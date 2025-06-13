@@ -1,0 +1,1 @@
+rootProject.name = "inspection-mcp-plugin"

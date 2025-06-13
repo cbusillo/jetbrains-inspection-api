@@ -1,0 +1,36 @@
+<idea-plugin>
+    <id>com.shiny.inspection.api</id>
+    <name>Inspection API</name>
+    <version>1.0.0</version>
+    <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
+    
+    <description><![CDATA[
+        Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
+        <br/><br/>
+        Features:
+        <ul>
+            <li>HTTP API access to inspection results</li>
+            <li>Smart status detection (not run, running, complete)</li>
+            <li>Full project scope inspection support</li>
+            <li>Works with all JetBrains IDEs</li>
+        </ul>
+        <br/>
+        Endpoints available at http://localhost:63341/api/inspection/*
+    ]]></description>
+    
+    <change-notes><![CDATA[
+        <b>Version 0.1.0</b>
+        <ul>
+            <li>Initial release</li>
+            <li>HTTP API endpoints for inspection management</li>
+            <li>Smart status detection</li>
+            <li>Support for all JetBrains IDEs</li>
+        </ul>
+    ]]></change-notes>
+    
+    <depends>com.intellij.modules.platform</depends>
+    
+    <extensions defaultExtensionNs="com.intellij">
+        <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>
+    </extensions>
+</idea-plugin>

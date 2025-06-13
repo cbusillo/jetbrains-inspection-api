@@ -1,0 +1,21 @@
+{
+  "name": "jetbrains-inspection-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for JetBrains Inspection API",
+  "type": "module",
+  "main": "server.js",
+  "bin": {
+    "jetbrains-inspection-mcp": "./server.js"
+  },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.25.64"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}

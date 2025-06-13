@@ -1,0 +1,67 @@
+<component name="InspectionProjectProfileManager">
+  <profile version="1.0">
+    <option name="myName" value="Project Default" />
+    <option name="scopesOrder">
+      <list>
+        <option value="Generated" />
+        <option value="All Changed Files" />
+        <option value="Open Files" />
+        <option value="Project Files" />
+        <option value="Scratches and Consoles" />
+      </list>
+    </option>
+    <inspection_tool class="CssUnusedSymbol" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Odoo SCSS" level="WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyArgumentEqualDefaultInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyAugmentAssignmentInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyClassicStyleClassInspection" enabled="true" level="WARNING" enabled_by_default="true" />
+    <inspection_tool class="PyCompatibilityInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <option name="ourVersions">
+        <value>
+          <list size="2">
+            <item index="0" class="java.lang.String" itemvalue="3.13" />
+            <item index="1" class="java.lang.String" itemvalue="3.12" />
+          </list>
+        </value>
+      </option>
+    </inspection_tool>
+    <inspection_tool class="PyMethodMayBeStaticInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyMissingTypeHintsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false">
+        <option name="m_onlyWhenTypesAreKnown" value="false" />
+      </scope>
+      <option name="m_onlyWhenTypesAreKnown" value="false" />
+    </inspection_tool>
+    <inspection_tool class="PyPep8NamingInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyProtectedMemberInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyShadowingBuiltinsInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyUnreachableCodeInspection" enabled="true" level="WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="PyUnusedLocalInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true">
+      <scope name="Generated" level="WEAK WARNING" enabled="false" />
+    </inspection_tool>
+    <inspection_tool class="SpellCheckingInspection" enabled="true" level="TYPO" enabled_by_default="true">
+      <scope name="Generated" level="TYPO" enabled="false">
+        <option name="processCode" value="true" />
+        <option name="processLiterals" value="true" />
+        <option name="processComments" value="true" />
+      </scope>
+      <option name="processCode" value="true" />
+      <option name="processLiterals" value="true" />
+      <option name="processComments" value="true" />
+    </inspection_tool>
+  </profile>
+</component>
