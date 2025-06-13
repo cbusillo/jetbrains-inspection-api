@@ -1,1 +1,1 @@
-rootProject.name = "inspection-mcp-plugin"
+ rootProject.name = "jetbrains-inspection-api"
