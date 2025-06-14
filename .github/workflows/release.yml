@@ -101,8 +101,9 @@ jobs:
         # Get the last published release (not just last tag)
         LAST_RELEASE=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
         
+        # Generate changelog
         {
-          echo 'CHANGELOG<<EOF'
+          echo "CHANGELOG<<CHANGELOG_END"
           if [ -n "$LAST_RELEASE" ] && [ "$LAST_RELEASE" != "null" ] && [ "$LAST_RELEASE" != "$CURRENT_TAG" ]; then
             echo "## Changes since $LAST_RELEASE"
             echo ""
@@ -118,7 +119,7 @@ jobs:
             echo ""
             git log --pretty=format:"- %s" --no-merges -10
           fi
-          echo 'EOF'
+          echo "CHANGELOG_END"
         } >> $GITHUB_OUTPUT
       env:
         GH_TOKEN: ${{ github.token }}
