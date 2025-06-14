@@ -111,7 +111,7 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 ## Version Management & Release
 
 **Versioning**: Change `pluginVersion` in `gradle.properties` and everything else updates automatically via precommit hook.
-**Releases**: Push a `v*` git tag (e.g., `git tag v1.5.0 && git push origin v1.5.0`) to trigger automated GitHub release with changelog.
+**Releases**: `git tag v1.X.X && git push origin master && git push origin v1.X.X` to trigger automated GitHub release with changelog.
 
 ## Future Enhancements
 
