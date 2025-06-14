@@ -10,6 +10,7 @@
       <w>errorlevel</w>
       <w>inspectionmcp</w>
       <w>javacmd</w>
+      <w>oneline</w>
       <w>readarray</w>
       <w>setlocal</w>
       <w>ulimit</w>

@@ -30,13 +30,48 @@ jobs:
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
     
+    - name: Generate changelog
+      id: changelog
+      run: |
+        # Get the previous tag
+        PREV_TAG=$(git describe --tags --abbrev=0 HEAD~1 2>/dev/null || echo "")
+        
+        # Generate changelog with commit messages since last tag
+        if [ -n "$PREV_TAG" ]; then
+          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
+          echo "## Changes since $PREV_TAG" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          git log --oneline --no-merges $PREV_TAG..HEAD | sed 's/^/- /' >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        else
+          echo "CHANGELOG=## Initial Release" >> $GITHUB_OUTPUT
+        fi
+    
     - name: Create Release
       id: create_release
       uses: softprops/action-gh-release@v1
       with:
         tag_name: ${{ github.ref }}
         name: Release ${{ steps.get_version.outputs.VERSION }}
-        generate_release_notes: true
+        body: |
+          ${{ steps.changelog.outputs.CHANGELOG }}
+          
+          ## Installation
+          
+          1. Download the `jetbrains-inspection-api-${{ steps.get_version.outputs.VERSION }}.zip` file
+          2. In your JetBrains IDE, go to **Settings** → **Plugins** → **⚙️** → **Install Plugin from Disk**
+          3. Select the downloaded zip file and restart the IDE
+          4. The plugin will be available on port 63340 (IntelliJ) or 63341 (PyCharm)
+          
+          ## MCP Integration
+          
+          ```bash
+          # For IntelliJ IDEA
+          claude mcp add-json jetbrains '{"command": "node", "args": ["path/to/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
+          
+          # For PyCharm  
+          claude mcp add-json inspection-pycharm '{"command": "node", "args": ["path/to/mcp-server/server.js"], "env": {"IDE_PORT": "63341"}}'
+          ```
         draft: false
         prerelease: false
         files: ./build/distributions/*.zip
