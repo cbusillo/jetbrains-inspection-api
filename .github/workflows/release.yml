@@ -33,23 +33,23 @@ jobs:
     - name: Generate changelog
       id: changelog
       run: |
-        # Get the previous tag
-        PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${{ steps.get_version.outputs.VERSION }}$" | head -n 1)
+        # Get the previous tag (exclude current tag being released)
+        CURRENT_TAG="${{ steps.get_version.outputs.VERSION }}"
+        PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
         
-        # Generate changelog with commit messages since last tag
+        echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
         if [ -n "$PREV_TAG" ]; then
-          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
           echo "## Changes since $PREV_TAG" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
-          git log --oneline --no-merges ${PREV_TAG}..HEAD | sed 's/^/- /' >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Get commits since last tag, format nicely
+          git log --pretty=format:"- %s" --no-merges ${PREV_TAG}..HEAD >> $GITHUB_OUTPUT
         else
-          echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
-          echo "## Initial Release" >> $GITHUB_OUTPUT
+          echo "## Changes in this release" >> $GITHUB_OUTPUT
           echo "" >> $GITHUB_OUTPUT
-          git log --oneline --no-merges | sed 's/^/- /' >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          # Get recent commits if no previous tag
+          git log --pretty=format:"- %s" --no-merges -10 >> $GITHUB_OUTPUT
         fi
+        echo "EOF" >> $GITHUB_OUTPUT
     
     - name: Create Release
       id: create_release
