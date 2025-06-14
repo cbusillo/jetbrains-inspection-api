@@ -99,13 +99,11 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val problems = mutableListOf<Map<String, Any>>()
             
-            // Parse severity filter
             val allowedSeverities = parseSeverityFilter(severity)
             
             val psiManager = PsiManager.getInstance(project)
             val documentManager = PsiDocumentManager.getInstance(project)
             
-            // Find the virtual file by path
             val virtualFileManager = com.intellij.openapi.vfs.VirtualFileManager.getInstance()
             val virtualFile = virtualFileManager.findFileByUrl("file://$filePath")
             
@@ -141,7 +139,6 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val problems = mutableListOf<Map<String, Any>>()
             
-            // Parse severity filter
             val allowedSeverities = parseSeverityFilter(severity)
             
             val psiManager = PsiManager.getInstance(project)
@@ -226,19 +223,14 @@ class InspectionHandler : HttpRequestHandler() {
     }
     
     private fun extractBetterDescription(info: com.intellij.codeInsight.daemon.impl.HighlightInfo, psiFile: PsiFile, startOffset: Int): String {
-        // Try multiple approaches to get a better description
-        
-        // 1. Use the primary description if available
         info.description?.let { desc ->
             if (desc.isNotBlank() && (desc != "null")) {
                 return desc
             }
         }
         
-        // 2. Try tooltip text which often contains more detailed info
         info.toolTip?.let { tooltip ->
             if (tooltip.isNotBlank()) {
-                // Remove HTML tags and clean up tooltip
                 val cleanTooltip = tooltip
                     .replace(Regex("<[^>]*>"), "")
                     .replace("&nbsp;", " ")
@@ -252,7 +244,6 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         
-        // 3. Extract text from the highlighted region for context
         try {
             val document = PsiDocumentManager.getInstance(psiFile.project).getDocument(psiFile)
             if (document != null) {
@@ -273,10 +264,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
         } catch (_: Exception) {
-            // Fall through to default
         }
         
-        // 4. Generate description based on inspection tool ID
         info.inspectionToolId?.let { toolId ->
             return when {
                 toolId.contains("unused", ignoreCase = true) -> "Unused element"
@@ -289,7 +278,6 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         
-        // 5. Final fallback
         return "Inspection issue found"
     }
     

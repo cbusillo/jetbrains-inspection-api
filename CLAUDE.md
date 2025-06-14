@@ -47,6 +47,14 @@ The plugin uses JetBrains 2025.x compatible APIs:
 8. **Modern Threading**: Compatible with 2025.x threading model
 9. **Clean JSON**: Manual JSON formatting to handle special characters
 
+### Code Style Guidelines
+
+**No Comments Policy**: Code should be self-documenting through descriptive naming and clear patterns. Comments are not used - instead rely on:
+- Descriptive function and variable names
+- Clear class and method structure
+- Meaningful constant names
+- Self-explanatory code organization
+
 ## Development Setup
 
 ### Prerequisites
@@ -72,10 +80,23 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 ## Development Workflow
 
 1. **Make Changes**: Edit InspectionHandler.kt or MCP server
-2. **Build**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
-3. **Install**: Load .zip from build/distributions/ in IDE
-4. **Test**: Use MCP tools or direct HTTP calls
-5. **Iterate**: Repeat until issues are resolved
+2. **Run Tests**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test` - All tests must pass
+3. **Build**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
+4. **Install**: Load .zip from build/distributions/ in IDE
+5. **Test**: Use MCP tools or direct HTTP calls
+6. **Iterate**: Repeat until issues are resolved
+
+### Testing Requirements
+
+**Before Committing**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
+
+**Coverage Standards**:
+- All new functionality requires tests (unit + integration)
+- Test public API behavior, error conditions, and performance
+- Avoid testing private methods directly
+- Use TDD: write failing tests first
+
+**Current Gaps**: Core process() method, error handling, integration tests
 
 ### Debugging
 1. Check IDE logs at `~/Library/Logs/JetBrains/IntelliJIdea{version}/idea.log`

@@ -62,3 +62,5 @@ replay_pid*
 
 # Node.js
 node_modules/
+
+/.kotlin/sessions
