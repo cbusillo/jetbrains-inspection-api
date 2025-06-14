@@ -13,9 +13,11 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 ### Core Components
 
 1. **InspectionHandler.kt** - Main HTTP request handler
-   - Handles `/api/inspection/problems` with optional scope parameter
+   - Handles `/api/inspection/problems` with optional scope and severity parameters
+   - Handles `/api/inspection/problems/{file-path}` for file-specific analysis
    - Handles `/api/inspection/inspections` for category summaries
    - Uses modern highlighting API for real-time problem detection
+   - Includes severity filtering and improved description extraction
    - No longer requires manual triggering
 
 2. **MCP Server** (Model Context Protocol)
@@ -26,11 +28,16 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 ### API Endpoints
 
 #### 1. Problems Endpoint
-**URL**: `GET /api/inspection/problems?scope={scope}`
+**URL**: `GET /api/inspection/problems?scope={scope}&severity={severity}`
 
-**Scopes**:
-- `whole_project` = (default) Scan the entire project
-- `current_file` = Only currently open files
+**Parameters**:
+- `scope`: `whole_project` (default) | `current_file`
+- `severity`: `error` | `warning` | `weak_warning` | `info` | `all` (default)
+
+#### 2. File-Specific Problems Endpoint
+**URL**: `GET /api/inspection/problems/{file-path}?severity={severity}`
+
+**Response**: Same as problems endpoint but with `"scope": "single_file"` and `"file_path"` field
 
 **Response**:
 ```json
@@ -56,7 +63,7 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 }
 ```
 
-#### 2. Categories Endpoint
+#### 3. Categories Endpoint
 **URL**: `GET /api/inspection/inspections`
 
 **Response**:
@@ -85,11 +92,14 @@ The plugin uses JetBrains 2025.x compatible APIs:
 ### Key Features
 
 1. **Real-time Detection**: No manual triggering needed, uses IDE's live highlighting
-2. **Scope Control**: Filter by whole project or current file
-3. **Universal File Support**: Processes all file types supported by the IDE (no longer limited to specific languages)
-4. **Comprehensive Inspection Coverage**: Captures all severity levels including spell check and informational inspections
-5. **Modern Threading**: Compatible with 2025.x threading model
-6. **Clean JSON**: Manual JSON formatting to handle special characters
+2. **Scope Control**: Filter by whole project, current file, or specific files
+3. **Severity Filtering**: Filter by error, warning, weak_warning, info levels or all
+4. **File-Specific Analysis**: Target inspection analysis to individual files
+5. **Universal File Support**: Processes all file types supported by the IDE
+6. **Improved Descriptions**: 5-layer fallback strategy for better issue descriptions
+7. **Comprehensive Coverage**: Captures all severity levels including spell check and informational inspections
+8. **Modern Threading**: Compatible with 2025.x threading model
+9. **Clean JSON**: Manual JSON formatting to handle special characters
 
 ## Development Setup
 
@@ -123,7 +133,8 @@ claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/j
 ```
 
 ### Available MCP Tools
-- `inspection_get_problems` - Get all inspection problems
+- `inspection_get_problems` - Get all inspection problems with optional scope and severity filtering
+- `inspection_get_file_problems` - Get inspection problems for a specific file
 - `inspection_get_categories` - Get problem categories summary
 
 ### Debugging
@@ -148,13 +159,13 @@ claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/j
 
 ### Potential Improvements
 - Add VCS scope (uncommitted files only)
-- Add severity filtering options (currently captures all: error, warning, weak_warning, info)
 - Implement caching for better performance
 - Add configuration options for inspection selection
-- Improve description extraction for "Unknown issue" entries
+- Add batch operations for multiple files
 
 ### API Extensions
-- File-specific endpoint: `/api/inspection/problems/{file-path}`
 - Live updates via WebSocket
 - Batch problem resolution tracking
 - Integration with external tools (ESLint, SonarQube, etc.)
+- Pattern-based file filtering (e.g., `*.{js,ts}`)
+- Diff-based inspection (only changed lines)
