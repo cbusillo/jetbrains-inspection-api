@@ -95,14 +95,16 @@ jobs:
       id: changelog
       run: |
         CURRENT_TAG="${{ steps.get_version.outputs.VERSION }}"
-        PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${CURRENT_TAG}$" | head -n 1)
+        
+        # Get the last published release (not just last tag)
+        LAST_RELEASE=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
         
         {
           echo 'CHANGELOG<<EOF'
-          if [ -n "$PREV_TAG" ]; then
-            echo "## Changes since $PREV_TAG"
+          if [ -n "$LAST_RELEASE" ] && [ "$LAST_RELEASE" != "null" ] && [ "$LAST_RELEASE" != "$CURRENT_TAG" ]; then
+            echo "## Changes since $LAST_RELEASE"
             echo ""
-            git log --pretty=format:"- %s" --no-merges ${PREV_TAG}..HEAD
+            git log --pretty=format:"- %s" --no-merges ${LAST_RELEASE}..HEAD
           else
             echo "## Changes in this release"
             echo ""
@@ -110,6 +112,8 @@ jobs:
           fi
           echo 'EOF'
         } >> $GITHUB_OUTPUT
+      env:
+        GH_TOKEN: ${{ github.token }}
     
     - name: Create Release
       id: create_release
