@@ -37,7 +37,14 @@ cd jetbrains-inspection-api
 
 ### 3. Set Up Claude Code Integration (Recommended)
 
-Add the MCP server using Claude Code CLI:
+First, install MCP server dependencies:
+
+```bash
+cd jetbrains-inspection-api/mcp-server
+npm install
+```
+
+Then add the MCP server using Claude Code CLI:
 
 ```bash
 # For PyCharm (typically port 63341)
