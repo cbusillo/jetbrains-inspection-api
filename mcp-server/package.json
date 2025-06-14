@@ -8,7 +8,9 @@
     "jetbrains-inspection-mcp": "./server.js"
   },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test",
+    "test:watch": "node --test --watch"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

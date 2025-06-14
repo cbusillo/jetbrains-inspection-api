@@ -88,8 +88,10 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 
 ### Testing Requirements
 
-**Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests + MCP syntax check  
-**Manual Testing**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`  
+**Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests, MCP syntax check, and build  
+**Manual Testing**: 
+- Plugin: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
+- MCP Server: `cd mcp-server && npm test`
 **CI/CD**: GitHub Actions run full test suite on push/PR
 
 **Coverage Standards**:
