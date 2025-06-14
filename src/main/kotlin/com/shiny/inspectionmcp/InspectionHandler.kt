@@ -144,8 +144,10 @@ class InspectionHandler : HttpRequestHandler() {
                     val lineNumber = document.getLineNumber(startOffset) + 1
                     val columnNumber = startOffset - document.getLineStartOffset(document.getLineNumber(startOffset))
                     
+                    val description = extractBetterDescription(info, psiFile, startOffset)
+                    
                     val problem = mapOf(
-                        "description" to (info.description ?: "Unknown issue").replace("\"", "\\\"").replace("\n", "\\n"),
+                        "description" to description.replace("\"", "\\\"").replace("\n", "\\n"),
                         "file" to psiFile.virtualFile.path,
                         "line" to lineNumber,
                         "column" to columnNumber,
@@ -166,6 +168,74 @@ class InspectionHandler : HttpRequestHandler() {
         }
         
         return problems
+    }
+    
+    private fun extractBetterDescription(info: com.intellij.codeInsight.daemon.impl.HighlightInfo, psiFile: PsiFile, startOffset: Int): String {
+        // Try multiple approaches to get a better description
+        
+        // 1. Use the primary description if available
+        info.description?.let { desc ->
+            if (desc.isNotBlank() && desc != "null") {
+                return desc
+            }
+        }
+        
+        // 2. Try tooltip text which often contains more detailed info
+        info.toolTip?.let { tooltip ->
+            if (tooltip.isNotBlank()) {
+                // Remove HTML tags and clean up tooltip
+                val cleanTooltip = tooltip
+                    .replace(Regex("<[^>]*>"), "")
+                    .replace("&nbsp;", " ")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                    .replace("&amp;", "&")
+                    .trim()
+                if (cleanTooltip.isNotBlank() && cleanTooltip != "null") {
+                    return cleanTooltip
+                }
+            }
+        }
+        
+        // 3. Extract text from the highlighted region for context
+        try {
+            val document = PsiDocumentManager.getInstance(psiFile.project).getDocument(psiFile)
+            if (document != null) {
+                val endOffset = info.endOffset.coerceAtMost(document.textLength)
+                val highlightedText = document.getText(com.intellij.openapi.util.TextRange(startOffset, endOffset))
+                if (highlightedText.isNotBlank()) {
+                    return when {
+                        info.inspectionToolId?.contains("spell", ignoreCase = true) == true -> 
+                            "Possible spelling issue: '$highlightedText'"
+                        info.inspectionToolId?.contains("typo", ignoreCase = true) == true -> 
+                            "Typo: '$highlightedText'"
+                        info.inspectionToolId?.contains("shellcheck", ignoreCase = true) == true -> 
+                            "ShellCheck issue with: '$highlightedText'"
+                        info.severity == HighlightSeverity.INFORMATION -> 
+                            "Info: '$highlightedText'"
+                        else -> "Issue with: '$highlightedText'"
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Fall through to default
+        }
+        
+        // 4. Generate description based on inspection tool ID
+        info.inspectionToolId?.let { toolId ->
+            return when {
+                toolId.contains("unused", ignoreCase = true) -> "Unused element"
+                toolId.contains("unresolve", ignoreCase = true) -> "Unresolved reference"
+                toolId.contains("spell", ignoreCase = true) -> "Spelling issue"
+                toolId.contains("typo", ignoreCase = true) -> "Typo"
+                toolId.contains("shellcheck", ignoreCase = true) -> "ShellCheck warning"
+                toolId.contains("syntax", ignoreCase = true) -> "Syntax issue"
+                else -> "Issue detected by $toolId"
+            }
+        }
+        
+        // 5. Final fallback
+        return "Inspection issue found"
     }
     
     private fun getInspectionCategories(): String {
