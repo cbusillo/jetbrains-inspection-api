@@ -88,7 +88,9 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 
 ### Testing Requirements
 
-**Before Committing**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
+**Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests + MCP syntax check  
+**Manual Testing**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`  
+**CI/CD**: GitHub Actions run full test suite on push/PR
 
 **Coverage Standards**:
 - All new functionality requires tests (unit + integration)
