@@ -115,6 +115,39 @@ server.tool(
   }
 );
 
+// Tool: Get inspection problems for a specific file
+server.tool(
+  "inspection_get_file_problems",
+  "Get inspection problems for a specific file",
+  {
+    file_path: z.string().describe("Absolute path to the file to inspect"),
+    severity: z.string().optional().default("all").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
+  },
+  async ({ file_path, severity }) => {
+    try {
+      const params = new URLSearchParams();
+      if (severity !== "all") params.append("severity", severity);
+      
+      const url = `${BASE_URL}/problems/${encodeURIComponent(file_path)}${params.toString() ? '?' + params.toString() : ''}`;
+      const result = await httpGet(url);
+      
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify(result, null, 2)
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{
+          type: "text",
+          text: `Error getting file problems: ${error.message}`
+        }]
+      };
+    }
+  }
+);
+
 // Main function to start the server
 async function main() {
   try {

@@ -17,17 +17,18 @@ import org.jetbrains.ide.HttpRequestHandler
 class InspectionHandler : HttpRequestHandler() {
     
     override fun isSupported(request: FullHttpRequest): Boolean {
-        return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
+        return (request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET)
     }
 
     override fun process(
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
-        context: ChannelHandlerContext
+        context: ChannelHandlerContext,
     ): Boolean {
         try {
-            when (urlDecoder.path()) {
-                "/api/inspection/problems" -> {
+            val path = urlDecoder.path()
+            when {
+                path == "/api/inspection/problems" -> {
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val result = ReadAction.compute<String, Exception> {
@@ -35,7 +36,15 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     sendJsonResponse(context, result)
                 }
-                "/api/inspection/inspections" -> {
+                path.startsWith("/api/inspection/problems/") -> {
+                    val filePath = path.removePrefix("/api/inspection/problems/")
+                    val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
+                    val result = ReadAction.compute<String, Exception> {
+                        getInspectionProblemsForFile(filePath, severity)
+                    }
+                    sendJsonResponse(context, result)
+                }
+                path == "/api/inspection/inspections" -> {
                     val result = ReadAction.compute<String, Exception> {
                         getInspectionCategories()
                     }
@@ -57,7 +66,7 @@ class InspectionHandler : HttpRequestHandler() {
         psiManager: PsiManager,
         documentManager: PsiDocumentManager,
         problems: MutableList<Map<String, Any>>,
-        allowedSeverities: Set<HighlightSeverity>
+        allowedSeverities: Set<HighlightSeverity>,
     ) {
         try {
             val psiFile = psiManager.findFile(virtualFile)
@@ -72,6 +81,59 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
+    private fun parseSeverityFilter(severity: String): Set<HighlightSeverity> {
+        return when (severity.lowercase()) {
+            "error" -> setOf(HighlightSeverity.ERROR)
+            "warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING)
+            "weak_warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING)
+            "info" -> setOf(HighlightSeverity.INFORMATION)
+            "all" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
+            else -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
+        }
+    }
+    
+    private fun getInspectionProblemsForFile(filePath: String, severity: String = "all"): String {
+        val project = getCurrentProject()
+            ?: return """{"error": "No project found"}"""
+        
+        return try {
+            val problems = mutableListOf<Map<String, Any>>()
+            
+            // Parse severity filter
+            val allowedSeverities = parseSeverityFilter(severity)
+            
+            val psiManager = PsiManager.getInstance(project)
+            val documentManager = PsiDocumentManager.getInstance(project)
+            
+            // Find the virtual file by path
+            val virtualFileManager = com.intellij.openapi.vfs.VirtualFileManager.getInstance()
+            val virtualFile = virtualFileManager.findFileByUrl("file://$filePath")
+            
+            if ((virtualFile != null) && virtualFile.isValid && !virtualFile.isDirectory) {
+                processFile(virtualFile, psiManager, documentManager, problems, allowedSeverities)
+            } else {
+                return """{"error": "File not found or not accessible: $filePath"}"""
+            }
+            
+            val response = mapOf(
+                "status" to "results_available",
+                "project" to project.name,
+                "timestamp" to System.currentTimeMillis(),
+                "total_problems" to problems.size,
+                "problems_shown" to problems.size,
+                "problems" to problems,
+                "scope" to "single_file",
+                "file_path" to filePath,
+                "severity_filter" to severity,
+                "method" to "highlighting_api",
+            )
+            
+            formatJsonManually(response)
+        } catch (e: Exception) {
+            """{"error": "Failed to get problems for file: ${e.message}"}"""
+        }
+    }
+    
     private fun getInspectionProblems(scope: String = "whole_project", severity: String = "all"): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
@@ -80,14 +142,7 @@ class InspectionHandler : HttpRequestHandler() {
             val problems = mutableListOf<Map<String, Any>>()
             
             // Parse severity filter
-            val allowedSeverities = when (severity.lowercase()) {
-                "error" -> setOf(HighlightSeverity.ERROR)
-                "warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING)
-                "weak_warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING)
-                "info" -> setOf(HighlightSeverity.INFORMATION)
-                "all" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
-                else -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
-            }
+            val allowedSeverities = parseSeverityFilter(severity)
             
             val psiManager = PsiManager.getInstance(project)
             val documentManager = PsiDocumentManager.getInstance(project)
@@ -119,7 +174,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "problems" to problems.take(100),
                 "scope" to scope,
                 "severity_filter" to severity,
-                "method" to "highlighting_api"
+                "method" to "highlighting_api",
             )
             
             formatJsonManually(response)
@@ -175,7 +230,7 @@ class InspectionHandler : HttpRequestHandler() {
         
         // 1. Use the primary description if available
         info.description?.let { desc ->
-            if (desc.isNotBlank() && desc != "null") {
+            if (desc.isNotBlank() && (desc != "null")) {
                 return desc
             }
         }
@@ -191,7 +246,7 @@ class InspectionHandler : HttpRequestHandler() {
                     .replace("&gt;", ">")
                     .replace("&amp;", "&")
                     .trim()
-                if (cleanTooltip.isNotBlank() && cleanTooltip != "null") {
+                if (cleanTooltip.isNotBlank() && (cleanTooltip != "null")) {
                     return cleanTooltip
                 }
             }
@@ -263,7 +318,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "status" to "results_available",
                 "project" to project.name,
                 "timestamp" to System.currentTimeMillis(),
-                "categories" to categories
+                "categories" to categories,
             )
             
             formatJsonManually(response)
@@ -293,13 +348,13 @@ class InspectionHandler : HttpRequestHandler() {
     private fun sendJsonResponse(
         context: ChannelHandlerContext, 
         jsonContent: String, 
-        status: HttpResponseStatus = HttpResponseStatus.OK
+        status: HttpResponseStatus = HttpResponseStatus.OK,
     ) {
         val content = Unpooled.copiedBuffer(jsonContent, Charsets.UTF_8)
         val response = DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, content)
-        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json")
-        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.readableBytes())
-        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+        response.headers()[HttpHeaderNames.CONTENT_TYPE] = "application/json"
+        response.headers()[HttpHeaderNames.CONTENT_LENGTH] = content.readableBytes()
+        response.headers()[HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN] = "*"
         context.writeAndFlush(response)
     }
 }
