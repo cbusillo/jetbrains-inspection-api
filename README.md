@@ -4,11 +4,11 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 
 ## Features
 
-- **HTTP API access** to inspection results
-- **Smart status detection** (not run, running, complete)
+- **Real-time HTTP API access** to inspection results
+- **Scope-based filtering** (whole project or current file)
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
 - **Claude Code MCP integration** for seamless AI assistant access
-- **Full project scope** inspection support
+- **No manual triggering required** - uses live inspection data
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 ```bash
 git clone https://github.com/cbusillo/jetbrains-inspection-api.git
 cd jetbrains-inspection-api
-./gradlew buildPlugin
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 # Plugin will be in build/distributions/
 ```
 
@@ -66,11 +66,11 @@ claude mcp list
 
 ### With Claude Code (Recommended)
 ```bash
-# Trigger project-wide inspection
-inspection_trigger()
-
-# Get detailed problems list (wait a few seconds after triggering)
+# Get all problems in project (real-time, no triggering needed)
 inspection_get_problems()
+
+# Get problems for currently open files only
+inspection_get_problems(scope="current_file")
 
 # Get problem categories summary
 inspection_get_categories()
@@ -78,31 +78,73 @@ inspection_get_categories()
 
 ### Direct HTTP API
 ```bash
-# Trigger inspection
-curl "http://localhost:63341/api/inspection/trigger"
+# Get all problems in project
+curl "http://localhost:63340/api/inspection/problems"
 
-# Get problems
-curl "http://localhost:63341/api/inspection/problems"
+# Get problems for current file only
+curl "http://localhost:63340/api/inspection/problems?scope=current_file"
 
 # Get categories  
-curl "http://localhost:63341/api/inspection/inspections"
+curl "http://localhost:63340/api/inspection/inspections"
 ```
 
-Replace `63341` with your IDE's configured port.
+Replace `63340` with your IDE's configured port.
 
-### Response Format
-The API returns JSON with:
-- `status`: `"no_inspection_run"`, `"no_results_yet"`, or `"results_available"`
-- `total_problems`: Total number of issues found
-- `problems`: Array of first 100 problems with description, category, and severity
+## API Reference
+
+### Problems Endpoint
+**URL**: `GET /api/inspection/problems?scope={scope}`
+
+**Scopes**:
+- `whole_project` (default) - All project files
+- `current_file` - Only currently open files
+
+**Response**:
+```json
+{
+  "status": "results_available",
+  "project": "project-name",
+  "timestamp": 1234567890,
+  "total_problems": 5,
+  "problems_shown": 5,
+  "scope": "whole_project",
+  "method": "highlighting_api",
+  "problems": [
+    {
+      "description": "Unused import directive",
+      "file": "/path/to/file.kt",
+      "line": 42,
+      "column": 10,
+      "severity": "warning",
+      "category": "KotlinUnusedImport",
+      "source": "highlighting_api"
+    }
+  ]
+}
+```
+
+### Categories Endpoint
+**URL**: `GET /api/inspection/inspections`
+
+**Response**:
+```json
+{
+  "status": "results_available",
+  "project": "project-name", 
+  "timestamp": 1234567890,
+  "categories": [
+    {"name": "KotlinUnusedImport", "problem_count": 3},
+    {"name": "DuplicatedCode", "problem_count": 2}
+  ]
+}
+```
 
 ## MCP Server Details
 
 The included MCP (Model Context Protocol) server provides seamless integration with Claude Code:
 
 ### Tools Provided
-- **`inspection_trigger(scope?)`** - Triggers inspection (scope defaults to "whole_project")
-- **`inspection_get_problems()`** - Gets current problems and status
+- **`inspection_get_problems(scope?)`** - Gets real-time problems (scope: "whole_project" or "current_file")
 - **`inspection_get_categories()`** - Gets problem categories summary
 
 ### Requirements
@@ -128,26 +170,40 @@ Add this to your project's `CLAUDE.md`:
 
 ### JetBrains Inspection API
 
-**Usage**: Use MCP tools for comprehensive inspection results:
+**Usage**: Use MCP tools for real-time inspection results:
 
-- `inspection_trigger()` - Start project-wide inspection—`inspection_get_problems()` - Get a detailed problems list (wait a few seconds after triggering)
+- `inspection_get_problems()` - Get all project problems
+- `inspection_get_problems(scope="current_file")` - Get problems in open files only  
 - `inspection_get_categories()` - Get problem categories summary
 
-**Response format**: 
-- Status: "no_inspection_run", "no_results_yet", or "results_available"
+**Features**: 
+- Real-time results (no triggering needed)
+- Supports Kotlin, Java, JavaScript, TypeScript, Python
 - Returns up to 100 detailed problems with description, category, and severity
-- Use for project-wide code quality assessment before major commits
+- Use for project-wide code quality assessment before commits
 
 ## Development Workflow
 
 1. Make code changes
-2. Run `inspection_trigger()` to start inspection
-3. Wait a few seconds, then check results with `inspection_get_problems()`
-4. Fix any critical issues found
-5. Run tests
-6. Commit changes
+2. Check real-time results with `inspection_get_problems()`
+3. Fix any critical issues found
+4. Run tests
+5. Commit changes
 ```
+
+## Version History
+
+### v1.2.0 (Latest)
+- ✅ **Real-time inspection** - No manual triggering required
+- ✅ **Scope filtering** - Whole project or current file only
+- ✅ **Removed trigger endpoint** - Uses live highlighting API
+- ✅ **JetBrains 2025.x compatibility** - Latest IDE support
+- ✅ **Cleaner codebase** - Removed legacy code and comments
+
+### v1.1.0
+- Updated for JetBrains 2025.x compatibility
+- Replaced internal APIs with public alternatives
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+MIT License: see [LICENSE](LICENSE) file for details.

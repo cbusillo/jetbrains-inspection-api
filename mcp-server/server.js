@@ -17,7 +17,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.0.3'
+    version: '1.2.0'
   },
   {
     capabilities: {
@@ -53,43 +53,17 @@ function httpGet(url) {
   });
 }
 
-// Tool: Trigger inspection
-server.tool(
-  "inspection_trigger",
-  "Trigger a project-wide code inspection",
-  {
-    scope: z.string().optional().default("whole_project").describe("Inspection scope (default: whole_project)")
-  },
-  async ({ scope }) => {
-    try {
-      const url = `${BASE_URL}/trigger?scope=${encodeURIComponent(scope)}`;
-      const result = await httpGet(url);
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result, null, 2)
-        }]
-      };
-    } catch (error) {
-      return {
-        content: [{
-          type: "text", 
-          text: `Error triggering inspection: ${error.message}`
-        }]
-      };
-    }
-  }
-);
 
 // Tool: Get inspection problems
 server.tool(
   "inspection_get_problems",
   "Get inspection problems and status",
-  {},
-  async () => {
+  {
+    scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'")
+  },
+  async ({ scope }) => {
     try {
-      const url = `${BASE_URL}/problems`;
+      const url = `${BASE_URL}/problems?scope=${encodeURIComponent(scope)}`;
       const result = await httpGet(url);
       
       return {

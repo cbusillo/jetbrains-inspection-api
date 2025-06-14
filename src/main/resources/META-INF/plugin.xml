@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.0.3</version>
+    <version>1.2.0</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
     
     <description><![CDATA[
@@ -9,16 +9,33 @@
         <br/><br/>
         Features:
         <ul>
-            <li>HTTP API access to inspection results</li>
-            <li>Smart status detection (not run, running, complete)</li>
-            <li>Full project scope inspection support</li>
-            <li>Works with all JetBrains IDEs</li>
+            <li>Real-time HTTP API access to inspection results</li>
+            <li>Scope-based filtering (whole project or current file)</li>
+            <li>No manual triggering required - uses live inspection data</li>
+            <li>Works with all JetBrains IDEs (2025.x compatible)</li>
+            <li>Claude Code MCP integration included</li>
         </ul>
         <br/>
-        Endpoints available at http://localhost:63341/api/inspection/*
+        Endpoints available at http://localhost:63340/api/inspection/*
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.2.0</b>
+        <ul>
+            <li>Real-time inspection - No manual triggering required</li>
+            <li>Scope filtering - Whole project or current file only</li>
+            <li>Removed trigger endpoint - Uses live highlighting API</li>
+            <li>JetBrains 2025.x compatibility - Latest IDE support</li>
+            <li>Cleaner codebase - Removed legacy code and comments</li>
+            <li>Updated MCP server with scope parameter support</li>
+        </ul>
+        <b>Version 1.1.0</b>
+        <ul>
+            <li>Updated for JetBrains 2025.x compatibility</li>
+            <li>Replaced internal APIs with public alternatives</li>
+            <li>Improved threading model compatibility</li>
+            <li>Updated to latest Kotlin and Gradle plugin versions</li>
+        </ul>
         <b>Version 1.0.0</b>
         <ul>
             <li>Initial release</li>

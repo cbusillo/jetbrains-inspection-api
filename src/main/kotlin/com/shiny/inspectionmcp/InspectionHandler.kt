@@ -1,14 +1,14 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.analysis.AnalysisScope
-import com.intellij.codeInspection.ex.GlobalInspectionContextEx
-import com.intellij.codeInspection.ex.InspectionManagerEx
-import com.intellij.codeInspection.ui.InspectionResultsView
-import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.lang.annotation.HighlightSeverity
+import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
-import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -26,34 +26,19 @@ class InspectionHandler : HttpRequestHandler() {
         context: ChannelHandlerContext
     ): Boolean {
         try {
-            when {
-                urlDecoder.path() == "/api/inspection/trigger" -> {
+            when (urlDecoder.path()) {
+                "/api/inspection/problems" -> {
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
-                    triggerInspection(scope)
-                    sendJsonResponse(context, """{"status": "triggered", "message": "Inspection started", "scope": "$scope"}""")
-                }
-                urlDecoder.path() == "/api/inspection/problems" -> {
-                    // Smart endpoint that handles both status and results
-                    var resultsJson = """{"status": "pending"}"""
-                    try {
-                        ApplicationManager.getApplication().invokeAndWait {
-                            resultsJson = getInspectionProblems()
-                        }
-                    } catch (e: ProcessCanceledException) {
-                        throw e // Must rethrow ProcessCanceledException
+                    val result = ReadAction.compute<String, Exception> {
+                        getInspectionProblems(scope)
                     }
-                    sendJsonResponse(context, resultsJson)
+                    sendJsonResponse(context, result)
                 }
-                urlDecoder.path() == "/api/inspection/inspections" -> {
-                    var resultsJson = """{"status": "pending"}"""
-                    try {
-                        ApplicationManager.getApplication().invokeAndWait {
-                            resultsJson = getInspectionCategories()
-                        }
-                    } catch (e: ProcessCanceledException) {
-                        throw e // Must rethrow ProcessCanceledException
+                "/api/inspection/inspections" -> {
+                    val result = ReadAction.compute<String, Exception> {
+                        getInspectionCategories()
                     }
-                    sendJsonResponse(context, resultsJson)
+                    sendJsonResponse(context, result)
                 }
                 else -> {
                     sendJsonResponse(context, """{"error": "Unknown endpoint"}""", HttpResponseStatus.NOT_FOUND)
@@ -66,221 +51,143 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun triggerInspection(scopeType: String) {
-        val project = getCurrentProject() ?: return
-        
-        ApplicationManager.getApplication().invokeLater {
-            try {
-                val inspectionManager = InspectionManagerEx.getInstance(project) as InspectionManagerEx
-                val context = inspectionManager.createNewGlobalContext() as GlobalInspectionContextEx
-                
-                val analysisScope = when (scopeType) {
-                    "whole_project" -> AnalysisScope(project)
-                    "uncommitted" -> AnalysisScope(project)
-                    "custom" -> AnalysisScope(project)
-                    else -> AnalysisScope(project)
+    private fun processFile(
+        virtualFile: VirtualFile,
+        psiManager: PsiManager,
+        documentManager: PsiDocumentManager,
+        problems: MutableList<Map<String, Any>>
+    ) {
+        try {
+            val psiFile = psiManager.findFile(virtualFile)
+            if (psiFile != null) {
+                val document = documentManager.getDocument(psiFile)
+                if (document != null) {
+                    val highlightingProblems = extractHighlightingProblems(psiFile, document)
+                    problems.addAll(highlightingProblems)
                 }
-                
-                ApplicationManager.getApplication().executeOnPooledThread {
-                    try {
-                        context.doInspections(analysisScope)
-                    } catch (e: Exception) { }
-                }
-                
-            } catch (e: Exception) { }
-        }
-    }
-    
-    private fun findInspectionView(project: Project): InspectionResultsView? {
-        val toolWindow = ToolWindowManager.getInstance(project).getToolWindow("Problems View")
-        if (toolWindow?.isAvailable != true) return null
-        
-        val contentManager = toolWindow.contentManager ?: return null
-        
-        for (i in 0 until contentManager.contentCount) {
-            val content = contentManager.getContent(i)
-            if (content?.component is InspectionResultsView) {
-                return content.component as InspectionResultsView
             }
+        } catch (_: Exception) {
         }
-        return null
     }
     
-    private fun getInspectionProblems(): String {
-        val project = getCurrentProject() ?: return """{"error": "No project found"}"""
+    private fun getInspectionProblems(scope: String = "whole_project"): String {
+        val project = getCurrentProject()
+            ?: return """{"error": "No project found"}"""
+        
+        return try {
+            val problems = mutableListOf<Map<String, Any>>()
+            
+            val psiManager = PsiManager.getInstance(project)
+            val documentManager = PsiDocumentManager.getInstance(project)
+            
+            if (scope == "current_file") {
+                val fileEditorManager = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+                val selectedFiles = fileEditorManager.selectedFiles
+                for (virtualFile in selectedFiles) {
+                    if (virtualFile.extension in listOf("kt", "java", "js", "ts", "py")) {
+                        processFile(virtualFile, psiManager, documentManager, problems)
+                    }
+                }
+            } else {
+                val projectFileIndex = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
+                projectFileIndex.iterateContent { virtualFile ->
+                    if (virtualFile.isValid && !virtualFile.isDirectory && 
+                        virtualFile.extension in listOf("kt", "java", "js", "ts", "py")) {
+                        processFile(virtualFile, psiManager, documentManager, problems)
+                    }
+                    true
+                }
+            }
+            
+            val response = mapOf(
+                "status" to "results_available",
+                "project" to project.name,
+                "timestamp" to System.currentTimeMillis(),
+                "total_problems" to problems.size,
+                "problems_shown" to problems.size,
+                "problems" to problems.take(100),
+                "scope" to scope,
+                "method" to "highlighting_api"
+            )
+            
+            formatJsonManually(response)
+        } catch (e: Exception) {
+            """{"error": "Failed to get problems: ${e.message}"}"""
+        }
+    }
+    
+    private fun extractHighlightingProblems(psiFile: PsiFile, document: Document): List<Map<String, Any>> {
+        val problems = mutableListOf<Map<String, Any>>()
         
         try {
-            val inspectionView = findInspectionView(project)
-            if (inspectionView == null) {
-                return """
-                {
-                    "status": "no_inspection_run",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "message": "No inspection has been run yet. Use /api/inspection/trigger first."
-                }
-                """.trimIndent()
-            }
+            @Suppress("UnstableApiUsage")
+            val highlightInfos = com.intellij.codeInsight.daemon.impl.DaemonCodeAnalyzerImpl.getHighlights(
+                document, HighlightSeverity.INFORMATION, psiFile.project
+            )
             
-            if (inspectionView == null) {
-                return """
-                {
-                    "status": "no_results_yet",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "message": "Inspection may be running or no results available yet. Try again in a few seconds."
-                }
-                """.trimIndent()
-            }
-            val tree = inspectionView.tree
-            val treeModel = tree?.model
-            val rootNode = treeModel?.root
-            val childCount = treeModel?.getChildCount(rootNode) ?: 0
-            
-            if (childCount == 0) {
-                return """
-                {
-                    "status": "no_results_yet",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "message": "Inspection running or no problems found yet. Try again in a few seconds."
-                }
-                """.trimIndent()
-            }
-            
-            // Extract problems from the tree
-            val problems = mutableListOf<Map<String, Any>>()
-            var totalProblems = 0
-            
-            if (tree != null && treeModel != null && rootNode != null) {
-                fun extractProblems(node: Any?, category: String = "", depth: Int = 0) {
-                    if (node == null || depth > 10 || totalProblems >= 5000) return
+            for (info in highlightInfos) {
+                if (info.severity == HighlightSeverity.ERROR || 
+                    info.severity == HighlightSeverity.WARNING ||
+                    info.severity == HighlightSeverity.WEAK_WARNING) {
                     
-                    val nodeStr = node.toString()
-                    val nodeChildCount = treeModel.getChildCount(node)
-                    val nodeClass = node.javaClass.simpleName
+                    val startOffset = info.startOffset
+                    val lineNumber = document.getLineNumber(startOffset) + 1
+                    val columnNumber = startOffset - document.getLineStartOffset(document.getLineNumber(startOffset))
                     
-                    
-                    // If this is an InspectionNode (actual problem), extract it
-                    if (nodeClass == "InspectionNode" && nodeChildCount == 0) {
-                        totalProblems++
-                        if (problems.size < 100) { // Limit to 100 for response size
-                            problems.add(mapOf(
-                                "description" to nodeStr,
-                                "category" to category,
-                                "severity" to "warning" // Default severity
-                            ))
-                        }
-                    } else if (nodeChildCount == 0 && depth > 2) {
-                        // Try to capture leaf nodes that might be problems
-                        totalProblems++
-                        if (problems.size < 100) {
-                            problems.add(mapOf(
-                                "description" to nodeStr,
-                                "category" to category,
-                                "severity" to "warning"
-                            ))
-                        }
-                    }
-                    
-                    // Recurse through children
-                    val currentCategory = if (nodeClass == "InspectionGroupNode" || depth <= 1) nodeStr else category
-                    for (i in 0 until nodeChildCount) {
-                        try {
-                            val child = treeModel.getChild(node, i)
-                            extractProblems(child, currentCategory, depth + 1)
-                        } catch (e: Exception) {
-                            // Skip problematic nodes
-                        }
-                    }
-                }
-                
-                // Extract problems from all root children
-                for (i in 0 until childCount) {
-                    try {
-                        val child = treeModel.getChild(rootNode, i)
-                        extractProblems(child, "", 1)
-                    } catch (e: Exception) {
-                        // Skip problematic nodes
-                    }
+                    val problem = mapOf(
+                        "description" to (info.description ?: "Unknown issue").replace("\"", "\\\"").replace("\n", "\\n"),
+                        "file" to psiFile.virtualFile.path,
+                        "line" to lineNumber,
+                        "column" to columnNumber,
+                        "severity" to when (info.severity) {
+                            HighlightSeverity.ERROR -> "error"
+                            HighlightSeverity.WARNING -> "warning"
+                            HighlightSeverity.WEAK_WARNING -> "weak_warning"
+                            else -> "info"
+                        },
+                        "category" to (info.inspectionToolId ?: "General"),
+                        "source" to "highlighting_api"
+                    )
+                    problems.add(problem)
                 }
             }
-            
-            return """
-            {
-                "status": "results_available",
-                "project": "${project.name}",
-                "timestamp": "${System.currentTimeMillis()}",
-                "total_problems": $totalProblems,
-                "problems_shown": ${problems.size},
-                "problems": ${formatJsonValue(problems)}
-            }
-            """.trimIndent()
-            
-        } catch (e: Exception) {
-            return """{"error": "Failed to get problems: ${e.message}"}"""
+        } catch (_: Exception) {
         }
+        
+        return problems
     }
     
     private fun getInspectionCategories(): String {
-        val project = getCurrentProject() ?: return """{"error": "No project found"}"""
+        val project = getCurrentProject()
+            ?: return """{"error": "No project found"}"""
         
-        try {
-            val inspectionView = findInspectionView(project)
-            if (inspectionView == null) {
-                return """
-                {
-                    "status": "no_inspection_run",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "message": "No inspection has been run yet."
-                }
-                """.trimIndent()
+        return try {
+            val problemsResult = getInspectionProblems()
+            
+            val categoryMap = mutableMapOf<String, Int>()
+            
+            val categoryRegex = """"category":\s*"([^"]+)"""".toRegex()
+            val matches = categoryRegex.findAll(problemsResult)
+            
+            for (match in matches) {
+                val category = match.groupValues[1]
+                categoryMap[category] = categoryMap.getOrDefault(category, 0) + 1
             }
             
-            if (inspectionView != null) {
-                val tree = inspectionView.tree
-                val treeModel = tree?.model
-                val rootNode = treeModel?.root
-                val childCount = treeModel?.getChildCount(rootNode) ?: 0
-                
-                val categories = mutableListOf<Map<String, Any>>()
-                
-                // Get top-level categories
-                for (i in 0 until childCount) {
-                    try {
-                        val child = treeModel?.getChild(rootNode, i)
-                        val childCount2 = treeModel?.getChildCount(child) ?: 0
-                        categories.add(mapOf(
-                            "name" to child.toString(),
-                            "problem_count" to childCount2
-                        ))
-                    } catch (e: Exception) {
-                        // Skip problematic nodes
-                    }
-                }
-                
-                return """
-                {
-                    "status": "results_available",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "categories": ${formatJsonValue(categories)}
-                }
-                """.trimIndent()
-            } else {
-                return """
-                {
-                    "status": "no_results_yet",
-                    "project": "${project.name}",
-                    "timestamp": "${System.currentTimeMillis()}",
-                    "message": "Inspection results not ready yet."
-                }
-                """.trimIndent()
+            val categories = categoryMap.map { (name, count) ->
+                mapOf("name" to name, "problem_count" to count)
             }
             
+            val response = mapOf(
+                "status" to "results_available",
+                "project" to project.name,
+                "timestamp" to System.currentTimeMillis(),
+                "categories" to categories
+            )
+            
+            formatJsonManually(response)
         } catch (e: Exception) {
-            return """{"error": "Failed to get categories: ${e.message}"}"""
+            """{"error": "Failed to get categories: ${e.message}"}"""
         }
     }
     
@@ -288,25 +195,30 @@ class InspectionHandler : HttpRequestHandler() {
         return ProjectManager.getInstance().openProjects.firstOrNull { !it.isDefault }
     }
     
-    private fun formatJsonValue(value: Any?): String {
-        return when (value) {
-            is String -> "\"$value\""
-            is Number -> value.toString()
-            is Boolean -> value.toString()
-            is List<*> -> value.joinToString(",", "[", "]") { formatJsonValue(it) }
-            is Map<*, *> -> value.entries.joinToString(",\n      ", "{\n      ", "\n    }") { (k, v) ->
-                """"$k": ${formatJsonValue(v)}"""
+    private fun formatJsonManually(data: Any?): String {
+        return when (data) {
+            is String -> "\"${data.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")}\""
+            is Number -> data.toString()
+            is Boolean -> data.toString()
+            is List<*> -> data.joinToString(",", "[", "]") { formatJsonManually(it) }
+            is Map<*, *> -> data.entries.joinToString(",\n  ", "{\n  ", "\n}") { (k, v) ->
+                "\"$k\": ${formatJsonManually(v)}"
             }
             null -> "null"
-            else -> "\"$value\""
+            else -> "\"$data\""
         }
     }
     
-    private fun sendJsonResponse(context: ChannelHandlerContext, json: String, status: HttpResponseStatus = HttpResponseStatus.OK) {
-        val content = Unpooled.copiedBuffer(json, Charsets.UTF_8)
+    private fun sendJsonResponse(
+        context: ChannelHandlerContext, 
+        jsonContent: String, 
+        status: HttpResponseStatus = HttpResponseStatus.OK
+    ) {
+        val content = Unpooled.copiedBuffer(jsonContent, Charsets.UTF_8)
         val response = DefaultFullHttpResponse(HttpVersion.HTTP_1_1, status, content)
-        response.headers().set(HttpHeaders.Names.CONTENT_TYPE, "application/json")
-        response.headers().set(HttpHeaders.Names.CONTENT_LENGTH, content.readableBytes())
+        response.headers().set(HttpHeaderNames.CONTENT_TYPE, "application/json")
+        response.headers().set(HttpHeaderNames.CONTENT_LENGTH, content.readableBytes())
+        response.headers().set(HttpHeaderNames.ACCESS_CONTROL_ALLOW_ORIGIN, "*")
         context.writeAndFlush(response)
     }
 }

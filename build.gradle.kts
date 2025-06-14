@@ -3,9 +3,9 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.24"
-    id("org.jetbrains.intellij.platform") version "2.1.0"
-    kotlin("plugin.serialization") version "1.9.24"
+    id("org.jetbrains.kotlin.jvm") version "2.1.21"
+    id("org.jetbrains.intellij.platform") version "2.6.0"
+    kotlin("plugin.serialization") version "2.1.21"
 }
 
 group = "com.jetbrains.inspection"
@@ -23,8 +23,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     
     intellijPlatform {
-        create("IC", "2024.3.1.1")
-        instrumentationTools()
+        intellijIdeaCommunity("2025.1.1")
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)
@@ -42,7 +41,9 @@ tasks {
     }
     
     withType<KotlinCompile> {
-        kotlinOptions.jvmTarget = "17"
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
     }
     
     buildPlugin {
@@ -62,7 +63,7 @@ tasks {
 
 intellijPlatform {
     pluginConfiguration {
-        name = "JetBrains Inspection API"
+        name = "Inspection API"
         description = "Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants"
         version = project.property("pluginVersion").toString()
         
@@ -73,8 +74,8 @@ intellijPlatform {
         }
         
         ideaVersion {
-            sinceBuild = "243"
-            untilBuild = "253.*"
+            sinceBuild = "251"
+            untilBuild = "261.*"
         }
     }
     
