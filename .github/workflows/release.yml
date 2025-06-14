@@ -74,6 +74,8 @@ jobs:
     
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
     
     - name: Set up JDK 21
       uses: actions/setup-java@v4
@@ -104,7 +106,13 @@ jobs:
           if [ -n "$LAST_RELEASE" ] && [ "$LAST_RELEASE" != "null" ] && [ "$LAST_RELEASE" != "$CURRENT_TAG" ]; then
             echo "## Changes since $LAST_RELEASE"
             echo ""
-            git log --pretty=format:"- %s" --no-merges ${LAST_RELEASE}..HEAD
+            # Check if the tag exists before using it
+            if git rev-parse "$LAST_RELEASE" >/dev/null 2>&1; then
+              git log --pretty=format:"- %s" --no-merges ${LAST_RELEASE}..HEAD
+            else
+              echo "Previous release tag not found in history, showing recent commits:"
+              git log --pretty=format:"- %s" --no-merges -10
+            fi
           else
             echo "## Changes in this release"
             echo ""
