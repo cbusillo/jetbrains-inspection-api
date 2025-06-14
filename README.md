@@ -35,11 +35,12 @@ cd jetbrains-inspection-api
    - **✅ Check**: "Allow unsigned requests"
 4. **Apply settings and restart IDE**
 
-### 3. Set Up Claude Code Integration (Recommended)
+### 3. Set Up Claude Code MCP
 
-First, install MCP server dependencies:
+First, clone the repository and install MCP server dependencies:
 
 ```bash
+git clone https://github.com/cbusillo/jetbrains-inspection-api.git
 cd jetbrains-inspection-api/mcp-server
 npm install
 ```
