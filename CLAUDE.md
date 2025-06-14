@@ -4,8 +4,6 @@
 
 This project provides a JetBrains IDE plugin that exposes inspection results via HTTP API for use with automated tools and AI assistants like Claude Code.
 
-**Project Path**: `/Users/cbusillo/Developer/jetbrains-inspection-api`  
-**Current Version**: 1.2.0  
 **Target IDE**: JetBrains 2025.x (IntelliJ IDEA, WebStorm, PyCharm, etc.)  
 **Language**: Kotlin  
 **Build System**: Gradle with IntelliJ Platform Gradle Plugin 2.6.0  
