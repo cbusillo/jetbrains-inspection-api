@@ -84,15 +84,14 @@ class InspectionHandler : HttpRequestHandler() {
                 val fileEditorManager = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
                 val selectedFiles = fileEditorManager.selectedFiles
                 for (virtualFile in selectedFiles) {
-                    if (virtualFile.extension in listOf("kt", "java", "js", "ts", "py")) {
+                    if (virtualFile.isValid && !virtualFile.isDirectory) {
                         processFile(virtualFile, psiManager, documentManager, problems)
                     }
                 }
             } else {
                 val projectFileIndex = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
                 projectFileIndex.iterateContent { virtualFile ->
-                    if (virtualFile.isValid && !virtualFile.isDirectory && 
-                        virtualFile.extension in listOf("kt", "java", "js", "ts", "py")) {
+                    if (virtualFile.isValid && !virtualFile.isDirectory) {
                         processFile(virtualFile, psiManager, documentManager, problems)
                     }
                     true
@@ -128,7 +127,8 @@ class InspectionHandler : HttpRequestHandler() {
             for (info in highlightInfos) {
                 if (info.severity == HighlightSeverity.ERROR || 
                     info.severity == HighlightSeverity.WARNING ||
-                    info.severity == HighlightSeverity.WEAK_WARNING) {
+                    info.severity == HighlightSeverity.WEAK_WARNING ||
+                    info.severity == HighlightSeverity.INFORMATION) {
                     
                     val startOffset = info.startOffset
                     val lineNumber = document.getLineNumber(startOffset) + 1
@@ -143,6 +143,7 @@ class InspectionHandler : HttpRequestHandler() {
                             HighlightSeverity.ERROR -> "error"
                             HighlightSeverity.WARNING -> "warning"
                             HighlightSeverity.WEAK_WARNING -> "weak_warning"
+                            HighlightSeverity.INFORMATION -> "info"
                             else -> "info"
                         },
                         "category" to (info.inspectionToolId ?: "General"),
