@@ -6,7 +6,7 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 
 **Target IDE**: JetBrains 2025.x (IntelliJ IDEA, WebStorm, PyCharm, etc.)  
 **Language**: Kotlin  
-**Build System**: Gradle with IntelliJ Platform Gradle Plugin 2.6.0  
+**Build System**: Gradle with IntelliJ Platform Gradle Plugin (see `build.gradle.kts` for the current version)  
 
 ## Architecture
 
@@ -86,9 +86,10 @@ The plugin uses JetBrains 2025.x compatible APIs:
 
 1. **Real-time Detection**: No manual triggering needed, uses IDE's live highlighting
 2. **Scope Control**: Filter by whole project or current file
-3. **Multi-language Support**: Kotlin, Java, JavaScript, TypeScript, Python
-4. **Modern Threading**: Compatible with 2025.x threading model
-5. **Clean JSON**: Manual JSON formatting to handle special characters
+3. **Universal File Support**: Processes all file types supported by the IDE (no longer limited to specific languages)
+4. **Comprehensive Inspection Coverage**: Captures all severity levels including spell check and informational inspections
+5. **Modern Threading**: Compatible with 2025.x threading model
+6. **Clean JSON**: Manual JSON formatting to handle special characters
 
 ## Development Setup
 
@@ -106,18 +107,19 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 ```
 
 ### Key Dependencies
-- **Gradle Plugin**: `org.jetbrains.intellij.platform` v2.6.0
-- **Kotlin**: 2.1.21
-- **Target Platform**: IntelliJ 2025.1.1
-- **Compatibility**: Build 251 to 261.*
+See `build.gradle.kts` and `gradle.properties` for current versions:
+- **Gradle Plugin**: `org.jetbrains.intellij.platform` 
+- **Kotlin**: Latest stable version
+- **Target Platform**: IntelliJ 2025.x
+- **Compatibility**: See `build.gradle.kts` ideaVersion block
 
 ## MCP Integration
 
 ### Setup
 ```bash
-# Add MCP servers to Claude Code
-claude mcp add-json inspection-intellij '{"command": "node", "args": ["/path/to/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
-claude mcp add-json jetbrains '{"command": "node", "args": ["/path/to/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
+# Add MCP servers to Claude Code (replace /path/to with actual repo path).
+claude mcp add-json inspection-intellij '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
+claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63341"}}'
 ```
 
 ### Available MCP Tools
@@ -140,16 +142,16 @@ claude mcp add-json jetbrains '{"command": "node", "args": ["/path/to/mcp-server
 ## Version Management & Release
 
 **Versioning**: Change `pluginVersion` in `gradle.properties` and everything else updates automatically via precommit hook.
-**Releases**: Push a `v*` git tag (e.g., `git tag v1.3.0 && git push origin v1.3.0`) to trigger automated GitHub release.
+**Releases**: Push a `v*` git tag (e.g., `git tag v1.4.1 && git push origin v1.4.1`) to trigger automated GitHub release with changelog.
 
 ## Future Enhancements
 
 ### Potential Improvements
 - Add VCS scope (uncommitted files only)
-- Support more file types beyond the current 5
-- Add severity filtering options
+- Add severity filtering options (currently captures all: error, warning, weak_warning, info)
 - Implement caching for better performance
 - Add configuration options for inspection selection
+- Improve description extraction for "Unknown issue" entries
 
 ### API Extensions
 - File-specific endpoint: `/api/inspection/problems/{file-path}`
