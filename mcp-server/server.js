@@ -17,7 +17,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.4.1'
+    version: '1.4.2'
   },
   {
     capabilities: {
@@ -59,11 +59,16 @@ server.tool(
   "inspection_get_problems",
   "Get inspection problems and status",
   {
-    scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'")
+    scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'"),
+    severity: z.string().optional().default("all").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
   },
-  async ({ scope }) => {
+  async ({ scope, severity }) => {
     try {
-      const url = `${BASE_URL}/problems?scope=${encodeURIComponent(scope)}`;
+      const params = new URLSearchParams();
+      if (scope !== "whole_project") params.append("scope", scope);
+      if (severity !== "all") params.append("severity", severity);
+      
+      const url = `${BASE_URL}/problems${params.toString() ? '?' + params.toString() : ''}`;
       const result = await httpGet(url);
       
       return {

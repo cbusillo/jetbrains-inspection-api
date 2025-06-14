@@ -29,8 +29,9 @@ class InspectionHandler : HttpRequestHandler() {
             when (urlDecoder.path()) {
                 "/api/inspection/problems" -> {
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
+                    val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(scope)
+                        getInspectionProblems(scope, severity)
                     }
                     sendJsonResponse(context, result)
                 }
@@ -55,14 +56,15 @@ class InspectionHandler : HttpRequestHandler() {
         virtualFile: VirtualFile,
         psiManager: PsiManager,
         documentManager: PsiDocumentManager,
-        problems: MutableList<Map<String, Any>>
+        problems: MutableList<Map<String, Any>>,
+        allowedSeverities: Set<HighlightSeverity>
     ) {
         try {
             val psiFile = psiManager.findFile(virtualFile)
             if (psiFile != null) {
                 val document = documentManager.getDocument(psiFile)
                 if (document != null) {
-                    val highlightingProblems = extractHighlightingProblems(psiFile, document)
+                    val highlightingProblems = extractHighlightingProblems(psiFile, document, allowedSeverities)
                     problems.addAll(highlightingProblems)
                 }
             }
@@ -70,12 +72,22 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getInspectionProblems(scope: String = "whole_project"): String {
+    private fun getInspectionProblems(scope: String = "whole_project", severity: String = "all"): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
         
         return try {
             val problems = mutableListOf<Map<String, Any>>()
+            
+            // Parse severity filter
+            val allowedSeverities = when (severity.lowercase()) {
+                "error" -> setOf(HighlightSeverity.ERROR)
+                "warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING)
+                "weak_warning" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING)
+                "info" -> setOf(HighlightSeverity.INFORMATION)
+                "all" -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
+                else -> setOf(HighlightSeverity.ERROR, HighlightSeverity.WARNING, HighlightSeverity.WEAK_WARNING, HighlightSeverity.INFORMATION)
+            }
             
             val psiManager = PsiManager.getInstance(project)
             val documentManager = PsiDocumentManager.getInstance(project)
@@ -85,14 +97,14 @@ class InspectionHandler : HttpRequestHandler() {
                 val selectedFiles = fileEditorManager.selectedFiles
                 for (virtualFile in selectedFiles) {
                     if (virtualFile.isValid && !virtualFile.isDirectory) {
-                        processFile(virtualFile, psiManager, documentManager, problems)
+                        processFile(virtualFile, psiManager, documentManager, problems, allowedSeverities)
                     }
                 }
             } else {
                 val projectFileIndex = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
                 projectFileIndex.iterateContent { virtualFile ->
                     if (virtualFile.isValid && !virtualFile.isDirectory) {
-                        processFile(virtualFile, psiManager, documentManager, problems)
+                        processFile(virtualFile, psiManager, documentManager, problems, allowedSeverities)
                     }
                     true
                 }
@@ -106,6 +118,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "problems_shown" to problems.size,
                 "problems" to problems.take(100),
                 "scope" to scope,
+                "severity_filter" to severity,
                 "method" to "highlighting_api"
             )
             
@@ -115,7 +128,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun extractHighlightingProblems(psiFile: PsiFile, document: Document): List<Map<String, Any>> {
+    private fun extractHighlightingProblems(psiFile: PsiFile, document: Document, allowedSeverities: Set<HighlightSeverity>): List<Map<String, Any>> {
         val problems = mutableListOf<Map<String, Any>>()
         
         try {
@@ -125,10 +138,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
             
             for (info in highlightInfos) {
-                if (info.severity == HighlightSeverity.ERROR || 
-                    info.severity == HighlightSeverity.WARNING ||
-                    info.severity == HighlightSeverity.WEAK_WARNING ||
-                    info.severity == HighlightSeverity.INFORMATION) {
+                if (allowedSeverities.contains(info.severity)) {
                     
                     val startOffset = info.startOffset
                     val lineNumber = document.getLineNumber(startOffset) + 1
