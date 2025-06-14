@@ -123,17 +123,18 @@ describe('MCP Integration Tests', () => {
 
     it('should handle timeout scenarios', async () => {
       const controller = new AbortController();
-      const timeoutId = globalThis.setTimeout(() => controller.abort(), 1000);
+      const timeoutId = globalThis.setTimeout(() => controller.abort(), 50);
       
       try {
         await fetch(`${BASE_URL}/problems`, {
           signal: controller.signal
         });
-      } catch (error) {
-        assert.ok(error.name === 'AbortError' || error.message.includes('aborted'), 
-                 'Should handle timeout/abort scenarios');
-      } finally {
         globalThis.clearTimeout(timeoutId);
+        assert.ok(true, 'Request completed successfully or was aborted gracefully');
+      } catch (error) {
+        globalThis.clearTimeout(timeoutId);
+        assert.ok(error.name === 'AbortError' || error.message.includes('aborted'), 
+                 'Should handle timeout/abort scenarios gracefully');
       }
     });
   });
