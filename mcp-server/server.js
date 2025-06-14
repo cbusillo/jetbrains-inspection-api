@@ -60,13 +60,13 @@ server.tool(
   "Get inspection problems and status",
   {
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'"),
-    severity: z.string().optional().default("all").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
+    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
   },
   async ({ scope, severity }) => {
     try {
       const params = new URLSearchParams();
       if (scope !== "whole_project") params.append("scope", scope);
-      if (severity !== "all") params.append("severity", severity);
+      if (severity !== "warning") params.append("severity", severity);
       
       const url = `${BASE_URL}/problems${params.toString() ? '?' + params.toString() : ''}`;
       const result = await httpGet(url);

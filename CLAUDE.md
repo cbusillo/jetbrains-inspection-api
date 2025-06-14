@@ -85,6 +85,7 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 4. **Install**: Load .zip from build/distributions/ in IDE
 5. **Test**: Use MCP tools or direct HTTP calls
 6. **Iterate**: Repeat until issues are resolved
+7. **Commit**: Make commits at logical stopping points (feature complete, tests passing, documentation updated)
 
 ### Testing Requirements
 

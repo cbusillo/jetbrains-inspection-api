@@ -30,7 +30,7 @@ class InspectionHandler : HttpRequestHandler() {
             when {
                 path == "/api/inspection/problems" -> {
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
-                    val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
+                    val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "warning"
                     val result = ReadAction.compute<String, Exception> {
                         getInspectionProblems(scope, severity)
                     }
@@ -92,7 +92,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getInspectionProblemsForFile(filePath: String, severity: String = "all"): String {
+    private fun getInspectionProblemsForFile(filePath: String, severity: String = "warning"): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
         
@@ -132,7 +132,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getInspectionProblems(scope: String = "whole_project", severity: String = "all"): String {
+    private fun getInspectionProblems(scope: String = "whole_project", severity: String = "warning"): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
         
