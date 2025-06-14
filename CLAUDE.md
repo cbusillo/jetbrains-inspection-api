@@ -6,7 +6,9 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 
 **Target IDE**: JetBrains 2025.x (IntelliJ IDEA, WebStorm, PyCharm, etc.)  
 **Language**: Kotlin  
-**Build System**: Gradle with IntelliJ Platform Gradle Plugin (see `build.gradle.kts` for the current version)  
+**Build System**: Gradle with IntelliJ Platform Gradle Plugin (see `build.gradle.kts` for the current version)
+
+> **For user documentation, installation, and usage instructions, see [README.md](README.md)**
 
 ## Architecture
 
@@ -23,65 +25,9 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 2. **MCP Server** (Model Context Protocol)
    - Node.js server at `mcp-server/server.js`
    - Provides Claude Code integration tools
-   - Runs on port 63340/63341
+   - Configurable port via IDE_PORT environment variable
 
-### API Endpoints
-
-#### 1. Problems Endpoint
-**URL**: `GET /api/inspection/problems?scope={scope}&severity={severity}`
-
-**Parameters**:
-- `scope`: `whole_project` (default) | `current_file`
-- `severity`: `error` | `warning` | `weak_warning` | `info` | `all` (default)
-
-#### 2. File-Specific Problems Endpoint
-**URL**: `GET /api/inspection/problems/{file-path}?severity={severity}`
-
-**Response**: Same as problems endpoint but with `"scope": "single_file"` and `"file_path"` field
-
-**Response**:
-```json
-{
-  "status": "results_available",
-  "project": "project-name",
-  "timestamp": 1234567890,
-  "total_problems": 5,
-  "problems_shown": 5,
-  "scope": "whole_project",
-  "method": "highlighting_api",
-  "problems": [
-    {
-      "description": "Problem description",
-      "file": "/path/to/file.kt",
-      "line": 42,
-      "column": 10,
-      "severity": "warning|error|weak_warning|info",
-      "category": "InspectionCategory",
-      "source": "highlighting_api"
-    }
-  ]
-}
-```
-
-#### 3. Categories Endpoint
-**URL**: `GET /api/inspection/inspections`
-
-**Response**:
-```json
-{
-  "status": "results_available",
-  "project": "project-name", 
-  "timestamp": 1234567890,
-  "categories": [
-    {"name": "KotlinUnusedImport", "problem_count": 3},
-    {"name": "DuplicatedCode", "problem_count": 2}
-  ]
-}
-```
-
-## Technical Implementation
-
-### Modern API Usage
+### Technical Implementation
 
 The plugin uses JetBrains 2025.x compatible APIs:
 
@@ -123,25 +69,6 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 - **Target Platform**: IntelliJ 2025.x
 - **Compatibility**: See `build.gradle.kts` ideaVersion block
 
-## MCP Integration
-
-### Setup
-```bash
-# Add MCP servers to Claude Code (replace /path/to with actual repo path).
-claude mcp add-json inspection-intellij '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
-claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63341"}}'
-```
-
-### Available MCP Tools
-- `inspection_get_problems` - Get all inspection problems with optional scope and severity filtering
-- `inspection_get_file_problems` - Get inspection problems for a specific file
-- `inspection_get_categories` - Get problem categories summary
-
-### Debugging
-1. Check IDE logs at `~/Library/Logs/JetBrains/IntelliJIdea{version}/idea.log`
-2. Test HTTP endpoints directly: `curl http://localhost:63340/api/inspection/problems`
-3. Use MCP tools through Claude Code for integration testing
-
 ## Development Workflow
 
 1. **Make Changes**: Edit InspectionHandler.kt or MCP server
@@ -150,10 +77,15 @@ claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/j
 4. **Test**: Use MCP tools or direct HTTP calls
 5. **Iterate**: Repeat until issues are resolved
 
+### Debugging
+1. Check IDE logs at `~/Library/Logs/JetBrains/IntelliJIdea{version}/idea.log`
+2. Test HTTP endpoints directly: `curl http://localhost:63340/api/inspection/problems`
+3. Use MCP tools through Claude Code for integration testing
+
 ## Version Management & Release
 
 **Versioning**: Change `pluginVersion` in `gradle.properties` and everything else updates automatically via precommit hook.
-**Releases**: Push a `v*` git tag (e.g., `git tag v1.4.1 && git push origin v1.4.1`) to trigger automated GitHub release with changelog.
+**Releases**: Push a `v*` git tag (e.g., `git tag v1.5.0 && git push origin v1.5.0`) to trigger automated GitHub release with changelog.
 
 ## Future Enhancements
 
