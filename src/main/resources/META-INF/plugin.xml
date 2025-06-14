@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.7.4</version>
+    <version>1.7.5</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
     
     <description><![CDATA[

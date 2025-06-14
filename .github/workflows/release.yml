@@ -96,31 +96,26 @@ jobs:
     - name: Generate changelog
       id: changelog
       run: |
-        CURRENT_TAG="${{ steps.get_version.outputs.VERSION }}"
+        current_tag="${{ steps.get_version.outputs.VERSION }}"
         
-        # Get the last published release (not just last tag)
-        LAST_RELEASE=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || echo "")
+        # Last published release tag (empty if the project has no releases yet)
+        last_release="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
         
-        # Generate changelog
+        if [ -n "$last_release" ] && [ "$last_release" != "null" ] && git rev-parse -q "$last_release" >/dev/null; then
+          title="## Changes since $last_release"
+          range="${last_release}..HEAD"
+        else
+          title="## Changes in this release"
+          range="-30"         
+        fi
+        
+        changelog="$title\n\n$(git log --pretty=format:'- %s' --no-merges $range)"
+        
         {
-          echo "CHANGELOG<<CHANGELOG_END"
-          if [ -n "$LAST_RELEASE" ] && [ "$LAST_RELEASE" != "null" ] && [ "$LAST_RELEASE" != "$CURRENT_TAG" ]; then
-            echo "## Changes since $LAST_RELEASE"
-            echo ""
-            # Check if the tag exists before using it
-            if git rev-parse "$LAST_RELEASE" >/dev/null 2>&1; then
-              git log --pretty=format:"- %s" --no-merges ${LAST_RELEASE}..HEAD
-            else
-              echo "Previous release tag not found in history, showing recent commits:"
-              git log --pretty=format:"- %s" --no-merges -10
-            fi
-          else
-            echo "## Changes in this release"
-            echo ""
-            git log --pretty=format:"- %s" --no-merges -10
-          fi
-          echo "CHANGELOG_END"
-        } >> $GITHUB_OUTPUT
+          echo 'CHANGELOG<<__CHANGELOG__'
+          printf '%b\n' "$changelog"
+          echo '__CHANGELOG__'
+        } >>"$GITHUB_OUTPUT"
       env:
         GH_TOKEN: ${{ github.token }}
     
