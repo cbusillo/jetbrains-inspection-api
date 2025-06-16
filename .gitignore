@@ -64,3 +64,16 @@ replay_pid*
 node_modules/
 
 /.kotlin/sessions
+
+# Local development configuration
+CLAUDE.local.md
+
+# Plugin build outputs
+jetbrains-inspection-api-*.zip
+
+# IntelliJ
+.idea/
+*.iml
+*.ipr
+*.iws
+out/

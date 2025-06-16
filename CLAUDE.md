@@ -16,11 +16,11 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 
 1. **InspectionHandler.kt** - Main HTTP request handler
    - Handles `/api/inspection/problems` with optional scope and severity parameters
-   - Handles `/api/inspection/problems/{file-path}` for file-specific analysis
-   - Handles `/api/inspection/inspections` for category summaries
-   - Uses modern highlighting API for real-time problem detection
-   - Includes severity filtering and improved description extraction
-   - No longer requires manual triggering
+   - Handles `/api/inspection/trigger` to initiate inspections
+   - Handles `/api/inspection/status` to check inspection progress
+   - Uses enhanced tree extraction from the inspection results window
+   - Includes severity filtering
+   - Requires triggering inspections before getting results
 
 2. **MCP Server** (Model Context Protocol)
    - Node.js server at `mcp-server/server.js`
@@ -31,21 +31,24 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
 
 The plugin uses JetBrains 2025.x compatible APIs:
 
-- **Highlighting API**: `DaemonCodeAnalyzerImpl.getHighlights()` for real-time problem detection
-- **Threading**: `ReadAction.compute()` instead of deprecated `invokeAndWait`
-- **Public APIs**: Replaced internal `InspectionManagerEx` with `InspectionManager`
+- **Inspection Extraction**: Enhanced tree extraction from `InspectionResultsView` and `InspectionTree`
+- **Severity Detection**: Extracts severity from ProblemDescriptionNode's myLevel field, with special handling for GrazieInspection (grammar) and SpellCheckingInspection/AiaStyle (typo)
+- **Inspection Triggering**: `GlobalInspectionContext` and `AnalysisScope` for running inspections
+- **Enhanced Status Tracking**: Volatile timing flags track inspection progress with timeout detection
+- **Threading**: `ReadAction.compute()` and `invokeLater` for safe background execution
+- **Window Management**: `ToolWindowManager` for accessing inspection results window
 
 ### Key Features
 
-1. **Real-time Detection**: No manual triggering needed, uses IDE's live highlighting
-2. **Scope Control**: Filter by whole project, current file, or specific files
-3. **Severity Filtering**: Filter by error, warning, weak_warning, info levels or all
-4. **File-Specific Analysis**: Target inspection analysis to individual files
-5. **Universal File Support**: Processes all file types supported by the IDE
-6. **Improved Descriptions**: 5-layer fallback strategy for better issue descriptions
-7. **Comprehensive Coverage**: Captures all severity levels including spell check and informational inspections
-8. **Modern Threading**: Compatible with 2025.x threading model
-9. **Clean JSON**: Manual JSON formatting to handle special characters
+1. **Complete Inspection Coverage**: Extracts results from IDE's inspection window
+2. **All Inspection Types**: JavaScript, Shell, Python, SpellCheck, and all enabled inspections  
+3. **Scope Control**: Filter by whole project or current file
+4. **Severity Filtering**: Filter by error, warning, weak_warning, info, grammar, typo levels or all
+5. **Inspection Triggering**: Programmatically trigger IDE inspections
+6. **Enhanced Status Monitoring**: Real-time inspection progress tracking with timing and completion detection
+7. **Thread Safe**: Background execution with proper `ReadAction` usage
+8. **Universal Language Support**: Works with all IDE-supported file types
+9. **Clean JSON**: Structured output compatible with automated tools
 
 ### Code Style Guidelines
 
@@ -64,8 +67,8 @@ The plugin uses JetBrains 2025.x compatible APIs:
 
 ### Build Commands
 ```bash
-# Build plugin
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
+# Build plugin (runs tests first, then builds)
+./build.sh
 
 # Install plugin from build/distributions/jetbrains-inspection-api-{version}.zip
 ```
@@ -90,10 +93,10 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 ### Testing Requirements
 
 **Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests, MCP syntax check, and build  
-**Manual Testing**: 
-- Plugin: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
-- MCP Server: `cd mcp-server && npm test`
-**CI/CD**: GitHub Actions run full test suite on push/PR
+**Test Scripts**:
+- All tests: `./test-all.sh` - Runs plugin + MCP tests with 80% coverage requirement
+- Build + test: `./build.sh` - Tests then builds the plugin
+- MCP Server only: `cd mcp-server && npm test`
 
 **Coverage Standards**:
 - All new functionality requires tests (unit + integration)
@@ -101,12 +104,46 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 - Avoid testing private methods directly
 - Use TDD: write failing tests first
 
-**Current Gaps**: Core process() method, error handling, integration tests
+**Test Coverage Achieved**: 57 Kotlin + 21 MCP tests (78 total) including:
+- Error handling and HTTP processing
+- JSON formatting and parameter validation  
+- Enhanced inspection status tracking
+- Severity filtering (grammar, typo, etc.)
+- Extractor consolidation and cleanup
 
-### Debugging
-1. Check IDE logs at `~/Library/Logs/JetBrains/IntelliJIdea{version}/idea.log`
-2. Test HTTP endpoints directly: `curl http://localhost:63340/api/inspection/problems`
-3. Use MCP tools through Claude Code for integration testing
+### Testing & Debugging
+
+**Automated IDE Testing**:
+```bash
+# Run automated IDE lifecycle test (builds, installs, starts IDE, tests)
+./test-automated.sh
+
+# This script will:
+# 1. Build the plugin
+# 2. Stop any running IDE
+# 3. Install plugin automatically
+# 4. Start IDE with test project
+# 5. Run comprehensive API tests
+# 6. Report results
+```
+
+**Unit Testing**:
+```bash
+# Run unit tests (error handling, JSON formatting, HTTP processing)
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
+```
+
+**Manual API Testing**:
+```bash
+# Test API endpoint directly
+curl -s "http://localhost:63341/api/inspection/problems?severity=all" | jq '.'
+```
+
+**Debugging**:
+```bash
+# Watch debug logs in real-time
+tail -f ~/Library/Logs/JetBrains/{IDE}{version}/idea.log | grep "DEBUG:"
+```
 
 ## Version Management & Release
 
@@ -115,15 +152,19 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 
 ## Future Enhancements
 
-### Potential Improvements
-- Add VCS scope (uncommitted files only)
-- Implement caching for better performance
-- Add configuration options for inspection selection
-- Add batch operations for multiple files
+### Implementation Status
+- ✅ **HTTP API Framework**: Complete
+- ✅ **Inspection Extraction**: Complete - Enhanced tree extraction from an inspection window
+- ✅ **Inspection Triggering**: Complete - Programmatic inspection execution
+- ✅ **Comprehensive Testing**: Complete - All tests passing with updated endpoints
+- ✅ **Thread Safety**: Complete - proper ReadAction usage throughout
+- ✅ **Error Handling**: Complete - comprehensive exception handling and graceful degradation
 
-### API Extensions
-- Live updates via WebSocket
-- Batch problem resolution tracking
-- Integration with external tools (ESLint, SonarQube, etc.)
-- Pattern-based file filtering (e.g., `*.{js,ts}`)
-- Diff-based inspection (only changed lines)
+### Planned Enhancements
+- **VCS Integration**: Uncommitted files only scope
+- **Performance**: Result caching and incremental analysis  
+- **Configuration**: Custom inspection profile selection
+- **Batch Operations**: Multiple file analysis optimization
+- **Live Updates**: WebSocket support for real-time results
+- **External Tools**: ESLint, SonarQube integration
+- **Advanced Filtering**: Pattern-based file selection, diff-based analysis

@@ -69,10 +69,9 @@ class JsonUtilsTest {
         
         val result = formatJsonManually(testData)
         
-        // Should handle nested objects and arrays
         assertTrue(result.contains("\"status\": \"results_available\""))
         assertTrue(result.contains("\"count\": 5"))
-        assertTrue(result.contains("[\"item1\",\"item2\"]")) // No spaces in arrays
+        assertTrue(result.contains("[\"item1\",\"item2\"]"))
         assertTrue(result.contains("\"timestamp\": 1234567890"))
     }
     
@@ -87,11 +86,9 @@ class JsonUtilsTest {
         
         val result = formatJsonManually(testData)
         
-        // Verify proper escaping
         @Suppress("SpellCheckingInspection")
         assertTrue(result.contains("Test \\\"quoted\\\" text with\\nnewline and\\ttab"))
         assertTrue(result.contains("C:\\\\Windows\\\\System32\\\\file.txt"))
-        // Unicode should be preserved as-is
         assertTrue(result.contains("Unicode: éñü"))
     }
     
@@ -127,14 +124,12 @@ class JsonUtilsTest {
         
         val result = formatJsonManually(testData)
         
-        // Should complete without errors
         assertNotNull(result)
         assertTrue(result.contains("\"size\": 100"))
         assertTrue(result.contains("\"item_1\""))
         assertTrue(result.contains("\"item_100\""))
     }
     
-    // Helper method using reflection to access a private method
     private fun formatJsonManually(data: Any?): String {
         val method = handler::class.java.getDeclaredMethod("formatJsonManually", Any::class.java)
         method.isAccessible = true

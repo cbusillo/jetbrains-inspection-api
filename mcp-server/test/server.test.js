@@ -3,7 +3,8 @@ import assert from 'node:assert';
 import { spawn } from 'node:child_process';
 import { setTimeout } from 'node:timers/promises';
 
-const BASE_URL = 'http://localhost:63340/api/inspection';
+const IDE_PORT = process.env.IDE_PORT || '63341';
+const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 
 describe('MCP Server Tests', () => {
   let serverProcess;
@@ -75,7 +76,7 @@ describe('MCP Server Tests', () => {
     });
 
     it('should handle URL encoding for file paths', async () => {
-      const testPath = '/Users/test/file with spaces.js';
+      const testPath = '/test/file with spaces.js';
       const encoded = encodeURIComponent(testPath);
       assert.ok(encoded.includes('%20'), 'Should properly encode spaces in file paths');
     });

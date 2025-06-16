@@ -49,7 +49,7 @@ This project follows test-driven development (TDD) principles with comprehensive
 ### Test Quality
 - Tests should be independent and isolated
 - Use descriptive test names that explain behavior
-- Follow arrange-act-assert pattern
+- Follow the arrange-act-assert pattern
 - Clean up resources in teardown methods
 
 ### Error Testing
@@ -64,11 +64,11 @@ This project follows test-driven development (TDD) principles with comprehensive
 - Runs all tests before allowing commits
 - Validates MCP server syntax
 - Builds plugin to catch compilation issues
-- Prevents broken code from entering repository
+- Prevents broken code from entering the repository
 
 ### GitHub Actions
-- Executes full test suite on push/PR
-- Tests against clean environment
+- Executes a full test suite on push/PR
+- Tests against a clean environment
 - Generates test reports and artifacts
 - Validates both plugin and MCP components
 

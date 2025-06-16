@@ -1,6 +1,6 @@
 {
   "name": "jetbrains-inspection-mcp",
-  "version": "1.7.5",
+  "version": "1.8.0",
   "description": "MCP server for JetBrains Inspection API",
   "type": "module",
   "main": "server.js",
@@ -10,11 +10,16 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
-    "test:watch": "node --test --watch"
+    "test:watch": "node --test --watch",
+    "test:coverage": "c8 --reporter=html --reporter=text --reporter=lcov node --test",
+    "coverage": "c8 report"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",
     "zod": "^3.25.64"
+  },
+  "devDependencies": {
+    "c8": "^10.1.2"
   },
   "engines": {
     "node": ">=18.0.0"

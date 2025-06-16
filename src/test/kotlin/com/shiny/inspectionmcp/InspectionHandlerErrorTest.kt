@@ -9,7 +9,6 @@ import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.*
 import io.netty.handler.codec.http.*
 import io.netty.channel.ChannelHandlerContext
-import io.netty.buffer.ByteBuf
 
 class InspectionHandlerErrorTest {
     
@@ -136,7 +135,6 @@ class InspectionHandlerErrorTest {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
         whenever(mockDecoder.parameters()).thenReturn(emptyMap())
         
-        // Simulate multiple concurrent calls
         val results = (1..10).map {
             handler.process(mockDecoder, mockRequest, mockContext)
         }
@@ -181,7 +179,6 @@ class InspectionHandlerErrorTest {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
         whenever(mockDecoder.parameters()).thenReturn(emptyMap())
         
-        // Force garbage collection to simulate memory pressure
         System.gc()
         
         val result = handler.process(mockDecoder, mockRequest, mockContext)
@@ -193,7 +190,6 @@ class InspectionHandlerErrorTest {
     @Test
     @DisplayName("Should handle request processing errors gracefully")
     fun testProcessingErrors() {
-        // Test different types of exceptions that could occur
         val exceptions = listOf(
             RuntimeException("Runtime error"),
             IllegalArgumentException("Invalid argument"),

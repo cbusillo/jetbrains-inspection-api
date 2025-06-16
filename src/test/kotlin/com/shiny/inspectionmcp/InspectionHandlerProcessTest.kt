@@ -9,8 +9,6 @@ import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.*
 import io.netty.handler.codec.http.*
 import io.netty.channel.ChannelHandlerContext
-import io.netty.buffer.ByteBuf
-import io.netty.buffer.Unpooled
 
 class InspectionHandlerProcessTest {
     
@@ -59,12 +57,10 @@ class InspectionHandlerProcessTest {
     }
     
     @Test
-    @DisplayName("Should process file-specific endpoint")
-    fun testProcessFileSpecificEndpoint() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/problems/path/to/file.kt")
-        whenever(mockDecoder.parameters()).thenReturn(mapOf(
-            "severity" to listOf("warning")
-        ))
+    @DisplayName("Should process trigger endpoint")
+    fun testProcessTriggerEndpoint() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(emptyMap())
         
         val result = handler.process(mockDecoder, mockRequest, mockContext)
         
@@ -73,9 +69,9 @@ class InspectionHandlerProcessTest {
     }
     
     @Test
-    @DisplayName("Should process inspections categories endpoint")
-    fun testProcessInspectionsEndpoint() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/inspections")
+    @DisplayName("Should process status endpoint")
+    fun testProcessStatusEndpoint() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/status")
         whenever(mockDecoder.parameters()).thenReturn(emptyMap())
         
         val result = handler.process(mockDecoder, mockRequest, mockContext)
@@ -97,15 +93,15 @@ class InspectionHandlerProcessTest {
     }
     
     @Test
-    @DisplayName("Should handle complex file paths correctly")
-    fun testProcessComplexFilePaths() {
-        val complexPaths = listOf(
-            "/api/inspection/problems/C:/Windows/System32/file.java",
-            "/api/inspection/problems/home/user/project/src/main/kotlin/File.kt",
-            "/api/inspection/problems/Users/user/Documents/My%20Project/file.js"
+    @DisplayName("Should handle various endpoint paths correctly")
+    fun testProcessVariousEndpoints() {
+        val endpoints = listOf(
+            "/api/inspection/problems",
+            "/api/inspection/trigger",
+            "/api/inspection/status"
         )
         
-        complexPaths.forEach { path ->
+        endpoints.forEach { path ->
             whenever(mockDecoder.path()).thenReturn(path)
             whenever(mockDecoder.parameters()).thenReturn(emptyMap())
             
@@ -114,7 +110,7 @@ class InspectionHandlerProcessTest {
             assertTrue(result, "Should handle path: $path")
         }
         
-        verify(mockContext, times(complexPaths.size)).writeAndFlush(any())
+        verify(mockContext, times(endpoints.size)).writeAndFlush(any())
     }
     
     @Test
@@ -122,17 +118,14 @@ class InspectionHandlerProcessTest {
     fun testProcessWithEmptyParameters() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
         
-        // Test with null parameters map
         whenever(mockDecoder.parameters()).thenReturn(null)
         var result = handler.process(mockDecoder, mockRequest, mockContext)
         assertTrue(result)
         
-        // Test with empty parameters
         whenever(mockDecoder.parameters()).thenReturn(emptyMap())
         result = handler.process(mockDecoder, mockRequest, mockContext)
         assertTrue(result)
         
-        // Test with empty parameter values
         whenever(mockDecoder.parameters()).thenReturn(mapOf(
             "scope" to emptyList(),
             "severity" to emptyList()
@@ -163,8 +156,8 @@ class InspectionHandlerProcessTest {
     fun testProcessAllSupportedEndpoints() {
         val endpoints = listOf(
             "/api/inspection/problems",
-            "/api/inspection/problems/test.kt", 
-            "/api/inspection/inspections"
+            "/api/inspection/trigger",
+            "/api/inspection/status"
         )
         
         endpoints.forEach { endpoint ->
@@ -180,12 +173,12 @@ class InspectionHandlerProcessTest {
     }
     
     @Test
-    @DisplayName("Should return true for all valid requests")
+    @DisplayName("Should return true for all requests")
     fun testProcessAlwaysReturnsTrue() {
         val testCases = listOf(
             "/api/inspection/problems",
-            "/api/inspection/problems/file.kt",
-            "/api/inspection/inspections",
+            "/api/inspection/trigger",
+            "/api/inspection/status",
             "/api/inspection/unknown"
         )
         

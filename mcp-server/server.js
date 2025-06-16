@@ -2,7 +2,8 @@
 
 /**
  * JetBrains Inspection API MCP Server
- * Provides Claude Code tools for accessing inspection results without curl permissions
+ * Provides Claude Code tools for accessing comprehensive inspection results
+ * using the full JetBrains inspection framework (mirrors PyCharm's "Inspect Code")
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -17,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.7.5'
+    version: '1.8.0'
   },
   {
     capabilities: {
@@ -57,10 +58,10 @@ function httpGet(url) {
 // Tool: Get inspection problems
 server.tool(
   "inspection_get_problems",
-  "Get inspection problems and status",
+  "Get comprehensive inspection problems using JetBrains inspection framework. IMPORTANT: Before calling this, ensure inspection_get_status shows 'is_scanning: false' and 'has_inspection_results: true'. If inspection is still running, wait and check status again.",
   {
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'"),
-    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
+    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'")
   },
   async ({ scope, severity }) => {
     try {
@@ -69,12 +70,20 @@ server.tool(
       if (severity !== "warning") params.append("severity", severity);
       
       const url = `${BASE_URL}/problems${params.toString() ? '?' + params.toString() : ''}`;
+      /** @type {{status: string, total_problems: number}} */
       const result = await httpGet(url);
+      
+      // Add guidance based on response
+      const guidance = result.status === "no_results" 
+        ? "\n\n⚠️  No results found. Run inspection_trigger first, then wait for completion using inspection_get_status."
+        : result.total_problems === 0
+        ? "\n\n✅ No problems found - codebase is clean!"
+        : `\n\n📊 Found ${result.total_problems} problems. Review and fix as needed.`;
       
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(result, null, 2)
+          text: JSON.stringify(result, null, 2) + guidance
         }]
       };
     } catch (error) {
@@ -88,60 +97,61 @@ server.tool(
   }
 );
 
-// Tool: Get inspection categories
+// Tool: Trigger inspection
 server.tool(
-  "inspection_get_categories",
-  "Get inspection problem categories summary",
+  "inspection_trigger",
+  "Trigger a full project inspection in the IDE. IMPORTANT: After triggering, you MUST use inspection_get_status to wait for completion before calling inspection_get_problems. The inspection process typically takes 10-30 seconds depending on project size.",
   {},
   async () => {
     try {
-      const url = `${BASE_URL}/inspections`;
+      const url = `${BASE_URL}/trigger`;
       const result = await httpGet(url);
       
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(result, null, 2)
+          text: JSON.stringify(result, null, 2) + "\n\n⚠️  IMPORTANT: Use inspection_get_status to check when inspection completes before getting problems!"
         }]
       };
     } catch (error) {
       return {
         content: [{
           type: "text",
-          text: `Error getting categories: ${error.message}`
+          text: `Error triggering inspection: ${error.message}`
         }]
       };
     }
   }
 );
 
-// Tool: Get inspection problems for a specific file
+// Tool: Get inspection status
 server.tool(
-  "inspection_get_file_problems",
-  "Get inspection problems for a specific file",
-  {
-    file_path: z.string().describe("Absolute path to the file to inspect"),
-    severity: z.string().optional().default("all").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', or 'all'")
-  },
-  async ({ file_path, severity }) => {
+  "inspection_get_status", 
+  "Get the current inspection status and check if results are available. Check 'is_scanning' field - if true, inspection is still running and you should wait. Only call inspection_get_problems when 'is_scanning' is false and 'has_inspection_results' is true.",
+  {},
+  async () => {
     try {
-      const params = new URLSearchParams();
-      if (severity !== "all") params.append("severity", severity);
-      
-      const url = `${BASE_URL}/problems/${encodeURIComponent(file_path)}${params.toString() ? '?' + params.toString() : ''}`;
+      const url = `${BASE_URL}/status`;
+      /** @type {{is_scanning: boolean, has_inspection_results: boolean}} */
       const result = await httpGet(url);
+      
+      const statusInfo = result.is_scanning ? 
+        "\n\n⏳ Inspection still running - wait before getting problems" :
+        result.has_inspection_results ? 
+          "\n\n✅ Inspection complete - ready to get problems" :
+          "\n\n❌ No inspection results - trigger inspection first";
       
       return {
         content: [{
-          type: "text",
-          text: JSON.stringify(result, null, 2)
+          type: "text", 
+          text: JSON.stringify(result, null, 2) + statusInfo
         }]
       };
     } catch (error) {
       return {
         content: [{
           type: "text",
-          text: `Error getting file problems: ${error.message}`
+          text: `Error getting status: ${error.message}`
         }]
       };
     }
