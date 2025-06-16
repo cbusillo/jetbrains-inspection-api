@@ -134,9 +134,9 @@ class InspectionHandler : HttpRequestHandler() {
                 status["problems_window_visible"] = false
             }
             
-            val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000 && !hasInspectionResults
+            val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000
             
-            if (hasInspectionResults && inspectionInProgress) {
+            if (hasInspectionResults && inspectionInProgress && timeSinceLastTrigger > 5000) {
                 inspectionInProgress = false
             }
             
@@ -156,7 +156,8 @@ class InspectionHandler : HttpRequestHandler() {
         val project = getCurrentProject() ?: return
         
         try {
-            // Check if we already have an inspection results window and close it
+            inspectionInProgress = true
+            
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val problemsWindow = toolWindowManager.getToolWindow("Problems View")
             
@@ -193,7 +194,10 @@ class InspectionHandler : HttpRequestHandler() {
                 true,
                 project
             )
+            
+            inspectionInProgress = false
         } catch (e: Exception) {
+            inspectionInProgress = false
         }
     }
     
