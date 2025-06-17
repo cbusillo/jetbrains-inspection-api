@@ -18,7 +18,7 @@ This project provides a JetBrains IDE plugin that exposes inspection results via
    - Handles `/api/inspection/problems` with optional scope and severity parameters
    - Handles `/api/inspection/trigger` to initiate inspections
    - Handles `/api/inspection/status` to check inspection progress
-   - Uses enhanced tree extraction from the inspection results window
+   - Use enhanced tree extraction from the inspection results window
    - Includes severity filtering
    - Requires triggering inspections before getting results
 
@@ -40,15 +40,10 @@ The plugin uses JetBrains 2025.x compatible APIs:
 
 ### Key Features
 
-1. **Complete Inspection Coverage**: Extracts results from IDE's inspection window
-2. **All Inspection Types**: JavaScript, Shell, Python, SpellCheck, and all enabled inspections  
-3. **Scope Control**: Filter by whole project or current file
-4. **Severity Filtering**: Filter by error, warning, weak_warning, info, grammar, typo levels or all
-5. **Inspection Triggering**: Programmatically trigger IDE inspections
-6. **Enhanced Status Monitoring**: Real-time inspection progress tracking with timing and completion detection
-7. **Thread Safe**: Background execution with proper `ReadAction` usage
-8. **Universal Language Support**: Works with all IDE-supported file types
-9. **Clean JSON**: Structured output compatible with automated tools
+- **Complete Inspection Coverage**: All inspection types (JavaScript, Python, SpellCheck, etc.)
+- **Filtering**: By scope (project/file) and severity (error, warning, info, grammar, typo)
+- **Inspection Control**: Trigger inspections and monitor real-time progress
+- **Universal Support**: Works with all IDE-supported file types
 
 ### Code Style Guidelines
 
@@ -168,3 +163,18 @@ tail -f ~/Library/Logs/JetBrains/{IDE}{version}/idea.log | grep "DEBUG:"
 - **Live Updates**: WebSocket support for real-time results
 - **External Tools**: ESLint, SonarQube integration
 - **Advanced Filtering**: Pattern-based file selection, diff-based analysis
+
+## CLAUDE.md Example
+
+For AI assistants using this plugin, add the following to your CLAUDE.md:
+
+```markdown
+### Inspection Usage Guidelines
+
+When using the JetBrains inspection tools:
+1. Trigger inspection once with `inspection_trigger`
+2. Check status with `inspection_get_status` until complete
+3. Get results with `inspection_get_problems`
+4. **Important**: When you see "✅ No problems found - codebase is clean!" or `total_problems: 0`, stop checking. The codebase has no issues.
+5. Don't repeatedly trigger inspections if there are zero problems - one cycle is enough per user request
+```

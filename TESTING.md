@@ -23,7 +23,7 @@ This project follows test-driven development (TDD) principles with comprehensive
 ### Unit Tests
 - Test individual functions and methods in isolation
 - Mock external dependencies
-- Fast execution (< 5 seconds total)
+- Fast execution (< 5-second total)
 - Cover edge cases and error conditions
 
 ### Integration Tests
@@ -50,7 +50,7 @@ This project follows test-driven development (TDD) principles with comprehensive
 - Tests should be independent and isolated
 - Use descriptive test names that explain behavior
 - Follow the arrange-act-assert pattern
-- Clean up resources in teardown methods
+- Cleanup resources in teardown methods
 
 ### Error Testing
 - Test all error conditions and recovery paths
@@ -61,13 +61,13 @@ This project follows test-driven development (TDD) principles with comprehensive
 ## Continuous Integration
 
 ### Precommit Hook
-- Runs all tests before allowing commits
+- Run all tests before allowing commits
 - Validates MCP server syntax
 - Builds plugin to catch compilation issues
 - Prevents broken code from entering the repository
 
 ### GitHub Actions
-- Executes a full test suite on push/PR
+- Execute a full test suite on push/PR
 - Tests against a clean environment
 - Generates test reports and artifacts
 - Validates both plugin and MCP components
