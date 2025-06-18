@@ -170,4 +170,127 @@ class InspectionHandlerTest {
         assertTrue(result)
         verify { mockContext.writeAndFlush(any()) }
     }
+    
+    @Test
+    fun `test scope parameter handling with whole_project`() {
+        val handler = InspectionHandler()
+        
+        val mockUrlDecoder = mockk<QueryStringDecoder>()
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        
+        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
+        every { mockUrlDecoder.parameters() } returns mapOf(
+            "scope" to listOf("whole_project"),
+            "severity" to listOf("all")
+        )
+        
+        every { mockContext.writeAndFlush(any()) } returns mockk()
+        
+        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
+        
+        assertTrue(result)
+        verify { mockContext.writeAndFlush(any()) }
+    }
+    
+    @Test
+    fun `test scope parameter handling with current_file`() {
+        val handler = InspectionHandler()
+        
+        val mockUrlDecoder = mockk<QueryStringDecoder>()
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        
+        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
+        every { mockUrlDecoder.parameters() } returns mapOf(
+            "scope" to listOf("current_file"),
+            "severity" to listOf("all")
+        )
+        
+        every { mockContext.writeAndFlush(any()) } returns mockk()
+        
+        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
+        
+        assertTrue(result)
+        verify { mockContext.writeAndFlush(any()) }
+    }
+    
+    @Test
+    fun `test scope parameter handling with custom scope`() {
+        val handler = InspectionHandler()
+        
+        val mockUrlDecoder = mockk<QueryStringDecoder>()
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        
+        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
+        every { mockUrlDecoder.parameters() } returns mapOf(
+            "scope" to listOf("odoo_intelligence_mcp"),
+            "severity" to listOf("all")
+        )
+        
+        every { mockContext.writeAndFlush(any()) } returns mockk()
+        
+        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
+        
+        assertTrue(result)
+        verify { mockContext.writeAndFlush(any()) }
+    }
+    
+    @Test
+    fun `test scope parameter defaults to whole_project when missing`() {
+        val handler = InspectionHandler()
+        
+        val mockUrlDecoder = mockk<QueryStringDecoder>()
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        
+        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
+        every { mockUrlDecoder.parameters() } returns mapOf(
+            "severity" to listOf("all")
+        )
+        
+        every { mockContext.writeAndFlush(any()) } returns mockk()
+        
+        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
+        
+        assertTrue(result)
+        verify { mockContext.writeAndFlush(any()) }
+    }
+    
+    @Test
+    fun `test scope and severity parameters together`() {
+        val handler = InspectionHandler()
+        
+        val mockUrlDecoder = mockk<QueryStringDecoder>()
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        
+        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
+        every { mockUrlDecoder.parameters() } returns mapOf(
+            "scope" to listOf("custom_scope"),
+            "severity" to listOf("error")
+        )
+        
+        every { mockContext.writeAndFlush(any()) } returns mockk()
+        
+        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
+        
+        assertTrue(result)
+        verify { mockContext.writeAndFlush(any()) }
+    }
+    
+    @Test
+    fun `test getInspectionProblems method signature accepts scope parameter`() {
+        // Use reflection to verify the method signature includes scope parameter
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "getInspectionProblems", 
+            String::class.java, 
+            String::class.java
+        )
+        
+        assertNotNull(method)
+        assertEquals("getInspectionProblems", method.name)
+        assertEquals(2, method.parameterCount)
+    }
 }

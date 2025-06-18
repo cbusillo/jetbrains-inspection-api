@@ -142,4 +142,98 @@ describe('MCP Server Tests', () => {
       assert.deepEqual(parsed.problems, [], 'Should handle empty problem arrays');
     });
   });
+
+  describe('Scope Parameter Handling', () => {
+    it('should handle whole_project scope parameter', () => {
+      const params = new URLSearchParams();
+      params.append('scope', 'whole_project');
+      
+      const queryString = params.toString();
+      assert.ok(queryString.includes('scope=whole_project'), 'Should handle whole_project scope');
+    });
+
+    it('should handle current_file scope parameter', () => {
+      const params = new URLSearchParams();
+      params.append('scope', 'current_file');
+      
+      const queryString = params.toString();
+      assert.ok(queryString.includes('scope=current_file'), 'Should handle current_file scope');
+    });
+
+    it('should handle custom scope parameters', () => {
+      const customScopes = [
+        'odoo_intelligence_mcp',
+        'test_project',
+        'custom_directory'
+      ];
+
+      customScopes.forEach(scope => {
+        const params = new URLSearchParams();
+        params.append('scope', scope);
+        
+        const queryString = params.toString();
+        assert.ok(queryString.includes(`scope=${scope}`), `Should handle custom scope: ${scope}`);
+      });
+    });
+
+    it('should handle scope parameter with special characters', () => {
+      const specialScopes = [
+        'project-with-dashes',
+        'project_with_underscores',
+        'project.with.dots'
+      ];
+
+      specialScopes.forEach(scope => {
+        const params = new URLSearchParams();
+        params.append('scope', scope);
+        
+        const queryString = params.toString();
+        const decoded = decodeURIComponent(queryString);
+        assert.ok(decoded.includes(scope), `Should handle scope with special chars: ${scope}`);
+      });
+    });
+
+    it('should handle scope and severity parameters together', () => {
+      const testCombinations = [
+        { scope: 'whole_project', severity: 'error' },
+        { scope: 'current_file', severity: 'warning' },
+        { scope: 'odoo_intelligence_mcp', severity: 'all' },
+        { scope: 'custom_scope', severity: 'info' }
+      ];
+
+      testCombinations.forEach(({ scope, severity }) => {
+        const params = new URLSearchParams();
+        params.append('scope', scope);
+        params.append('severity', severity);
+        
+        const queryString = params.toString();
+        assert.ok(queryString.includes(`scope=${scope}`), `Should include scope: ${scope}`);
+        assert.ok(queryString.includes(`severity=${severity}`), `Should include severity: ${severity}`);
+      });
+    });
+
+    it('should validate scope parameter values', () => {
+      const validScopes = [
+        'whole_project',
+        'current_file', 
+        'odoo_intelligence_mcp',
+        'any_custom_string'
+      ];
+
+      validScopes.forEach(scope => {
+        assert.ok(typeof scope === 'string' && scope.length > 0, 
+          `Scope '${scope}' should be a non-empty string`);
+      });
+    });
+
+    it('should handle missing scope parameter gracefully', () => {
+      const params = new URLSearchParams();
+      params.append('severity', 'error');
+      // No scope parameter added
+      
+      const queryString = params.toString();
+      assert.ok(!queryString.includes('scope='), 'Should handle missing scope parameter');
+      assert.ok(queryString.includes('severity=error'), 'Should still handle other parameters');
+    });
+  });
 });

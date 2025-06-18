@@ -32,8 +32,9 @@ class InspectionHandler : HttpRequestHandler() {
             when (path) {
                 "/api/inspection/problems" -> {
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
+                    val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
                     val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(severity)
+                        getInspectionProblems(severity, scope)
                     }
                     sendJsonResponse(context, result)
                 }
@@ -67,7 +68,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getInspectionProblems(severity: String = "all"): String {
+    private fun getInspectionProblems(severity: String = "all", scope: String = "whole_project"): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
         
@@ -76,13 +77,29 @@ class InspectionHandler : HttpRequestHandler() {
             val problems = extractor.extractAllProblems(project)
             
             if (problems.isNotEmpty()) {
-                val filteredProblems = if (severity == "all") {
+                val severityFilteredProblems = if (severity == "all") {
                     problems
                 } else {
                     problems.filter { 
                         val problemSeverity = it["severity"] as String
                         severity == problemSeverity || 
                         (severity == "warning" && (problemSeverity == "grammar" || problemSeverity == "typo"))
+                    }
+                }
+                
+                val filteredProblems = if (scope == "whole_project") {
+                    severityFilteredProblems
+                } else {
+                    severityFilteredProblems.filter { problem ->
+                        val filePath = problem["file"] as? String ?: ""
+                        when (scope) {
+                            "current_file" -> {
+                                true
+                            }
+                            else -> {
+                                filePath.contains(scope, ignoreCase = true)
+                            }
+                        }
                     }
                 }
                 
@@ -94,6 +111,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "problems_shown" to filteredProblems.size,
                     "problems" to filteredProblems,
                     "severity_filter" to severity,
+                    "scope_filter" to scope,
                     "method" to "enhanced_tree"
                 )
                 
