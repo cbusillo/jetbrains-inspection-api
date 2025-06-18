@@ -60,7 +60,7 @@ server.tool(
   "inspection_get_problems",
   "Get comprehensive inspection problems using JetBrains inspection framework. IMPORTANT: Before calling this, ensure inspection_get_status shows 'is_scanning: false' and 'has_inspection_results: true'. If inspection is still running, wait and check status again.",
   {
-    scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project' or 'current_file'"),
+    scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path"),
     severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'")
   },
   async ({ scope, severity }) => {
