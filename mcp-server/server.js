@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.8.1'
+    version: '1.9.0'
   },
   {
     capabilities: {
