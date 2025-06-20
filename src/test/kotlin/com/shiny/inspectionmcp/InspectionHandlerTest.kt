@@ -282,15 +282,19 @@ class InspectionHandlerTest {
     
     @Test
     fun `test getInspectionProblems method signature accepts scope parameter`() {
-        // Use reflection to verify the method signature includes scope parameter
+        // Use reflection to verify the method signature includes all filtering parameters
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems", 
-            String::class.java, 
-            String::class.java
+            String::class.java,  // severity
+            String::class.java,  // scope
+            String::class.java,  // problemType (nullable)
+            String::class.java,  // filePattern (nullable)
+            Int::class.java,     // limit
+            Int::class.java      // offset
         )
         
         assertNotNull(method)
         assertEquals("getInspectionProblems", method.name)
-        assertEquals(2, method.parameterCount)
+        assertEquals(6, method.parameterCount)
     }
 }

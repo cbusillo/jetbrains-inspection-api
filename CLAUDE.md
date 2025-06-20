@@ -172,9 +172,25 @@ For AI assistants using this plugin, add the following to your CLAUDE.md:
 ### Inspection Usage Guidelines
 
 When using the JetBrains inspection tools:
-1. Trigger inspection once with `inspection_trigger`
+1. Trigger inspection with `inspection_trigger`
 2. Check status with `inspection_get_status` until complete
-3. Get results with `inspection_get_problems`
-4. **Important**: When you see "✅ No problems found - codebase is clean!" or `total_problems: 0`, stop checking. The codebase has no issues.
-5. Don't repeatedly trigger inspections if there are zero problems - one cycle is enough per user request
+3. **Key**: The status response will clearly tell you:
+   - `clean_inspection: true` → Inspection passed with no problems (stop here!)
+   - `has_inspection_results: true` → Problems found, call `inspection_get_problems`
+   - Otherwise → No recent inspection, trigger one first
+
+### Handling Large Inspection Results
+
+If you encounter token limit errors (response exceeds 25000 tokens), use filtering to reduce the response size:
+
+1. **Start with critical issues only**: `inspection_get_problems(severity="error")`
+2. **Filter by problem type**: `inspection_get_problems(problem_type="PyUnresolvedReferences")`
+3. **Filter by file pattern**: `inspection_get_problems(file_pattern="src/")`
+4. **Use pagination**: `inspection_get_problems(limit=50, offset=0)`, then increment offset
+5. **Combine filters**: `inspection_get_problems(severity="error", file_pattern="*.py", limit=50)`
+
+Example workflow for large projects:
+- First get error count: `inspection_get_problems(severity="error", limit=1)` (check total_problems)
+- Then paginate if needed: `inspection_get_problems(severity="error", limit=50, offset=0)`
+- Continue with warnings after fixing errors
 ```

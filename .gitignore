@@ -77,3 +77,4 @@ jetbrains-inspection-api-*.zip
 *.ipr
 *.iws
 out/
+mcp-server/coverage/

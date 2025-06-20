@@ -33,8 +33,12 @@ class InspectionHandler : HttpRequestHandler() {
                 "/api/inspection/problems" -> {
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
+                    val problemType = urlDecoder.parameters()["problem_type"]?.firstOrNull()
+                    val filePattern = urlDecoder.parameters()["file_pattern"]?.firstOrNull()
+                    val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
+                    val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
                     val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(severity, scope)
+                        getInspectionProblems(severity, scope, problemType, filePattern, limit, offset)
                     }
                     sendJsonResponse(context, result)
                 }
@@ -68,7 +72,14 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getInspectionProblems(severity: String = "all", scope: String = "whole_project"): String {
+    private fun getInspectionProblems(
+        severity: String = "all", 
+        scope: String = "whole_project",
+        problemType: String? = null,
+        filePattern: String? = null,
+        limit: Int = 100,
+        offset: Int = 0
+    ): String {
         val project = getCurrentProject()
             ?: return """{"error": "No project found"}"""
         
@@ -87,7 +98,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 
-                val filteredProblems = if (scope == "whole_project") {
+                val scopeFilteredProblems = if (scope == "whole_project") {
                     severityFilteredProblems
                 } else {
                     severityFilteredProblems.filter { problem ->
@@ -103,21 +114,73 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 
+                val problemTypeFilteredProblems = if (problemType != null) {
+                    scopeFilteredProblems.filter { problem ->
+                        val inspectionType = problem["inspectionType"] as? String ?: ""
+                        val category = problem["category"] as? String ?: ""
+                        inspectionType.contains(problemType, ignoreCase = true) || 
+                        category.contains(problemType, ignoreCase = true)
+                    }
+                } else {
+                    scopeFilteredProblems
+                }
+                
+                val filePatternFilteredProblems = if (filePattern != null) {
+                    val regex = try { 
+                        Regex(filePattern, RegexOption.IGNORE_CASE) 
+                    } catch (e: Exception) {
+                        null
+                    }
+                    
+                    if (regex != null) {
+                        problemTypeFilteredProblems.filter { problem ->
+                            val filePath = problem["file"] as? String ?: ""
+                            regex.containsMatchIn(filePath)
+                        }
+                    } else {
+                        problemTypeFilteredProblems.filter { problem ->
+                            val filePath = problem["file"] as? String ?: ""
+                            filePath.contains(filePattern, ignoreCase = true)
+                        }
+                    }
+                } else {
+                    problemTypeFilteredProblems
+                }
+                
+                val totalFilteredProblems = filePatternFilteredProblems.size
+                
+                val paginatedProblems = filePatternFilteredProblems
+                    .drop(offset)
+                    .take(limit)
+                
+                val hasMore = offset + paginatedProblems.size < totalFilteredProblems
+                val nextOffset = if (hasMore) offset + limit else null
+                
                 val response = mapOf(
                     "status" to "results_available",
                     "project" to project.name,
                     "timestamp" to System.currentTimeMillis(),
-                    "total_problems" to filteredProblems.size,
-                    "problems_shown" to filteredProblems.size,
-                    "problems" to filteredProblems,
-                    "severity_filter" to severity,
-                    "scope_filter" to scope,
+                    "total_problems" to totalFilteredProblems,
+                    "problems_shown" to paginatedProblems.size,
+                    "problems" to paginatedProblems,
+                    "pagination" to mapOf(
+                        "limit" to limit,
+                        "offset" to offset,
+                        "has_more" to hasMore,
+                        "next_offset" to nextOffset
+                    ),
+                    "filters" to mapOf(
+                        "severity" to severity,
+                        "scope" to scope,
+                        "problem_type" to (problemType ?: "all"),
+                        "file_pattern" to (filePattern ?: "all")
+                    ),
                     "method" to "enhanced_tree"
                 )
                 
                 formatJsonManually(response)
             } else {
-                """{"status": "no_results", "message": "No inspection results found. Run 'Analyze → Inspect Code' first."}"""
+                """{"status": "no_results", "message": "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass)."}"""
             }
         } catch (e: Exception) {
             """{"error": "Failed to get inspection problems: ${e.message}"}"""
@@ -163,6 +226,11 @@ class InspectionHandler : HttpRequestHandler() {
             status["inspection_in_progress"] = inspectionInProgress
             status["time_since_last_trigger_ms"] = timeSinceLastTrigger
             status["indexing"] = isIndexing
+            
+            // Add clear status for clean inspection
+            val recentlyCompleted = timeSinceLastTrigger < 60000 // within last minute
+            val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !hasInspectionResults
+            status["clean_inspection"] = cleanInspection
             
             formatJsonManually(status)
         } catch (e: Exception) {

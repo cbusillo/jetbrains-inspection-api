@@ -109,11 +109,31 @@ Replace `63340` with your IDE's configured port.
 ## API Reference
 
 ### Problems Endpoint
-**URL**: `GET /api/inspection/problems?scope={scope}&severity={severity}`
+**URL**: `GET /api/inspection/problems`
 
 **Parameters**:
-- `scope` (optional): `whole_project` (default) | `current_file`
+- `scope` (optional): `whole_project` (default) | `current_file` | custom path filter
 - `severity` (optional): `error` | `warning` | `weak_warning` | `info` | `grammar` | `typo` | `all` (default)
+- `problem_type` (optional): Filter by inspection type (e.g., `PyUnresolvedReferencesInspection`, `SpellCheck`, `Unused`)
+- `file_pattern` (optional): Filter by file path pattern - simple string or regex (e.g., `*.py`, `src/.*\.js$`)
+- `limit` (optional): Maximum problems to return (default: 100)
+- `offset` (optional): Number of problems to skip for pagination (default: 0)
+
+**Examples**:
+```bash
+# Get only Python unresolved reference errors
+curl "http://localhost:63340/api/inspection/problems?problem_type=PyUnresolvedReferences&severity=error"
+
+# Get problems in test files only
+curl "http://localhost:63340/api/inspection/problems?file_pattern=.*test.*\.py$"
+
+# Paginate through large result sets
+curl "http://localhost:63340/api/inspection/problems?limit=50&offset=0"
+curl "http://localhost:63340/api/inspection/problems?limit=50&offset=50"
+
+# Combine filters for precise results
+curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern=src/&problem_type=TypeScript"
+```
 
 ### Trigger Endpoint
 **URL**: `GET /api/inspection/trigger`
@@ -135,18 +155,19 @@ Replace `63340` with your IDE's configured port.
   "project_name": "project-name",
   "is_scanning": false,
   "has_inspection_results": true,
-  "inspection_in_progress": false,
+  "clean_inspection": false,
+  "inspection_in_progress": false,  
   "time_since_last_trigger_ms": 5000,
   "indexing": false,
   "problems_window_visible": true
 }
 ```
 
-**Enhanced Status Fields**:
-- `is_scanning`: Overall scanning status (true if indexing OR inspection running)
-- `inspection_in_progress`: Specific inspection progress tracking
-- `time_since_last_trigger_ms`: Milliseconds since last inspection trigger
-- `indexing`: Whether IDE indexing is currently running
+**Key Status Fields**:
+- `clean_inspection`: **NEW** - `true` when inspection completed with no problems
+- `is_scanning`: `true` if inspection is currently running
+- `has_inspection_results`: `true` when problems were found and are available
+- `time_since_last_trigger_ms`: Time since last inspection was triggered
 
 ## Proper Usage Workflow
 
@@ -176,10 +197,24 @@ done
 curl "http://localhost:63340/api/inspection/problems?severity=all"
 ```
 
-### Status Indicators
-- **⏳ Still Running**: `is_scanning: true` - Wait before getting problems
-- **✅ Ready**: `is_scanning: false` + `has_inspection_results: true` - Safe to get problems  
-- **❌ No Results**: `has_inspection_results: false` - Trigger inspection first
+### Understanding Status Response
+
+The status endpoint now includes a `clean_inspection` field that makes it crystal clear:
+
+```json
+{
+  "is_scanning": false,
+  "has_inspection_results": false,
+  "clean_inspection": true,  // ← Inspection passed with no problems!
+  "time_since_last_trigger_ms": 15000
+}
+```
+
+**Status Indicators**:
+- `is_scanning: true` → Inspection running, wait
+- `clean_inspection: true` → Inspection complete, no problems found
+- `has_inspection_results: true` → Problems found, retrieve with `/problems`
+- All false → No recent inspection, trigger one first
 
 ## MCP Server Details
 
@@ -188,7 +223,7 @@ The included MCP (Model Context Protocol) server provides seamless integration w
 ### Tools Provided
 - **`inspection_trigger()`** - Triggers a full project inspection
 - **`inspection_get_status()`** - Checks inspection status
-- **`inspection_get_problems(scope?, severity?)`** - Gets inspection problems with optional filtering
+- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?)`** - Gets inspection problems with filtering and pagination
 
 ### Requirements
 - **Node.js 18.0.0+**
@@ -217,9 +252,18 @@ Add this to your project's `CLAUDE.md`:
 
 - `inspection_trigger()` - Trigger a full project inspection
 - `inspection_get_status()` - Check if inspection is complete
-- `inspection_get_problems()` - Get all project problems
+- `inspection_get_problems()` - Get all project problems (paginated)
 - `inspection_get_problems(scope="current_file")` - Get problems in open files only
 - `inspection_get_problems(severity="error")` - Get only error-level problems
+- `inspection_get_problems(problem_type="Unused")` - Get specific inspection types
+- `inspection_get_problems(file_pattern="*.test.js")` - Get problems in matching files
+- `inspection_get_problems(limit=50, offset=0)` - Paginate through results
+
+**Handling Large Results**: When you encounter token limit errors, use filtering:
+- Filter by severity: `severity="error"` (most critical issues only)
+- Filter by problem type: `problem_type="PyUnresolvedReferences"`
+- Filter by file pattern: `file_pattern="src/"`
+- Use pagination: `limit=50` then increment `offset`
 
 **Features**:
 - Trigger and monitor inspections

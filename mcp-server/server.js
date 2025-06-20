@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.9.0'
+    version: '1.10.0'
   },
   {
     capabilities: {
@@ -61,24 +61,36 @@ server.tool(
   "Get comprehensive inspection problems using JetBrains inspection framework. IMPORTANT: Before calling this, ensure inspection_get_status shows 'is_scanning: false' and 'has_inspection_results: true'. If inspection is still running, wait and check status again.",
   {
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path"),
-    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'")
+    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'"),
+    problem_type: z.string().optional().describe("Filter by inspection type (e.g., 'PyUnresolvedReferencesInspection', 'SpellCheck', 'Unused') - matches against inspection type or category"),
+    file_pattern: z.string().optional().describe("Filter by file path pattern - can be a simple string match or regex (e.g., '*.py', 'src/.*\\.js$', 'test')"),
+    limit: z.number().optional().default(100).describe("Maximum number of problems to return (default: 100)"),
+    offset: z.number().optional().default(0).describe("Number of problems to skip for pagination (default: 0)")
   },
-  async ({ scope, severity }) => {
+  async ({ scope, severity, problem_type, file_pattern, limit, offset }) => {
     try {
       const params = new URLSearchParams();
       if (scope !== "whole_project") params.append("scope", scope);
       if (severity !== "warning") params.append("severity", severity);
+      if (problem_type) params.append("problem_type", problem_type);
+      if (file_pattern) params.append("file_pattern", file_pattern);
+      if (limit !== 100) params.append("limit", limit.toString());
+      if (offset !== 0) params.append("offset", offset.toString());
       
       const url = `${BASE_URL}/problems${params.toString() ? '?' + params.toString() : ''}`;
-      /** @type {{status: string, total_problems: number}} */
+      /** @type {{status: string, total_problems: number, problems_shown?: number, pagination?: {has_more: boolean, next_offset: number}}} */
       const result = await httpGet(url);
       
       // Add guidance based on response
-      const guidance = result.status === "no_results" 
-        ? "\n\n⚠️  No results found. Run inspection_trigger first, then wait for completion using inspection_get_status."
+      let guidance = result.status === "no_results" 
+        ? "\n\n⚠️  No results found. Either trigger an inspection first, or the codebase is clean (100% pass rate = no inspection window created)."
         : result.total_problems === 0
-        ? "\n\n✅ No problems found - codebase is clean!"
-        : `\n\n📊 Found ${result.total_problems} problems. Review and fix as needed.`;
+        ? "\n\n✅ No problems found matching filters - codebase is clean!"
+        : `\n\n📊 Found ${result.total_problems} problems total, showing ${result.problems_shown !== undefined ? result.problems_shown : result.total_problems}.`;
+      
+      if (result.pagination?.has_more) {
+        guidance += `\n\n➡️  More results available. Use offset=${result.pagination.next_offset} to get the next page.`;
+      }
       
       return {
         content: [{
@@ -132,14 +144,16 @@ server.tool(
   async () => {
     try {
       const url = `${BASE_URL}/status`;
-      /** @type {{is_scanning: boolean, has_inspection_results: boolean}} */
+      /** @type {{is_scanning: boolean, has_inspection_results: boolean, clean_inspection?: boolean}} */
       const result = await httpGet(url);
       
       const statusInfo = result.is_scanning ? 
         "\n\n⏳ Inspection still running - wait before getting problems" :
+        result.clean_inspection ? 
+          "\n\n✅ Inspection complete - codebase is clean (no problems found)" :
         result.has_inspection_results ? 
-          "\n\n✅ Inspection complete - ready to get problems" :
-          "\n\n❌ No inspection results - trigger inspection first";
+          "\n\n✅ Inspection complete - problems found, ready to retrieve" :
+          "\n\n❌ No recent inspection - trigger inspection first";
       
       return {
         content: [{
