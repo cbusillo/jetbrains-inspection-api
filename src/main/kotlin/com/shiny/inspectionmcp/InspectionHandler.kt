@@ -48,7 +48,7 @@ class InspectionHandler : HttpRequestHandler() {
                     com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
                         triggerInspectionAsync()
                     }
-                    sendJsonResponse(context, """{"status": "triggered", "message": "Inspection triggered. Wait 10-15 seconds then call /api/inspection/problems"}""")
+                    sendJsonResponse(context, """{"status": "triggered", "message": "Inspection triggered. Wait 10-15 seconds then check status"}""")
                 }
                 "/api/inspection/status" -> {
                     val result = ReadAction.compute<String, Exception> {
@@ -228,7 +228,7 @@ class InspectionHandler : HttpRequestHandler() {
             status["indexing"] = isIndexing
             
             // Add clear status for clean inspection
-            val recentlyCompleted = timeSinceLastTrigger < 60000 // within last minute
+            val recentlyCompleted = timeSinceLastTrigger < 60000
             val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !hasInspectionResults
             status["clean_inspection"] = cleanInspection
             
