@@ -205,7 +205,7 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 {
   "is_scanning": false,
   "has_inspection_results": false,
-  "clean_inspection": true,  // ← Inspection passed with no problems!
+  "clean_inspection": true, 
   "time_since_last_trigger_ms": 15000
 }
 ```

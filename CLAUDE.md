@@ -177,7 +177,7 @@ When using the JetBrains inspection tools:
 3. **Key**: The status response will clearly tell you:
    - `clean_inspection: true` → Inspection passed with no problems (stop here!)
    - `has_inspection_results: true` → Problems found, call `inspection_get_problems`
-   - Otherwise → No recent inspection, trigger one first
+   - Otherwise, no recent inspection, trigger one-first
 
 ### Handling Large Inspection Results
 
