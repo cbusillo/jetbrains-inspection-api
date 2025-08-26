@@ -78,26 +78,33 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 ## Development Workflow
 
 1. **Make Changes**: Edit InspectionHandler.kt or MCP server
-2. **Run Tests**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test` - All tests must pass
-3. **Build**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
-4. **Install**: Load .zip from build/distributions/ in IDE
-5. **Test**: Use MCP tools or direct HTTP calls
-6. **Iterate**: Repeat until issues are resolved
-7. **Commit**: Make commits at logical stopping points (feature complete, tests passing, documentation updated)
+2. **Write Tests**: Add comprehensive tests for all new functionality before committing
+3. **Run Tests**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test` - All tests must pass
+4. **Build**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
+5. **Install**: Load .zip from build/distributions/ in IDE
+6. **Test**: Use MCP tools or direct HTTP calls
+7. **Iterate**: Repeat until issues are resolved
+8. **Commit**: Make commits at logical stopping points (feature complete, tests passing, documentation updated)
 
 ### Testing Requirements
 
+**IMPORTANT**: All code changes MUST have comprehensive test coverage before committing. While coverage tools show artificially low metrics due to IntelliJ plugin architecture limitations (classloader isolation prevents proper instrumentation), this does NOT excuse writing tests. The tests DO exercise the code properly even if tools can't measure it.
+
 **Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests, MCP syntax check, and build  
 **Test Scripts**:
-- All tests: `./test-all.sh` - Runs plugin + MCP tests with 80% coverage requirement
+- All tests: `./test-all.sh` - Runs plugin + MCP tests
 - Build + test: `./build.sh` - Tests then builds the plugin
 - MCP Server only: `cd mcp-server && npm test`
 
-**Coverage Standards**:
-- All new functionality requires tests (unit + integration)
-- Test public API behavior, error conditions, and performance
-- Avoid testing private methods directly
-- Use TDD: write failing tests first
+**Test Coverage Requirements**:
+- **MANDATORY**: Write tests for ALL new functionality before committing
+- **MANDATORY**: Ensure existing tests still pass after changes
+- **MANDATORY**: Test both happy paths and error conditions
+- Write unit tests for business logic
+- Write integration tests for API endpoints
+- Test edge cases and error handling
+- Use TDD: write failing tests first, then implement
+- Aim for logical coverage even if tools can't measure it
 
 **Test Coverage Achieved**: 57 Kotlin + 21 MCP tests (78 total) including:
 - Error handling and HTTP processing
@@ -139,6 +146,17 @@ curl -s "http://localhost:63341/api/inspection/problems?severity=all" | jq '.'
 # Watch debug logs in real-time
 tail -f ~/Library/Logs/JetBrains/{IDE}{version}/idea.log | grep "DEBUG:"
 ```
+
+## Commit Requirements
+
+**Before ANY commit**:
+1. **Tests Written**: Ensure comprehensive tests exist for all new/modified functionality
+2. **Tests Pass**: Run `./test-all.sh` - ALL tests must pass
+3. **Build Succeeds**: Run `./build.sh` to verify the plugin builds
+4. **Manual Testing**: Test your changes in a real IDE environment
+5. **Documentation**: Update relevant documentation if behavior changes
+
+**Note on Coverage**: JaCoCo shows 0% coverage due to IntelliJ plugin classloader isolation. This is a known limitation, NOT an excuse to skip writing tests. The 65+ existing tests DO exercise the code properly - the tool just can't measure it.
 
 ## Version Management & Release
 
