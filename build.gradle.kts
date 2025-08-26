@@ -72,7 +72,7 @@ tasks {
             exceptionFormat = TestExceptionFormat.FULL
         }
         
-        // Add system properties to help with coverage in plugin environment
+        // Add system properties to help with coverage in the plugin environment
         systemProperty("idea.is.unit.test", "true")
         systemProperty("idea.test.cyclic.buffer.size", "1048576")
         
