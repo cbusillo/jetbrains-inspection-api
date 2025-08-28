@@ -128,19 +128,11 @@ jobs:
         body: |
           ${{ steps.changelog.outputs.CHANGELOG }}
           
-          ## Installation
+          ## Installation & Setup
           
-          1. Download the `jetbrains-inspection-api-${{ steps.get_version.outputs.VERSION }}.zip` file
-          2. In your JetBrains IDE, go to **Settings** → **Plugins** → **⚙️** → **Install Plugin from Disk**
-          3. Select the downloaded zip file and restart the IDE
-          4. The plugin will be available on the IDE's built-in server port, you may need to enable it and external access.  
+          Download the `jetbrains-inspection-api-${{ steps.get_version.outputs.VERSION }}.zip` file below.
           
-          ## MCP Integration
-          
-          ```bash
-          # Add MCP server (replace /path/to with actual path and set IDE_PORT as needed)
-          claude mcp add-json jetbrains '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
-          ```
+          For installation and setup instructions, see the [README Quick Start Guide](https://github.com/cbusillo/jetbrains-inspection-api#quick-start).
         draft: false
         prerelease: false
         files: ./build/distributions/*.zip
