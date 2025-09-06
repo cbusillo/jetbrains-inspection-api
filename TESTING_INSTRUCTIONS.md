@@ -1,0 +1,37 @@
+# Testing JetBrains Inspection API v1.10.5 - Project Parameter Feature
+
+## Quick Test Instructions
+
+To test the new project-specific inspection feature in v1.10.5:
+
+1. **Ensure you have multiple projects open** in your JetBrains IDE (PyCharm, IntelliJ, etc.)
+
+2. **Using MCP Tools in Claude Code:**
+   ```bash
+   # Inspect a specific project by name
+   mcp__inspection-pycharm__inspection_trigger(project="odoo-intelligence-mcp")
+   mcp__inspection-pycharm__inspection_get_status(project="odoo-intelligence-mcp")
+   mcp__inspection-pycharm__inspection_get_problems(project="odoo-intelligence-mcp", severity="error")
+   
+   # Compare with different project
+   mcp__inspection-pycharm__inspection_get_problems(project="odoo-ai", severity="error")
+   ```
+
+3. **Using Direct HTTP API:**
+   ```bash
+   # Replace 63341 with your IDE's configured port
+   curl "http://localhost:63341/api/inspection/trigger?project=odoo-intelligence-mcp"
+   curl "http://localhost:63341/api/inspection/problems?project=odoo-intelligence-mcp&severity=error"
+   ```
+
+4. **Expected Behavior:**
+   - When you specify a project name, it should inspect ONLY that project
+   - Without the project parameter, it inspects the currently focused/active project
+   - If the specified project doesn't exist, you'll get a "Project not found" error
+   - The project name must match exactly as shown in your IDE's project view
+
+5. **Verify Fix:**
+   - Previously, it would always inspect the first project alphabetically (e.g., "odoo-ai" before "odoo-intelligence-mcp")
+   - Now it correctly inspects the specified project or the one with focus
+
+Test both with and without the project parameter to confirm the focused project detection also works correctly.
