@@ -2,15 +2,19 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionManager
+import com.intellij.ide.DataManager
+import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
+import java.util.concurrent.TimeUnit
 
 class InspectionHandler : HttpRequestHandler() {
     
@@ -292,6 +296,24 @@ class InspectionHandler : HttpRequestHandler() {
     
     private fun getCurrentProject(): Project? {
         return try {
+            val lastFocusedFrame = IdeFocusManager.getGlobalInstance().lastFocusedFrame
+            val projectFromFrame = lastFocusedFrame?.project
+            if (projectFromFrame != null && !projectFromFrame.isDefault && !projectFromFrame.isDisposed && projectFromFrame.isInitialized) {
+                return projectFromFrame
+            }
+            
+            val dataContextFuture = DataManager.getInstance().dataContextFromFocusAsync
+            val dataContext = try {
+                dataContextFuture.blockingGet(1000, TimeUnit.MILLISECONDS)
+            } catch (_: Exception) {
+                null
+            }
+            
+            val projectFromDataContext = dataContext?.let { CommonDataKeys.PROJECT.getData(it) }
+            if (projectFromDataContext != null && !projectFromDataContext.isDefault && !projectFromDataContext.isDisposed && projectFromDataContext.isInitialized) {
+                return projectFromDataContext
+            }
+            
             val projectManager = ProjectManager.getInstance()
             val openProjects = projectManager.openProjects
             

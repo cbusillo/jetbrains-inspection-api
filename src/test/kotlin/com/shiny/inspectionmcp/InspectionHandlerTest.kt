@@ -4,18 +4,27 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import io.mockk.*
+import com.intellij.ide.DataManager
+import com.intellij.openapi.actionSystem.CommonDataKeys
+import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.wm.IdeFocusManager
+import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.util.concurrency.AppExecutorUtil
 import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.channel.ChannelHandlerContext
+import org.jetbrains.concurrency.Promise
+import org.jetbrains.concurrency.resolvedPromise
+import org.jetbrains.concurrency.rejectedPromise
 import javax.swing.JFrame
 
 class InspectionHandlerTest {
@@ -52,6 +61,21 @@ class InspectionHandlerTest {
         
         mockkStatic(ProjectManager::class)
         every { ProjectManager.getInstance() } returns mockProjectManager
+        
+        mockkStatic(IdeFocusManager::class)
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        val mockIdeFrame = mockk<IdeFrame>()
+        every { mockIdeFrame.project } returns mockProject
+        every { mockIdeFocusManager.lastFocusedFrame } returns mockIdeFrame
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+        
+        mockkStatic(DataManager::class)
+        val mockDataManager = mockk<DataManager>()
+        val mockDataContext = mockk<DataContext>()
+        val promise: Promise<DataContext> = resolvedPromise(mockDataContext)
+        every { mockDataManager.dataContextFromFocusAsync } returns promise
+        every { DataManager.getInstance() } returns mockDataManager
+        every { CommonDataKeys.PROJECT.getData(mockDataContext) } returns mockProject
         
         mockkStatic(WindowManager::class)
         every { WindowManager.getInstance() } returns mockWindowManager
@@ -129,6 +153,15 @@ class InspectionHandlerTest {
     @Test
     fun `test getCurrentProject returns null when no valid project`() {
         every { mockProjectManager.openProjects } returns emptyArray()
+        
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        every { mockIdeFocusManager.lastFocusedFrame } returns null
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+        
+        val mockDataManager = mockk<DataManager>()
+        val promise: Promise<DataContext> = rejectedPromise("No context")
+        every { mockDataManager.dataContextFromFocusAsync } returns promise
+        every { DataManager.getInstance() } returns mockDataManager
         
         val handler = InspectionHandler()
         val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
@@ -332,6 +365,12 @@ class InspectionHandlerTest {
         
         every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2, mockProject3)
         
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        val mockIdeFrame = mockk<IdeFrame>()
+        every { mockIdeFrame.project } returns mockProject2
+        every { mockIdeFocusManager.lastFocusedFrame } returns mockIdeFrame
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+        
         val mockWindow1 = mockk<JFrame>()
         val mockWindow2 = mockk<JFrame>()
         val mockWindow3 = mockk<JFrame>()
@@ -371,6 +410,15 @@ class InspectionHandlerTest {
         
         every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
         
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        every { mockIdeFocusManager.lastFocusedFrame } returns null
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+        
+        val mockDataManager = mockk<DataManager>()
+        val promise: Promise<DataContext> = rejectedPromise("No context")
+        every { mockDataManager.dataContextFromFocusAsync } returns promise
+        every { DataManager.getInstance() } returns mockDataManager
+        
         val mockWindow1 = mockk<JFrame>()
         val mockWindow2 = mockk<JFrame>()
         
@@ -406,6 +454,15 @@ class InspectionHandlerTest {
         every { mockProject2.name } returns "SecondProject"
         
         every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
+        
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        every { mockIdeFocusManager.lastFocusedFrame } returns null
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+        
+        val mockDataManager = mockk<DataManager>()
+        val promise: Promise<DataContext> = rejectedPromise("No context")
+        every { mockDataManager.dataContextFromFocusAsync } returns promise
+        every { DataManager.getInstance() } returns mockDataManager
         
         every { mockWindowManager.suggestParentWindow(mockProject1) } returns null
         every { mockWindowManager.suggestParentWindow(mockProject2) } returns null
