@@ -6,6 +6,7 @@ import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.wm.WindowManager
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -66,8 +67,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
             return true
-        } catch (e: Exception) {
-            sendJsonResponse(context, """{"error": "Internal server error: ${e.message}"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
+        } catch (_: Exception) {
+            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
             return true
         }
     }
@@ -92,6 +93,7 @@ class InspectionHandler : HttpRequestHandler() {
                     problems
                 } else {
                     problems.filter { 
+                        @Suppress("USELESS_CAST")
                         val problemSeverity = it["severity"] as String
                         severity == problemSeverity || 
                         (severity == "warning" && (problemSeverity == "grammar" || problemSeverity == "typo"))
@@ -128,7 +130,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val filePatternFilteredProblems = if (filePattern != null) {
                     val regex = try { 
                         Regex(filePattern, RegexOption.IGNORE_CASE) 
-                    } catch (e: Exception) {
+                    } catch (_: Exception) {
                         null
                     }
                     
@@ -182,8 +184,8 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 """{"status": "no_results", "message": "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass)."}"""
             }
-        } catch (e: Exception) {
-            """{"error": "Failed to get inspection problems: ${e.message}"}"""
+        } catch (_: Exception) {
+            """{"error": "Failed to get inspection problems"}"""
         }
     }
     
@@ -233,8 +235,8 @@ class InspectionHandler : HttpRequestHandler() {
             status["clean_inspection"] = cleanInspection
             
             formatJsonManually(status)
-        } catch (e: Exception) {
-            """{"error": "Failed to get status: ${e.message}"}"""
+        } catch (_: Exception) {
+            """{"error": "Failed to get status"}"""
         }
     }
     
@@ -262,11 +264,12 @@ class InspectionHandler : HttpRequestHandler() {
             
             val scope = AnalysisScope(project)
             
+            @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
             val profile = profileManager.currentProfile
             
-            @Suppress("UnstableApiUsage")
+            @Suppress("UnstableApiUsage", "USELESS_CAST")
             val globalContext = inspectionManager.createNewGlobalContext() as com.intellij.codeInspection.ex.GlobalInspectionContextImpl
             globalContext.setExternalProfile(profile)
             globalContext.currentScope = scope
@@ -282,7 +285,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
             
             inspectionInProgress = false
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             inspectionInProgress = false
         }
     }
@@ -291,10 +294,24 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val projectManager = ProjectManager.getInstance()
             val openProjects = projectManager.openProjects
-            openProjects.firstOrNull { project ->
+            
+            val validProjects = openProjects.filter { project ->
                 !project.isDefault && !project.isDisposed && project.isInitialized
             }
-        } catch (e: Exception) {
+            
+            if (validProjects.isEmpty()) {
+                return null
+            }
+            
+            for (project in validProjects) {
+                val window = WindowManager.getInstance().suggestParentWindow(project)
+                if (window != null && window.isActive) {
+                    return project
+                }
+            }
+            
+            validProjects.firstOrNull()
+        } catch (_: Exception) {
             null
         }
     }

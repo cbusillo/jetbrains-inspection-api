@@ -7,6 +7,7 @@ import io.mockk.*
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.wm.WindowManager
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
@@ -15,6 +16,7 @@ import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.channel.ChannelHandlerContext
+import javax.swing.JFrame
 
 class InspectionHandlerTest {
     
@@ -22,6 +24,7 @@ class InspectionHandlerTest {
     private lateinit var mockProject: Project
     private lateinit var mockProjectManager: ProjectManager
     private lateinit var mockVirtualFileManager: VirtualFileManager
+    private lateinit var mockWindowManager: WindowManager
     private lateinit var mockInspectionManager: InspectionManager
     private lateinit var mockGlobalContext: GlobalInspectionContext
     private lateinit var mockProfileManager: InspectionProjectProfileManager
@@ -34,6 +37,7 @@ class InspectionHandlerTest {
         mockProject = mockk<Project>()
         mockProjectManager = mockk<ProjectManager>()
         mockVirtualFileManager = mockk<VirtualFileManager>()
+        mockWindowManager = mockk<WindowManager>()
         mockInspectionManager = mockk<InspectionManager>()
         mockGlobalContext = mockk<GlobalInspectionContext>()
         mockProfileManager = mockk<InspectionProjectProfileManager>()
@@ -48,6 +52,13 @@ class InspectionHandlerTest {
         
         mockkStatic(ProjectManager::class)
         every { ProjectManager.getInstance() } returns mockProjectManager
+        
+        mockkStatic(WindowManager::class)
+        every { WindowManager.getInstance() } returns mockWindowManager
+        
+        val mockWindow = mockk<JFrame>()
+        every { mockWindow.isActive } returns true
+        every { mockWindowManager.suggestParentWindow(mockProject) } returns mockWindow
         
         mockkStatic(VirtualFileManager::class)
         every { VirtualFileManager.getInstance() } returns mockVirtualFileManager
@@ -296,5 +307,116 @@ class InspectionHandlerTest {
         assertNotNull(method)
         assertEquals("getInspectionProblems", method.name)
         assertEquals(6, method.parameterCount)
+    }
+    
+    @Test
+    fun `test getCurrentProject with multiple projects returns active one`() {
+        val mockProject1 = mockk<Project>()
+        val mockProject2 = mockk<Project>()
+        val mockProject3 = mockk<Project>()
+        
+        every { mockProject1.isDefault } returns false
+        every { mockProject1.isDisposed } returns false
+        every { mockProject1.isInitialized } returns true
+        every { mockProject1.name } returns "Project1"
+        
+        every { mockProject2.isDefault } returns false
+        every { mockProject2.isDisposed } returns false
+        every { mockProject2.isInitialized } returns true
+        every { mockProject2.name } returns "ActiveProject"
+        
+        every { mockProject3.isDefault } returns false
+        every { mockProject3.isDisposed } returns false
+        every { mockProject3.isInitialized } returns true
+        every { mockProject3.name } returns "Project3"
+        
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2, mockProject3)
+        
+        val mockWindow1 = mockk<JFrame>()
+        val mockWindow2 = mockk<JFrame>()
+        val mockWindow3 = mockk<JFrame>()
+        
+        every { mockWindow1.isActive } returns false
+        every { mockWindow2.isActive } returns true
+        every { mockWindow3.isActive } returns false
+        
+        every { mockWindowManager.suggestParentWindow(mockProject1) } returns mockWindow1
+        every { mockWindowManager.suggestParentWindow(mockProject2) } returns mockWindow2
+        every { mockWindowManager.suggestParentWindow(mockProject3) } returns mockWindow3
+        
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        method.isAccessible = true
+        
+        val result = method.invoke(handler) as Project?
+        
+        assertNotNull(result)
+        assertEquals("ActiveProject", result?.name)
+    }
+    
+    @Test
+    fun `test getCurrentProject with no active window returns first valid project`() {
+        val mockProject1 = mockk<Project>()
+        val mockProject2 = mockk<Project>()
+        
+        every { mockProject1.isDefault } returns false
+        every { mockProject1.isDisposed } returns false
+        every { mockProject1.isInitialized } returns true
+        every { mockProject1.name } returns "FirstProject"
+        
+        every { mockProject2.isDefault } returns false
+        every { mockProject2.isDisposed } returns false
+        every { mockProject2.isInitialized } returns true
+        every { mockProject2.name } returns "SecondProject"
+        
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
+        
+        val mockWindow1 = mockk<JFrame>()
+        val mockWindow2 = mockk<JFrame>()
+        
+        every { mockWindow1.isActive } returns false
+        every { mockWindow2.isActive } returns false
+        
+        every { mockWindowManager.suggestParentWindow(mockProject1) } returns mockWindow1
+        every { mockWindowManager.suggestParentWindow(mockProject2) } returns mockWindow2
+        
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        method.isAccessible = true
+        
+        val result = method.invoke(handler) as Project?
+        
+        assertNotNull(result)
+        assertEquals("FirstProject", result?.name)
+    }
+    
+    @Test
+    fun `test getCurrentProject with null windows returns first valid project`() {
+        val mockProject1 = mockk<Project>()
+        val mockProject2 = mockk<Project>()
+        
+        every { mockProject1.isDefault } returns false
+        every { mockProject1.isDisposed } returns false
+        every { mockProject1.isInitialized } returns true
+        every { mockProject1.name } returns "FirstProject"
+        
+        every { mockProject2.isDefault } returns false
+        every { mockProject2.isDisposed } returns false
+        every { mockProject2.isInitialized } returns true
+        every { mockProject2.name } returns "SecondProject"
+        
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
+        
+        every { mockWindowManager.suggestParentWindow(mockProject1) } returns null
+        every { mockWindowManager.suggestParentWindow(mockProject2) } returns null
+        
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        method.isAccessible = true
+        
+        val result = method.invoke(handler) as Project?
+        
+        assertNotNull(result)
+        assertEquals("FirstProject", result?.name)
     }
 }

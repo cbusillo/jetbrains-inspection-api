@@ -108,7 +108,7 @@ class InspectionHandlerIntegrationTest {
         
         val content = response.content().toString(Charsets.UTF_8)
         assertTrue(content.contains("error"))
-        assertTrue(content.contains("Test error"))
+        assertTrue(content.contains("Internal server error"))
     }
     
     @Test
