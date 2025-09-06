@@ -17,7 +17,6 @@ import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
-import com.intellij.util.concurrency.AppExecutorUtil
 import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.HttpMethod
