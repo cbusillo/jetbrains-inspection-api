@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.10.4'
+    version: '1.10.5'
   },
   {
     capabilities: {
@@ -60,6 +60,7 @@ server.tool(
   "inspection_get_problems",
   "Get comprehensive inspection problems using JetBrains inspection framework. IMPORTANT: Before calling this, ensure inspection_get_status shows 'is_scanning: false' and 'has_inspection_results: true'. If inspection is still running, wait and check status again.",
   {
+    project: z.string().optional().describe("Name of the project to inspect (e.g., 'odoo-ai', 'MyProject'). If not specified, inspects the currently focused project"),
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path"),
     severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'"),
     problem_type: z.string().optional().describe("Filter by inspection type (e.g., 'PyUnresolvedReferencesInspection', 'SpellCheck', 'Unused') - matches against inspection type or category"),
@@ -67,9 +68,10 @@ server.tool(
     limit: z.number().optional().default(100).describe("Maximum number of problems to return (default: 100)"),
     offset: z.number().optional().default(0).describe("Number of problems to skip for pagination (default: 0)")
   },
-  async ({ scope, severity, problem_type, file_pattern, limit, offset }) => {
+  async ({ project, scope, severity, problem_type, file_pattern, limit, offset }) => {
     try {
       const params = new URLSearchParams();
+      if (project) params.append("project", project);
       if (scope !== "whole_project") params.append("scope", scope);
       if (severity !== "warning") params.append("severity", severity);
       if (problem_type) params.append("problem_type", problem_type);
@@ -113,10 +115,14 @@ server.tool(
 server.tool(
   "inspection_trigger",
   "Trigger a full project inspection in the IDE. IMPORTANT: After triggering, you MUST use inspection_get_status to wait for completion before calling inspection_get_problems. The inspection process typically takes 10-30 seconds depending on project size.",
-  {},
-  async () => {
+  {
+    project: z.string().optional().describe("Name of the project to trigger inspection for (e.g., 'odoo-ai', 'MyProject'). If not specified, triggers for the currently focused project")
+  },
+  async ({ project }) => {
     try {
-      const url = `${BASE_URL}/trigger`;
+      const params = new URLSearchParams();
+      if (project) params.append("project", project);
+      const url = `${BASE_URL}/trigger${params.toString() ? '?' + params.toString() : ''}`;
       const result = await httpGet(url);
       
       return {
@@ -140,10 +146,14 @@ server.tool(
 server.tool(
   "inspection_get_status", 
   "Get the current inspection status and check if results are available. Check 'is_scanning' field - if true, inspection is still running and you should wait. Only call inspection_get_problems when 'is_scanning' is false and 'has_inspection_results' is true.",
-  {},
-  async () => {
+  {
+    project: z.string().optional().describe("Name of the project to check status for (e.g., 'odoo-ai', 'MyProject'). If not specified, checks status for the currently focused project")
+  },
+  async ({ project }) => {
     try {
-      const url = `${BASE_URL}/status`;
+      const params = new URLSearchParams();
+      if (project) params.append("project", project);
+      const url = `${BASE_URL}/status${params.toString() ? '?' + params.toString() : ''}`;
       /** @type {{is_scanning: boolean, has_inspection_results: boolean, clean_inspection?: boolean}} */
       const result = await httpGet(url);
       

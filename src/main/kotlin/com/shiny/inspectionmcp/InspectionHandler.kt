@@ -36,6 +36,7 @@ class InspectionHandler : HttpRequestHandler() {
             val path = urlDecoder.path()
             when (path) {
                 "/api/inspection/problems" -> {
+                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
                     val problemType = urlDecoder.parameters()["problem_type"]?.firstOrNull()
@@ -43,21 +44,23 @@ class InspectionHandler : HttpRequestHandler() {
                     val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
                     val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(severity, scope, problemType, filePattern, limit, offset)
+                        getInspectionProblems(projectName, severity, scope, problemType, filePattern, limit, offset)
                     }
                     sendJsonResponse(context, result)
                 }
                 "/api/inspection/trigger" -> {
+                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
                     lastInspectionTriggerTime = System.currentTimeMillis()
                     inspectionInProgress = true
                     com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                        triggerInspectionAsync()
+                        triggerInspectionAsync(projectName)
                     }
                     sendJsonResponse(context, """{"status": "triggered", "message": "Inspection triggered. Wait 10-15 seconds then check status"}""")
                 }
                 "/api/inspection/status" -> {
+                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
                     val result = ReadAction.compute<String, Exception> {
-                        val project = getCurrentProject()
+                        val project = getCurrentProject(projectName)
                         if (project != null) {
                             getInspectionStatus(project)
                         } else {
@@ -78,6 +81,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
     
     private fun getInspectionProblems(
+        projectName: String? = null,
         severity: String = "all", 
         scope: String = "whole_project",
         problemType: String? = null,
@@ -85,7 +89,7 @@ class InspectionHandler : HttpRequestHandler() {
         limit: Int = 100,
         offset: Int = 0
     ): String {
-        val project = getCurrentProject()
+        val project = getCurrentProject(projectName)
             ?: return """{"error": "No project found"}"""
         
         return try {
@@ -244,8 +248,8 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun triggerInspectionAsync() {
-        val project = getCurrentProject() ?: return
+    private fun triggerInspectionAsync(projectName: String? = null) {
+        val project = getCurrentProject(projectName) ?: return
         
         try {
             inspectionInProgress = true
@@ -294,8 +298,15 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun getCurrentProject(): Project? {
+    private fun getCurrentProject(projectName: String? = null): Project? {
         return try {
+            if (projectName != null) {
+                val projectByName = getProjectByName(projectName)
+                if (projectByName != null) {
+                    return projectByName
+                }
+            }
+            
             val lastFocusedFrame = IdeFocusManager.getGlobalInstance().lastFocusedFrame
             val projectFromFrame = lastFocusedFrame?.project
             if (projectFromFrame != null && !projectFromFrame.isDefault && !projectFromFrame.isDisposed && projectFromFrame.isInitialized) {
@@ -335,6 +346,18 @@ class InspectionHandler : HttpRequestHandler() {
             validProjects.firstOrNull()
         } catch (_: Exception) {
             null
+        }
+    }
+    
+    private fun getProjectByName(projectName: String): Project? {
+        val projectManager = ProjectManager.getInstance()
+        val openProjects = projectManager.openProjects
+        
+        return openProjects.firstOrNull { project ->
+            !project.isDefault && 
+            !project.isDisposed && 
+            project.isInitialized && 
+            project.name == projectName
         }
     }
     

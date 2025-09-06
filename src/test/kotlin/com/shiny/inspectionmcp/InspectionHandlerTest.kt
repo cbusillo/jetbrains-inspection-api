@@ -140,10 +140,10 @@ class InspectionHandlerTest {
     fun `test getCurrentProject returns valid project`() {
         val handler = InspectionHandler()
         
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
         
-        val result = method.invoke(handler) as Project?
+        val result = method.invoke(handler, null) as Project?
         
         assertNotNull(result)
         assertEquals("TestProject", result?.name)
@@ -163,10 +163,10 @@ class InspectionHandlerTest {
         every { DataManager.getInstance() } returns mockDataManager
         
         val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
         
-        val result = method.invoke(handler) as Project?
+        val result = method.invoke(handler, null) as Project?
         
         assertNull(result)
     }
@@ -328,6 +328,7 @@ class InspectionHandlerTest {
         // Use reflection to verify the method signature includes all filtering parameters
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems", 
+            String::class.java,  // projectName (nullable)
             String::class.java,  // severity
             String::class.java,  // scope
             String::class.java,  // problemType (nullable)
@@ -338,7 +339,7 @@ class InspectionHandlerTest {
         
         assertNotNull(method)
         assertEquals("getInspectionProblems", method.name)
-        assertEquals(6, method.parameterCount)
+        assertEquals(7, method.parameterCount)
     }
     
     @Test
@@ -383,10 +384,10 @@ class InspectionHandlerTest {
         every { mockWindowManager.suggestParentWindow(mockProject3) } returns mockWindow3
         
         val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
         
-        val result = method.invoke(handler) as Project?
+        val result = method.invoke(handler, null) as Project?
         
         assertNotNull(result)
         assertEquals("ActiveProject", result?.name)
@@ -428,10 +429,10 @@ class InspectionHandlerTest {
         every { mockWindowManager.suggestParentWindow(mockProject2) } returns mockWindow2
         
         val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
         
-        val result = method.invoke(handler) as Project?
+        val result = method.invoke(handler, null) as Project?
         
         assertNotNull(result)
         assertEquals("FirstProject", result?.name)
@@ -467,12 +468,71 @@ class InspectionHandlerTest {
         every { mockWindowManager.suggestParentWindow(mockProject2) } returns null
         
         val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject")
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
         
-        val result = method.invoke(handler) as Project?
+        val result = method.invoke(handler, null) as Project?
         
         assertNotNull(result)
         assertEquals("FirstProject", result?.name)
+    }
+    
+    @Test
+    fun `test getCurrentProject with explicit project name`() {
+        val mockProject1 = mockk<Project>()
+        val mockProject2 = mockk<Project>()
+        
+        every { mockProject1.isDefault } returns false
+        every { mockProject1.isDisposed } returns false
+        every { mockProject1.isInitialized } returns true
+        every { mockProject1.name } returns "ProjectOne"
+        
+        every { mockProject2.isDefault } returns false
+        every { mockProject2.isDisposed } returns false
+        every { mockProject2.isInitialized } returns true
+        every { mockProject2.name } returns "ProjectTwo"
+        
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
+        
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
+        method.isAccessible = true
+        
+        val result1 = method.invoke(handler, "ProjectTwo") as Project?
+        assertNotNull(result1)
+        assertEquals("ProjectTwo", result1?.name)
+        
+        val result2 = method.invoke(handler, "ProjectOne") as Project?
+        assertNotNull(result2)
+        assertEquals("ProjectOne", result2?.name)
+        
+        val result3 = method.invoke(handler, "NonExistent") as Project?
+        assertNotNull(result3)
+    }
+    
+    @Test
+    fun `test getProjectByName returns correct project`() {
+        val mockProject1 = mockk<Project>()
+        val mockProject2 = mockk<Project>()
+        
+        every { mockProject1.isDefault } returns false
+        every { mockProject1.isDisposed } returns false
+        every { mockProject1.isInitialized } returns true
+        every { mockProject1.name } returns "TargetProject"
+        
+        every { mockProject2.isDefault } returns false
+        every { mockProject2.isDisposed } returns false
+        every { mockProject2.isInitialized } returns true
+        every { mockProject2.name } returns "OtherProject"
+        
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject2, mockProject1)
+        
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getProjectByName", String::class.java)
+        method.isAccessible = true
+        
+        val result = method.invoke(handler, "TargetProject") as Project?
+        assertNotNull(result)
+        assertEquals("TargetProject", result?.name)
     }
 }
