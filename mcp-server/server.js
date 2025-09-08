@@ -62,7 +62,7 @@ server.tool(
   {
     project: z.string().optional().describe("Name of the project to inspect (e.g., 'odoo-ai', 'MyProject'). If not specified, inspects the currently focused project"),
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path"),
-    severity: z.string().optional().default("warning").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'"),
+    severity: z.string().optional().default("all").describe("Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'"),
     problem_type: z.string().optional().describe("Filter by inspection type (e.g., 'PyUnresolvedReferencesInspection', 'SpellCheck', 'Unused') - matches against inspection type or category"),
     file_pattern: z.string().optional().describe("Filter by file path pattern - can be a simple string match or regex (e.g., '*.py', 'src/.*\\.js$', 'test')"),
     limit: z.number().optional().default(100).describe("Maximum number of problems to return (default: 100)"),
@@ -72,8 +72,9 @@ server.tool(
     try {
       const params = new URLSearchParams();
       if (project) params.append("project", project);
-      if (scope !== "whole_project") params.append("scope", scope);
-      if (severity !== "warning") params.append("severity", severity);
+      // Always include scope and severity explicitly for clarity and consistency
+      params.append("scope", scope || "whole_project");
+      params.append("severity", severity || "all");
       if (problem_type) params.append("problem_type", problem_type);
       if (file_pattern) params.append("file_pattern", file_pattern);
       if (limit !== 100) params.append("limit", limit.toString());

@@ -16,7 +16,9 @@
             <li>Claude Code MCP integration included</li>
         </ul>
         <br/>
-        Endpoints available at http://localhost:63340/api/inspection/*
+        Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
+        <br/>
+        Tip: Check your IDE's built-in server port under Settings → Advanced Settings → Built-in server.
     ]]></description>
     
     <change-notes><![CDATA[

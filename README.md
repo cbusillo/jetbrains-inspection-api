@@ -84,6 +84,12 @@ inspection_get_problems(severity="error")
 
 # Get problems for currently open files only
 inspection_get_problems(scope="current_file")
+
+# Specify which project to inspect (v1.10.5+)
+inspection_get_problems(project="MyProject")
+
+# Combine project and severity filtering
+inspection_get_problems(project="odoo-ai", severity="error")
 ```
 
 ### Direct HTTP API
@@ -102,6 +108,12 @@ curl "http://localhost:63340/api/inspection/problems?scope=current_file"
 
 # Get only error-level problems
 curl "http://localhost:63340/api/inspection/problems?severity=error"
+
+# Specify which project to inspect (v1.10.5+)
+curl "http://localhost:63340/api/inspection/problems?project=MyProject"
+
+# Trigger inspection for specific project
+curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
 ```
 
 Replace `63340` with your IDE's configured port.

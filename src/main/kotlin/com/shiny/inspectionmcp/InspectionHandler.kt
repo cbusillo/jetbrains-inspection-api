@@ -111,17 +111,34 @@ class InspectionHandler : HttpRequestHandler() {
                 val scopeFilteredProblems = if (scope == "whole_project") {
                     severityFilteredProblems
                 } else {
-                    severityFilteredProblems.filter { problem ->
+                    val filtered = severityFilteredProblems.filter { problem ->
                         val filePath = problem["file"] as? String ?: ""
                         when (scope) {
+                            // Limit to the currently selected editor file when available
                             "current_file" -> {
-                                true
+                                val selected = try {
+                                    com.intellij.openapi.fileEditor.FileEditorManager
+                                        .getInstance(project)
+                                        .selectedFiles
+                                        .firstOrNull()
+                                        ?.path
+                                } catch (_: Exception) { null }
+
+                                if (selected.isNullOrBlank()) {
+                                    // Fallback: no active file; do not match anything to avoid
+                                    // returning whole-project results under a current_file scope
+                                    false
+                                } else {
+                                    // Compare absolute paths; also allow endsWith as a light fallback
+                                    filePath == selected || filePath.endsWith(selected)
+                                }
                             }
                             else -> {
                                 filePath.contains(scope, ignoreCase = true)
                             }
                         }
                     }
+                    filtered
                 }
                 
                 val problemTypeFilteredProblems = if (problemType != null) {
