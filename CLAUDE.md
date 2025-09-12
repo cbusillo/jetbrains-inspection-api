@@ -33,7 +33,7 @@ The plugin uses JetBrains 2025.x compatible APIs:
 
 - **Inspection Extraction**: Enhanced tree extraction from `InspectionResultsView` and `InspectionTree`
 - **Severity Detection**: Extracts severity from ProblemDescriptionNode's myLevel field, with special handling for GrazieInspection (grammar) and SpellCheckingInspection/AiaStyle (typo)
-- **Inspection Triggering**: `GlobalInspectionContext` and `AnalysisScope` for running inspections
+- **Inspection Triggering**: `GlobalInspectionContext` and `AnalysisScope` for running inspections (supports `whole_project`, `current_file`, and `directory` scopes on `/api/inspection/trigger`)
 - **Enhanced Status Tracking**: Volatile timing flags track inspection progress with timeout detection
 - **Threading**: `ReadAction.compute()` and `invokeLater` for safe background execution
 - **Window Management**: `ToolWindowManager` for accessing inspection results window
@@ -41,7 +41,7 @@ The plugin uses JetBrains 2025.x compatible APIs:
 ### Key Features
 
 - **Complete Inspection Coverage**: All inspection types (JavaScript, Python, SpellCheck, etc.)
-- **Filtering**: By scope (project/file) and severity (error, warning, info, grammar, typo)
+- **Filtering**: By scope (project/file/path) and severity (error, warning, info, grammar, typo)
 - **Inspection Control**: Trigger inspections and monitor real-time progress
 - **Universal Support**: Works with all IDE-supported file types
 
@@ -190,7 +190,7 @@ For AI assistants using this plugin, add the following to your CLAUDE.md:
 ### Inspection Usage Guidelines
 
 When using the JetBrains inspection tools:
-1. Trigger inspection with `inspection_trigger`
+1. Trigger inspection with `inspection_trigger` (optionally `scope=current_file` or `scope=directory&dir=...`)
 2. Check status with `inspection_get_status` until complete
 3. **Key**: The status response will clearly tell you:
    - `clean_inspection: true` → Inspection passed with no problems (stop here!)

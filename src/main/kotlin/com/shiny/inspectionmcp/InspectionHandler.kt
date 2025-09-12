@@ -50,12 +50,23 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 "/api/inspection/trigger" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val scope = urlDecoder.parameters()["scope"]?.firstOrNull()
+                    // Accept either `dir`, `directory`, or `path` for directory scoping
+                    val directory = urlDecoder.parameters()["dir"]?.firstOrNull()
+                        ?: urlDecoder.parameters()["directory"]?.firstOrNull()
+                        ?: urlDecoder.parameters()["path"]?.firstOrNull()
                     lastInspectionTriggerTime = System.currentTimeMillis()
                     inspectionInProgress = true
                     com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                        triggerInspectionAsync(projectName)
+                        triggerInspectionAsync(projectName, scope, directory)
                     }
-                    sendJsonResponse(context, """{"status": "triggered", "message": "Inspection triggered. Wait 10-15 seconds then check status"}""")
+                    val details = mutableMapOf<String, Any>(
+                        "status" to "triggered",
+                        "message" to "Inspection triggered. Wait 10-15 seconds then check status"
+                    )
+                    if (!scope.isNullOrBlank()) details["scope"] = scope
+                    if (!directory.isNullOrBlank()) details["directory"] = directory
+                    sendJsonResponse(context, formatJsonManually(details))
                 }
                 "/api/inspection/status" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
@@ -265,7 +276,11 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun triggerInspectionAsync(projectName: String? = null) {
+    private fun triggerInspectionAsync(
+        projectName: String? = null,
+        scopeParam: String? = null,
+        directoryParam: String? = null,
+    ) {
         val project = getCurrentProject(projectName) ?: return
         
         try {
@@ -286,8 +301,9 @@ class InspectionHandler : HttpRequestHandler() {
             }
             
             FileDocumentManager.getInstance().saveAllDocuments()
-            
-            val scope = AnalysisScope(project)
+
+            // Build an AnalysisScope based on request parameters
+            val scope: AnalysisScope = buildAnalysisScope(project, scopeParam, directoryParam)
             
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
@@ -312,6 +328,56 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionInProgress = false
         } catch (_: Exception) {
             inspectionInProgress = false
+        }
+    }
+
+    private fun buildAnalysisScope(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?
+    ): AnalysisScope {
+        return try {
+            val scopeLower = scopeParam?.lowercase()?.trim()
+
+            // 1) Explicit current file
+            if (scopeLower == "current_file") {
+                val selected = try {
+                    com.intellij.openapi.fileEditor.FileEditorManager
+                        .getInstance(project)
+                        .selectedFiles
+                        .firstOrNull()
+                } catch (_: Exception) { null }
+                if (selected != null) {
+                    val psiFile = com.intellij.psi.PsiManager.getInstance(project).findFile(selected)
+                    if (psiFile != null) return AnalysisScope(psiFile)
+                    return AnalysisScope(project, listOf(selected).toSet())
+                }
+            }
+
+            // 2) Directory scoping: `scope=directory` with `dir=...` or any non-empty directoryParam
+            val dirPath = directoryParam?.trim()
+            if ((scopeLower == "directory" || !dirPath.isNullOrBlank())) {
+                val base = project.basePath
+                val absolute = when {
+                    dirPath.isNullOrBlank() -> null
+                    java.nio.file.Paths.get(dirPath).isAbsolute -> dirPath
+                    !base.isNullOrBlank() -> java.nio.file.Paths.get(base, dirPath).normalize().toString()
+                    else -> dirPath
+                }
+                if (!absolute.isNullOrBlank()) {
+                    val vfs = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(absolute)
+                    if (vfs != null && vfs.isDirectory) {
+                        val psiDir = com.intellij.psi.PsiManager.getInstance(project).findDirectory(vfs)
+                        if (psiDir != null) return AnalysisScope(psiDir)
+                        return AnalysisScope(project, setOf(vfs))
+                    }
+                }
+            }
+
+            // 3) Fallback to whole project
+            AnalysisScope(project)
+        } catch (_: Exception) {
+            AnalysisScope(project)
         }
     }
     

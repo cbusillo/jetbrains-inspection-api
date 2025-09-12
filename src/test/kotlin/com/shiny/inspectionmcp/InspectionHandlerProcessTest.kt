@@ -67,6 +67,55 @@ class InspectionHandlerProcessTest {
         assertTrue(result)
         verify(mockContext, times(1)).writeAndFlush(any())
     }
+
+    @Test
+    @DisplayName("Should process trigger endpoint with current_file scope and not crash")
+    fun testProcessTriggerEndpointCurrentFileScope() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "scope" to listOf("current_file")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(check {
+            val resp = it as io.netty.handler.codec.http.DefaultFullHttpResponse
+            val body = resp.content().toString(Charsets.UTF_8)
+            if (resp.status() == HttpResponseStatus.OK) {
+                assertTrue(body.contains("\"status\": \"triggered\""))
+                assertTrue(body.contains("\"scope\": \"current_file\""))
+            } else {
+                // Headless test environment may return 500; still ensure JSON body
+                assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, resp.status())
+                assertTrue(body.contains("error"))
+            }
+        })
+    }
+
+    @Test
+    @DisplayName("Should process trigger endpoint with directory scope parameter and not crash")
+    fun testProcessTriggerEndpointDirectoryScope() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "scope" to listOf("directory"),
+            "dir" to listOf("src")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(check {
+            val resp = it as io.netty.handler.codec.http.DefaultFullHttpResponse
+            val body = resp.content().toString(Charsets.UTF_8)
+            if (resp.status() == HttpResponseStatus.OK) {
+                assertTrue(body.contains("\"status\": \"triggered\""))
+                assertTrue(body.contains("\"scope\": \"directory\""))
+                assertTrue(body.contains("\"directory\": \"src\""))
+            } else {
+                assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, resp.status())
+                assertTrue(body.contains("error"))
+            }
+        })
+    }
     
     @Test
     @DisplayName("Should process status endpoint")

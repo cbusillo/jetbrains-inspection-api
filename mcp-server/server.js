@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.10.6'
+    version: '1.10.7'
   },
   {
     capabilities: {
@@ -115,14 +115,21 @@ server.tool(
 // Tool: Trigger inspection
 server.tool(
   "inspection_trigger",
-  "Trigger a full project inspection in the IDE. IMPORTANT: After triggering, you MUST use inspection_get_status to wait for completion before calling inspection_get_problems. The inspection process typically takes 10-30 seconds depending on project size.",
+  "Trigger an inspection in the IDE. Supports scoping to the whole project (default), the current editor file, or a specific directory. After triggering, poll inspection_get_status until complete before calling inspection_get_problems.",
   {
-    project: z.string().optional().describe("Name of the project to trigger inspection for (e.g., 'odoo-ai', 'MyProject'). If not specified, triggers for the currently focused project")
+    project: z.string().optional().describe("Name of the project to trigger inspection for (e.g., 'odoo-ai', 'MyProject'). If not specified, triggers for the currently focused project"),
+    scope: z.enum(["whole_project", "current_file", "directory"]).optional().describe("Inspection scope: whole_project (default), current_file, or directory"),
+    dir: z.string().optional().describe("Directory to inspect when scope=directory. Relative to project root or absolute path."),
+    directory: z.string().optional().describe("Alias for dir"),
+    path: z.string().optional().describe("Alias for dir")
   },
-  async ({ project }) => {
+  async ({ project, scope, dir, directory, path }) => {
     try {
       const params = new URLSearchParams();
       if (project) params.append("project", project);
+      if (scope) params.append("scope", scope);
+      const chosenDir = dir || directory || path;
+      if (chosenDir) params.append("dir", chosenDir);
       const url = `${BASE_URL}/trigger${params.toString() ? '?' + params.toString() : ''}`;
       const result = await httpGet(url);
       

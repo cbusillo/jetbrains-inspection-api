@@ -150,11 +150,36 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 ### Trigger Endpoint
 **URL**: `GET /api/inspection/trigger`
 
+**Parameters**:
+- `project` (optional): Project name to target when multiple are open
+- `scope` (optional):
+  - `whole_project` (default)
+  - `current_file` (runs inspection only on the currently selected editor file)
+  - `directory` (requires one of `dir`, `directory`, or `path` to specify the folder)
+- `dir` | `directory` | `path` (optional): Directory to inspect. Relative paths resolve from the project root; absolute paths are accepted.
+
+**Examples**:
+```bash
+# Whole project (default)
+curl "http://localhost:63340/api/inspection/trigger"
+
+# Current editor file only
+curl "http://localhost:63340/api/inspection/trigger?scope=current_file"
+
+# A specific directory (relative to project)
+curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=src"
+
+# A specific directory (absolute path)
+curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=/full/path/to/addons/hr_employee_name_extended"
+```
+
 **Response**:
 ```json
 {
   "status": "triggered",
-  "message": "Inspection triggered. Wait 10-15 seconds then call /api/inspection/problems"
+  "message": "Inspection triggered. Wait 10-15 seconds then call /api/inspection/problems",
+  "scope": "directory",
+  "directory": "src"
 }
 ```
 
@@ -233,7 +258,7 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 The included MCP (Model Context Protocol) server provides seamless integration with Claude Code:
 
 ### Tools Provided
-- **`inspection_trigger()`** - Triggers a full project inspection
+- **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?)`** - Gets inspection problems with filtering and pagination
 
@@ -263,6 +288,8 @@ Add this to your project's `CLAUDE.md`:
 **Usage**: Use MCP tools for inspection results:
 
 - `inspection_trigger()` - Trigger a full project inspection
+- `inspection_trigger(scope="current_file")` - Trigger for the active file only
+- `inspection_trigger(scope="directory", dir="src")` - Trigger for a specific directory
 - `inspection_get_status()` - Check if inspection is complete
 - `inspection_get_problems()` - Get all project problems (paginated)
 - `inspection_get_problems(scope="current_file")` - Get problems in open files only

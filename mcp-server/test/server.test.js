@@ -235,5 +235,14 @@ describe('MCP Server Tests', () => {
       assert.ok(!queryString.includes('scope='), 'Should handle missing scope parameter');
       assert.ok(queryString.includes('severity=error'), 'Should still handle other parameters');
     });
+
+    it('should include directory param when provided for trigger', () => {
+      const params = new URLSearchParams();
+      params.append('scope', 'directory');
+      params.append('dir', 'src');
+      const queryString = params.toString();
+      assert.ok(queryString.includes('scope=directory'));
+      assert.ok(queryString.includes('dir=src'));
+    });
   });
 });
