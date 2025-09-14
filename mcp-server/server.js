@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.10.7'
+    version: '1.10.8'
   },
   {
     capabilities: {
@@ -115,28 +115,44 @@ server.tool(
 // Tool: Trigger inspection
 server.tool(
   "inspection_trigger",
-  "Trigger an inspection in the IDE. Supports scoping to the whole project (default), the current editor file, or a specific directory. After triggering, poll inspection_get_status until complete before calling inspection_get_problems.",
+  "Trigger inspection. Scopes: whole_project, current_file, directory, changed_files, files.",
   {
-    project: z.string().optional().describe("Name of the project to trigger inspection for (e.g., 'odoo-ai', 'MyProject'). If not specified, triggers for the currently focused project"),
-    scope: z.enum(["whole_project", "current_file", "directory"]).optional().describe("Inspection scope: whole_project (default), current_file, or directory"),
-    dir: z.string().optional().describe("Directory to inspect when scope=directory. Relative to project root or absolute path."),
+    project: z.string().optional().describe("Project name (optional)"),
+    scope: z.enum(["whole_project", "current_file", "directory", "changed_files", "files"]).optional().describe("Analysis scope"),
+    // directory scope
+    dir: z.string().optional().describe("Directory when scope=directory"),
     directory: z.string().optional().describe("Alias for dir"),
-    path: z.string().optional().describe("Alias for dir")
+    path: z.string().optional().describe("Alias for dir"),
+    // files scope
+    files: z.array(z.string()).optional().describe("File paths when scope=files"),
+    // changed_files scope
+    include_unversioned: z.boolean().optional().describe("Include unversioned (default true)"),
+    changed_files_mode: z.enum(["all", "staged", "unstaged"]).optional().describe("Best-effort mode"),
+    max_files: z.number().int().positive().optional().describe("Limit files for speed"),
+    // profile
+    profile: z.string().optional().describe("Inspection profile name")
   },
-  async ({ project, scope, dir, directory, path }) => {
+  async ({ project, scope, dir, directory, path, files, include_unversioned, changed_files_mode, max_files, profile }) => {
     try {
       const params = new URLSearchParams();
       if (project) params.append("project", project);
       if (scope) params.append("scope", scope);
       const chosenDir = dir || directory || path;
       if (chosenDir) params.append("dir", chosenDir);
+      if (files && files.length) {
+        for (const f of files) params.append("file", f);
+      }
+      if (include_unversioned !== undefined) params.append("include_unversioned", include_unversioned ? "true" : "false");
+      if (changed_files_mode) params.append("changed_files_mode", changed_files_mode);
+      if (typeof max_files === 'number') params.append("max_files", String(max_files));
+      if (profile) params.append("profile", profile);
       const url = `${BASE_URL}/trigger${params.toString() ? '?' + params.toString() : ''}`;
       const result = await httpGet(url);
       
       return {
         content: [{
           type: "text",
-          text: JSON.stringify(result, null, 2) + "\n\n⚠️  IMPORTANT: Use inspection_get_status to check when inspection completes before getting problems!"
+          text: JSON.stringify(result, null, 2) + "\n\nUse inspection_get_status to wait before fetching problems."
         }]
       };
     } catch (error) {

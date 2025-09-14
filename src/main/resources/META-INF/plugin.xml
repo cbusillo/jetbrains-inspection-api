@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.10.7</version>
+    <version>1.10.8</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
     
     <description><![CDATA[
@@ -9,45 +9,39 @@
         <br/><br/>
         Features:
         <ul>
-            <li>Real-time HTTP API access to inspection results</li>
-            <li>Scope-based filtering (whole project or current file)</li>
-            <li>No manual triggering required - uses live inspection data</li>
-            <li>Works with all JetBrains IDEs (2025.x compatible)</li>
+            <li>HTTP API access to inspection results</li>
+            <li>Scope-based filtering (whole project, current file, directory)</li>
+            <li>Trigger inspections programmatically and poll status</li>
+            <li>Works with JetBrains IDEs (2025.x compatible)</li>
             <li>Claude Code MCP integration included</li>
         </ul>
         <br/>
         Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
         <br/>
-        Tip: Check your IDE's built-in server port under Settings → Advanced Settings → Built-in server.
+        Tip: Check your IDE's built-in server port under Settings → Built-in server.
     ]]></description>
     
     <change-notes><![CDATA[
-        <b>Version 1.2.0</b>
+        <b>Version 1.10.8</b>
         <ul>
-            <li>Real-time inspection - No manual triggering required</li>
-            <li>Scope filtering - Whole project or current file only</li>
-            <li>Removed trigger endpoint - Uses live highlighting API</li>
-            <li>JetBrains 2025.x compatibility - Latest IDE support</li>
-            <li>Cleaner codebase - Removed legacy code and comments</li>
-            <li>Updated MCP server with scope parameter support</li>
+            <li>New trigger scopes: <code>files</code> and <code>changed_files</code></li>
+            <li>New trigger params: <code>file</code>/<code>files</code>, <code>include_unversioned</code>, <code>changed_files_mode</code>, <code>max_files</code>, <code>profile</code></li>
+            <li>MCP tool updated with concise parameter docs</li>
+            <li>Docs cleanup and clarity improvements</li>
         </ul>
-        <b>Version 1.1.0</b>
+        <b>Earlier Versions</b>
         <ul>
-            <li>Updated for JetBrains 2025.x compatibility</li>
-            <li>Replaced internal APIs with public alternatives</li>
-            <li>Improved threading model compatibility</li>
-            <li>Updated to the latest Kotlin and Gradle plugin versions</li>
-        </ul>
-        <b>Version 1.0.0</b>
-        <ul>
-            <li>Initial release</li>
-            <li>HTTP API endpoints for inspection management</li>
-            <li>Smart status detection</li>
-            <li>Support for all JetBrains IDEs</li>
+            <li>Programmatic inspection triggering with status polling</li>
+            <li>Scope filtering (whole project, current file, directory)</li>
+            <li>Enhanced results extraction and severity mapping (incl. grammar/typo)</li>
+            <li>MCP tools for Claude Code</li>
+            <li>JetBrains 2025.x compatibility updates</li>
+            <li>Initial HTTP API and status detection</li>
         </ul>
     ]]></change-notes>
     
     <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.vcs</depends>
     
     <extensions defaultExtensionNs="com.intellij">
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>

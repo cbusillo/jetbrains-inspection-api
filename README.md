@@ -154,9 +154,17 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 - `project` (optional): Project name to target when multiple are open
 - `scope` (optional):
   - `whole_project` (default)
-  - `current_file` (runs inspection only on the currently selected editor file)
-  - `directory` (requires one of `dir`, `directory`, or `path` to specify the folder)
+  - `current_file` (inspect the currently selected editor file)
+  - `directory` (requires `dir`, `directory`, or `path`)
+  - `files` (inspect only the provided file list)
+  - `changed_files` (inspect files changed in VCS; best‑effort)
 - `dir` | `directory` | `path` (optional): Directory to inspect. Relative paths resolve from the project root; absolute paths are accepted.
+- `file` (repeatable, optional): File path when `scope=files`. Can be repeated multiple times.
+- `files` (optional): Comma or newline‑separated list of file paths when `scope=files`.
+- `include_unversioned` (optional): `true|false` when `scope=changed_files` (default `true`).
+- `changed_files_mode` (optional): `all|staged|unstaged` (best‑effort; falls back to `all`).
+- `max_files` (optional): Positive integer to cap files inspected for responsiveness.
+- `profile` (optional): Name of inspection profile to use; falls back to current profile if not found.
 
 **Examples**:
 ```bash
@@ -171,6 +179,16 @@ curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=src"
 
 # A specific directory (absolute path)
 curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=/full/path/to/addons/hr_employee_name_extended"
+
+# Only files you specify
+curl "http://localhost:63340/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
+curl "http://localhost:63340/api/inspection/trigger?scope=files&files=src/a.py,src/b.py"
+
+# Only changed files (fast inner loop)
+curl "http://localhost:63340/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=50"
+
+# Use a lighter inspection profile by name
+curl "http://localhost:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
 
 **Response**:
@@ -259,6 +277,7 @@ The included MCP (Model Context Protocol) server provides seamless integration w
 
 ### Tools Provided
 - **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
+  - Also supports `scope=files` with `file=...` (repeat) or `files=[...]`, and `scope=changed_files` with `include_unversioned` and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?)`** - Gets inspection problems with filtering and pagination
 
@@ -290,6 +309,8 @@ Add this to your project's `CLAUDE.md`:
 - `inspection_trigger()` - Trigger a full project inspection
 - `inspection_trigger(scope="current_file")` - Trigger for the active file only
 - `inspection_trigger(scope="directory", dir="src")` - Trigger for a specific directory
+- `inspection_trigger(scope="files", files=["src/a.py","src/b.py"])` - Trigger for specific files
+- `inspection_trigger(scope="changed_files", max_files=50)` - Trigger for changed files only
 - `inspection_get_status()` - Check if inspection is complete
 - `inspection_get_problems()` - Get all project problems (paginated)
 - `inspection_get_problems(scope="current_file")` - Get problems in open files only
@@ -353,12 +374,11 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
 ## Version History
 
-### v1.8.0 (Latest)
-- ✅ **Enhanced status tracking** - Real-time inspection progress monitoring with timing detection
-- ✅ **Complete test coverage** - 78 total tests (57 Kotlin + 21 MCP) with comprehensive error handling
-- ✅ **Grammar/typo detection** - Custom severity levels for grammar and spelling inspections
-- ✅ **Codebase cleanup** - Removed obsolete code, debug statements, and unused dependencies
-- ✅ **Production ready** - Clean architecture with proper error handling and documentation
+### v1.10.8 (Latest)
+- ✅ **New trigger scopes**: `files`, `changed_files` for fast inner loop
+- ✅ **New params**: `file`/`files`, `include_unversioned`, `changed_files_mode`, `max_files`, `profile`
+- ✅ **MCP updates**: Concise tool/param docs to reduce token usage
+- ✅ **Docs cleanup**: Clarified setup and usage across README/CLAUDE.md
 
 ### v1.7.5
 - ✅ **Complete inspection framework** - Full GlobalInspectionContext and AnalysisScope implementation

@@ -212,3 +212,16 @@ Example workflow for large projects:
 - Then paginate if needed: `inspection_get_problems(severity="error", limit=50, offset=0)`
 - Continue with warnings after fixing errors
 ```
+
+### Speeding Up In-Flow Fixes
+
+Use targeted scopes to keep latency low while coding:
+
+- Only changed files:
+  - `inspection_trigger(scope="changed_files", max_files=50)`
+- Only files you just edited:
+  - `inspection_trigger(scope="files", files=["src/a.py","src/b.py"])`
+- Use a lighter profile (if configured):
+  - `inspection_trigger(profile="LLM Fast Checks")`
+
+Then poll `inspection_get_status` and fetch results with `inspection_get_problems`.

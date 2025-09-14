@@ -69,6 +69,83 @@ class InspectionHandlerProcessTest {
     }
 
     @Test
+    @DisplayName("Trigger: scope=files echoes files_requested and scope")
+    fun testTriggerScopeFilesEcho() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "scope" to listOf("files"),
+            "file" to listOf("src/a.py", "tests/t_a.py")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(check {
+            val resp = it as DefaultFullHttpResponse
+            val body = resp.content().toString(Charsets.UTF_8)
+            if (resp.status() == HttpResponseStatus.OK) {
+                assertTrue(body.contains("\"status\": \"triggered\""))
+                assertTrue(body.contains("\"scope\": \"files\""))
+                assertTrue(body.contains("\"files_requested\": 2"))
+            } else {
+                assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, resp.status())
+                assertTrue(body.contains("error"))
+            }
+        })
+    }
+
+    @Test
+    @DisplayName("Trigger: scope=changed_files echoes options")
+    fun testTriggerScopeChangedFilesEcho() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "scope" to listOf("changed_files"),
+            "include_unversioned" to listOf("false"),
+            "changed_files_mode" to listOf("staged"),
+            "max_files" to listOf("10")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(check {
+            val resp = it as DefaultFullHttpResponse
+            val body = resp.content().toString(Charsets.UTF_8)
+            if (resp.status() == HttpResponseStatus.OK) {
+                assertTrue(body.contains("\"status\": \"triggered\""))
+                assertTrue(body.contains("\"scope\": \"changed_files\""))
+                assertTrue(body.contains("\"include_unversioned\": false"))
+                assertTrue(body.contains("\"changed_files_mode\": \"staged\""))
+                assertTrue(body.contains("\"max_files\": 10"))
+            } else {
+                assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, resp.status())
+                assertTrue(body.contains("error"))
+            }
+        })
+    }
+
+    @Test
+    @DisplayName("Trigger: profile name is echoed")
+    fun testTriggerProfileEcho() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "profile" to listOf("LLM Fast Checks")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(check {
+            val resp = it as DefaultFullHttpResponse
+            val body = resp.content().toString(Charsets.UTF_8)
+            if (resp.status() == HttpResponseStatus.OK) {
+                assertTrue(body.contains("\"status\": \"triggered\""))
+                assertTrue(body.contains("\"profile\": \"LLM Fast Checks\""))
+            } else {
+                assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, resp.status())
+                assertTrue(body.contains("error"))
+            }
+        })
+    }
+
+    @Test
     @DisplayName("Should process trigger endpoint with current_file scope and not crash")
     fun testProcessTriggerEndpointCurrentFileScope() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/trigger")

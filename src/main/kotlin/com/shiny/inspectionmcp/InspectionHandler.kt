@@ -55,10 +55,30 @@ class InspectionHandler : HttpRequestHandler() {
                     val directory = urlDecoder.parameters()["dir"]?.firstOrNull()
                         ?: urlDecoder.parameters()["directory"]?.firstOrNull()
                         ?: urlDecoder.parameters()["path"]?.firstOrNull()
+                    val filesList = mutableListOf<String>()
+                    val repeatedFiles = urlDecoder.parameters()["file"] ?: emptyList()
+                    if (repeatedFiles.isNotEmpty()) filesList.addAll(repeatedFiles)
+                    val filesParam = urlDecoder.parameters()["files"]?.firstOrNull()
+                    if (!filesParam.isNullOrBlank()) {
+                        filesList.addAll(filesParam.split('\n', ',', ';').map { it.trim() }.filter { it.isNotEmpty() })
+                    }
+                    val includeUnversioned = urlDecoder.parameters()["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
+                    val changedFilesMode = urlDecoder.parameters()["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
+                    val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
+                    val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
                     lastInspectionTriggerTime = System.currentTimeMillis()
                     inspectionInProgress = true
                     com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
-                        triggerInspectionAsync(projectName, scope, directory)
+                        triggerInspectionAsync(
+                            projectName = projectName,
+                            scopeParam = scope,
+                            directoryParam = directory,
+                            files = if (filesList.isEmpty()) null else filesList,
+                            includeUnversioned = includeUnversioned,
+                            changedFilesMode = changedFilesMode,
+                            maxFiles = maxFiles,
+                            profileName = profile
+                        )
                     }
                     val details = mutableMapOf<String, Any>(
                         "status" to "triggered",
@@ -66,6 +86,11 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                     if (!scope.isNullOrBlank()) details["scope"] = scope
                     if (!directory.isNullOrBlank()) details["directory"] = directory
+                    if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
+                    details["include_unversioned"] = includeUnversioned
+                    if (!changedFilesMode.isNullOrBlank()) details["changed_files_mode"] = changedFilesMode
+                    if (maxFiles != null) details["max_files"] = maxFiles
+                    if (!profile.isNullOrBlank()) details["profile"] = profile
                     sendJsonResponse(context, formatJsonManually(details))
                 }
                 "/api/inspection/status" -> {
@@ -280,6 +305,11 @@ class InspectionHandler : HttpRequestHandler() {
         projectName: String? = null,
         scopeParam: String? = null,
         directoryParam: String? = null,
+        files: List<String>? = null,
+        includeUnversioned: Boolean = true,
+        changedFilesMode: String? = null,
+        maxFiles: Int? = null,
+        profileName: String? = null,
     ) {
         val project = getCurrentProject(projectName) ?: return
         
@@ -302,13 +332,22 @@ class InspectionHandler : HttpRequestHandler() {
             
             FileDocumentManager.getInstance().saveAllDocuments()
 
-            // Build an AnalysisScope based on request parameters
-            val scope: AnalysisScope = buildAnalysisScope(project, scopeParam, directoryParam)
+            val scope: AnalysisScope = buildAnalysisScope(
+                project = project,
+                scopeParam = scopeParam,
+                directoryParam = directoryParam,
+                files = files,
+                includeUnversioned = includeUnversioned,
+                changedFilesMode = changedFilesMode,
+                maxFiles = maxFiles
+            )
             
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
-            val profile = profileManager.currentProfile
+            val profile = if (!profileName.isNullOrBlank()) {
+                profileManager.getProfile(profileName) ?: profileManager.currentProfile
+            } else profileManager.currentProfile
             
             @Suppress("UnstableApiUsage", "USELESS_CAST")
             val globalContext = inspectionManager.createNewGlobalContext() as com.intellij.codeInspection.ex.GlobalInspectionContextImpl
@@ -334,10 +373,45 @@ class InspectionHandler : HttpRequestHandler() {
     private fun buildAnalysisScope(
         project: Project,
         scopeParam: String?,
-        directoryParam: String?
+        directoryParam: String?,
+        files: List<String>?,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?
     ): AnalysisScope {
         return try {
             val scopeLower = scopeParam?.lowercase()?.trim()
+
+            if (scopeLower == "files" && !files.isNullOrEmpty()) {
+                val base = project.basePath
+                val resolved = files.mapNotNull { p ->
+                    val absolute = try {
+                        val path = java.nio.file.Paths.get(p)
+                        if (path.isAbsolute) p else if (!base.isNullOrBlank()) java.nio.file.Paths.get(base, p).normalize().toString() else p
+                    } catch (_: Exception) { p }
+                    com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(absolute)
+                }.toSet()
+                return if (resolved.isEmpty()) AnalysisScope(project, emptySet()) else AnalysisScope(project, resolved)
+            }
+
+            if (scopeLower == "changed_files") {
+                val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
+                val changeFiles = clm.allChanges.mapNotNull { ch ->
+                    ch.virtualFile ?: ch.afterRevision?.file?.virtualFile ?: ch.beforeRevision?.file?.virtualFile
+                }.toMutableList()
+                if (includeUnversioned) {
+                    try {
+                        val method = clm.javaClass.getMethod("getUnversionedFiles")
+                        @Suppress("UNCHECKED_CAST")
+                        val unversioned = method.invoke(clm) as? Collection<com.intellij.openapi.vfs.VirtualFile>
+                        if (unversioned != null) changeFiles.addAll(unversioned)
+                    } catch (_: Exception) {
+                    }
+                }
+                val unique = changeFiles.distinct()
+                val limited = if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
+                return if (limited.isEmpty()) AnalysisScope(project, emptySet()) else AnalysisScope(project, limited.toSet())
+            }
 
             // 1) Explicit current file
             if (scopeLower == "current_file") {
