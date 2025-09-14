@@ -254,47 +254,50 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             val problemsWindow = toolWindowManager.getToolWindow("Problems View")
-            
+            val inspectionResultsWindow = toolWindowManager.getToolWindow("Inspection Results")
+
             val status = mutableMapOf<String, Any>()
             status["project_name"] = project.name
-            
+
             val currentTime = System.currentTimeMillis()
             val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
-            
+
             val dumbService = com.intellij.openapi.project.DumbService.getInstance(project)
             val isIndexing = dumbService.isDumb
-            
-            var hasInspectionResults = false
-            if (problemsWindow != null) {
-                for (i in 0 until problemsWindow.contentManager.contentCount) {
-                    val content = problemsWindow.contentManager.getContent(i)
-                    if (content != null && content.component.javaClass.name.contains("InspectionResultsView")) {
-                        hasInspectionResults = true
-                        break
-                    }
-                }
-                status["problems_window_visible"] = problemsWindow.isVisible
-            } else {
-                status["problems_window_visible"] = false
+
+            // Use the same extractor as the /problems endpoint so status matches real availability
+            val extractor = EnhancedTreeExtractor()
+            val problemsAvailable = try {
+                extractor.extractAllProblems(project).isNotEmpty()
+            } catch (_: Exception) { false }
+
+            // Window visibility hints (best-effort)
+            val problemsVisible = problemsWindow?.isVisible ?: false
+            val inspectionVisible = inspectionResultsWindow?.isVisible ?: false
+            status["problems_window_visible"] = problemsVisible || inspectionVisible
+            if (inspectionResultsWindow != null && inspectionResultsWindow.isVisible) {
+                status["active_tool_window"] = "Inspection Results"
+            } else if (problemsWindow != null && problemsWindow.isVisible) {
+                status["active_tool_window"] = "Problems View"
             }
-            
+
             val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000
-            
-            if (hasInspectionResults && inspectionInProgress && timeSinceLastTrigger > 5000) {
+
+            if (problemsAvailable && inspectionInProgress && timeSinceLastTrigger > 5000) {
                 inspectionInProgress = false
             }
-            
+
             status["is_scanning"] = isIndexing || isLikelyStillRunning
-            status["has_inspection_results"] = hasInspectionResults
+            status["has_inspection_results"] = problemsAvailable
             status["inspection_in_progress"] = inspectionInProgress
             status["time_since_last_trigger_ms"] = timeSinceLastTrigger
             status["indexing"] = isIndexing
-            
-            // Add clear status for clean inspection
+
+            // Clear indicator for a clean inspection (recent, finished, and no problems)
             val recentlyCompleted = timeSinceLastTrigger < 60000
-            val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !hasInspectionResults
+            val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !problemsAvailable
             status["clean_inspection"] = cleanInspection
-            
+
             formatJsonManually(status)
         } catch (_: Exception) {
             """{"error": "Failed to get status"}"""
@@ -317,15 +320,17 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionInProgress = true
             
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            val problemsWindow = toolWindowManager.getToolWindow("Problems View")
-            
-            if (problemsWindow != null) {
-                for (i in 0 until problemsWindow.contentManager.contentCount) {
-                    val content = problemsWindow.contentManager.getContent(i)
-                    if (content != null && content.component.javaClass.name.contains("InspectionResultsView")) {
-                        problemsWindow.contentManager.removeContent(content, true)
-                        Thread.sleep(500)
-                        break
+            // Clear prior results from both known locations to avoid stale reads
+            listOf("Problems View", "Inspection Results").forEach { name ->
+                val tw = toolWindowManager.getToolWindow(name)
+                if (tw != null) {
+                    for (i in 0 until tw.contentManager.contentCount) {
+                        val content = tw.contentManager.getContent(i)
+                        if (content != null && content.component.javaClass.name.contains("InspectionResultsView")) {
+                            tw.contentManager.removeContent(content, true)
+                            try { Thread.sleep(200) } catch (_: Exception) {}
+                            break
+                        }
                     }
                 }
             }
@@ -391,14 +396,42 @@ class InspectionHandler : HttpRequestHandler() {
                     } catch (_: Exception) { p }
                     com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(absolute)
                 }.toSet()
-                return if (resolved.isEmpty()) AnalysisScope(project, emptySet()) else AnalysisScope(project, resolved)
+                return if (resolved.isEmpty()) AnalysisScope(project) else AnalysisScope(project, resolved)
             }
 
             if (scopeLower == "changed_files") {
                 val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
-                val changeFiles = clm.allChanges.mapNotNull { ch ->
+                val baseChanges = clm.allChanges
+
+                val changeFiles = baseChanges.mapNotNull { ch ->
                     ch.virtualFile ?: ch.afterRevision?.file?.virtualFile ?: ch.beforeRevision?.file?.virtualFile
                 }.toMutableList()
+
+                // Best-effort Git staging filter when requested
+                val mode = changedFilesMode?.lowercase()?.trim()
+                if (!mode.isNullOrBlank() && mode != "all") {
+                    val gitSets = computeGitStagingSets(project)
+                    if (gitSets != null) {
+                        val (stagedSet, unstagedSet) = gitSets
+                        val basePath = project.basePath
+                        if (!basePath.isNullOrBlank()) {
+                            fun rel(p: String): String {
+                                val rel = try {
+                                    java.nio.file.Paths.get(basePath).relativize(java.nio.file.Paths.get(p)).toString()
+                                } catch (_: Exception) { p }
+                                return rel.replace('\\', '/')
+                            }
+                            changeFiles.retainAll { vf ->
+                                val rp = rel(vf.path)
+                                when (mode) {
+                                    "staged" -> stagedSet.contains(rp)
+                                    "unstaged" -> unstagedSet.contains(rp)
+                                    else -> true
+                                }
+                            }
+                        }
+                    }
+                }
                 if (includeUnversioned) {
                     try {
                         val method = clm.javaClass.getMethod("getUnversionedFiles")
@@ -410,22 +443,18 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 val unique = changeFiles.distinct()
                 val limited = if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
-                return if (limited.isEmpty()) AnalysisScope(project, emptySet()) else AnalysisScope(project, limited.toSet())
+                return if (limited.isEmpty()) AnalysisScope(project) else AnalysisScope(project, limited.toSet())
             }
 
             // 1) Explicit current file
             if (scopeLower == "current_file") {
-                val selected = try {
-                    com.intellij.openapi.fileEditor.FileEditorManager
-                        .getInstance(project)
-                        .selectedFiles
-                        .firstOrNull()
-                } catch (_: Exception) { null }
-                if (selected != null) {
-                    val psiFile = com.intellij.psi.PsiManager.getInstance(project).findFile(selected)
+                val vf = resolveActiveEditorFile(project)
+                if (vf != null) {
+                    val psiFile = com.intellij.psi.PsiManager.getInstance(project).findFile(vf)
                     if (psiFile != null) return AnalysisScope(psiFile)
-                    return AnalysisScope(project, listOf(selected).toSet())
+                    return AnalysisScope(project, setOf(vf))
                 }
+                // Fallback: no valid active editor file (e.g., TabPreviewDiffVirtualFile) → whole project
             }
 
             // 2) Directory scoping: `scope=directory` with `dir=...` or any non-empty directoryParam
@@ -446,12 +475,70 @@ class InspectionHandler : HttpRequestHandler() {
                         return AnalysisScope(project, setOf(vfs))
                     }
                 }
+                return AnalysisScope(project)
             }
 
-            // 3) Fallback to whole project
             AnalysisScope(project)
         } catch (_: Exception) {
             AnalysisScope(project)
+        }
+    }
+
+    private fun computeGitStagingSets(project: Project): Pair<Set<String>, Set<String>>? {
+        val basePath = project.basePath ?: return null
+        val gitDir = java.nio.file.Paths.get(basePath, ".git").toFile()
+        if (!gitDir.exists()) return null
+        return try {
+            val pb = ProcessBuilder("git", "status", "--porcelain", "-z")
+            pb.directory(java.io.File(basePath))
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            val bytes = proc.inputStream.readAllBytes()
+            proc.waitFor(2, TimeUnit.SECONDS)
+            val out = bytes.toString(Charsets.UTF_8)
+            val staged = mutableSetOf<String>()
+            val unstaged = mutableSetOf<String>()
+            var i = 0
+            while (i < out.length) {
+                val zero = out.indexOf('\u0000', i)
+                if (zero == -1) break
+                val entry = out.substring(i, zero)
+                if (entry.length >= 3) {
+                    val x = entry[0]
+                    val y = entry[1]
+                    // Entry format: XY<space>path or for renames: R<score><space>old<null>new
+                    val spaceIdx = entry.indexOf(' ', 2)
+                    if (spaceIdx >= 2) {
+                        // Path may start after XY and one separating space; trim leading spaces
+                        val pathPart = entry.substring(spaceIdx + 1).trimStart()
+                        val normalized = pathPart.replace('\\', '/')
+                        if (x != ' ') staged.add(normalized)
+                        if (y != ' ') unstaged.add(normalized)
+                    }
+                }
+                i = zero + 1
+            }
+            Pair(staged, unstaged)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun resolveActiveEditorFile(project: Project): com.intellij.openapi.vfs.VirtualFile? {
+        return try {
+            val fem = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+            val candidates = buildList {
+                addAll(runCatching { fem.selectedFiles.asList() }.getOrNull() ?: emptyList())
+                addAll(runCatching { fem.openFiles.asList() }.getOrNull() ?: emptyList())
+            }
+            val index = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
+            candidates.firstOrNull { vf ->
+                try {
+                    vf.isValid && vf.isInLocalFileSystem && index.isInContent(vf)
+                } catch (_: Exception) { false }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
     

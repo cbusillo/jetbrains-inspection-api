@@ -2,8 +2,8 @@
 
 /**
  * JetBrains Inspection API MCP Server
- * Provides Claude Code tools for accessing comprehensive inspection results
- * using the full JetBrains inspection framework (mirrors PyCharm's "Inspect Code")
+ * Provides MCP tools for accessing comprehensive inspection results
+ * using the full JetBrains inspection framework (mirrors IDE "Inspect Code")
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -18,7 +18,7 @@ const BASE_URL = `http://localhost:${IDE_PORT}/api/inspection`;
 const server = new McpServer(
   {
     name: 'jetbrains-inspection-mcp',
-    version: '1.10.8'
+    version: '1.10.10'
   },
   {
     capabilities: {
@@ -42,14 +42,25 @@ function httpGet(url) {
         }
       });
     });
-    
+
     req.on('error', (error) => {
-      reject(new Error(`HTTP request failed: ${error.message}`));
+      const parts = [];
+      if (error && error.message) parts.push(error.message);
+      if (error && error.code) parts.push(`code=${error.code}`);
+      if (error && typeof error.port !== 'undefined') parts.push(`port=${error.port}`);
+      if (error && error.address) parts.push(`addr=${error.address}`);
+
+      let hint = '';
+      if (error && error.code === 'ECONNREFUSED') {
+        hint = `Ensure JetBrains IDE is running, plugin installed, and built-in server enabled on port ${IDE_PORT} (Allow unsigned requests).`;
+      }
+      const msg = `HTTP request failed: ${parts.join(' | ')}${hint ? ' | ' + hint : ''}`;
+      reject(new Error(msg));
     });
-    
+
     req.setTimeout(10000, () => {
       req.destroy();
-      reject(new Error('Request timeout'));
+      reject(new Error(`Request timeout | Ensure IDE on port ${IDE_PORT} is reachable`));
     });
   });
 }
@@ -58,7 +69,7 @@ function httpGet(url) {
 // Tool: Get inspection problems
 server.tool(
   "inspection_get_problems",
-  "Get comprehensive inspection problems using JetBrains inspection framework. IMPORTANT: Before calling this, ensure inspection_get_status shows 'is_scanning: false' and 'has_inspection_results: true'. If inspection is still running, wait and check status again.",
+  "List inspection problems (scoped, filterable). Use inspection_get_status first and only call when is_scanning=false and has_inspection_results=true.",
   {
     project: z.string().optional().describe("Name of the project to inspect (e.g., 'odoo-ai', 'MyProject'). If not specified, inspects the currently focused project"),
     scope: z.string().optional().default("whole_project").describe("Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path"),
@@ -115,7 +126,7 @@ server.tool(
 // Tool: Trigger inspection
 server.tool(
   "inspection_trigger",
-  "Trigger inspection. Scopes: whole_project, current_file, directory, changed_files, files.",
+  "Trigger an inspection run. Scopes: whole_project|current_file|directory|changed_files|files (see parameters).",
   {
     project: z.string().optional().describe("Project name (optional)"),
     scope: z.enum(["whole_project", "current_file", "directory", "changed_files", "files"]).optional().describe("Analysis scope"),
@@ -127,7 +138,7 @@ server.tool(
     files: z.array(z.string()).optional().describe("File paths when scope=files"),
     // changed_files scope
     include_unversioned: z.boolean().optional().describe("Include unversioned (default true)"),
-    changed_files_mode: z.enum(["all", "staged", "unstaged"]).optional().describe("Best-effort mode"),
+    changed_files_mode: z.enum(["all", "staged", "unstaged"]).optional().describe("Best-effort Git filter: 'staged' or 'unstaged'"),
     max_files: z.number().int().positive().optional().describe("Limit files for speed"),
     // profile
     profile: z.string().optional().describe("Inspection profile name")
@@ -169,7 +180,7 @@ server.tool(
 // Tool: Get inspection status
 server.tool(
   "inspection_get_status", 
-  "Get the current inspection status and check if results are available. Check 'is_scanning' field - if true, inspection is still running and you should wait. Only call inspection_get_problems when 'is_scanning' is false and 'has_inspection_results' is true.",
+  "Get inspection status (is_scanning, has_inspection_results). Wait until is_scanning=false before calling inspection_get_problems.",
   {
     project: z.string().optional().describe("Name of the project to check status for (e.g., 'odoo-ai', 'MyProject'). If not specified, checks status for the currently focused project")
   },

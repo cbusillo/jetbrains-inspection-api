@@ -156,7 +156,7 @@ class InspectionHandlerProcessTest {
         val result = handler.process(mockDecoder, mockRequest, mockContext)
         assertTrue(result)
         verify(mockContext, times(1)).writeAndFlush(check {
-            val resp = it as io.netty.handler.codec.http.DefaultFullHttpResponse
+            val resp = it as DefaultFullHttpResponse
             val body = resp.content().toString(Charsets.UTF_8)
             if (resp.status() == HttpResponseStatus.OK) {
                 assertTrue(body.contains("\"status\": \"triggered\""))
@@ -181,7 +181,7 @@ class InspectionHandlerProcessTest {
         val result = handler.process(mockDecoder, mockRequest, mockContext)
         assertTrue(result)
         verify(mockContext, times(1)).writeAndFlush(check {
-            val resp = it as io.netty.handler.codec.http.DefaultFullHttpResponse
+            val resp = it as DefaultFullHttpResponse
             val body = resp.content().toString(Charsets.UTF_8)
             if (resp.status() == HttpResponseStatus.OK) {
                 assertTrue(body.contains("\"status\": \"triggered\""))

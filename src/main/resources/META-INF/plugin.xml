@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.10.8</version>
+    <version>1.10.10</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
     
     <description><![CDATA[
@@ -22,26 +22,28 @@
     ]]></description>
     
     <change-notes><![CDATA[
-        <b>Version 1.10.8</b>
+        <b>Version 1.10.10</b>
+        <ul>
+            <li>Status detection unified across Problems and Inspection Results windows</li>
+            <li>Clears stale results from both windows before triggering</li>
+            <li>MCP error messages improved when the IDE server is unreachable</li>
+            <li>Changed files mode filtering (staged/unstaged) implemented (Git best‑effort)</li>
+        </ul>
+        <b>Earlier Versions</b>
         <ul>
             <li>New trigger scopes: <code>files</code> and <code>changed_files</code></li>
             <li>New trigger params: <code>file</code>/<code>files</code>, <code>include_unversioned</code>, <code>changed_files_mode</code>, <code>max_files</code>, <code>profile</code></li>
             <li>MCP tool updated with concise parameter docs</li>
-            <li>Docs cleanup and clarity improvements</li>
-        </ul>
-        <b>Earlier Versions</b>
-        <ul>
             <li>Programmatic inspection triggering with status polling</li>
             <li>Scope filtering (whole project, current file, directory)</li>
             <li>Enhanced results extraction and severity mapping (incl. grammar/typo)</li>
-            <li>MCP tools for Claude Code</li>
+            <li>MCP tools for AI assistants</li>
             <li>JetBrains 2025.x compatibility updates</li>
             <li>Initial HTTP API and status detection</li>
         </ul>
     ]]></change-notes>
     
     <depends>com.intellij.modules.platform</depends>
-    <depends>com.intellij.modules.vcs</depends>
     
     <extensions defaultExtensionNs="com.intellij">
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>

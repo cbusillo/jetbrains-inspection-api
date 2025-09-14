@@ -9,7 +9,7 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 - **Severity filtering** (error, warning, weak_warning, info, or all)
 - **File-specific endpoint** for targeted inspection analysis
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
-- **Claude Code MCP integration** for seamless AI assistant access
+- **MCP integration** for seamless AI assistant access
 - **Comprehensive inspection framework** - mirrors PyCharm's "Inspect Code" functionality
 - **High performance** - < 100 ms response time for full project inspection
 - **Complete inspection coverage** - detects JSCheckFunctionSignatures, ShellCheck, SpellCheck, and all enabled inspections
@@ -118,6 +118,66 @@ curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
 
 Replace `63340` with your IDE's configured port.
 
+## Scopes & Parameters
+
+Scopes
+- `scope`: `whole_project` (default) | `current_file` | `directory` | `modules` | `project` | `git`
+- `git.base`: default `HEAD`
+- `git.include_untracked`: `true|false`
+
+Filters
+- `severity`: `error|warning|weak_warning|info|grammar|typo|all` (default)
+- `project`: optional project name (multi‑project IDEs)
+- `max_problems`: int
+- `excludes`: list of glob patterns
+
+Examples
+- Errors only, whole project:
+  `curl "http://localhost:63340/api/inspection/problems?severity=error"`
+- Changed files since HEAD:
+  `curl "http://localhost:63340/api/inspection/problems?scope=git&git.base=HEAD"`
+- Specific modules (path fragments):
+  `curl "http://localhost:63340/api/inspection/problems?scope=modules&modules=addons/product_connect,addons/disable_odoo_online"`
+
+## Result Schema
+
+Typical response:
+```json
+{
+  "run_id": "2025-09-14T19:12:01Z_abc123",
+  "version": "1.10.5",
+  "started_at": "2025-09-14T19:12:01Z",
+  "duration_ms": 842,
+  "counts": { "error": 0, "warning": 2, "weak_warning": 0, "info": 0 },
+  "files_scanned": 28,
+  "problems": [
+    {
+      "id": "IJ-PY-12345",
+      "rule": "PyUnresolvedReferences",
+      "severity": "warning",
+      "file": "addons/product_connect/models/product.py",
+      "line": 42,
+      "col": 12,
+      "message": "Unresolved reference 'x'",
+      "fixable": false,
+      "suggestion": "Import or define 'x' before use"
+    }
+  ]
+}
+```
+
+## Exit Behavior (for CLI/MCP consumers)
+
+- Gate mode (recommended): exit 1 if total problems > 0 in the selected scope; else 0.
+- Discovery mode: always exit 0; return counts only (consumers decide how to gate).
+- Invalid parameters: exit 2 and return an error JSON payload with a `hint`.
+
+## Tips
+
+- Inner loop: `scope=changed`
+- Pre‑commit: `scope=git` (base=`HEAD`)
+- Full gate: `scope=project` or `whole_project`
+
 ## API Reference
 
 ### Problems Endpoint
@@ -151,13 +211,13 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 **URL**: `GET /api/inspection/trigger`
 
 **Parameters**:
-- `project` (optional): Project name to target when multiple are open
+- `project` (optional): Project name to target when multiple projects are open
 - `scope` (optional):
   - `whole_project` (default)
   - `current_file` (inspect the currently selected editor file)
   - `directory` (requires `dir`, `directory`, or `path`)
   - `files` (inspect only the provided file list)
-  - `changed_files` (inspect files changed in VCS; best‑effort)
+  - `changed_files` (inspect the files changed in VCS
 - `dir` | `directory` | `path` (optional): Directory to inspect. Relative paths resolve from the project root; absolute paths are accepted.
 - `file` (repeatable, optional): File path when `scope=files`. Can be repeated multiple times.
 - `files` (optional): Comma or newline‑separated list of file paths when `scope=files`.
@@ -374,11 +434,13 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
 ## Version History
 
-### v1.10.8 (Latest)
+### v1.10.10 (Latest)
 - ✅ **New trigger scopes**: `files`, `changed_files` for fast inner loop
 - ✅ **New params**: `file`/`files`, `include_unversioned`, `changed_files_mode`, `max_files`, `profile`
 - ✅ **MCP updates**: Concise tool/param docs to reduce token usage
+- ✅ **Status detection**: Unified across Problems and Inspection Results windows; clears stale results before runs
 - ✅ **Docs cleanup**: Clarified setup and usage across README/CLAUDE.md
+ - ✅ **Changed files mode**: `staged` / `unstaged` best‑effort (Git) filtering implemented
 
 ### v1.7.5
 - ✅ **Complete inspection framework** - Full GlobalInspectionContext and AnalysisScope implementation

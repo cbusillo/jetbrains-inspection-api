@@ -38,19 +38,19 @@ Test both with and without the project parameter to confirm the focused project 
 
 ## Fast-Path Scopes (manual smoke tests)
 
-1. Changed files only (fast inner loop):
+• Changed files only (fast inner loop):
 ```bash
 curl "http://localhost:63341/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=25"
 curl "http://localhost:63341/api/inspection/status"
 ```
 
-2. Explicit files list:
+• Explicit files list:
 ```bash
 curl "http://localhost:63341/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
 curl "http://localhost:63341/api/inspection/status"
 ```
 
-3. Light inspection profile:
+• Light inspection profile:
 ```bash
 curl "http://localhost:63341/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
