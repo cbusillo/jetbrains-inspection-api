@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.10.10</version>
+    <version>1.10.11</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
     
     <description><![CDATA[
@@ -22,6 +22,10 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.10.11</b>
+        <ul>
+            <li>Adds support for PyCharm 2025.3 “Problems” tool window naming so inspections are detected and cleared correctly.</li>
+        </ul>
         <b>Version 1.10.10</b>
         <ul>
             <li>Status detection unified across Problems and Inspection Results windows</li>

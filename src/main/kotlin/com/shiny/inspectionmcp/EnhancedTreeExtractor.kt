@@ -23,7 +23,8 @@ class EnhancedTreeExtractor {
         
         try {
             val toolWindowManager = ToolWindowManager.getInstance(project)
-            val windowNames = listOf("Inspection Results", "Problems View", "Inspections")
+            // JetBrains 2025.3 renamed "Problems View" to "Problems" in some IDEs; include both.
+            val windowNames = listOf("Inspection Results", "Problems View", "Problems", "Inspections")
             val toolWindow = windowNames.firstNotNullOfOrNull { windowName ->
                 toolWindowManager.getToolWindow(windowName)
             }

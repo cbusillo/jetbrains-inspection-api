@@ -253,7 +253,9 @@ class InspectionHandler : HttpRequestHandler() {
     private fun getInspectionStatus(project: Project): String {
         return try {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            val problemsWindow = toolWindowManager.getToolWindow("Problems View")
+            val problemsWindows = listOf("Problems View", "Problems", "Inspection Results")
+                .mapNotNull { toolWindowManager.getToolWindow(it) }
+            val problemsWindow = problemsWindows.firstOrNull()
             val inspectionResultsWindow = toolWindowManager.getToolWindow("Inspection Results")
 
             val status = mutableMapOf<String, Any>()
@@ -321,7 +323,7 @@ class InspectionHandler : HttpRequestHandler() {
             
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             // Clear prior results from both known locations to avoid stale reads
-            listOf("Problems View", "Inspection Results").forEach { name ->
+            listOf("Problems View", "Problems", "Inspection Results").forEach { name ->
                 val tw = toolWindowManager.getToolWindow(name)
                 if (tw != null) {
                     for (i in 0 until tw.contentManager.contentCount) {
