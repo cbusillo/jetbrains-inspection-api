@@ -18,7 +18,7 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 
 ### 1. Install Plugin
 **From Releases:**
-1. Download the latest `.zip` file from [Releases](https://github.com/cbusillo/jetbrains-inspection-api/releases)
+1. Download a `.zip` file from [Releases](https://github.com/cbusillo/jetbrains-inspection-api/releases)
 2. In your IDE: `Settings` → `Plugins` → `⚙️` → `Install Plugin from Disk...`
 3. Select the downloaded file and restart the IDE
 
@@ -31,13 +31,13 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 ```
 
 ### 2. Configure IDE Built-in Server
-1. **Open IDE Settings**: `File` → `Settings` (or `IntelliJ IDEA` → `Preferences` on Mac)
-2. **Navigate to**: `Build, Execution, Deployment` → `Debugger`
-3. **In the "Built-in server" section**:
-   - **Port**: Set to `63341` (PyCharm), `63340` (IntelliJ), or `8080` (avoid default `63342`)
+1. **Open IDE Settings**: `File` → `Settings` (or `IntelliJ IDEA` → `Preferences` on macOS)
+2. **Navigate to**: `Tools` → `Web Browsers and Preview`
+3. In the **Built-in Server** section:
+   - Set the **Port** (example: `63341`)
    - **✅ Check**: "Can accept external connections"
    - **✅ Check**: "Allow unsigned requests"
-4. **Apply settings and restart IDE**
+4. **Apply** settings
 
 ### 3. Set Up Claude Code MCP
 
@@ -52,10 +52,10 @@ npm install
 Then add the MCP server using Claude Code CLI:
 
 ```bash
-# For PyCharm (typically port 63341)
+# For PyCharm (example port 63341)
 claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63341"}}'
 
-# For IntelliJ (typically port 63340)
+# For IntelliJ (example port 63340)
 claude mcp add-json inspection-intellij '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
 
 # Verify configuration
