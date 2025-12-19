@@ -2,7 +2,7 @@
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
     <version>1.10.11</version>
-    <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo and Claude Code)</vendor>
+    <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     
     <description><![CDATA[
         Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
@@ -13,7 +13,7 @@
             <li>Scope-based filtering (whole project, current file, directory)</li>
             <li>Trigger inspections programmatically and poll status</li>
             <li>Works with JetBrains IDEs (2025.x compatible)</li>
-            <li>Claude Code MCP integration included</li>
+            <li>MCP client integration included</li>
         </ul>
         <br/>
         Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
