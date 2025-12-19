@@ -408,44 +408,11 @@ This will automatically:
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 ```
 
-## Version History
+## Releases
 
-### v1.10.10 
-- ✅ **New trigger scopes**: `files`, `changed_files` for fast inner loop
-- ✅ **New params**: `file`/`files`, `include_unversioned`, `changed_files_mode`, `max_files`, `profile`
-- ✅ **MCP updates**: Concise tool/param docs to reduce token usage
-- ✅ **Status detection**: Unified across Problems and Inspection Results windows; clears stale results before runs
-- ✅ **Docs cleanup**: Clarified setup and usage across README/CLAUDE.md
- - ✅ **Changed files mode**: `staged` / `unstaged` best‑effort (Git) filtering implemented
+Release notes live on GitHub Releases:
 
-### v1.7.5
-- ✅ **Complete inspection framework** - Full GlobalInspectionContext and AnalysisScope implementation
-- ✅ **Performance optimization** - < 100 ms response time for full project inspection
-- ✅ **Comprehensive test suite** - 53 passing tests with extensive error handling coverage
-- ✅ **Thread safety** - Proper ReadAction usage for all inspection operations
-- ✅ **Enhanced detection** - JSCheckFunctionSignatures, ShellCheck, SpellCheck, PyUnresolvedReferences
-
-### v1.6.0
-- ✅ **Inspection framework transition** - Replaced highlighting API with a proper inspection framework
-- ✅ **Error handling** - Comprehensive exception handling and graceful degradation
-- ✅ **MCP server updates** - Improved descriptions reflecting inspection framework capabilities
-
-### v1.5.0
-- ✅ **File/path filtering** - Target inspection analysis to specific files
-- ✅ **Severity filtering** - Filter by error, warning, weak_warning, info levels
-- ✅ **Improved descriptions** - Better extraction of inspection issue details
-- ✅ **Code quality improvements** - Eliminated duplication, enhanced maintainability
-
-### v1.4.0
-- ✅ **Real-time inspection** - No manual triggering required
-- ✅ **Scope filtering** - Whole project or current file only
-- ✅ **JetBrains 2025.x compatibility** - maintained for JetBrains 2025.x
-- ✅ **Universal file support** - All IDE-supported file types
-- ✅ **Comprehensive coverage** - Including spell check and info-level inspections
-
-### v1.1.0
-- Updated for JetBrains 2025.x compatibility
-- Replaced internal APIs with public alternatives
+- https://github.com/cbusillo/jetbrains-inspection-api/releases
 
 ## License
 
