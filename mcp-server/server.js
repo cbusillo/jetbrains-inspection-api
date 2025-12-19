@@ -51,7 +51,8 @@ function httpGet(url) {
       if (error && error.address) parts.push(`addr=${error.address}`);
 
       let hint = '';
-      if (error && error.code === 'ECONNREFUSED') {
+      const errorCode = error && typeof error.code === 'string' ? error.code : undefined;
+      if (errorCode === 'ECONNREFUSED') {
         hint = `Ensure JetBrains IDE is running, plugin installed, and built-in server enabled on port ${IDE_PORT} (Allow unsigned requests).`;
       }
       const msg = `HTTP request failed: ${parts.join(' | ')}${hint ? ' | ' + hint : ''}`;

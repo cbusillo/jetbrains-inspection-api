@@ -7,7 +7,7 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 - **Real-time HTTP API access** to inspection results
 - **Scope-based filtering** (whole project, current file, or specific files)
 - **Severity filtering** (error, warning, weak_warning, info, or all)
-- **File-specific endpoint** for targeted inspection analysis
+- **File/path filtering** for targeted inspection analysis
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
 - **MCP integration** for seamless AI assistant access
 - **Comprehensive inspection framework** - mirrors PyCharm's "Inspect Code" functionality
@@ -431,7 +431,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 - ✅ **MCP server updates** - Improved descriptions reflecting inspection framework capabilities
 
 ### v1.5.0
-- ✅ **File-specific endpoint** - Target inspection analysis to individual files
+- ✅ **File/path filtering** - Target inspection analysis to specific files
 - ✅ **Severity filtering** - Filter by error, warning, weak_warning, info levels
 - ✅ **Improved descriptions** - Better extraction of inspection issue details
 - ✅ **Code quality improvements** - Eliminated duplication, enhanced maintainability
