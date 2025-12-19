@@ -189,12 +189,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 
                 val filePatternFilteredProblems = if (filePattern != null) {
-                    val regex = try { 
-                        Regex(filePattern, RegexOption.IGNORE_CASE) 
-                    } catch (_: Exception) {
-                        null
-                    }
-                    
+                    val pattern = filePattern.trim()
+                    val regex = compileFilePatternRegex(pattern)
                     if (regex != null) {
                         problemTypeFilteredProblems.filter { problem ->
                             val filePath = problem["file"] as? String ?: ""
@@ -203,7 +199,7 @@ class InspectionHandler : HttpRequestHandler() {
                     } else {
                         problemTypeFilteredProblems.filter { problem ->
                             val filePath = problem["file"] as? String ?: ""
-                            filePath.contains(filePattern, ignoreCase = true)
+                            filePath.contains(pattern, ignoreCase = true)
                         }
                     }
                 } else {

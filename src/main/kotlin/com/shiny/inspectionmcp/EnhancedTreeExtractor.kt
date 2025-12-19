@@ -10,6 +10,7 @@ import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.openapi.wm.ToolWindow
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
 import java.awt.Component
@@ -23,39 +24,104 @@ class EnhancedTreeExtractor {
         
         try {
             val toolWindowManager = ToolWindowManager.getInstance(project)
-            // JetBrains 2025.3 renamed "Problems View" to "Problems" in some IDEs; include both.
-            val windowNames = listOf("Inspection Results", "Problems View", "Problems", "Inspections")
-            val toolWindow = windowNames.firstNotNullOfOrNull { windowName ->
-                toolWindowManager.getToolWindow(windowName)
-            }
-            
-            if (toolWindow == null) {
+
+            val seen = LinkedHashSet<String>()
+
+            val inspectionWindows = findToolWindowsContainingInspectionResults(toolWindowManager)
+            if (inspectionWindows.isNotEmpty()) {
+                for (tw in inspectionWindows) {
+                    extractFromToolWindow(tw, problems, project, seen)
+                }
                 return problems
             }
-            
-            
-            for (i in 0 until toolWindow.contentManager.contentCount) {
-                val content = toolWindow.contentManager.getContent(i)
-                if (content != null) {
-                    val component = content.component
-                    
-                    
-                    val inspectionView = findInspectionResultsView(component)
-                    if (inspectionView != null) {
-                        extractProblemsFromView(inspectionView, problems, project)
-                    } else {
-                        val tree = findInspectionTree(component)
-                        if (tree != null) {
-                            extractProblemsFromTree(tree, problems, project)
-                        }
-                    }
-                }
-            }
+
+            // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
+            // JetBrains 2025.3 renamed "Problems View" to "Problems" in some IDEs; include both.
+            val fallbackNames = listOf("Problems View", "Problems", "Inspections")
+            val fallback = fallbackNames.firstNotNullOfOrNull { name -> toolWindowManager.getToolWindow(name) }
+                ?: return problems
+            extractFromToolWindow(fallback, problems, project, seen)
             
         } catch (e: Exception) {
         }
         
         return problems
+    }
+
+    private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): List<ToolWindow> {
+        val ids = try {
+            toolWindowManager.toolWindowIds.toList()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (ids.isEmpty()) {
+            val direct = toolWindowManager.getToolWindow("Inspection Results")
+            return if (direct != null) listOf(direct) else emptyList()
+        }
+
+        val matches = mutableListOf<ToolWindow>()
+        for (id in ids) {
+            val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
+            if (toolWindowHasInspectionResults(toolWindow)) {
+                matches.add(toolWindow)
+            }
+        }
+        return matches
+    }
+
+    private fun toolWindowHasInspectionResults(toolWindow: ToolWindow): Boolean {
+        try {
+            for (i in 0 until toolWindow.contentManager.contentCount) {
+                val content = toolWindow.contentManager.getContent(i) ?: continue
+                val component = content.component
+                if (findInspectionResultsView(component) != null) {
+                    return true
+                }
+            }
+        } catch (_: Exception) {
+            return false
+        }
+        return false
+    }
+
+    private fun extractFromToolWindow(
+        toolWindow: ToolWindow,
+        problems: MutableList<Map<String, Any>>,
+        project: Project,
+        seen: MutableSet<String>,
+    ) {
+        for (i in 0 until toolWindow.contentManager.contentCount) {
+            val content = toolWindow.contentManager.getContent(i) ?: continue
+            val component = content.component
+
+            val before = problems.size
+            val inspectionView = findInspectionResultsView(component)
+            if (inspectionView != null) {
+                extractProblemsFromView(inspectionView, problems, project)
+            } else {
+                val tree = findInspectionTree(component)
+                if (tree != null) {
+                    extractProblemsFromTree(tree, problems, project)
+                }
+            }
+
+            if (problems.size != before) {
+                val newSlice = problems.subList(before, problems.size)
+                val deduped = newSlice.filter { p ->
+                    val key = listOf(
+                        p["severity"],
+                        p["inspectionType"],
+                        p["file"],
+                        p["line"],
+                        p["column"],
+                        p["description"],
+                    ).joinToString("|")
+                    seen.add(key)
+                }
+                newSlice.clear()
+                problems.addAll(deduped)
+            }
+        }
     }
     
     private fun findInspectionResultsView(component: Component): InspectionResultsView? {
