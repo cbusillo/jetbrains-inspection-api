@@ -18,13 +18,14 @@
         <br/>
         Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
         <br/>
-        Tip: Check your IDE's built-in server port under Settings → Built-in server.
+        Tip: Check your IDE's built-in server port under Settings → Tools → Web Browsers and Preview.
     ]]></description>
     
     <change-notes><![CDATA[
         <b>Version 1.10.11</b>
         <ul>
-            <li>Adds support for PyCharm 2025.3 “Problems” tool window naming so inspections are detected and cleared correctly.</li>
+            <li>Prefers Inspect Code results over Problems View when available (reduces noise from generated files).</li>
+            <li>Improves file_pattern filtering (regex + simple globs like <code>*.py</code>).</li>
         </ul>
         <b>Version 1.10.10</b>
         <ul>

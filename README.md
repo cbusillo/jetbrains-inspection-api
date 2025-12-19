@@ -11,7 +11,6 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
 - **MCP integration** for seamless AI assistant access
 - **Comprehensive inspection framework** - mirrors PyCharm's "Inspect Code" functionality
-- **High performance** - < 100 ms response time for full project inspection
 - **Complete inspection coverage** - detects JSCheckFunctionSignatures, ShellCheck, SpellCheck, and all enabled inspections
 
 ## Quick Start
@@ -118,65 +117,42 @@ curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
 
 Replace `63340` with your IDE's configured port.
 
-## Scopes & Parameters
-
-Scopes
-- `scope`: `whole_project` (default) | `current_file` | `directory` | `modules` | `project` | `git`
-- `git.base`: default `HEAD`
-- `git.include_untracked`: `true|false`
-
-Filters
-- `severity`: `error|warning|weak_warning|info|grammar|typo|all` (default)
-- `project`: optional project name (multi‑project IDEs)
-- `max_problems`: int
-- `excludes`: list of glob patterns
-
-Examples
-- Errors only, whole project:
-  `curl "http://localhost:63340/api/inspection/problems?severity=error"`
-- Changed files since HEAD:
-  `curl "http://localhost:63340/api/inspection/problems?scope=git&git.base=HEAD"`
-- Specific modules (path fragments):
-  `curl "http://localhost:63340/api/inspection/problems?scope=modules&modules=addons/product_connect,addons/disable_odoo_online"`
-
 ## Result Schema
 
-Typical response:
+Typical response (truncated):
 ```json
 {
-  "run_id": "2025-09-14T19:12:01Z_abc123",
-  "version": "1.10.5",
-  "started_at": "2025-09-14T19:12:01Z",
-  "duration_ms": 842,
-  "counts": { "error": 0, "warning": 2, "weak_warning": 0, "info": 0 },
-  "files_scanned": 28,
+  "status": "results_available",
+  "project": "MyProject",
+  "timestamp": 1766165367310,
+  "total_problems": 1320,
+  "problems_shown": 100,
   "problems": [
     {
-      "id": "IJ-PY-12345",
-      "rule": "PyUnresolvedReferences",
-      "severity": "warning",
-      "file": "addons/product_connect/models/product.py",
+      "description": "Unresolved reference 'x'",
+      "file": "/abs/path/to/file.py",
       "line": 42,
-      "col": 12,
-      "message": "Unresolved reference 'x'",
-      "fixable": false,
-      "suggestion": "Import or define 'x' before use"
+      "column": 12,
+      "severity": "warning",
+      "category": "Python",
+      "inspectionType": "PyUnresolvedReferencesInspection"
     }
-  ]
+  ],
+  "pagination": {
+    "limit": 100,
+    "offset": 0,
+    "has_more": true,
+    "next_offset": 100
+  },
+  "filters": {
+    "severity": "all",
+    "scope": "whole_project",
+    "problem_type": "all",
+    "file_pattern": "all"
+  },
+  "method": "enhanced_tree"
 }
 ```
-
-## Exit Behavior (for CLI/MCP consumers)
-
-- Gate mode (recommended): exit 1 if total problems > 0 in the selected scope; else 0.
-- Discovery mode: always exit 0; return counts only (consumers decide how to gate).
-- Invalid parameters: exit 2 and return an error JSON payload with a `hint`.
-
-## Tips
-
-- Inner loop: `scope=changed`
-- Pre‑commit: `scope=git` (base=`HEAD`)
-- Full gate: `scope=project` or `whole_project`
 
 ## API Reference
 
@@ -434,7 +410,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
 ## Version History
 
-### v1.10.10 (Latest)
+### v1.10.10 
 - ✅ **New trigger scopes**: `files`, `changed_files` for fast inner loop
 - ✅ **New params**: `file`/`files`, `include_unversioned`, `changed_files_mode`, `max_files`, `profile`
 - ✅ **MCP updates**: Concise tool/param docs to reduce token usage
@@ -463,7 +439,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 ### v1.4.0
 - ✅ **Real-time inspection** - No manual triggering required
 - ✅ **Scope filtering** - Whole project or current file only
-- ✅ **JetBrains 2025.x compatibility** - Latest IDE support
+- ✅ **JetBrains 2025.x compatibility** - maintained for JetBrains 2025.x
 - ✅ **Universal file support** - All IDE-supported file types
 - ✅ **Comprehensive coverage** - Including spell check and info-level inspections
 

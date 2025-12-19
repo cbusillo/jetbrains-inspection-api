@@ -1,8 +1,8 @@
-# Testing JetBrains Inspection API v1.10.5 - Project Parameter Feature
+# Testing JetBrains Inspection API - Project Parameter Feature
 
 ## Quick Test Instructions
 
-To test the new project-specific inspection feature in v1.10.5:
+To test project-specific inspection when multiple projects are open:
 
 1. **Ensure you have multiple projects open** in your JetBrains IDE (PyCharm, IntelliJ, etc.)
 
