@@ -2,7 +2,7 @@
 
 ## Quick Test Instructions
 
-To test project-specific inspection when multiple projects are open:
+To test a project-specific inspection when multiple projects are open:
 
 1. **Ensure you have multiple projects open** in your JetBrains IDE (PyCharm, IntelliJ, etc.)
 

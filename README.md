@@ -303,7 +303,7 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 
 **Status Indicators**:
 - `is_scanning: true` → Inspection running, wait
-- `clean_inspection: true` → Inspection complete, no problems found
+- `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - All false → No recent inspection, trigger one first
 

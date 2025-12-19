@@ -93,7 +93,7 @@ See `build.gradle.kts` and `gradle.properties` for current versions:
 **Precommit Hook**: Built-in `.git/hooks/pre-commit` runs tests, MCP syntax check, and build  
 **Test Scripts**:
 - All tests: `./test-all.sh` - Runs plugin + MCP tests
-- Build + test: `./build.sh` - Tests then builds the plugin
+- Build and test: `./build.sh` - Tests then builds the plugin
 - MCP Server only: `cd mcp-server && npm test`
 
 **Test Coverage Requirements**:
@@ -175,7 +175,7 @@ Current release: 1.10.10
 - ✅ **Error Handling**: Complete - comprehensive exception handling and graceful degradation
 
 ### Planned Enhancements
-- **VCS Integration**: Uncommitted files only scope
+- **VCS Integration**: Uncommitted files-only scope
 - **Performance**: Result caching and incremental analysis  
 - **Configuration**: Custom inspection profile selection
 - **Batch Operations**: Multiple file analysis optimization
