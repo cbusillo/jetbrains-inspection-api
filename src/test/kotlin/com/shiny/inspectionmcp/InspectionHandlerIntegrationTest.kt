@@ -139,7 +139,7 @@ class InspectionHandlerIntegrationTest {
             "/api/inspection/problems/simple.kt",
             "/api/inspection/problems/path/to/file.java", 
             "/api/inspection/unknown",
-            "/api/inspection/inspections"
+            "/api/inspection/problems/path with spaces"
         )
         
         unknownPaths.forEach { path ->

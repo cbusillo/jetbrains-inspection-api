@@ -1,121 +1,39 @@
-# Testing Guide
+# Testing
 
-## Testing Philosophy
+This project has two test surfaces:
 
-This project follows test-driven development (TDD) principles with comprehensive coverage across all components. Tests serve as living documentation and ensure code reliability across IDE versions and environments.
+- **Plugin (Kotlin/Gradle)**: HTTP handler + inspection extraction/trigger logic.
+- **MCP server (Node)**: tool wiring + URL/param handling + error behavior.
 
-## Test Structure
+## Prerequisites
 
-### Plugin Tests (Kotlin)
-- **Framework**: JUnit 5 with Mockito
-- **Location**: `src/test/kotlin/`
-- **Focus**: HTTP routing, JSON utilities, core functionality
-- **Run**: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
+- Java 21 (required for Gradle plugin builds)
+- Node.js 18+
 
-### MCP Server Tests (JavaScript)
-- **Framework**: Node.js built-in test runner
-- **Location**: `mcp-server/test/`
-- **Focus**: Server startup, tool registration, HTTP handling, error recovery
-- **Run**: `cd mcp-server && npm test`
+## Local commands
 
-## Test Categories
+```bash
+# Plugin tests
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
-### Unit Tests
-- Test individual functions and methods in isolation
-- Mock external dependencies
-- Fast execution (< 5-second total)
-- Cover edge cases and error conditions
+# MCP server tests
+cd mcp-server && npm test
 
-### Integration Tests
-- Test component interactions
-- Use real HTTP connections where possible
-- Validate end-to-end workflows
-- Include timeout and error scenarios
+# Everything (plugin tests + MCP tests + build)
+./test-all.sh
+```
 
-### Performance Tests
-- Measure response times for critical paths
-- Test with large files and datasets
-- Validate memory usage patterns
-- Ensure scalability across IDE versions
+## Automated IDE smoke test
 
-## Testing Standards
+`./test-automated.sh` can install the plugin into a local IDE, start it with a
+test project, and hit a few API endpoints.
 
-### Code Coverage
-- Aim for high coverage on public APIs
-- Focus on critical business logic
-- Don't test trivial getters/setters
-- Prioritize edge cases over happy path redundancy
+- Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 
-### Test Quality
-- Tests should be independent and isolated
-- Use descriptive test names that explain behavior
-- Follow the arrange-act-assert pattern
-- Cleanup resources in teardown methods
+## CI
 
-### Error Testing
-- Test all error conditions and recovery paths
-- Validate proper error messages and logging
-- Test network failures and timeouts
-- Ensure graceful degradation
+GitHub Actions runs on version tags (`v*`) via `.github/workflows/release.yml`:
 
-## Continuous Integration
-
-### Precommit Hook
-- Run all tests before allowing commits
-- Validates MCP server syntax
-- Builds plugin to catch compilation issues
-- Prevents broken code from entering the repository
-
-### GitHub Actions
-- Execute a full test suite on push/PR
-- Tests against a clean environment
-- Generates test reports and artifacts
-- Validates both plugin and MCP components
-
-## Development Workflow
-
-### Adding New Features
-1. Write failing tests first (TDD)
-2. Implement minimum code to pass tests
-3. Refactor while keeping tests green
-4. Add integration tests for complex workflows
-
-### Debugging Test Failures
-1. Run tests locally to reproduce issues
-2. Use IDE debugger for step-through analysis
-3. Check test logs for detailed error information
-4. Validate test assumptions and mocks
-
-### Maintaining Tests
-- Update tests when changing APIs
-- Remove obsolete tests for deprecated features
-- Keep test data and fixtures minimal
-- Review test performance regularly
-
-## Best Practices
-
-### Do
-- Test behavior, not implementation
-- Use meaningful assertions with clear messages
-- Mock external dependencies consistently
-- Write tests that document expected behavior
-
-### Don't
-- Test private methods directly
-- Create brittle tests tied to implementation details
-- Ignore flaky tests - fix them immediately
-- Skip testing error conditions
-
-## IDE-Specific Considerations
-
-### JetBrains Platform Testing
-- Use IntelliJ Platform test framework for complex IDE interactions
-- Mock highlighting API calls for unit tests
-- Test against multiple IDE versions when possible
-- Validate plugin descriptor and configuration
-
-### MCP Protocol Testing
-- Test tool registration and invocation
-- Validate JSON serialization/deserialization
-- Test network communication patterns
-- Ensure protocol compliance
+- `./gradlew test`
+- `mcp-server` tests
+- `./gradlew buildPlugin`

@@ -49,18 +49,15 @@ describe('MCP Integration Tests', () => {
       }
     });
 
-    it('should handle file-specific requests', async () => {
-      const testFile = '/test/example.js';
-      const encodedPath = encodeURIComponent(testFile);
-      const result = await httpGet(`${BASE_URL}/problems/${encodedPath}`);
-      
-      assert.ok(result, 'Should receive response for file-specific requests');
-    });
+    it('should support file_pattern filtering', async () => {
+      const params = new URLSearchParams({
+        severity: 'all',
+        file_pattern: '*.py',
+        limit: '1'
+      });
 
-    it('should handle category requests', async () => {
-      const result = await httpGet(`${BASE_URL}/inspections`);
-      
-      assert.ok(result, 'Should receive response for category requests');
+      const result = await httpGet(`${BASE_URL}/problems?${params}`);
+      assert.ok(result, 'Should receive response for file_pattern filtering');
     });
 
     it('should handle query parameters', async () => {
@@ -92,25 +89,12 @@ describe('MCP Integration Tests', () => {
       assert.ok(result, 'Should simulate MCP tool behavior');
     });
 
-    it('should simulate inspection_get_file_problems tool', async () => {
-      const mockParams = {
-        file_path: '/test/example.js',
-        severity: 'error'
-      };
+    it('should simulate inspection_trigger and status polling', async () => {
+      const trigger = await httpGet(`${BASE_URL}/trigger?scope=whole_project`);
+      assert.ok(trigger, 'Should receive trigger response');
 
-      const params = new URLSearchParams();
-      if (mockParams.severity !== 'all') params.append('severity', mockParams.severity);
-      
-      const url = `${BASE_URL}/problems/${encodeURIComponent(mockParams.file_path)}${params.toString() ? '?' + params.toString() : ''}`;
-      const result = await httpGet(url);
-      
-      assert.ok(result, 'Should simulate file-specific MCP tool behavior');
-    });
-
-    it('should simulate inspection_get_categories tool', async () => {
-      const result = await httpGet(`${BASE_URL}/inspections`);
-      
-      assert.ok(result, 'Should simulate categories MCP tool behavior');
+      const status = await httpGet(`${BASE_URL}/status`);
+      assert.ok(status, 'Should receive status response');
     });
   });
 

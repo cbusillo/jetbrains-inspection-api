@@ -58,8 +58,8 @@ describe('MCP Server Tests', () => {
   describe('MCP Tools Registration', () => {
     const expectedTools = [
       'inspection_get_problems',
-      'inspection_get_categories', 
-      'inspection_get_file_problems'
+      'inspection_trigger',
+      'inspection_get_status'
     ];
 
     expectedTools.forEach(toolName => {

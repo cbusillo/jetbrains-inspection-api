@@ -5,20 +5,35 @@
 
 set -e
 
-# Configuration (source from CLAUDE.local.md if exists)
-if [ -f "CLAUDE.local.md" ]; then
-    IDE_TYPE=$(grep "IDE_TYPE=" CLAUDE.local.md | cut -d'"' -f2 || echo "PyCharm")
-    IDE_VERSION=$(grep "IDE_VERSION=" CLAUDE.local.md | cut -d'"' -f2 || echo "2025.1")
-    IDE_PORT=$(grep "IDE_PORT=" CLAUDE.local.md | cut -d'"' -f2 || echo "63341")
-    TEST_PROJECT_PATH=$(grep "TEST_PROJECT_PATH=" CLAUDE.local.md | cut -d'"' -f2 || echo "")
-    PLUGIN_DIR=$(grep "PLUGIN_DIR=" CLAUDE.local.md | cut -d'"' -f2 || echo "$HOME/Library/Application Support/JetBrains/${IDE_TYPE}${IDE_VERSION}/plugins")
-else
-    # Default configuration
-    IDE_TYPE="PyCharm"
-    IDE_VERSION="2025.1"
-    IDE_PORT="63341"
-    TEST_PROJECT_PATH=""  # Must be set in CLAUDE.local.md
-    PLUGIN_DIR="$HOME/Library/Application Support/JetBrains/${IDE_TYPE}${IDE_VERSION}/plugins"
+# Configuration (source from AGENTS.local.md if present)
+
+IDE_TYPE="PyCharm"
+IDE_VERSION=""
+IDE_PORT="63341"
+TEST_PROJECT_PATH=""  # Must be set in AGENTS.local.md
+PLUGIN_DIR=""
+
+if [ -f "AGENTS.local.md" ]; then
+    IDE_TYPE=$(grep "IDE_TYPE=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_TYPE")
+    IDE_VERSION=$(grep "IDE_VERSION=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_VERSION")
+    IDE_PORT=$(grep "IDE_PORT=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_PORT")
+    TEST_PROJECT_PATH=$(grep "TEST_PROJECT_PATH=" AGENTS.local.md | cut -d'"' -f2 || echo "$TEST_PROJECT_PATH")
+    PLUGIN_DIR=$(grep "PLUGIN_DIR=" AGENTS.local.md | cut -d'"' -f2 || echo "$PLUGIN_DIR")
+fi
+
+if [ -z "$PLUGIN_DIR" ]; then
+    base="$HOME/Library/Application Support/JetBrains"
+
+    if [ -n "$IDE_VERSION" ]; then
+        PLUGIN_DIR="$base/${IDE_TYPE}${IDE_VERSION}/plugins"
+    else
+        ide_home=$(ls -dt "$base/${IDE_TYPE}"* 2>/dev/null | head -n 1)
+        if [ -n "$ide_home" ]; then
+            PLUGIN_DIR="$ide_home/plugins"
+        else
+            PLUGIN_DIR="$base/${IDE_TYPE}/plugins"
+        fi
+    fi
 fi
 
 
@@ -30,7 +45,7 @@ echo ""
 if [ -z "$TEST_PROJECT_PATH" ]; then
     echo "❌ ERROR: TEST_PROJECT_PATH not set"
     echo ""
-    echo "Please create CLAUDE.local.md from CLAUDE.local.template.md"
+    echo "Please create AGENTS.local.md from AGENTS.local.template.md"
     echo "and set your test project path."
     exit 1
 fi
@@ -41,7 +56,7 @@ if [ ! -d "$TEST_PROJECT_PATH" ]; then
 fi
 
 echo "Configuration:"
-echo "  IDE: $IDE_TYPE $IDE_VERSION"
+echo "  IDE: $IDE_TYPE${IDE_VERSION:+ $IDE_VERSION}"
 echo "  Port: $IDE_PORT"
 echo "  Project: $TEST_PROJECT_PATH"
 echo "  Plugin Dir: $PLUGIN_DIR"
@@ -202,11 +217,11 @@ echo ""
 
 # Step 4: Start IDE with project
 echo "🚀 Step 4: Starting $IDE_TYPE with project..."
-if [ -z "$TEST_PROJECT_PATH" ] || [ ! -d "$TEST_PROJECT_PATH" ]; then
-    echo "❌ Test project path not found: $TEST_PROJECT_PATH"
-    echo "   Please set TEST_PROJECT_PATH in CLAUDE.local.md"
-    exit 1
-fi
+	if [ -z "$TEST_PROJECT_PATH" ] || [ ! -d "$TEST_PROJECT_PATH" ]; then
+	    echo "❌ Test project path not found: $TEST_PROJECT_PATH"
+	    echo "   Please set TEST_PROJECT_PATH in AGENTS.local.md"
+	    exit 1
+	fi
 
 # Start IDE in background
 open -a "$IDE_TYPE" "$TEST_PROJECT_PATH"

@@ -38,7 +38,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
    - **✅ Check**: "Allow unsigned requests"
 4. **Apply** settings
 
-### 3. Set Up Claude Code MCP
+### 3. Set Up MCP Client
 
 First, clone the repository and install MCP server dependencies:
 
@@ -48,26 +48,26 @@ cd jetbrains-inspection-api/mcp-server
 npm install
 ```
 
-Then add the MCP server using Claude Code CLI:
+Then add the MCP server using your MCP client.
+
+Example using **Code** (Codex CLI fork):
 
 ```bash
 # For PyCharm (example port 63341)
-claude mcp add-json inspection-pycharm '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63341"}}'
+code mcp add inspection-pycharm node /path/to/jetbrains-inspection-api/mcp-server/server.js --env IDE_PORT=63341
 
 # For IntelliJ (example port 63340)
-claude mcp add-json inspection-intellij '{"command": "node", "args": ["/path/to/jetbrains-inspection-api/mcp-server/server.js"], "env": {"IDE_PORT": "63340"}}'
+code mcp add inspection-intellij node /path/to/jetbrains-inspection-api/mcp-server/server.js --env IDE_PORT=63340
 
 # Verify configuration
-claude mcp list
-
-# Restart Claude Code
+code mcp list
 ```
 
 **Replace `/path/to/jetbrains-inspection-api`** with actual location of your cloned repository.
 
 ## Usage
 
-### With Claude Code (Recommended)
+### With an MCP client
 ```bash
 # Trigger a full project inspection
 inspection_trigger()
@@ -309,7 +309,7 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 
 ## MCP Server Details
 
-The included MCP (Model Context Protocol) server provides seamless integration with Claude Code:
+The included MCP (Model Context Protocol) server provides integration for any MCP-capable client.
 
 ### Tools Provided
 - **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
@@ -333,7 +333,7 @@ IDE_PORT=63340 node mcp-server/server.js
 
 ## Development Workflow Example
 
-Add this to your project's `CLAUDE.md`:
+Add this to your project's `AGENTS.md` (or your repo's agent instructions file):
 
 ```markdown
 ## Code Quality Checks
