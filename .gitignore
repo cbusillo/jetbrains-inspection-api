@@ -58,25 +58,14 @@ replay_pid*
 /.gradle/
 /.intellijPlatform/
 /build/
-/build/classes/kotlin/main/
 
 # Node.js
 node_modules/
 
 /.kotlin/sessions
 
-# Local development configuration
-CLAUDE.local.md
+*.local.md
 
-# Plugin build outputs
-jetbrains-inspection-api-*.zip
-
-# IntelliJ
-.idea/
-*.iml
-*.ipr
-*.iws
 out/
 mcp-server/coverage/
-
-*.local.*
+/.claude/settings.local.json
