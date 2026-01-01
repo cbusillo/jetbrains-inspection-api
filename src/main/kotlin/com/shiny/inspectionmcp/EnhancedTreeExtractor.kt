@@ -10,7 +10,10 @@ import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.wm.ToolWindow
+import com.intellij.injected.editor.DocumentWindow
+import com.intellij.injected.editor.VirtualFileWindow
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
 import java.awt.Component
@@ -245,15 +248,30 @@ class EnhancedTreeExtractor {
                     if (element != null && element.isValid) {
                         val containingFile = element.containingFile
                         val virtualFile = containingFile?.virtualFile
-                        
-                        if (virtualFile != null) {
-                            file = virtualFile.path
-                            
-                            val document = PsiDocumentManager.getInstance(project).getDocument(containingFile)
-                            if (document != null) {
-                                val textRange = element.textRange
-                                line = document.getLineNumber(textRange.startOffset) + 1
-                                column = textRange.startOffset - document.getLineStartOffset(line - 1)
+
+                        if (virtualFile != null && containingFile != null) {
+                            val documentManager = PsiDocumentManager.getInstance(project)
+                            val document = documentManager.getDocument(containingFile)
+                            val textRange = element.textRange
+                            if (virtualFile is VirtualFileWindow && document is DocumentWindow) {
+                                val hostFile = virtualFile.delegate
+                                val hostPsi = InjectedLanguageManager.getInstance(project).getTopLevelFile(containingFile)
+                                val hostDocument = hostPsi?.let { psi -> documentManager.getDocument(psi) }
+                                val hostOffset = document.injectedToHost(textRange.startOffset)
+                                file = hostFile.path
+                                if (hostDocument != null) {
+                                    line = hostDocument.getLineNumber(hostOffset) + 1
+                                    column = hostOffset - hostDocument.getLineStartOffset(line - 1)
+                                } else {
+                                    line = document.getLineNumber(textRange.startOffset) + 1
+                                    column = textRange.startOffset - document.getLineStartOffset(line - 1)
+                                }
+                            } else {
+                                file = virtualFile.path
+                                if (document != null) {
+                                    line = document.getLineNumber(textRange.startOffset) + 1
+                                    column = textRange.startOffset - document.getLineStartOffset(line - 1)
+                                }
                             }
                         }
                         
