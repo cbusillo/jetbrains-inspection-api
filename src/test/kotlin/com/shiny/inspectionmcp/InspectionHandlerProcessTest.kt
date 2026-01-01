@@ -205,6 +205,21 @@ class InspectionHandlerProcessTest {
         assertTrue(result)
         verify(mockContext, times(1)).writeAndFlush(any())
     }
+
+    @Test
+    @DisplayName("Should process wait endpoint")
+    fun testProcessWaitEndpoint() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/wait")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf(
+            "timeout_ms" to listOf("1"),
+            "poll_ms" to listOf("1")
+        ))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+
+        assertTrue(result)
+        verify(mockContext, times(1)).writeAndFlush(any())
+    }
     
     @Test
     @DisplayName("Should handle unknown endpoint with 404")
@@ -224,7 +239,8 @@ class InspectionHandlerProcessTest {
         val endpoints = listOf(
             "/api/inspection/problems",
             "/api/inspection/trigger",
-            "/api/inspection/status"
+            "/api/inspection/status",
+            "/api/inspection/wait"
         )
         
         endpoints.forEach { path ->
@@ -283,7 +299,8 @@ class InspectionHandlerProcessTest {
         val endpoints = listOf(
             "/api/inspection/problems",
             "/api/inspection/trigger",
-            "/api/inspection/status"
+            "/api/inspection/status",
+            "/api/inspection/wait"
         )
         
         endpoints.forEach { endpoint ->
@@ -305,6 +322,7 @@ class InspectionHandlerProcessTest {
             "/api/inspection/problems",
             "/api/inspection/trigger",
             "/api/inspection/status",
+            "/api/inspection/wait",
             "/api/inspection/unknown"
         )
         

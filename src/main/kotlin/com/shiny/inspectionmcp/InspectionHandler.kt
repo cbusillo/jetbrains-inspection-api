@@ -107,6 +107,13 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     sendJsonResponse(context, result)
                 }
+                "/api/inspection/wait" -> {
+                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val timeoutMs = urlDecoder.parameters()["timeout_ms"]?.firstOrNull()?.toLongOrNull()
+                    val pollMs = urlDecoder.parameters()["poll_ms"]?.firstOrNull()?.toLongOrNull()
+                    val result = waitForInspection(projectName, timeoutMs, pollMs)
+                    sendJsonResponse(context, result)
+                }
                 else -> {
                     sendJsonResponse(context, """{"error": "Unknown endpoint"}""", HttpResponseStatus.NOT_FOUND)
                 }
@@ -270,58 +277,189 @@ class InspectionHandler : HttpRequestHandler() {
     
     private fun getInspectionStatus(project: Project): String {
         return try {
-            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            val problemsWindows = listOf("Problems View", "Problems", "Inspection Results")
-                .mapNotNull { toolWindowManager.getToolWindow(it) }
-            val problemsWindow = problemsWindows.firstOrNull()
-            val inspectionResultsWindow = toolWindowManager.getToolWindow("Inspection Results")
-
-            val status = mutableMapOf<String, Any>()
-            status["project_name"] = project.name
-
-            val currentTime = System.currentTimeMillis()
-            val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
-
-            val dumbService = com.intellij.openapi.project.DumbService.getInstance(project)
-            val isIndexing = dumbService.isDumb
-
-            // Use the same extractor as the /problems endpoint so status matches real availability
-            val extractor = EnhancedTreeExtractor()
-            val problemsAvailable = try {
-                extractor.extractAllProblems(project).isNotEmpty()
-            } catch (_: Exception) { false }
-
-            // Window visibility hints (best-effort)
-            val problemsVisible = problemsWindow?.isVisible ?: false
-            val inspectionVisible = inspectionResultsWindow?.isVisible ?: false
-            status["problems_window_visible"] = problemsVisible || inspectionVisible
-            if (inspectionResultsWindow != null && inspectionResultsWindow.isVisible) {
-                status["active_tool_window"] = "Inspection Results"
-            } else if (problemsWindow != null && problemsWindow.isVisible) {
-                status["active_tool_window"] = "Problems View"
-            }
-
-            val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000
-
-            if (problemsAvailable && inspectionInProgress && timeSinceLastTrigger > 5000) {
-                inspectionInProgress = false
-            }
-
-            status["is_scanning"] = isIndexing || isLikelyStillRunning
-            status["has_inspection_results"] = problemsAvailable
-            status["inspection_in_progress"] = inspectionInProgress
-            status["time_since_last_trigger_ms"] = timeSinceLastTrigger
-            status["indexing"] = isIndexing
-
-            // Clear indicator for a clean inspection (recent, finished, and no problems)
-            val recentlyCompleted = timeSinceLastTrigger < 60000
-            val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !problemsAvailable
-            status["clean_inspection"] = cleanInspection
-
+            val status = buildInspectionStatus(project)
             formatJsonManually(status)
         } catch (_: Exception) {
             """{"error": "Failed to get status"}"""
         }
+    }
+
+    private fun buildInspectionStatus(project: Project): MutableMap<String, Any> {
+        val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+        val problemsWindows = listOf("Problems View", "Problems", "Inspection Results")
+            .mapNotNull { toolWindowManager.getToolWindow(it) }
+        val problemsWindow = problemsWindows.firstOrNull()
+        val inspectionResultsWindow = toolWindowManager.getToolWindow("Inspection Results")
+
+        val status = mutableMapOf<String, Any>()
+        status["project_name"] = project.name
+
+        val currentTime = System.currentTimeMillis()
+        val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
+
+        val dumbService = com.intellij.openapi.project.DumbService.getInstance(project)
+        val isIndexing = dumbService.isDumb
+
+        // Use the same extractor as the /problems endpoint so status matches real availability
+        val cachedProblems = resultsStore.getProblems(project.name)
+        val cachedTimestamp = resultsStore.getTimestamp(project.name)
+        val hasInspectionSnapshot = cachedTimestamp != null
+        val extractor = EnhancedTreeExtractor()
+        val problemsSnapshot = if (hasInspectionSnapshot) {
+            cachedProblems ?: emptyList()
+        } else {
+            try {
+                extractor.extractAllProblems(project)
+            } catch (_: Exception) { emptyList() }
+        }
+        val problemsAvailable = problemsSnapshot.isNotEmpty()
+        status["total_problems"] = problemsSnapshot.size
+        status["results_source"] = if (hasInspectionSnapshot) "inspection_view" else "tool_window"
+
+        // Window visibility hints (best-effort)
+        val problemsVisible = problemsWindow?.isVisible ?: false
+        val inspectionVisible = inspectionResultsWindow?.isVisible ?: false
+        status["problems_window_visible"] = problemsVisible || inspectionVisible
+        if (inspectionResultsWindow != null && inspectionResultsWindow.isVisible) {
+            status["active_tool_window"] = "Inspection Results"
+        } else if (problemsWindow != null && problemsWindow.isVisible) {
+            status["active_tool_window"] = "Problems View"
+        }
+
+        val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000
+
+        if (problemsAvailable && inspectionInProgress && timeSinceLastTrigger > 5000) {
+            inspectionInProgress = false
+        }
+
+        status["is_scanning"] = isIndexing || isLikelyStillRunning
+        status["has_inspection_results"] = hasInspectionSnapshot || problemsAvailable
+        status["inspection_in_progress"] = inspectionInProgress
+        status["time_since_last_trigger_ms"] = timeSinceLastTrigger
+        status["indexing"] = isIndexing
+
+        // Clear indicator for a clean inspection (recent, finished, and no problems)
+        val recentlyCompleted = timeSinceLastTrigger < 60000
+        val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !problemsAvailable && hasInspectionSnapshot
+        status["clean_inspection"] = cleanInspection
+
+        return status
+    }
+
+    private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
+        val timeoutMs = (timeoutMsRaw ?: 180000L).coerceIn(1000L, 300000L)
+        val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
+        val start = System.currentTimeMillis()
+        var project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+        while (project == null) {
+            if (System.currentTimeMillis() - start >= timeoutMs) {
+                return formatWaitError("No project found", start, timeoutMs, pollMs, "no_project")
+            }
+
+            try {
+                TimeUnit.MILLISECONDS.sleep(pollMs)
+            } catch (_: Exception) {
+                return formatWaitError("Wait interrupted", start, timeoutMs, pollMs, "interrupted")
+            }
+
+            project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+        }
+
+        val activeProject = project
+            ?: return formatWaitError("No project found", start, timeoutMs, pollMs, "no_project")
+        var lastStableCount: Int? = null
+        var stableCountHits = 0
+        var stableSince: Long? = null
+        var status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
+
+        while (true) {
+        val hasResults = status["has_inspection_results"] as? Boolean ?: false
+        val cleanInspection = status["clean_inspection"] as? Boolean ?: false
+        val isScanning = status["is_scanning"] as? Boolean ?: false
+        val inProgress = status["inspection_in_progress"] as? Boolean ?: false
+        val totalProblems = (status["total_problems"] as? Number)?.toInt()
+        val resultsSource = status["results_source"] as? String
+        val minStableMs = 5000L
+        val now = System.currentTimeMillis()
+
+        if (cleanInspection && hasResults && !isScanning && !inProgress) {
+            return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
+        }
+
+        if (hasResults && !isScanning && !inProgress) {
+            if (resultsSource == "inspection_view") {
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+            }
+
+            if (totalProblems != null) {
+                if (totalProblems == lastStableCount) {
+                    if (stableCountHits == 0) {
+                        stableSince = now
+                    }
+                    stableCountHits += 1
+                } else {
+                    stableCountHits = 0
+                    stableSince = null
+                    lastStableCount = totalProblems
+                }
+
+                if (stableSince != null && now - stableSince >= minStableMs) {
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+                }
+            } else {
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+            }
+        }
+
+            if (System.currentTimeMillis() - start >= timeoutMs) {
+                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout")
+            }
+
+            try {
+                TimeUnit.MILLISECONDS.sleep(pollMs)
+            } catch (_: Exception) {
+                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted")
+            }
+
+            status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
+        }
+    }
+
+    private fun formatWaitResponse(
+        status: MutableMap<String, Any>,
+        startMs: Long,
+        timeoutMs: Long,
+        pollMs: Long,
+        completed: Boolean,
+        reason: String
+    ): String {
+        val response = status.toMutableMap()
+        val elapsed = System.currentTimeMillis() - startMs
+        response["wait_completed"] = completed
+        response["timed_out"] = !completed && reason == "timeout"
+        response["completion_reason"] = reason
+        response["wait_ms"] = elapsed
+        response["timeout_ms"] = timeoutMs
+        response["poll_ms"] = pollMs
+        return formatJsonManually(response)
+    }
+
+    private fun formatWaitError(
+        message: String,
+        startMs: Long,
+        timeoutMs: Long,
+        pollMs: Long,
+        reason: String
+    ): String {
+        val response = mutableMapOf<String, Any>()
+        response["error"] = message
+        response["wait_completed"] = false
+        response["timed_out"] = reason == "no_project" || reason == "timeout"
+        response["completion_reason"] = reason
+        response["wait_ms"] = System.currentTimeMillis() - startMs
+        response["timeout_ms"] = timeoutMs
+        response["poll_ms"] = pollMs
+        return formatJsonManually(response)
     }
     
     private fun triggerInspectionAsync(
@@ -393,6 +531,7 @@ class InspectionHandler : HttpRequestHandler() {
                 @Suppress("UnstableApiUsage")
                 globalContext.initializeViewIfNeeded()
                 val view = try {
+                    @Suppress("UnstableApiUsage")
                     globalContext.view
                 } catch (_: Exception) {
                     null

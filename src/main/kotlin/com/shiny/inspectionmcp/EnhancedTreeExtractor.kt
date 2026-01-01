@@ -216,7 +216,7 @@ class EnhancedTreeExtractor {
                 }
                 
                 is DefaultMutableTreeNode -> {
-                    extractProblemFromUserObject(node, problems, project)
+                    extractProblemFromUserObject(node, problems)
                     for (i in 0 until node.childCount) {
                         val child = node.getChildAt(i)
                         walkNode(child, problems, project, depth + 1)
@@ -237,7 +237,6 @@ class EnhancedTreeExtractor {
     private fun extractProblemFromUserObject(
         node: DefaultMutableTreeNode,
         problems: MutableList<Map<String, Any>>,
-        project: Project,
     ) {
         val userObject = node.userObject ?: return
         if (userObject is ProblemDescriptionNode || userObject is InspectionNode || userObject is InspectionTreeNode) {
@@ -271,7 +270,7 @@ class EnhancedTreeExtractor {
             ?: tryCall(candidate, "getTextRange")
             ?: tryCall(candidate, "getRange")
 
-        val (line, column) = resolveLineColumn(project, virtualFile, rangeObj)
+        val (line, column) = resolveLineColumn(virtualFile, rangeObj)
         val severity = normalizeSeverity(tryCall(candidate, "getSeverity") ?: tryCall(candidate, "getHighlightSeverity"))
         val category = callString(candidate, listOf("getCategory", "getGroup", "getCategoryName")) ?: "General"
         val inspectionType = callString(candidate, listOf("getInspectionToolId", "getShortName", "getName"))
@@ -301,7 +300,6 @@ class EnhancedTreeExtractor {
     }
 
     private fun resolveLineColumn(
-        project: Project,
         virtualFile: VirtualFile?,
         rangeObj: Any?
     ): Pair<Int, Int> {
@@ -311,13 +309,10 @@ class EnhancedTreeExtractor {
         val document = FileDocumentManager.getInstance().getDocument(virtualFile) ?: return 0 to 0
         val startOffset = when (rangeObj) {
             is TextRange -> rangeObj.startOffset
-            else -> {
-                val raw = tryCall(rangeObj, "getStartOffset")
-                when (raw) {
-                    is Int -> raw
-                    is Number -> raw.toInt()
-                    else -> null
-                }
+            else -> when (val raw = tryCall(rangeObj, "getStartOffset")) {
+                is Int -> raw
+                is Number -> raw.toInt()
+                else -> null
             }
         } ?: return 0 to 0
         val line = document.getLineNumber(startOffset) + 1

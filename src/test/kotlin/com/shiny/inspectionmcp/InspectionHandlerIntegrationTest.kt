@@ -54,7 +54,8 @@ class InspectionHandlerIntegrationTest {
         val validEndpoints = listOf(
             "/api/inspection/problems",
             "/api/inspection/trigger",
-            "/api/inspection/status"
+            "/api/inspection/status",
+            "/api/inspection/wait"
         )
         
         validEndpoints.forEach { endpoint ->
@@ -230,7 +231,8 @@ class InspectionHandlerIntegrationTest {
         val endpoints = listOf(
             "/api/inspection/problems",
             "/api/inspection/trigger",
-            "/api/inspection/status"
+            "/api/inspection/status",
+            "/api/inspection/wait"
         )
         
         endpoints.forEach { endpoint ->
