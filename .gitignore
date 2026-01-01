@@ -65,6 +65,9 @@ node_modules/
 /.kotlin/sessions
 
 *.local.md
+.env
+.env*
+*.env
 
 out/
 mcp-server/coverage/
