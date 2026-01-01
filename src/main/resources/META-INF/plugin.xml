@@ -1,8 +1,9 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.10.15</version>
+    <version>1.11.0</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
+    <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
     <description><![CDATA[
         Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
@@ -22,6 +23,12 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.11.0</b>
+        <ul>
+            <li>Bundled JVM MCP server (no Node.js dependency).</li>
+            <li>New long-poll endpoint: <code>/api/inspection/wait</code> and MCP tool <code>inspection_wait</code>.</li>
+            <li>New IDE action: <code>Tools → Copy MCP Setup Command</code>.</li>
+        </ul>
         <b>Version 1.10.13</b>
         <ul>
             <li>Problems endpoint now treats <code>scope=files</code>, <code>directory</code>, and <code>changed_files</code> as trigger-only (no accidental filtering).</li>
@@ -56,5 +63,18 @@
     
     <extensions defaultExtensionNs="com.intellij">
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>
+        <notificationGroup
+                id="inspection.api"
+                displayType="BALLOON"
+                bundle="messages.InspectionApiBundle"
+                key="notification.group.name" />
+        <postStartupActivity implementation="com.shiny.inspectionmcp.McpOnboardingStartupActivity"/>
     </extensions>
+
+    <actions resource-bundle="messages.InspectionApiBundle">
+        <action id="InspectionApi.CopyMcpCommand"
+                class="com.shiny.inspectionmcp.CopyMcpCommandAction">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>

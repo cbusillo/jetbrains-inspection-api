@@ -63,6 +63,20 @@ tasks {
     buildPlugin {
         archiveFileName.set("jetbrains-inspection-api-${project.property("pluginVersion")}.zip")
     }
+
+    prepareSandbox {
+        dependsOn(":mcp-server-jvm:mcpServerJar")
+        from(project(":mcp-server-jvm").layout.buildDirectory.file("libs/jetbrains-inspection-mcp.jar")) {
+            into("lib")
+        }
+    }
+
+    buildPlugin {
+        dependsOn(":mcp-server-jvm:mcpServerJar")
+        from(project(":mcp-server-jvm").layout.buildDirectory.file("libs/jetbrains-inspection-mcp.jar")) {
+            into("lib")
+        }
+    }
     
     test {
         useJUnitPlatform()

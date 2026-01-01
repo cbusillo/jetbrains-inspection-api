@@ -70,3 +70,4 @@ out/
 mcp-server/coverage/
 .claude/
 .code/
+/mcp-server-jvm/build/
