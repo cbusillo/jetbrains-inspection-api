@@ -386,6 +386,19 @@ Add this to your project's `AGENTS.md` (or your repo's agent instructions file):
 5. Commit changes
 ```
 
+## Optional commit gate
+
+This repo ships a shared commit gate script in `scripts/commit-gate.sh`.
+To use it as a git hook:
+
+```bash
+ln -s ../../scripts/commit-gate.sh .git/hooks/pre-commit
+```
+
+Notes:
+- Set `JAVA_HOME_21` if `/usr/libexec/java_home -v 21` is unavailable.
+- CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
+
 ## Known Limitations
 
 ### Inspection Detection Coverage
@@ -401,7 +414,7 @@ This limitation primarily affects Java projects in IntelliJ IDEA. PyCharm users 
 ### Automated IDE Testing
 ```bash
 # Run complete automated test cycle
-./test-automated.sh
+./scripts/test-automated.sh
 ```
 
 This will automatically:

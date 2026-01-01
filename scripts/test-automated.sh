@@ -278,6 +278,6 @@ echo "💡 Next Steps:"
 echo "   - IDE is still running for manual inspection"
 echo "   - To stop IDE: pkill -f $IDE_TYPE"
 echo "   - To see logs: tail -f ~/Library/Logs/JetBrains/${IDE_TYPE}${IDE_VERSION}/idea.log"
-echo "   - To re-run tests: ./test-automated.sh"
+echo "   - To re-run tests: ./scripts/test-automated.sh"
 
 exit $TEST_RESULT

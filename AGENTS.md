@@ -12,10 +12,12 @@ User-facing setup and API usage live in [README.md](README.md).
 ## Dev loop (Code)
 
 - Build plugin zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
-- Run all tests: `./test-all.sh`
+- Run all tests: `./scripts/test-all.sh`
 - Plugin unit tests only: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
 - MCP server tests only: `./gradlew :mcp-server-jvm:test`
 - MCP server jar only: `./gradlew :mcp-server-jvm:mcpServerJar`
+
+Optional commit gate checks are in `scripts/commit-gate.sh` (see README for setup).
 
 Notes:
 
@@ -36,6 +38,7 @@ Notes:
 
 - Prefer descriptive names to comments/docstrings; keep commentary minimal.
 - Avoid stale docs: keep this file evergreen and link to README for specifics.
+- Use `git mv` for file moves so history stays intact.
 
 ## Local-only overrides
 
@@ -45,7 +48,7 @@ If you need machine-specific paths/ports/log locations, copy `AGENTS.local.templ
 ## Release checklist
 
 - Bump versions: `gradle.properties` (`pluginVersion`).
-- Run tests: `./test-all.sh`.
+- Run tests: `./scripts/test-all.sh`.
 - Build zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`.
 - Tag + push: `git tag vX.Y.Z && git push && git push --tags`.
 - Create a GitHub Release and upload the zip from `build/distributions/`.

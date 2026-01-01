@@ -29,12 +29,12 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 ./gradlew :mcp-server-jvm:mcpServerJar
 
 # Everything (plugin tests + MCP tests + plugin build)
-./test-all.sh
+./scripts/test-all.sh
 ```
 
 ## Automated IDE smoke test
 
-`./test-automated.sh` can install the plugin into a local IDE, start it with a
+`./scripts/test-automated.sh` can install the plugin into a local IDE, start it with a
 test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
