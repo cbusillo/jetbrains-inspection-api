@@ -18,6 +18,9 @@ curl "http://localhost:$IDE_PORT/api/inspection/trigger?project=$PROJECT_NAME&sc
 # Poll until is_scanning=false and either clean_inspection=true or has_inspection_results=true
 curl "http://localhost:$IDE_PORT/api/inspection/status?project=$PROJECT_NAME"
 
+# Or long-poll until results are ready
+curl "http://localhost:$IDE_PORT/api/inspection/wait?project=$PROJECT_NAME&timeout_ms=180000&poll_ms=1000"
+
 curl "http://localhost:$IDE_PORT/api/inspection/problems?project=$PROJECT_NAME&severity=error&limit=1"
 ```
 

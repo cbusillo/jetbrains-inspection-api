@@ -29,6 +29,9 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 # Plugin will be in build/distributions/
 ```
 
+If `/usr/libexec/java_home -v 21` fails, set `JAVA_HOME_21` to your JDK 21
+path and rerun the command.
+
 ### 2. Configure IDE Built-in Server
 1. **Open IDE Settings**: `File` → `Settings` (or `IntelliJ IDEA` → `Preferences` on macOS)
 2. **Navigate to**: `Tools` → `Web Browsers and Preview`
@@ -40,30 +43,28 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 
 ### 3. Set Up MCP Client
 
-First, clone the repository and install MCP server dependencies:
+The plugin bundles the MCP server as a JVM jar.
 
-```bash
-git clone https://github.com/cbusillo/jetbrains-inspection-api.git
-cd jetbrains-inspection-api/mcp-server
-npm install
-```
+Fast path: on first run you’ll see a notification with a **Copy MCP Setup Command** button.
+You can also run `Tools` → `Copy MCP Setup Command`, then paste the command into your terminal.
 
-Then add the MCP server using your MCP client.
-
-Example using **Code** (Codex CLI fork):
+Manual example using **Code** (Codex CLI fork):
 
 ```bash
 # For PyCharm (example port 63341)
-code mcp add inspection-pycharm node /path/to/jetbrains-inspection-api/mcp-server/server.js --env IDE_PORT=63341
+code mcp add --env IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # For IntelliJ (example port 63340)
-code mcp add inspection-intellij node /path/to/jetbrains-inspection-api/mcp-server/server.js --env IDE_PORT=63340
+code mcp add --env IDE_PORT=63340 inspection-intellij "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Verify configuration
 code mcp list
 ```
 
-**Replace `/path/to/jetbrains-inspection-api`** with actual location of your cloned repository.
+Notes:
+- Use the IDE's bundled Java (from `java.home`) or any Java 21 on your PATH.
+- The jar is installed with the plugin under the IDE's plugins directory.
+- For source builds, the jar is at `mcp-server-jvm/build/libs/jetbrains-inspection-mcp.jar`.
 
 ## Usage
 
@@ -74,6 +75,9 @@ inspection_trigger()
 
 # Check inspection status
 inspection_get_status()
+
+# Wait for inspection to finish
+inspection_wait()
 
 # Get all problems in project (after triggering)
 inspection_get_problems()
@@ -98,6 +102,9 @@ curl "http://localhost:63340/api/inspection/trigger"
 
 # Check inspection status
 curl "http://localhost:63340/api/inspection/status"
+
+# Wait for inspection to finish (long-poll)
+curl "http://localhost:63340/api/inspection/wait?timeout_ms=180000&poll_ms=1000"
 
 # Get all problems in project
 curl "http://localhost:63340/api/inspection/problems"
@@ -310,26 +317,27 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 
 ## MCP Server Details
 
-The included MCP (Model Context Protocol) server provides integration for any MCP-capable client.
+The bundled JVM MCP (Model Context Protocol) server provides integration for any MCP-capable client.
 
 ### Tools Provided
 - **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
   - Also supports `scope=files` with `file=...` (repeat) or `files=[...]`, and `scope=changed_files` with `include_unversioned` and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
+- **`inspection_wait(timeout_ms?, poll_ms?)`** - Long-poll until results or timeout
 - **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?)`** - Gets inspection problems with filtering and pagination
 
 ### Requirements
-- **Node.js 18.0.0+**
+- **Java 21+** (or the IDE's bundled runtime)
 - **JetBrains IDE** with this plugin installed
 - **IDE built-in server** enabled and configured
 
 ### Debugging
 ```bash
 # Test the MCP server directly
-echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | node mcp-server/server.js
+echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 
 # Set custom port
-IDE_PORT=63340 node mcp-server/server.js
+IDE_PORT=63340 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
 ## Development Workflow Example
@@ -349,6 +357,7 @@ Add this to your project's `AGENTS.md` (or your repo's agent instructions file):
 - `inspection_trigger(scope="files", files=["src/a.py","src/b.py"])` - Trigger for specific files
 - `inspection_trigger(scope="changed_files", max_files=50)` - Trigger for changed files only
 - `inspection_get_status()` - Check if inspection is complete
+- `inspection_wait()` - Wait for inspection completion (long-poll)
 - `inspection_get_problems()` - Get all project problems (paginated)
 - `inspection_get_problems(scope="current_file")` - Get problems in open files only
 - `inspection_get_problems(severity="error")` - Get only error-level problems

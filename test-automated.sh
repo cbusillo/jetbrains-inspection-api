@@ -12,6 +12,7 @@ IDE_VERSION=""
 IDE_PORT="63341"
 TEST_PROJECT_PATH=""  # Must be set in AGENTS.local.md
 PLUGIN_DIR=""
+JAVA_HOME_21=""
 
 if [ -f "AGENTS.local.md" ]; then
     IDE_TYPE=$(grep "IDE_TYPE=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_TYPE")
@@ -19,6 +20,9 @@ if [ -f "AGENTS.local.md" ]; then
     IDE_PORT=$(grep "IDE_PORT=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_PORT")
     TEST_PROJECT_PATH=$(grep "TEST_PROJECT_PATH=" AGENTS.local.md | cut -d'"' -f2 || echo "$TEST_PROJECT_PATH")
     PLUGIN_DIR=$(grep "PLUGIN_DIR=" AGENTS.local.md | cut -d'"' -f2 || echo "$PLUGIN_DIR")
+    if [ -z "$JAVA_HOME_21" ]; then
+        JAVA_HOME_21=$(grep "JAVA_HOME_21=" AGENTS.local.md | cut -d'"' -f2 || echo "$JAVA_HOME_21")
+    fi
 fi
 
 if [ -z "$PLUGIN_DIR" ]; then
@@ -95,28 +99,23 @@ run_api_tests() {
     echo "📍 Triggering Inspection..."
     TRIGGER_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/trigger")
     echo "   Response: $(echo "$TRIGGER_RESPONSE" | jq -r '.message // "triggered"')"
-    
-    # Wait for inspection to complete
+
+    # Wait for inspection to complete (long-poll)
     echo "⏳ Waiting for inspection to complete..."
-    for i in {1..30}; do
-        STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status")
-        IS_SCANNING=$(echo "$STATUS" | jq -r '.is_scanning // true')
-        HAS_RESULTS=$(echo "$STATUS" | jq -r '.has_inspection_results // false')
-        
-        if [ "$IS_SCANNING" = "false" ] && [ "$HAS_RESULTS" = "true" ]; then
-            echo "✅ Inspection complete"
-            break
-        fi
-        
-        if [ "$i" -eq 30 ]; then
-            echo ""
-            echo "⚠️  Inspection status check timed out after 30 seconds"
-            echo "   Continuing with tests anyway..."
-        else
-            sleep 1
-            echo -n "."
-        fi
-    done
+    WAIT_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/wait?timeout_ms=180000&poll_ms=1000")
+    WAIT_COMPLETED=$(echo "$WAIT_RESPONSE" | jq -r '.wait_completed // false')
+    WAIT_REASON=$(echo "$WAIT_RESPONSE" | jq -r '.completion_reason // "unknown"')
+    WAIT_TIMED_OUT=$(echo "$WAIT_RESPONSE" | jq -r '.timed_out // false')
+
+    if [ "$WAIT_COMPLETED" = "true" ]; then
+        echo "✅ Inspection wait completed ($WAIT_REASON)"
+    elif [ "$WAIT_TIMED_OUT" = "true" ]; then
+        echo "⚠️  Inspection wait timed out after 120s"
+        echo "   Continuing with tests anyway..."
+    else
+        echo "⚠️  Inspection wait did not complete"
+        echo "   Continuing with tests anyway..."
+    fi
     echo ""
     
     # Test 1: Get inspection results
@@ -169,9 +168,18 @@ run_api_tests() {
 
 # Step 1: Build plugin
 echo "🔨 Step 1: Building plugin..."
-JAVA_HOME=$(/usr/libexec/java_home -v 21)
+if [ -n "$JAVA_HOME_21" ]; then
+    JAVA_HOME="$JAVA_HOME_21"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
+fi
+
+if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
+    echo "❌ ERROR: Java 21 not found. Please set JAVA_HOME_21."
+    exit 1
+fi
+
 export JAVA_HOME
-./gradlew buildPlugin
 if ! ./gradlew buildPlugin; then
     echo "❌ Build failed!"
     exit 1
@@ -199,7 +207,7 @@ echo ""
 
 # Step 3: Install plugin
 echo "📦 Step 3: Installing plugin..."
-PLUGIN_ZIP=$(find build/distributions -name "jetbrains-inspection-api-*.zip" | head -n 1)
+PLUGIN_ZIP=$(ls -t build/distributions/jetbrains-inspection-api-*.zip 2>/dev/null | head -n 1)
 if [ -z "$PLUGIN_ZIP" ]; then
     echo "❌ Plugin ZIP not found in build/distributions/"
     exit 1

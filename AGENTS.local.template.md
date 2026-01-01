@@ -2,13 +2,16 @@
 
 Copy this file to `AGENTS.local.md` and customize for your machine.
 
-`AGENTS.local.md` is intentionally gitignored (keep local paths, ports, and IDE details out of git).
+`AGENTS.local.md` is intentionally ignored by git (keep local paths, ports, and IDE details out of git).
 
 ## IDE + Plugin
 
 ```bash
 IDE_TYPE="PyCharm"  # or IntelliJ, WebStorm, etc.
 IDE_PORT="63341"
+
+# Optional: Java 21 home (helps when /usr/libexec/java_home -v 21 fails)
+JAVA_HOME_21="/path/to/jdk-21"
 
 # Optional: where the IDE installs plugins (useful for debugging scripted installs)
 PLUGIN_DIR=""  # optional; if empty, scripts try to auto-detect the newest IDE install

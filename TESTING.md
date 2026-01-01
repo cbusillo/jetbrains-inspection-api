@@ -2,13 +2,19 @@
 
 This project has two test surfaces:
 
-- **Plugin (Kotlin/Gradle)**: HTTP handler + inspection extraction/trigger logic.
-- **MCP server (Node)**: tool wiring + URL/param handling + error behavior.
+- **Plugin (Kotlin/Gradle)**: HTTP handler and inspection extraction/trigger logic.
+- **MCP server (JVM)**: tool wiring + URL/param handling + error behavior.
 
 ## Prerequisites
 
-- Java 21 (required for Gradle plugin builds)
-- Node.js 18+
+- Java 21 (required for Gradle builds)
+
+If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
+JDK 21 path before running the scripts.
+
+In the Code sandbox, Gradle may need escalated permissions. If you see
+"Operation not permitted" from NativeServices, re-run the command with
+escalation.
 
 ## Local commands
 
@@ -17,9 +23,12 @@ This project has two test surfaces:
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
 # MCP server tests
-cd mcp-server && npm test
+./gradlew :mcp-server-jvm:test
 
-# Everything (plugin tests + MCP tests + build)
+# MCP server jar
+./gradlew :mcp-server-jvm:mcpServerJar
+
+# Everything (plugin tests + MCP tests + plugin build)
 ./test-all.sh
 ```
 
@@ -35,5 +44,6 @@ test project, and hit a few API endpoints.
 GitHub Actions runs on version tags (`v*`) via `.github/workflows/release.yml`:
 
 - `./gradlew test`
-- `mcp-server` tests
+- `./gradlew :mcp-server-jvm:test`
+- `mcp-server-jvm` build
 - `./gradlew buildPlugin`

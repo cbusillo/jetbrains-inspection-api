@@ -41,12 +41,12 @@ print_result() {
 print_section "1. Running Kotlin Plugin Tests with Coverage"
 
 # Detect Java 21 location based on OS
-if [[ "$OSTYPE" == "darwin"* ]]; then
-    # macOS
-    JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null)
-elif [ -n "$JAVA_HOME_21" ]; then
+if [ -n "$JAVA_HOME_21" ]; then
     # Use environment variable if set
     JAVA_HOME="$JAVA_HOME_21"
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS
+    JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
 else
     # Try common Linux locations
     for dir in /usr/lib/jvm/java-21-* /usr/lib/jvm/java-21 /usr/lib/jvm/jdk-21*; do
@@ -78,26 +78,16 @@ fi
 print_result $PLUGIN_TEST_RESULT "Plugin tests"
 
 # Step 2: MCP Server Tests
-print_section "2. Running MCP Server Tests with Coverage"
+print_section "2. Running MCP Server Tests (JVM)"
 
-echo "Installing dependencies..."
-cd mcp-server
-npm install
-
-echo ""
 echo "Running MCP server tests..."
-if npm run test:coverage; then
+if ./gradlew :mcp-server-jvm:test :mcp-server-jvm:mcpServerJar; then
     MCP_TEST_RESULT=0
-    echo ""
-    echo "Coverage Report:"
-    echo "  HTML: coverage/index.html"
-    echo "  Text: See output above"
 else
     MCP_TEST_RESULT=1
 fi
 
 print_result $MCP_TEST_RESULT "MCP server tests"
-cd ..
 
 # Step 3: Build Verification
 print_section "3. Build Verification"
@@ -124,20 +114,8 @@ fi
 
 print_result $BUILD_RESULT "Plugin build"
 
-# Step 4: MCP Syntax Check
-print_section "4. MCP Server Syntax Check"
-
-echo "Checking MCP server syntax..."
-if node --check mcp-server/server.js; then
-    SYNTAX_RESULT=0
-else
-    SYNTAX_RESULT=1
-fi
-
-print_result $SYNTAX_RESULT "MCP syntax check"
-
-# Step 5: Coverage Verification
-print_section "5. Coverage Verification"
+# Step 4: Coverage Verification
+print_section "4. Coverage Verification"
 
 echo "Checking plugin test coverage..."
 if ./gradlew jacocoTestCoverageVerification; then
@@ -154,7 +132,6 @@ echo "Test Results:"
 print_result $PLUGIN_TEST_RESULT "  Plugin tests"
 print_result $MCP_TEST_RESULT "  MCP server tests"
 print_result $BUILD_RESULT "  Plugin build"
-print_result $SYNTAX_RESULT "  MCP syntax"
 print_result $COVERAGE_RESULT "  Coverage threshold"
 
 echo ""
@@ -167,7 +144,7 @@ fi
 echo ""
 echo "Reports Generated:"
 echo "  - Plugin coverage: build/reports/jacoco/test/html/index.html"
-echo "  - MCP coverage:    mcp-server/coverage/index.html"
+echo "  - MCP jar:         mcp-server-jvm/build/libs/jetbrains-inspection-mcp.jar"
 echo "  - Test results:    build/reports/tests/test/index.html"
 
 exit $OVERALL_RESULT

@@ -7,14 +7,22 @@ User-facing setup and API usage live in [README.md](README.md).
 ## Tooling
 
 - Plugin: Kotlin/Gradle (JetBrains 2025.x), requires Java 21.
-- MCP server: Node.js 18+ in `mcp-server/`.
+- MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
 
 ## Dev loop (Code)
 
 - Build plugin zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
 - Run all tests: `./test-all.sh`
 - Plugin unit tests only: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test`
-- MCP server tests only: `cd mcp-server && npm test`
+- MCP server tests only: `./gradlew :mcp-server-jvm:test`
+- MCP server jar only: `./gradlew :mcp-server-jvm:mcpServerJar`
+
+Notes:
+
+- If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
+  JDK 21 path (the IDE's bundled runtime is fine).
+- In the Code sandbox, Gradle may need escalated permissions; if you see
+  "Operation not permitted" from NativeServices, re-run with escalation.
 
 ## Local validation
 
@@ -26,17 +34,17 @@ User-facing setup and API usage live in [README.md](README.md).
 
 ## Conventions
 
-- Prefer descriptive names over comments/docstrings; keep commentary minimal.
+- Prefer descriptive names to comments/docstrings; keep commentary minimal.
 - Avoid stale docs: keep this file evergreen and link to README for specifics.
 
 ## Local-only overrides
 
 If you need machine-specific paths/ports/log locations, copy `AGENTS.local.template.md` to `AGENTS.local.md`.
-`AGENTS.local.md` is gitignored.
+`AGENTS.local.md` is ignored in git.
 
 ## Release checklist
 
-- Bump versions: `gradle.properties` (`pluginVersion`) and `mcp-server/package.json`.
+- Bump versions: `gradle.properties` (`pluginVersion`).
 - Run tests: `./test-all.sh`.
 - Build zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`.
 - Tag + push: `git tag vX.Y.Z && git push && git push --tags`.

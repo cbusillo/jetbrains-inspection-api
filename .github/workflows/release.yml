@@ -35,6 +35,12 @@ jobs:
     
     - name: Run tests
       run: ./gradlew test
+
+    - name: Test MCP server (JVM)
+      run: ./gradlew :mcp-server-jvm:test
+
+    - name: Build MCP server jar
+      run: ./gradlew :mcp-server-jvm:mcpServerJar
     
     - name: Upload test results
       uses: actions/upload-artifact@v4
@@ -44,30 +50,8 @@ jobs:
         path: build/reports/tests/test/
         retention-days: 7
 
-  mcp-test:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '18'
-        cache: 'npm'
-        cache-dependency-path: mcp-server/package-lock.json
-    
-    - name: Install MCP dependencies
-      run: cd mcp-server && npm ci
-    
-    - name: Test MCP server syntax
-      run: cd mcp-server && node --check server.js
-    
-    - name: Run MCP server tests
-      run: cd mcp-server && npm test
-
   release:
-    needs: [test, mcp-test]
+    needs: [test]
     runs-on: ubuntu-latest
     permissions:
       contents: write
