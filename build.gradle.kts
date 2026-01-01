@@ -5,7 +5,7 @@ import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 plugins {
     id("java")
     id("org.jetbrains.kotlin.jvm") version "2.1.21"
-    id("org.jetbrains.intellij.platform") version "2.9.0"
+    id("org.jetbrains.intellij.platform") version "2.10.5"
     kotlin("plugin.serialization") version "2.1.21"
     id("jacoco")
 }
@@ -37,7 +37,7 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.24.2")
     
     intellijPlatform {
-        intellijIdeaCommunity("2025.1.1")
+        intellijIdea("2025.1.1")
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)

@@ -18,6 +18,15 @@ import java.awt.Container
 import javax.swing.JTree
 
 class EnhancedTreeExtractor {
+
+    fun extractAllProblemsFromInspectionView(view: InspectionResultsView, project: Project): List<Map<String, Any>> {
+        val problems = mutableListOf<Map<String, Any>>()
+        try {
+            extractProblemsFromView(view, problems, project)
+        } catch (_: Exception) {
+        }
+        return problems
+    }
     
     fun extractAllProblems(project: Project): List<Map<String, Any>> {
         val problems = mutableListOf<Map<String, Any>>()

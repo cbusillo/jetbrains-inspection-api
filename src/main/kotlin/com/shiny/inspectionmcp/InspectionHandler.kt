@@ -22,6 +22,8 @@ class InspectionHandler : HttpRequestHandler() {
     private var lastInspectionTriggerTime: Long = 0
     @Volatile
     private var inspectionInProgress: Boolean = false
+
+    private val resultsStore = InspectionResultsStore
     
     override fun isSupported(request: FullHttpRequest): Boolean {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
@@ -127,10 +129,16 @@ class InspectionHandler : HttpRequestHandler() {
     ): String {
         val project = getCurrentProject(projectName)
             ?: return """{"error": "No project found"}"""
-        
+
         return try {
-            val extractor = EnhancedTreeExtractor()
-            val problems = extractor.extractAllProblems(project)
+            val normalizedScope = normalizeProblemsScope(scope)
+            val cachedProblems = resultsStore.getProblems(project.name)
+            val problems = if (cachedProblems != null) {
+                cachedProblems
+            } else {
+                val extractor = EnhancedTreeExtractor()
+                extractor.extractAllProblems(project)
+            }
             
             if (problems.isNotEmpty()) {
                 val severityFilteredProblems = if (severity == "all") {
@@ -144,12 +152,12 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 
-                val scopeFilteredProblems = if (scope == "whole_project") {
+                val scopeFilteredProblems = if (normalizedScope == "whole_project") {
                     severityFilteredProblems
                 } else {
                     val filtered = severityFilteredProblems.filter { problem ->
                         val filePath = problem["file"] as? String ?: ""
-                        when (scope) {
+                        when (normalizedScope) {
                             // Limit to the currently selected editor file when available
                             "current_file" -> {
                                 val selected = try {
@@ -218,7 +226,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val response = mapOf(
                     "status" to "results_available",
                     "project" to project.name,
-                    "timestamp" to System.currentTimeMillis(),
+                    "timestamp" to (resultsStore.getTimestamp(project.name) ?: System.currentTimeMillis()),
                     "total_problems" to totalFilteredProblems,
                     "problems_shown" to paginatedProblems.size,
                     "problems" to paginatedProblems,
@@ -230,7 +238,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "filters" to mapOf(
                         "severity" to severity,
-                        "scope" to scope,
+                        "scope" to normalizedScope,
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     ),
@@ -243,6 +251,20 @@ class InspectionHandler : HttpRequestHandler() {
             }
         } catch (_: Exception) {
             """{"error": "Failed to get inspection problems"}"""
+        }
+    }
+
+    private fun normalizeProblemsScope(scopeRaw: String): String {
+        val trimmed = scopeRaw.trim()
+        if (trimmed.isBlank()) {
+            return "whole_project"
+        }
+
+        return when (trimmed.lowercase()) {
+            "whole_project" -> "whole_project"
+            "current_file" -> "current_file"
+            "files", "directory", "changed_files" -> "whole_project"
+            else -> trimmed
         }
     }
     
@@ -366,10 +388,54 @@ class InspectionHandler : HttpRequestHandler() {
                 true,
                 project
             )
-            
+
+            try {
+                @Suppress("UnstableApiUsage")
+                globalContext.initializeViewIfNeeded()
+                val view = try {
+                    globalContext.view
+                } catch (_: Exception) {
+                    null
+                }
+                if (view != null) {
+                    val extractor = EnhancedTreeExtractor()
+                    val extracted = ReadAction.compute<List<Map<String, Any>>, Exception> {
+                        extractor.extractAllProblemsFromInspectionView(view, project)
+                    }
+                    resultsStore.setProblems(project.name, extracted)
+                } else {
+                    resultsStore.clear(project.name)
+                }
+            } catch (_: Exception) {
+                resultsStore.clear(project.name)
+            }
+
             inspectionInProgress = false
         } catch (_: Exception) {
             inspectionInProgress = false
+        }
+    }
+
+    private object InspectionResultsStore {
+        private val problemsByProject = java.util.concurrent.ConcurrentHashMap<String, List<Map<String, Any>>>()
+        private val timestampByProject = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+        fun getProblems(projectName: String): List<Map<String, Any>>? {
+            return problemsByProject[projectName]?.takeIf { it.isNotEmpty() }
+        }
+
+        fun getTimestamp(projectName: String): Long? {
+            return timestampByProject[projectName]
+        }
+
+        fun setProblems(projectName: String, problems: List<Map<String, Any>>) {
+            problemsByProject[projectName] = problems
+            timestampByProject[projectName] = System.currentTimeMillis()
+        }
+
+        fun clear(projectName: String) {
+            problemsByProject.remove(projectName)
+            timestampByProject.remove(projectName)
         }
     }
 

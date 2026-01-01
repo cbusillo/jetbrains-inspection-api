@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.10.12</version>
+    <version>1.10.13</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     
     <description><![CDATA[
@@ -22,6 +22,10 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.10.13</b>
+        <ul>
+            <li>Problems endpoint now treats <code>scope=files</code>, <code>directory</code>, and <code>changed_files</code> as trigger-only (no accidental filtering).</li>
+        </ul>
         <b>Version 1.10.11</b>
         <ul>
             <li>Prefers Inspect Code results over Problems View when available (reduces noise from generated files).</li>
