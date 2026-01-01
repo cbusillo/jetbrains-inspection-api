@@ -5,8 +5,8 @@
 
 set -e
 
-echo "🧪 JetBrains Inspection API - Comprehensive Test Suite"
-echo "====================================================="
+echo "JetBrains Inspection API - Comprehensive Test Suite"
+echo "===================================================="
 echo ""
 
 # Colors for output
@@ -21,18 +21,18 @@ OVERALL_RESULT=0
 # Function to print test section
 print_section() {
     echo ""
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "-----------------------------------------------------"
     echo "  $1"
-    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "-----------------------------------------------------"
     echo ""
 }
 
 # Function to print result
 print_result() {
     if [ "$1" -eq 0 ]; then
-        echo -e "${GREEN}✅ $2 PASSED${NC}"
+        echo -e "${GREEN}[OK] $2 PASSED${NC}"
     else
-        echo -e "${RED}❌ $2 FAILED${NC}"
+        echo -e "${RED}[FAIL] $2 FAILED${NC}"
         OVERALL_RESULT=1
     fi
 }
@@ -58,19 +58,19 @@ else
 fi
 
 if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
-    echo "❌ ERROR: Java 21 not found. Please set JAVA_HOME_21 environment variable."
+    echo "ERROR: Java 21 not found. Please set JAVA_HOME_21 environment variable."
     exit 1
 fi
 
 export JAVA_HOME
 
-echo "📍 Running plugin tests..."
+echo "Running plugin tests..."
 if ./gradlew test jacocoTestReport; then
     PLUGIN_TEST_RESULT=0
     echo ""
-    echo "📊 Coverage Report:"
-    echo "   HTML: build/reports/jacoco/test/html/index.html"
-    echo "   XML:  build/reports/jacoco/test/jacocoTestReport.xml"
+    echo "Coverage Report:"
+    echo "  HTML: build/reports/jacoco/test/html/index.html"
+    echo "  XML:  build/reports/jacoco/test/jacocoTestReport.xml"
 else
     PLUGIN_TEST_RESULT=1
 fi
@@ -80,18 +80,18 @@ print_result $PLUGIN_TEST_RESULT "Plugin tests"
 # Step 2: MCP Server Tests
 print_section "2. Running MCP Server Tests with Coverage"
 
-echo "📍 Installing dependencies..."
+echo "Installing dependencies..."
 cd mcp-server
 npm install
 
 echo ""
-echo "📍 Running MCP server tests..."
+echo "Running MCP server tests..."
 if npm run test:coverage; then
     MCP_TEST_RESULT=0
     echo ""
-    echo "📊 Coverage Report:"
-    echo "   HTML: coverage/index.html"
-    echo "   Text: See output above"
+    echo "Coverage Report:"
+    echo "  HTML: coverage/index.html"
+    echo "  Text: See output above"
 else
     MCP_TEST_RESULT=1
 fi
@@ -102,13 +102,21 @@ cd ..
 # Step 3: Build Verification
 print_section "3. Build Verification"
 
-echo "📍 Building plugin..."
+echo "Building plugin..."
 if ./gradlew buildPlugin; then
     BUILD_RESULT=0
-    PLUGIN_FILE=$(find build/distributions -name "jetbrains-inspection-api-*.zip" | head -n 1)
+    PLUGIN_FILE=""
+    if [ -d build/distributions ]; then
+        shopt -s nullglob
+        plugin_files=(build/distributions/jetbrains-inspection-api-*.zip)
+        shopt -u nullglob
+        if [ ${#plugin_files[@]} -gt 0 ]; then
+            PLUGIN_FILE=$(ls -t "${plugin_files[@]}" | head -n 1)
+        fi
+    fi
     if [ -n "$PLUGIN_FILE" ]; then
         FILE_SIZE=$(du -h "$PLUGIN_FILE" | cut -f1)
-        echo "   Plugin: $PLUGIN_FILE ($FILE_SIZE)"
+        echo "  Plugin: $PLUGIN_FILE ($FILE_SIZE)"
     fi
 else
     BUILD_RESULT=1
@@ -119,7 +127,7 @@ print_result $BUILD_RESULT "Plugin build"
 # Step 4: MCP Syntax Check
 print_section "4. MCP Server Syntax Check"
 
-echo "📍 Checking MCP server syntax..."
+echo "Checking MCP server syntax..."
 if node --check mcp-server/server.js; then
     SYNTAX_RESULT=0
 else
@@ -131,16 +139,16 @@ print_result $SYNTAX_RESULT "MCP syntax check"
 # Step 5: Coverage Verification
 print_section "5. Coverage Verification"
 
-echo "📍 Checking plugin test coverage..."
+echo "Checking plugin test coverage..."
 if ./gradlew jacocoTestCoverageVerification; then
     COVERAGE_RESULT=0
 else
     COVERAGE_RESULT=1
-    echo -e "${YELLOW}⚠️  Coverage is below 80% threshold${NC}"
+    echo -e "${YELLOW}WARNING: Coverage is below 80% threshold${NC}"
 fi
 
 # Summary
-print_section "📊 Test Summary"
+print_section "Test Summary"
 
 echo "Test Results:"
 print_result $PLUGIN_TEST_RESULT "  Plugin tests"
@@ -151,15 +159,15 @@ print_result $COVERAGE_RESULT "  Coverage threshold"
 
 echo ""
 if [ $OVERALL_RESULT -eq 0 ]; then
-    echo -e "${GREEN}✅ All tests passed!${NC}"
+    echo -e "${GREEN}All tests passed!${NC}"
 else
-    echo -e "${RED}❌ Some tests failed!${NC}"
+    echo -e "${RED}Some tests failed!${NC}"
 fi
 
 echo ""
-echo "📚 Reports Generated:"
-echo "   - Plugin coverage: build/reports/jacoco/test/html/index.html"
-echo "   - MCP coverage:    mcp-server/coverage/index.html"
-echo "   - Test results:    build/reports/tests/test/index.html"
+echo "Reports Generated:"
+echo "  - Plugin coverage: build/reports/jacoco/test/html/index.html"
+echo "  - MCP coverage:    mcp-server/coverage/index.html"
+echo "  - Test results:    build/reports/tests/test/index.html"
 
 exit $OVERALL_RESULT

@@ -69,3 +69,4 @@ node_modules/
 out/
 mcp-server/coverage/
 .claude/
+.code/
