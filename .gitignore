@@ -65,7 +65,6 @@ node_modules/
 /.kotlin/sessions
 
 *.local.md
-.env
 .env*
 *.env
 

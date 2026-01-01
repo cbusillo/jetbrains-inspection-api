@@ -45,7 +45,7 @@ path and rerun the command.
 
 The plugin bundles the MCP server as a JVM jar.
 
-Fast path: on first run you’ll see a notification with a **Copy MCP Setup Command** button.
+Fast path: on the first run you’ll see a notification with a **Copy MCP Setup Command** button.
 You can also run `Tools` → `Copy MCP Setup Command`, then paste the command into your terminal.
 
 Manual example using **Code** (Codex CLI fork):
