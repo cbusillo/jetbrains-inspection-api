@@ -7,7 +7,11 @@ import com.intellij.codeInspection.ui.InspectionNode
 import com.intellij.codeInspection.ui.InspectionTreeNode
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.codeInspection.ProblemHighlightType
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.lang.injection.InjectedLanguageManager
@@ -212,6 +216,7 @@ class EnhancedTreeExtractor {
                 }
                 
                 is DefaultMutableTreeNode -> {
+                    extractProblemFromUserObject(node, problems, project)
                     for (i in 0 until node.childCount) {
                         val child = node.getChildAt(i)
                         walkNode(child, problems, project, depth + 1)
@@ -227,6 +232,131 @@ class EnhancedTreeExtractor {
             }
         } catch (e: Exception) {
         }
+    }
+
+    private fun extractProblemFromUserObject(
+        node: DefaultMutableTreeNode,
+        problems: MutableList<Map<String, Any>>,
+        project: Project,
+    ) {
+        val userObject = node.userObject ?: return
+        if (userObject is ProblemDescriptionNode || userObject is InspectionNode || userObject is InspectionTreeNode) {
+            return
+        }
+
+        val candidate = tryCall(userObject, "getProblem") ?: userObject
+        val description = callString(
+            candidate,
+            listOf("getDescription", "getText", "getMessage", "getTitle")
+        ) ?: return
+
+        val location = tryCall(candidate, "getLocation") ?: tryCall(candidate, "getProblemLocation")
+        val fileObj = tryCall(location, "getVirtualFile")
+            ?: tryCall(location, "getFile")
+            ?: tryCall(location, "getFilePath")
+            ?: tryCall(candidate, "getVirtualFile")
+            ?: tryCall(candidate, "getFile")
+            ?: tryCall(candidate, "getFilePath")
+
+        val virtualFile = resolveVirtualFile(fileObj)
+        val filePath = when (fileObj) {
+            is VirtualFile -> fileObj.path
+            is java.nio.file.Path -> fileObj.toString()
+            is String -> fileObj
+            else -> virtualFile?.path
+        } ?: return
+
+        val rangeObj = tryCall(location, "getTextRange")
+            ?: tryCall(location, "getRange")
+            ?: tryCall(candidate, "getTextRange")
+            ?: tryCall(candidate, "getRange")
+
+        val (line, column) = resolveLineColumn(project, virtualFile, rangeObj)
+        val severity = normalizeSeverity(tryCall(candidate, "getSeverity") ?: tryCall(candidate, "getHighlightSeverity"))
+        val category = callString(candidate, listOf("getCategory", "getGroup", "getCategoryName")) ?: "General"
+        val inspectionType = callString(candidate, listOf("getInspectionToolId", "getShortName", "getName"))
+            ?: candidate.javaClass.simpleName
+
+        problems.add(
+            mapOf(
+                "description" to description,
+                "file" to filePath,
+                "line" to line,
+                "column" to column,
+                "severity" to severity,
+                "category" to category,
+                "inspectionType" to inspectionType,
+                "source" to "problems_view",
+            )
+        )
+    }
+
+    private fun resolveVirtualFile(fileObj: Any?): VirtualFile? {
+        return when (fileObj) {
+            is VirtualFile -> fileObj
+            is java.nio.file.Path -> LocalFileSystem.getInstance().findFileByPath(fileObj.toString())
+            is String -> LocalFileSystem.getInstance().findFileByPath(fileObj)
+            else -> null
+        }
+    }
+
+    private fun resolveLineColumn(
+        project: Project,
+        virtualFile: VirtualFile?,
+        rangeObj: Any?
+    ): Pair<Int, Int> {
+        if (virtualFile == null || rangeObj == null) {
+            return 0 to 0
+        }
+        val document = FileDocumentManager.getInstance().getDocument(virtualFile) ?: return 0 to 0
+        val startOffset = when (rangeObj) {
+            is TextRange -> rangeObj.startOffset
+            else -> {
+                val raw = tryCall(rangeObj, "getStartOffset")
+                when (raw) {
+                    is Int -> raw
+                    is Number -> raw.toInt()
+                    else -> null
+                }
+            }
+        } ?: return 0 to 0
+        val line = document.getLineNumber(startOffset) + 1
+        val column = startOffset - document.getLineStartOffset(line - 1)
+        return line to column
+    }
+
+    private fun normalizeSeverity(raw: Any?): String {
+        val severity = raw?.toString()?.lowercase() ?: return "warning"
+        return when {
+            severity.contains("error") -> "error"
+            severity.contains("weak") -> "weak_warning"
+            severity.contains("warning") -> "warning"
+            severity.contains("info") -> "info"
+            else -> "warning"
+        }
+    }
+
+    private fun tryCall(target: Any?, name: String): Any? {
+        if (target == null) return null
+        return try {
+            val method = target.javaClass.methods.firstOrNull { it.name == name && it.parameterCount == 0 }
+            method?.invoke(target)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun callString(target: Any?, names: List<String>): String? {
+        for (name in names) {
+            val value = tryCall(target, name)
+            if (value != null) {
+                val text = value.toString().trim()
+                if (text.isNotBlank()) {
+                    return text
+                }
+            }
+        }
+        return null
     }
     
     private fun extractProblemFromNode(node: ProblemDescriptionNode, problems: MutableList<Map<String, Any>>, project: Project) {
@@ -249,7 +379,7 @@ class EnhancedTreeExtractor {
                         val containingFile = element.containingFile
                         val virtualFile = containingFile?.virtualFile
 
-                        if (virtualFile != null && containingFile != null) {
+                        if (virtualFile != null) {
                             val documentManager = PsiDocumentManager.getInstance(project)
                             val document = documentManager.getDocument(containingFile)
                             val textRange = element.textRange
