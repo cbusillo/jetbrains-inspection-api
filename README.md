@@ -1,6 +1,7 @@
 # JetBrains Inspection API
 
 A plugin that exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
+It bundles an MCP server so AI clients can call the IDE’s real inspection engine instead of running duplicate linters.
 
 ## Features
 
@@ -45,20 +46,23 @@ path and rerun the command.
 
 The plugin bundles the MCP server as a JVM jar.
 
-Fast path: on the first run you’ll see a notification with a **Copy MCP Setup Command** button.
-You can also run `Tools` → `Copy MCP Setup Command`, then paste the command into your terminal.
+Fast path: on the first run you’ll see a notification with a **Copy MCP Setup** button.
+You can also run `Tools` → `Copy MCP Setup`, pick your MCP client, then paste the command into your terminal.
 
-Manual example using **Code** (Codex CLI fork):
+Manual examples:
 
 ```bash
-# For PyCharm (example port 63341)
+# Code (Every)
 code mcp add --env IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
-# For IntelliJ (example port 63340)
-code mcp add --env IDE_PORT=63340 inspection-intellij "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+# Codex CLI
+codex mcp add inspection-pycharm --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
-# Verify configuration
-code mcp list
+# Claude Code
+claude mcp add inspection-pycharm --scope user --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+
+# Gemini CLI
+gemini mcp add -s user -e IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 ```
 
 Notes:

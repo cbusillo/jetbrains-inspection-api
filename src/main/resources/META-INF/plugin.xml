@@ -7,6 +7,8 @@
     
     <description><![CDATA[
         Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
+        Includes a bundled MCP server so AI clients can use real IDE inspections instead of scraping logs
+        or running duplicate linters.
         <br/><br/>
         Features:
         <ul>
@@ -14,7 +16,7 @@
             <li>Scope-based filtering (whole project, current file, directory)</li>
             <li>Trigger inspections programmatically and poll status</li>
             <li>Works with JetBrains IDEs (2025.x compatible)</li>
-            <li>MCP client integration included</li>
+            <li>Bundled MCP server + setup command for Code, Codex CLI, Claude Code, and Gemini CLI</li>
         </ul>
         <br/>
         Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
@@ -27,7 +29,7 @@
         <ul>
             <li>Bundled JVM MCP server (no Node.js dependency).</li>
             <li>New long-poll endpoint: <code>/api/inspection/wait</code> and MCP tool <code>inspection_wait</code>.</li>
-            <li>New IDE action: <code>Tools → Copy MCP Setup Command</code>.</li>
+            <li>New IDE action: <code>Tools → Copy MCP Setup</code> (client picker for Code, Codex, Claude, Gemini).</li>
         </ul>
         <b>Version 1.10.13</b>
         <ul>
