@@ -80,13 +80,27 @@ if [ -z "$BRANCH" ]; then
   exit 1
 fi
 
-DEFAULT_BRANCH=""
-if git remote get-url "$REMOTE" >/dev/null 2>&1; then
-  DEFAULT_BRANCH=$(git symbolic-ref --quiet --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null | sed "s#^$REMOTE/##")
-fi
-if [ -z "$DEFAULT_BRANCH" ]; then
-  DEFAULT_BRANCH="main"
-fi
+detect_default_branch() {
+  local remote="$1"
+  local head_ref=""
+
+  if git remote get-url "$remote" >/dev/null 2>&1; then
+    head_ref=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
+    if [ -z "$head_ref" ]; then
+      head_ref=$(git remote show "$remote" 2>/dev/null | awk '/HEAD branch/ {print $NF; exit}')
+    fi
+  fi
+
+  if [ -n "$head_ref" ]; then
+    head_ref=${head_ref#"$remote/"}
+    echo "$head_ref"
+    return 0
+  fi
+
+  echo "main"
+}
+
+DEFAULT_BRANCH=$(detect_default_branch "$REMOTE")
 
 if [ "$ALLOW_NON_DEFAULT_BRANCH" -ne 1 ] && [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
   echo "ERROR: Release must be run from $DEFAULT_BRANCH. Use --allow-non-default-branch to override." >&2
