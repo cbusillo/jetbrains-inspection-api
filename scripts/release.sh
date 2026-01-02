@@ -83,16 +83,17 @@ fi
 detect_default_branch() {
   local remote="$1"
   local head_ref=""
+  local remote_prefix="${remote}/"
 
   if git remote get-url "$remote" >/dev/null 2>&1; then
     head_ref=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
     if [ -z "$head_ref" ]; then
-      head_ref=$(git remote show "$remote" 2>/dev/null | awk '/HEAD branch/ {print $NF; exit}')
+      head_ref=$(git remote show "$remote" 2>/dev/null | awk '/HEAD branch/ {print $NF; exit}' || true)
     fi
   fi
 
   if [ -n "$head_ref" ]; then
-    head_ref=${head_ref#"$remote/"}
+    head_ref=${head_ref#${remote_prefix}}
     echo "$head_ref"
     return 0
   fi
