@@ -445,6 +445,8 @@ Shortcut:
 ./scripts/release.sh --patch
 ```
 
+The release script pushes commit + tag by default; use `--no-push` to keep it local.
+
 ## License
 
 MIT License: see [LICENSE](LICENSE) file for details.

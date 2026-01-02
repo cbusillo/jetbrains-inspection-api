@@ -7,10 +7,10 @@ cd "$ROOT"
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/release.sh (--major|--minor|--patch) [--push] [--remote <name>]
+Usage: ./scripts/release.sh (--major|--minor|--patch) [--no-push] [--remote <name>]
 
 Bumps pluginVersion, runs commit gate, commits, and tags vX.Y.Z.
-By default it does not push; use --push to push commit + tag.
+By default it pushes commit + tag; use --no-push to keep it local.
 USAGE
 }
 
@@ -20,7 +20,7 @@ if [ $# -lt 1 ]; then
 fi
 
 BUMP=""
-PUSH=0
+PUSH=1
 REMOTE="origin"
 
 while [ $# -gt 0 ]; do
@@ -32,8 +32,8 @@ while [ $# -gt 0 ]; do
       fi
       BUMP="${1#--}"
       ;;
-    --push)
-      PUSH=1
+    --no-push)
+      PUSH=0
       ;;
     --remote)
       shift
