@@ -75,6 +75,7 @@ choose_bump_tui() {
   local key=""
   local key2=""
   local hide_cursor=0
+  local stty_state=""
 
   if ! [ -t 0 ] || ! [ -t 1 ]; then
     return 1
@@ -86,9 +87,19 @@ choose_bump_tui() {
     fi
   fi
 
+  if command -v stty >/dev/null 2>&1; then
+    stty_state=$(stty -g 2>/dev/null || true)
+    if ! stty -echo -icanon min 1 time 0 2>/dev/null; then
+      return 1
+    fi
+  fi
+
   cleanup_cursor() {
     if [ "$hide_cursor" -eq 1 ]; then
       tput cnorm >/dev/null 2>&1 || true
+    fi
+    if [ -n "$stty_state" ]; then
+      stty "$stty_state" >/dev/null 2>&1 || true
     fi
   }
   trap cleanup_cursor RETURN
