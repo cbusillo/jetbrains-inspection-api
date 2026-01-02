@@ -68,88 +68,45 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-choose_bump_tui() {
-  local options=("patch" "minor" "major" "cancel")
-  local selected=0
-  local count=${#options[@]}
-  local key=""
-  local key2=""
-  local hide_cursor=0
-  local stty_state=""
+choose_bump_prompt() {
+  local reply=""
   local tty="/dev/tty"
-  local tty_fd=3
+  if [ -r "$tty" ]; then
+    read -r -p "Release type (patch/minor/major): " reply <"$tty"
+  else
+    read -r -p "Release type (patch/minor/major): " reply
+  fi
+  echo "$reply"
+}
 
-  if ! [ -t 0 ] || ! [ -t 1 ]; then
+choose_bump_osascript() {
+  if [[ "$OSTYPE" != "darwin"* ]]; then
     return 1
   fi
-
-  if ! exec {tty_fd}<>"$tty"; then
+  if ! command -v osascript >/dev/null 2>&1; then
     return 1
   fi
-
-  if command -v tput >/dev/null 2>&1; then
-    if tput civis >&$tty_fd 2>/dev/null; then
-      hide_cursor=1
-    fi
-  fi
-
-  if command -v stty >/dev/null 2>&1; then
-    stty_state=$(stty -g <&$tty_fd 2>/dev/null || true)
-    stty -echo -icanon min 1 time 0 <&$tty_fd 2>/dev/null || true
-  fi
-
-  cleanup_cursor() {
-    if [ "$hide_cursor" -eq 1 ]; then
-      tput cnorm >&$tty_fd 2>/dev/null || true
-    fi
-    if [ -n "$stty_state" ]; then
-      stty "$stty_state" <&$tty_fd >/dev/null 2>&1 || true
-    fi
-    exec {tty_fd}>&-
-  }
-  trap cleanup_cursor RETURN
-  trap 'cleanup_cursor; exit 130' INT TERM
-
-  while true; do
-    printf "\033[H\033[J" >&$tty_fd
-    printf "Select release type (↑/↓ or j/k, Enter to confirm)\n\n" >&$tty_fd
-    for i in "${!options[@]}"; do
-      if [ "$i" -eq "$selected" ]; then
-        printf "> %s\n" "${options[$i]}" >&$tty_fd
-      else
-        printf "  %s\n" "${options[$i]}" >&$tty_fd
-      fi
-    done
-
-    if ! IFS= read -rsn1 key <&$tty_fd; then
-      continue
-    fi
-    if [ -z "$key" ]; then
-      echo "${options[$selected]}"
-      return 0
-    fi
-
-    if [ "$key" = $'\x1b' ]; then
-      key2=""
-      IFS= read -rsn5 -t 1 key2 <&$tty_fd || true
-      case "$key2" in
-        *A) selected=$(( (selected - 1 + count) % count )) ;;
-        *B) selected=$(( (selected + 1) % count )) ;;
-      esac
-      continue
-    fi
-
-    case "$key" in
-      k) selected=$(( (selected - 1 + count) % count )) ;;
-      j) selected=$(( (selected + 1) % count )) ;;
-      q) echo "cancel"; return 0 ;;
-    esac
-  done
+  osascript <<'APPLESCRIPT'
+set choices to {"patch", "minor", "major"}
+set picked to choose from list choices with prompt "Select release type" default items {"patch"} with title "Release"
+if picked is false then
+  return "cancel"
+else
+  return item 1 of picked
+end if
+APPLESCRIPT
 }
 
 if [ -z "$BUMP" ]; then
-  if [ -t 0 ] && [ -t 1 ]; then
-    BUMP=$(choose_bump_tui || true)
+  BUMP=$(choose_bump_osascript || true)
+  if [ -z "$BUMP" ]; then
+    if [ -t 0 ] || [ -r /dev/tty ]; then
+      echo "Picker unavailable; please type a release type." >&2
+      BUMP=$(choose_bump_prompt || true)
+    else
+      echo "ERROR: Non-interactive shell. Pass --patch/--minor/--major." >&2
+      exit 1
+    fi
   fi
   if [ -z "$BUMP" ] || [ "$BUMP" = "cancel" ]; then
     echo "Aborted." >&2
