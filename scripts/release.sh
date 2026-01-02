@@ -65,46 +65,76 @@ while [ $# -gt 0 ]; do
 done
 
 choose_bump_tui() {
-  python3 - <<'PY'
-import curses
+  local options=("patch" "minor" "major" "cancel")
+  local selected=0
+  local count=${#options[@]}
+  local key=""
+  local key2=""
+  local hide_cursor=0
 
-options = ["patch", "minor", "major", "cancel"]
+  if ! [ -t 0 ] || ! [ -t 1 ]; then
+    return 1
+  fi
 
-def run(stdscr):
-    curses.curs_set(0)
-    stdscr.nodelay(False)
-    stdscr.keypad(True)
-    idx = 0
+  if command -v tput >/dev/null 2>&1; then
+    if tput civis >/dev/null 2>&1; then
+      hide_cursor=1
+    fi
+  fi
 
-    while True:
-        stdscr.clear()
-        stdscr.addstr(0, 0, "Select release type (↑/↓ or j/k, Enter to confirm)")
-        for i, opt in enumerate(options):
-            prefix = "> " if i == idx else "  "
-            if i == idx:
-                stdscr.addstr(2 + i, 0, f"{prefix}{opt}", curses.A_REVERSE)
-            else:
-                stdscr.addstr(2 + i, 0, f"{prefix}{opt}")
-        stdscr.refresh()
+  cleanup_cursor() {
+    if [ "$hide_cursor" -eq 1 ]; then
+      tput cnorm >/dev/null 2>&1 || true
+    fi
+  }
+  trap cleanup_cursor RETURN
 
-        key = stdscr.getch()
-        if key in (curses.KEY_UP, ord("k")):
-            idx = (idx - 1) % len(options)
-        elif key in (curses.KEY_DOWN, ord("j")):
-            idx = (idx + 1) % len(options)
-        elif key in (curses.KEY_ENTER, 10, 13):
-            return options[idx]
-        elif key in (27, ord("q")):
-            return "cancel"
+  while true; do
+    printf "\033[H\033[J"
+    printf "Select release type (↑/↓ or j/k, Enter to confirm)\n\n"
+    for i in "${!options[@]}"; do
+      if [ "$i" -eq "$selected" ]; then
+        printf "> %s\n" "${options[$i]}"
+      else
+        printf "  %s\n" "${options[$i]}"
+      fi
+    done
 
-result = curses.wrapper(run)
-print(result)
-PY
+    IFS= read -rsn1 key
+    if [ -z "$key" ]; then
+      echo "${options[$selected]}"
+      return 0
+    fi
+
+    if [ "$key" = $'\x1b' ]; then
+      IFS= read -rsn2 -t 0.05 key2 || true
+      case "$key2" in
+        "[A") selected=$(( (selected - 1 + count) % count )) ;;
+        "[B") selected=$(( (selected + 1) % count )) ;;
+      esac
+      continue
+    fi
+
+    case "$key" in
+      k) selected=$(( (selected - 1 + count) % count )) ;;
+      j) selected=$(( (selected + 1) % count )) ;;
+      q) echo "cancel"; return 0 ;;
+    esac
+  done
+}
+
+choose_bump_prompt() {
+  local reply=""
+  read -r -p "Release type (patch/minor/major): " reply
+  echo "$reply"
 }
 
 if [ -z "$BUMP" ]; then
   if [ -t 0 ] && [ -t 1 ]; then
     BUMP=$(choose_bump_tui || true)
+    if [ -z "$BUMP" ]; then
+      BUMP=$(choose_bump_prompt || true)
+    fi
   fi
   if [ -z "$BUMP" ] || [ "$BUMP" = "cancel" ]; then
     echo "Aborted." >&2
