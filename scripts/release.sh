@@ -76,56 +76,65 @@ choose_bump_tui() {
   local key2=""
   local hide_cursor=0
   local stty_state=""
+  local tty="/dev/tty"
+  local tty_fd=3
 
   if ! [ -t 0 ] || ! [ -t 1 ]; then
     return 1
   fi
 
+  if ! exec {tty_fd}<>"$tty"; then
+    return 1
+  fi
+
   if command -v tput >/dev/null 2>&1; then
-    if tput civis >/dev/null 2>&1; then
+    if tput civis >&$tty_fd 2>/dev/null; then
       hide_cursor=1
     fi
   fi
 
   if command -v stty >/dev/null 2>&1; then
-    stty_state=$(stty -g 2>/dev/null || true)
-    if ! stty -echo -icanon min 1 time 0 2>/dev/null; then
-      return 1
-    fi
+    stty_state=$(stty -g <&$tty_fd 2>/dev/null || true)
+    stty -echo -icanon min 1 time 0 <&$tty_fd 2>/dev/null || true
   fi
 
   cleanup_cursor() {
     if [ "$hide_cursor" -eq 1 ]; then
-      tput cnorm >/dev/null 2>&1 || true
+      tput cnorm >&$tty_fd 2>/dev/null || true
     fi
     if [ -n "$stty_state" ]; then
-      stty "$stty_state" >/dev/null 2>&1 || true
+      stty "$stty_state" <&$tty_fd >/dev/null 2>&1 || true
     fi
+    exec {tty_fd}>&-
   }
   trap cleanup_cursor RETURN
+  trap 'cleanup_cursor; exit 130' INT TERM
 
   while true; do
-    printf "\033[H\033[J"
-    printf "Select release type (↑/↓ or j/k, Enter to confirm)\n\n"
+    printf "\033[H\033[J" >&$tty_fd
+    printf "Select release type (↑/↓ or j/k, Enter to confirm)\n\n" >&$tty_fd
     for i in "${!options[@]}"; do
       if [ "$i" -eq "$selected" ]; then
-        printf "> %s\n" "${options[$i]}"
+        printf "> %s\n" "${options[$i]}" >&$tty_fd
       else
-        printf "  %s\n" "${options[$i]}"
+        printf "  %s\n" "${options[$i]}" >&$tty_fd
       fi
     done
 
-    IFS= read -rsn1 key
+    if ! IFS= read -rsn1 key <&$tty_fd; then
+      continue
+    fi
     if [ -z "$key" ]; then
       echo "${options[$selected]}"
       return 0
     fi
 
     if [ "$key" = $'\x1b' ]; then
-      IFS= read -rsn2 -t 0.05 key2 || true
+      key2=""
+      IFS= read -rsn5 -t 1 key2 <&$tty_fd || true
       case "$key2" in
-        "[A") selected=$(( (selected - 1 + count) % count )) ;;
-        "[B") selected=$(( (selected + 1) % count )) ;;
+        *A) selected=$(( (selected - 1 + count) % count )) ;;
+        *B) selected=$(( (selected + 1) % count )) ;;
       esac
       continue
     fi
@@ -138,18 +147,9 @@ choose_bump_tui() {
   done
 }
 
-choose_bump_prompt() {
-  local reply=""
-  read -r -p "Release type (patch/minor/major): " reply
-  echo "$reply"
-}
-
 if [ -z "$BUMP" ]; then
   if [ -t 0 ] && [ -t 1 ]; then
     BUMP=$(choose_bump_tui || true)
-    if [ -z "$BUMP" ]; then
-      BUMP=$(choose_bump_prompt || true)
-    fi
   fi
   if [ -z "$BUMP" ] || [ "$BUMP" = "cancel" ]; then
     echo "Aborted." >&2
