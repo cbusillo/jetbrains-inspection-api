@@ -14,6 +14,58 @@ TEST_PROJECT_PATH=""  # Must be set in AGENTS.local.md
 PLUGIN_DIR=""
 JAVA_HOME_21=""
 
+java_major() {
+    local java_bin="$1/bin/java"
+    if [ ! -x "$java_bin" ]; then
+        return 1
+    fi
+    local major
+    major=$("$java_bin" -version 2>&1 | awk -F'[".]' '/version/ {print $2; exit}')
+    if [ "$major" = "1" ]; then
+        major=$("$java_bin" -version 2>&1 | awk -F'[".]' '/version/ {print $3; exit}')
+    fi
+    echo "$major"
+}
+
+is_java21() {
+    [ "$(java_major "$1")" = "21" ]
+}
+
+resolve_java_home() {
+    local candidate
+
+    if [ -n "${JAVA_HOME_21:-}" ]; then
+        if is_java21 "$JAVA_HOME_21"; then
+            echo "$JAVA_HOME_21"
+            return 0
+        fi
+        echo "ERROR: JAVA_HOME_21 is set but not Java 21." >&2
+        return 1
+    fi
+
+    if [ -n "${JAVA_HOME:-}" ] && is_java21 "$JAVA_HOME"; then
+        echo "$JAVA_HOME"
+        return 0
+    fi
+
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        candidate=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
+        if [ -n "$candidate" ] && is_java21 "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    else
+        for candidate in /usr/lib/jvm/java-21-* /usr/lib/jvm/java-21 /usr/lib/jvm/jdk-21*; do
+            if [ -d "$candidate" ] && is_java21 "$candidate"; then
+                echo "$candidate"
+                return 0
+            fi
+        done
+    fi
+
+    return 1
+}
+
 if [ -f "AGENTS.local.md" ]; then
     IDE_TYPE=$(grep "IDE_TYPE=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_TYPE")
     IDE_VERSION=$(grep "IDE_VERSION=" AGENTS.local.md | cut -d'"' -f2 || echo "$IDE_VERSION")
@@ -168,16 +220,10 @@ run_api_tests() {
 
 # Step 1: Build plugin
 echo "🔨 Step 1: Building plugin..."
-if [ -n "$JAVA_HOME_21" ]; then
-    JAVA_HOME="$JAVA_HOME_21"
-elif [[ "$OSTYPE" == "darwin"* ]]; then
-    JAVA_HOME=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
-fi
-
-if [ -z "$JAVA_HOME" ] || [ ! -d "$JAVA_HOME" ]; then
+JAVA_HOME=$(resolve_java_home) || {
     echo "❌ ERROR: Java 21 not found. Please set JAVA_HOME_21."
     exit 1
-fi
+}
 
 export JAVA_HOME
 if ! ./gradlew buildPlugin; then
