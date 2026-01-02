@@ -87,10 +87,22 @@ choose_bump_osascript() {
     return 1
   fi
   osascript <<'APPLESCRIPT'
+set picked to missing value
 set choices to {"patch", "minor", "major"}
-set picked to choose from list choices with prompt "Select release type" default items {"patch"} with title "Release"
+try
+  tell application "System Events"
+    activate
+    set picked to choose from list choices with prompt "Select release type" default items {"patch"} with title "Release"
+  end tell
+on error
+  set frontApp to (path to frontmost application as text)
+  tell application frontApp to activate
+  set picked to choose from list choices with prompt "Select release type" default items {"patch"} with title "Release"
+end try
 if picked is false then
   return "cancel"
+else if picked is missing value then
+  return ""
 else
   return item 1 of picked
 end if
