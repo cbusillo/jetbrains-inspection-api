@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+if [ -n "${ZSH_VERSION:-}" ]; then
+  exec /bin/bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
