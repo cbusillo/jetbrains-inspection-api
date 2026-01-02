@@ -8,7 +8,8 @@
     <description><![CDATA[
         Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
         Includes a bundled MCP server so AI clients can use real IDE inspections instead of scraping logs
-        or running duplicate linters.
+        or running duplicate linters. This is especially valuable for IDE-only checks (for example
+        PyCharm’s Odoo plugin inspections).
         <br/><br/>
         Features:
         <ul>
@@ -17,6 +18,7 @@
             <li>Trigger inspections programmatically and poll status</li>
             <li>Works with JetBrains IDEs (2025.x compatible)</li>
             <li>Bundled MCP server + setup command for Code, Codex CLI, Claude Code, and Gemini CLI</li>
+            <li>IDE-only inspections (e.g., PyCharm’s Odoo plugin checks) available to automation</li>
         </ul>
         <br/>
         Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*

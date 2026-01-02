@@ -82,7 +82,7 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
 
     val codeCommand = "code mcp add --env IDE_PORT=$port $name ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val codexCommand = "codex mcp add $name --env IDE_PORT=$port -- ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
-    val claudeCommand = "claude mcp add $name --scope user --env IDE_PORT=$port -- ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
+    val claudeCommand = "claude mcp add --transport stdio $name --scope user --env IDE_PORT=$port -- ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val geminiCommand = "gemini mcp add -s user -e IDE_PORT=$port $name ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val allCommands = buildString {
         appendLine("Code (Every)")

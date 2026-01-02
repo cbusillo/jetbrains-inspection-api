@@ -1,7 +1,8 @@
 # JetBrains Inspection API
 
 A plugin that exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
-It bundles an MCP server so AI clients can call the IDE’s real inspection engine instead of running duplicate linters.
+It bundles an MCP server so AI clients can call the IDE’s real inspection engine instead of running duplicate linters,
+including IDE-only inspections such as PyCharm’s Odoo plugin checks.
 
 ## Features
 
@@ -13,6 +14,7 @@ It bundles an MCP server so AI clients can call the IDE’s real inspection engi
 - **MCP integration** for seamless AI assistant access
 - **Comprehensive inspection framework** - mirrors PyCharm's "Inspect Code" functionality
 - **Complete inspection coverage** - detects JSCheckFunctionSignatures, ShellCheck, SpellCheck, and all enabled inspections
+- **IDE-only inspections** - bring PyCharm-specific checks (like Odoo plugin inspections) into your automated tooling
 
 ## Quick Start
 
@@ -59,7 +61,7 @@ code mcp add --env IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path
 codex mcp add inspection-pycharm --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Claude Code
-claude mcp add inspection-pycharm --scope user --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+claude mcp add --transport stdio inspection-pycharm --scope user --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Gemini CLI
 gemini mcp add -s user -e IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
