@@ -446,7 +446,7 @@ Shortcut:
 ```
 
 The release script pushes commit + tag by default; use `--no-push` to keep it local.
-It enforces `main` unless you pass `--allow-non-main`, and it runs both test suites (the IDE test will prompt before stopping your IDE unless you pass `--yes`).
+It enforces the default branch unless you pass `--allow-non-default-branch`, and it runs both test suites (the IDE test will prompt before stopping your IDE unless you pass `--yes`).
 
 ## License
 

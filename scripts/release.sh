@@ -9,11 +9,11 @@ usage() {
   cat <<'USAGE'
 Usage: ./scripts/release.sh (--major|--minor|--patch)
                            [--no-push] [--remote <name>]
-                           [--yes] [--allow-non-main]
+                           [--yes] [--allow-non-default-branch]
 
 Bumps pluginVersion, runs tests + commit gate, commits, and tags vX.Y.Z.
-By default it pushes commit + tag and enforces main branch.
-Use --no-push to keep it local, --allow-non-main to bypass branch check,
+By default it pushes commit + tag and enforces the default branch.
+Use --no-push to keep it local, --allow-non-default-branch to bypass branch check,
 and --yes to skip the IDE restart confirmation.
 USAGE
 }
@@ -26,7 +26,7 @@ fi
 BUMP=""
 PUSH=1
 REMOTE="origin"
-ALLOW_NON_MAIN=0
+ALLOW_NON_DEFAULT_BRANCH=0
 ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
@@ -49,8 +49,8 @@ while [ $# -gt 0 ]; do
       fi
       REMOTE="$1"
       ;;
-    --allow-non-main)
-      ALLOW_NON_MAIN=1
+    --allow-non-default-branch)
+      ALLOW_NON_DEFAULT_BRANCH=1
       ;;
     --yes)
       ASSUME_YES=1
@@ -80,8 +80,16 @@ if [ -z "$BRANCH" ]; then
   exit 1
 fi
 
-if [ "$ALLOW_NON_MAIN" -ne 1 ] && [ "$BRANCH" != "main" ]; then
-  echo "ERROR: Release must be run from main. Use --allow-non-main to override." >&2
+DEFAULT_BRANCH=""
+if git remote get-url "$REMOTE" >/dev/null 2>&1; then
+  DEFAULT_BRANCH=$(git symbolic-ref --quiet --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null | sed "s#^$REMOTE/##")
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+  DEFAULT_BRANCH="main"
+fi
+
+if [ "$ALLOW_NON_DEFAULT_BRANCH" -ne 1 ] && [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
+  echo "ERROR: Release must be run from $DEFAULT_BRANCH. Use --allow-non-default-branch to override." >&2
   exit 1
 fi
 
