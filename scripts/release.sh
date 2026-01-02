@@ -7,21 +7,17 @@ cd "$ROOT"
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/release.sh (--major|--minor|--patch)
+Usage: ./scripts/release.sh [--major|--minor|--patch]
                            [--no-push] [--remote <name>]
                            [--yes] [--allow-non-default-branch]
 
 Bumps pluginVersion, runs tests + commit gate, commits, and tags vX.Y.Z.
 By default it pushes commit + tag and enforces the default branch.
+If no bump flag is provided, an interactive picker is shown.
 Use --no-push to keep it local, --allow-non-default-branch to bypass branch check,
 and --yes to skip the IDE restart confirmation.
 USAGE
 }
-
-if [ $# -lt 1 ]; then
-  usage
-  exit 1
-fi
 
 BUMP=""
 PUSH=1
@@ -68,10 +64,60 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+choose_bump_tui() {
+  python3 - <<'PY'
+import curses
+
+options = ["patch", "minor", "major", "cancel"]
+
+def run(stdscr):
+    curses.curs_set(0)
+    stdscr.nodelay(False)
+    stdscr.keypad(True)
+    idx = 0
+
+    while True:
+        stdscr.clear()
+        stdscr.addstr(0, 0, "Select release type (↑/↓ or j/k, Enter to confirm)")
+        for i, opt in enumerate(options):
+            prefix = "> " if i == idx else "  "
+            if i == idx:
+                stdscr.addstr(2 + i, 0, f"{prefix}{opt}", curses.A_REVERSE)
+            else:
+                stdscr.addstr(2 + i, 0, f"{prefix}{opt}")
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            idx = (idx - 1) % len(options)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            idx = (idx + 1) % len(options)
+        elif key in (curses.KEY_ENTER, 10, 13):
+            return options[idx]
+        elif key in (27, ord("q")):
+            return "cancel"
+
+result = curses.wrapper(run)
+print(result)
+PY
+}
+
 if [ -z "$BUMP" ]; then
-  echo "ERROR: Missing bump type (--major/--minor/--patch)." >&2
-  usage
-  exit 1
+  if [ -t 0 ] && [ -t 1 ]; then
+    BUMP=$(choose_bump_tui || true)
+  fi
+  if [ -z "$BUMP" ] || [ "$BUMP" = "cancel" ]; then
+    echo "Aborted." >&2
+    exit 1
+  fi
+  case "$BUMP" in
+    major|minor|patch)
+      ;;
+    *)
+      echo "ERROR: Invalid selection: $BUMP" >&2
+      exit 1
+      ;;
+  esac
 fi
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
@@ -93,7 +139,7 @@ detect_default_branch() {
   fi
 
   if [ -n "$head_ref" ]; then
-    head_ref=${head_ref#${remote_prefix}}
+    head_ref=${head_ref#"$remote_prefix"}
     echo "$head_ref"
     return 0
   fi
