@@ -7,10 +7,14 @@ cd "$ROOT"
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/release.sh (--major|--minor|--patch) [--no-push] [--remote <name>]
+Usage: ./scripts/release.sh (--major|--minor|--patch)
+                           [--no-push] [--remote <name>]
+                           [--yes] [--allow-non-main]
 
-Bumps pluginVersion, runs commit gate, commits, and tags vX.Y.Z.
-By default it pushes commit + tag; use --no-push to keep it local.
+Bumps pluginVersion, runs tests + commit gate, commits, and tags vX.Y.Z.
+By default it pushes commit + tag and enforces main branch.
+Use --no-push to keep it local, --allow-non-main to bypass branch check,
+and --yes to skip the IDE restart confirmation.
 USAGE
 }
 
@@ -22,6 +26,8 @@ fi
 BUMP=""
 PUSH=1
 REMOTE="origin"
+ALLOW_NON_MAIN=0
+ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,6 +49,12 @@ while [ $# -gt 0 ]; do
       fi
       REMOTE="$1"
       ;;
+    --allow-non-main)
+      ALLOW_NON_MAIN=1
+      ;;
+    --yes)
+      ASSUME_YES=1
+      ;;
     -h|--help)
       usage
       exit 0
@@ -59,6 +71,17 @@ done
 if [ -z "$BUMP" ]; then
   echo "ERROR: Missing bump type (--major/--minor/--patch)." >&2
   usage
+  exit 1
+fi
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+if [ -z "$BRANCH" ]; then
+  echo "ERROR: Unable to determine current branch." >&2
+  exit 1
+fi
+
+if [ "$ALLOW_NON_MAIN" -ne 1 ] && [ "$BRANCH" != "main" ]; then
+  echo "ERROR: Release must be run from main. Use --allow-non-main to override." >&2
   exit 1
 fi
 
@@ -116,6 +139,23 @@ if count != 1:
 path.write_text(updated, encoding="utf-8")
 PY
 
+./scripts/test-all.sh
+
+if [ "$ASSUME_YES" -ne 1 ]; then
+  echo ""
+  echo "This will stop any running IDE instance for the automated test."
+  read -r -p "Continue with ./scripts/test-automated.sh? [y/N] " reply
+  case "$reply" in
+    [Yy]*)
+      ;;
+    *)
+      echo "Aborted before automated IDE test."
+      exit 1
+      ;;
+  esac
+fi
+
+./scripts/test-automated.sh
 ./scripts/commit-gate.sh
 
 git add gradle.properties src/main/resources/META-INF/plugin.xml

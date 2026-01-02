@@ -48,7 +48,7 @@ If you need machine-specific paths/ports/log locations, copy `AGENTS.local.templ
 ## Release checklist
 
 - Bump versions: `gradle.properties` (`pluginVersion`).
-- Optional shortcut: `./scripts/release.sh --patch` (pushes tag; use `--no-push` to keep it local).
+- Optional shortcut: `./scripts/release.sh --patch` (pushes tag + runs full tests; use `--no-push` to keep it local).
 - Run tests: `./scripts/test-all.sh`.
 - Build zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`.
 - Tag + push: `git tag vX.Y.Z && git push && git push --tags`.
