@@ -392,7 +392,7 @@ This repo ships a shared commit gate script in `scripts/commit-gate.sh`.
 To use it as a git hook:
 
 ```bash
-ln -s ../../scripts/commit-gate.sh .git/hooks/pre-commit
+ln -s "$(git rev-parse --show-toplevel)/scripts/commit-gate.sh" "$(git rev-parse --git-path hooks)/pre-commit"
 ```
 
 Notes:
@@ -436,6 +436,14 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 Release notes live on GitHub Releases:
 
 - https://github.com/cbusillo/jetbrains-inspection-api/releases
+
+Release publishing is tag-based. Bump `pluginVersion`, then tag `vX.Y.Z` and push the tag. The GitHub Actions release workflow will publish to the JetBrains Marketplace (requires `PUBLISH_TOKEN` in GitHub Secrets) and create the GitHub Release.
+
+Shortcut:
+
+```bash
+./scripts/release.sh --patch
+```
 
 ## License
 
