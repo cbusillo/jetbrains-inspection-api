@@ -62,13 +62,13 @@ internal fun copyMcpSetup(project: Project?) {
 
 private fun chooseMcpSetup(project: Project?, setups: List<McpSetupOption>): McpSetupOption? {
     val labels = setups.map { it.label }.toTypedArray()
-    val selection = Messages.showChooseDialog(
+    val selection = Messages.showDialog(
         project,
         "Select your MCP client",
         "MCP Setup",
-        null,
         labels,
-        labels.firstOrNull() ?: ""
+        0,
+        null
     )
     if (selection < 0) return null
     return setups.getOrNull(selection)
