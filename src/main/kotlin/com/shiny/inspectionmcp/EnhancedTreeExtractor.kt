@@ -6,7 +6,6 @@ import com.intellij.codeInspection.ui.ProblemDescriptionNode
 import com.intellij.codeInspection.ui.InspectionNode
 import com.intellij.codeInspection.ui.InspectionTreeNode
 import com.intellij.codeInspection.ProblemDescriptor
-import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
@@ -14,11 +13,7 @@ import com.intellij.openapi.util.TextRange
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
-import com.intellij.psi.PsiDocumentManager
-import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.wm.ToolWindow
-import com.intellij.injected.editor.DocumentWindow
-import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.ui.content.ContentManager
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
@@ -417,49 +412,13 @@ class EnhancedTreeExtractor {
                 var inspectionType: String
                 
                 if (descriptor is ProblemDescriptor) {
-                    val element = descriptor.psiElement
-                    if (element != null && element.isValid) {
-                        val containingFile = element.containingFile
-                        val virtualFile = containingFile?.virtualFile
-
-                        if (virtualFile != null) {
-                            val documentManager = PsiDocumentManager.getInstance(project)
-                            val document = documentManager.getDocument(containingFile)
-                            val textRange = element.textRange
-                            if (virtualFile is VirtualFileWindow && document is DocumentWindow) {
-                                val hostFile = virtualFile.delegate
-                                val hostPsi = InjectedLanguageManager.getInstance(project).getTopLevelFile(containingFile)
-                                val hostDocument = hostPsi?.let { psi -> documentManager.getDocument(psi) }
-                                val hostOffset = document.injectedToHost(textRange.startOffset)
-                                file = hostFile.path
-                                if (hostDocument != null) {
-                                    line = hostDocument.getLineNumber(hostOffset) + 1
-                                    column = hostOffset - hostDocument.getLineStartOffset(line - 1)
-                                } else {
-                                    line = document.getLineNumber(textRange.startOffset) + 1
-                                    column = textRange.startOffset - document.getLineStartOffset(line - 1)
-                                }
-                            } else {
-                                file = virtualFile.path
-                                if (document != null) {
-                                    line = document.getLineNumber(textRange.startOffset) + 1
-                                    column = textRange.startOffset - document.getLineStartOffset(line - 1)
-                                }
-                            }
-                        }
-                        
-                        severity = when (descriptor.highlightType) {
-                            ProblemHighlightType.ERROR -> "error"
-                            ProblemHighlightType.WARNING -> "warning"
-                            ProblemHighlightType.WEAK_WARNING -> "weak_warning"
-                            ProblemHighlightType.GENERIC_ERROR_OR_WARNING -> "warning"
-                            ProblemHighlightType.LIKE_UNKNOWN_SYMBOL -> "error"
-                            ProblemHighlightType.LIKE_DEPRECATED -> "weak_warning"
-                            ProblemHighlightType.LIKE_UNUSED_SYMBOL -> "weak_warning"
-                            ProblemHighlightType.GENERIC_ERROR -> "error"
-                            else -> "info"
-                        }
+                    val location = resolveProblemLocation(descriptor, project)
+                    if (location != null) {
+                        file = location.filePath
+                        line = location.line
+                        column = location.column
                     }
+                    severity = severityFromHighlightType(descriptor.highlightType)
                 }
                 
                 val parent = node.parent

@@ -10,12 +10,10 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
-import com.intellij.psi.PsiDocumentManager
-import com.intellij.lang.injection.InjectedLanguageManager
-import com.intellij.injected.editor.DocumentWindow
-import com.intellij.injected.editor.VirtualFileWindow
+import com.intellij.psi.PsiManager
 import com.shiny.inspectionmcp.core.filterProblems
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
@@ -505,7 +503,8 @@ class InspectionHandler : HttpRequestHandler() {
                         ReadAction.compute<List<Map<String, Any>>, Exception> {
                             extractProblemsFromContext(globalContext, project)
                         }
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        rethrowIfCanceled(e)
                         emptyList()
                     }
 
@@ -528,7 +527,8 @@ class InspectionHandler : HttpRequestHandler() {
 
                     val viewReadyOk = try {
                         viewReady.waitFor(60000)
-                    } catch (_: Exception) {
+                    } catch (e: Exception) {
+                        rethrowIfCanceled(e)
                         false
                     }
 
@@ -536,14 +536,16 @@ class InspectionHandler : HttpRequestHandler() {
                         val view = try {
                             @Suppress("UnstableApiUsage")
                             globalContext.view
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            rethrowIfCanceled(e)
                             null
                         } ?: initialView
 
                         if (viewReadyOk && view != null) {
                             val attempt = try {
                                 extractFromViewSafe(view)
-                            } catch (_: Exception) {
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
                                 emptyList()
                             }
                             if (attempt.size > bestResults.size) {
@@ -555,7 +557,8 @@ class InspectionHandler : HttpRequestHandler() {
                             ReadAction.compute<List<Map<String, Any>>, Exception> {
                                 extractor.extractAllProblems(project)
                             }
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            rethrowIfCanceled(e)
                             emptyList()
                         }
                         if (toolResults.size > bestResults.size) {
@@ -573,7 +576,8 @@ class InspectionHandler : HttpRequestHandler() {
 
                         try {
                             Thread.sleep(1000)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
+                            rethrowIfCanceled(e)
                             break
                         }
                     }
@@ -583,12 +587,22 @@ class InspectionHandler : HttpRequestHandler() {
                     resultsStore.setProblems(projectName, extracted)
                     inspectionInProgress = false
                 }
-            } catch (_: Exception) {
+            } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+                throw e
+            } catch (e: Exception) {
                 resultsStore.setProblems(project.name, emptyList())
                 inspectionInProgress = false
             }
-        } catch (_: Exception) {
+        } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+            throw e
+        } catch (e: Exception) {
             inspectionInProgress = false
+        }
+    }
+
+    private fun rethrowIfCanceled(e: Exception) {
+        if (e is com.intellij.openapi.progress.ProcessCanceledException) {
+            throw e
         }
     }
 
@@ -635,10 +649,10 @@ class InspectionHandler : HttpRequestHandler() {
                 val base = project.basePath
                 val resolved = files.mapNotNull { p ->
                     val absolute = try {
-                        val path = java.nio.file.Paths.get(p)
-                        if (path.isAbsolute) p else if (!base.isNullOrBlank()) java.nio.file.Paths.get(base, p).normalize().toString() else p
+                        val path = Paths.get(p)
+                        if (path.isAbsolute) p else if (!base.isNullOrBlank()) Paths.get(base, p).normalize().toString() else p
                     } catch (_: Exception) { p }
-                    com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(absolute)
+                    LocalFileSystem.getInstance().findFileByPath(absolute)
                 }.toSet()
                 return if (resolved.isEmpty()) AnalysisScope(project) else AnalysisScope(project, resolved)
             }
@@ -661,7 +675,7 @@ class InspectionHandler : HttpRequestHandler() {
                         if (!basePath.isNullOrBlank()) {
                             fun rel(p: String): String {
                                 val rel = try {
-                                    java.nio.file.Paths.get(basePath).relativize(java.nio.file.Paths.get(p)).toString()
+                                    Paths.get(basePath).relativize(Paths.get(p)).toString()
                                 } catch (_: Exception) { p }
                                 return rel.replace('\\', '/')
                             }
@@ -694,7 +708,7 @@ class InspectionHandler : HttpRequestHandler() {
             if (scopeLower == "current_file") {
                 val vf = resolveActiveEditorFile(project)
                 if (vf != null) {
-                    val psiFile = com.intellij.psi.PsiManager.getInstance(project).findFile(vf)
+                    val psiFile = PsiManager.getInstance(project).findFile(vf)
                     if (psiFile != null) return AnalysisScope(psiFile)
                     return AnalysisScope(project, setOf(vf))
                 }
@@ -707,14 +721,14 @@ class InspectionHandler : HttpRequestHandler() {
                 val base = project.basePath
                 val absolute = when {
                     dirPath.isNullOrBlank() -> null
-                    java.nio.file.Paths.get(dirPath).isAbsolute -> dirPath
-                    !base.isNullOrBlank() -> java.nio.file.Paths.get(base, dirPath).normalize().toString()
+                    Paths.get(dirPath).isAbsolute -> dirPath
+                    !base.isNullOrBlank() -> Paths.get(base, dirPath).normalize().toString()
                     else -> dirPath
                 }
                 if (!absolute.isNullOrBlank()) {
-                    val vfs = com.intellij.openapi.vfs.LocalFileSystem.getInstance().findFileByPath(absolute)
+                    val vfs = LocalFileSystem.getInstance().findFileByPath(absolute)
                     if (vfs != null && vfs.isDirectory) {
-                        val psiDir = com.intellij.psi.PsiManager.getInstance(project).findDirectory(vfs)
+                        val psiDir = PsiManager.getInstance(project).findDirectory(vfs)
                         if (psiDir != null) return AnalysisScope(psiDir)
                         return AnalysisScope(project, setOf(vfs))
                     }
@@ -730,7 +744,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun computeGitStagingSets(project: Project): Pair<Set<String>, Set<String>>? {
         val basePath = project.basePath ?: return null
-        val gitDir = java.nio.file.Paths.get(basePath, ".git").toFile()
+        val gitDir = Paths.get(basePath, ".git").toFile()
         if (!gitDir.exists()) return null
         return try {
             val pb = ProcessBuilder("git", "status", "--porcelain", "-z")
@@ -859,9 +873,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (basePath != null && basePath == pathHint) return true
 
         val projectFilePath = normalizeProjectPath(project.projectFilePath)
-        if (projectFilePath != null && projectFilePath == pathHint) return true
-
-        return false
+        return projectFilePath == pathHint
     }
 
     private fun normalizeProjectPath(value: String?): String? {
@@ -883,6 +895,7 @@ class InspectionHandler : HttpRequestHandler() {
         return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
     }
 
+    @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
@@ -959,48 +972,20 @@ class InspectionHandler : HttpRequestHandler() {
         var severity = "warning"
 
         if (descriptor is com.intellij.codeInspection.ProblemDescriptor) {
-            val element = descriptor.psiElement
-            if (element != null && element.isValid) {
-                val containingFile = element.containingFile
-                val virtualFile = containingFile?.virtualFile
-                if (virtualFile != null) {
-                    val documentManager = PsiDocumentManager.getInstance(project)
-                    val document = documentManager.getDocument(containingFile)
-                    val textRange = element.textRange
-                    if (virtualFile is VirtualFileWindow && document is DocumentWindow) {
-                        val hostFile = virtualFile.delegate
-                        val hostPsi = InjectedLanguageManager.getInstance(project).getTopLevelFile(containingFile)
-                        val hostDocument = hostPsi?.let { psi -> documentManager.getDocument(psi) }
-                        val hostOffset = document.injectedToHost(textRange.startOffset)
-                        filePath = hostFile.path
-                        if (hostDocument != null) {
-                            line = hostDocument.getLineNumber(hostOffset) + 1
-                            column = hostOffset - hostDocument.getLineStartOffset(line - 1)
-                        } else {
-                            line = document.getLineNumber(textRange.startOffset) + 1
-                            column = textRange.startOffset - document.getLineStartOffset(line - 1)
-                        }
-                    } else {
-                        filePath = virtualFile.path
-                        if (document != null) {
-                            line = document.getLineNumber(textRange.startOffset) + 1
-                            column = textRange.startOffset - document.getLineStartOffset(line - 1)
-                        }
-                    }
-                }
-
-                severity = when (descriptor.highlightType) {
-                    com.intellij.codeInspection.ProblemHighlightType.ERROR -> "error"
-                    com.intellij.codeInspection.ProblemHighlightType.WARNING -> "warning"
-                    com.intellij.codeInspection.ProblemHighlightType.WEAK_WARNING -> "weak_warning"
-                    com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR_OR_WARNING -> "warning"
-                    com.intellij.codeInspection.ProblemHighlightType.LIKE_UNKNOWN_SYMBOL -> "error"
-                    com.intellij.codeInspection.ProblemHighlightType.LIKE_DEPRECATED -> "weak_warning"
-                    com.intellij.codeInspection.ProblemHighlightType.LIKE_UNUSED_SYMBOL -> "weak_warning"
-                    com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR -> "error"
-                    else -> "info"
-                }
+            val location = resolveProblemLocation(descriptor, project)
+            if (location != null) {
+                filePath = location.filePath
+                line = location.line
+                column = location.column
             }
+            severity = severityFromHighlightType(descriptor.highlightType)
+        }
+
+        val typeLower = inspectionType.lowercase()
+        severity = when {
+            typeLower.contains("grazie") -> "grammar"
+            typeLower.contains("spell") || typeLower.contains("aia") -> "typo"
+            else -> severity
         }
 
         return mapOf(
