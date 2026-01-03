@@ -551,7 +551,8 @@ class EnhancedTreeExtractor {
                 } catch (e: Exception) {
                 }
                 
-                val problemMap = mapOf(
+                val locationKnown = file != "unknown" && line > 0
+                val problemMap = mutableMapOf<String, Any>(
                     "description" to description,
                     "file" to file,
                     "line" to line,
@@ -559,8 +560,12 @@ class EnhancedTreeExtractor {
                     "severity" to severity,
                     "category" to category,
                     "inspectionType" to inspectionType,
-                    "source" to "enhanced_tree_extractor"
+                    "source" to "enhanced_tree_extractor",
+                    "locationKnown" to locationKnown
                 )
+                if (!locationKnown) {
+                    problemMap["locationNote"] = "Location unavailable from IDE; entry may be stale. Re-run inspection to refresh."
+                }
                 
                 problems.add(problemMap)
             }

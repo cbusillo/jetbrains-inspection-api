@@ -5,6 +5,7 @@ plugins {
     kotlin("jvm") version "2.1.21"
     kotlin("plugin.serialization") version "2.1.21"
     application
+    id("jacoco")
 }
 
 group = "com.jetbrains.inspection"
@@ -21,6 +22,10 @@ dependencies {
 
 kotlin {
     jvmToolchain(21)
+}
+
+jacoco {
+    toolVersion = "0.8.12"
 }
 
 application {
@@ -42,6 +47,29 @@ tasks {
     test {
         useJUnitPlatform()
         jvmArgs("--add-modules", "jdk.httpserver")
+        finalizedBy(jacocoTestReport)
+    }
+
+    jacocoTestReport {
+        dependsOn(test)
+        reports {
+            xml.required.set(true)
+            html.required.set(true)
+            csv.required.set(true)
+        }
+    }
+
+    jacocoTestCoverageVerification {
+        dependsOn(jacocoTestReport)
+        violationRules {
+            rule {
+                limit {
+                    counter = "LINE"
+                    value = "COVEREDRATIO"
+                    minimum = 0.85.toBigDecimal()
+                }
+            }
+        }
     }
 }
 
