@@ -1,19 +1,10 @@
-package com.shiny.inspectionmcp
+package com.shiny.inspectionmcp.core
 
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Assertions.*
 
 class JsonUtilsTest {
-    
-    private lateinit var handler: InspectionHandler
-    
-    @BeforeEach
-    fun setUp() {
-        handler = InspectionHandler()
-    }
-    
     @Test
     @DisplayName("Should escape JSON strings correctly")
     fun testJsonEscaping() {
@@ -128,11 +119,5 @@ class JsonUtilsTest {
         assertTrue(result.contains("\"size\": 100"))
         assertTrue(result.contains("\"item_1\""))
         assertTrue(result.contains("\"item_100\""))
-    }
-    
-    private fun formatJsonManually(data: Any?): String {
-        val method = handler::class.java.getDeclaredMethod("formatJsonManually", Any::class.java)
-        method.isAccessible = true
-        return method.invoke(handler, data) as String
     }
 }

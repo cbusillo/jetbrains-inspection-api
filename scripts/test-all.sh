@@ -115,8 +115,20 @@ fi
 
 print_result $PLUGIN_TEST_RESULT "Plugin tests"
 
-# Step 2: MCP Server Tests
-print_section "2. Running MCP Server Tests (JVM)"
+# Step 2: Core Tests
+print_section "2. Running Core Tests (JVM)"
+
+echo "Running core tests..."
+if ./gradlew :inspection-core:test :inspection-core:jacocoTestReport; then
+  CORE_TEST_RESULT=0
+else
+  CORE_TEST_RESULT=1
+fi
+
+print_result $CORE_TEST_RESULT "Core tests"
+
+# Step 3: MCP Server Tests
+print_section "3. Running MCP Server Tests (JVM)"
 
 echo "Running MCP server tests..."
 if ./gradlew :mcp-server-jvm:test :mcp-server-jvm:jacocoTestReport :mcp-server-jvm:mcpServerJar; then
@@ -127,8 +139,8 @@ fi
 
 print_result $MCP_TEST_RESULT "MCP server tests"
 
-# Step 3: Build Verification
-print_section "3. Build Verification"
+# Step 4: Build Verification
+print_section "4. Build Verification"
 
 echo "Building plugin..."
 if ./gradlew buildPlugin; then
@@ -152,8 +164,8 @@ fi
 
 print_result $BUILD_RESULT "Plugin build"
 
-# Step 4: Coverage Verification
-print_section "4. Coverage Verification"
+# Step 5: Coverage Verification
+print_section "5. Coverage Verification"
 
 echo "Checking plugin test coverage..."
 if ./gradlew jacocoTestCoverageVerification; then
@@ -163,8 +175,19 @@ else
   echo -e "${YELLOW}WARNING: Coverage is below 80% threshold${NC}"
 fi
 
-# Step 5: MCP Coverage Verification
-print_section "5. MCP Coverage Verification"
+# Step 6: Core Coverage Verification
+print_section "6. Core Coverage Verification"
+
+echo "Checking core test coverage..."
+if ./gradlew :inspection-core:jacocoTestCoverageVerification; then
+  CORE_COVERAGE_RESULT=0
+else
+  CORE_COVERAGE_RESULT=1
+  echo -e "${YELLOW}WARNING: Core coverage is below 85% threshold${NC}"
+fi
+
+# Step 7: MCP Coverage Verification
+print_section "7. MCP Coverage Verification"
 
 echo "Checking MCP server test coverage..."
 if ./gradlew :mcp-server-jvm:jacocoTestCoverageVerification; then
@@ -179,9 +202,11 @@ print_section "Test Summary"
 
 echo "Test Results:"
 print_result $PLUGIN_TEST_RESULT "  Plugin tests"
+print_result $CORE_TEST_RESULT "  Core tests"
 print_result $MCP_TEST_RESULT "  MCP server tests"
 print_result $BUILD_RESULT "  Plugin build"
 print_result $PLUGIN_COVERAGE_RESULT "  Plugin coverage threshold"
+print_result $CORE_COVERAGE_RESULT "  Core coverage threshold"
 print_result $MCP_COVERAGE_RESULT "  MCP coverage threshold"
 
 echo ""
@@ -194,6 +219,7 @@ fi
 echo ""
 echo "Reports Generated:"
 echo "  - Plugin coverage: build/reports/jacoco/test/html/index.html"
+echo "  - Core coverage:   inspection-core/build/reports/jacoco/test/html/index.html"
 echo "  - MCP coverage:    mcp-server-jvm/build/reports/jacoco/test/html/index.html"
 echo "  - MCP jar:         mcp-server-jvm/build/libs/jetbrains-inspection-mcp.jar"
 echo "  - Test results:    build/reports/tests/test/index.html"

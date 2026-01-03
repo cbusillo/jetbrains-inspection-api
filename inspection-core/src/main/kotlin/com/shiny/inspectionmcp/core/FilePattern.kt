@@ -1,6 +1,6 @@
-package com.shiny.inspectionmcp
+package com.shiny.inspectionmcp.core
 
-internal fun compileFilePatternRegex(patternRaw: String): Regex? {
+fun compileFilePatternRegex(patternRaw: String): Regex? {
     val pattern = patternRaw.trim()
     if (pattern.isBlank()) {
         return null

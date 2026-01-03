@@ -10,6 +10,10 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
+import com.shiny.inspectionmcp.core.filterProblems
+import com.shiny.inspectionmcp.core.formatJsonManually
+import com.shiny.inspectionmcp.core.normalizeProblemsScope
+import com.shiny.inspectionmcp.core.paginateProblems
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -148,100 +152,43 @@ class InspectionHandler : HttpRequestHandler() {
             }
             
             if (problems.isNotEmpty()) {
-                val severityFilteredProblems = if (severity == "all") {
-                    problems
-                } else {
-                    problems.filter { 
-                        @Suppress("USELESS_CAST")
-                        val problemSeverity = it["severity"] as String
-                        severity == problemSeverity || 
-                        (severity == "warning" && (problemSeverity == "grammar" || problemSeverity == "typo"))
+                val currentFilePath = if (normalizedScope == "current_file") {
+                    try {
+                        com.intellij.openapi.fileEditor.FileEditorManager
+                            .getInstance(project)
+                            .selectedFiles
+                            .firstOrNull()
+                            ?.path
+                    } catch (_: Exception) {
+                        null
                     }
-                }
-                
-                val scopeFilteredProblems = if (normalizedScope == "whole_project") {
-                    severityFilteredProblems
                 } else {
-                    val filtered = severityFilteredProblems.filter { problem ->
-                        val filePath = problem["file"] as? String ?: ""
-                        when (normalizedScope) {
-                            // Limit to the currently selected editor file when available
-                            "current_file" -> {
-                                val selected = try {
-                                    com.intellij.openapi.fileEditor.FileEditorManager
-                                        .getInstance(project)
-                                        .selectedFiles
-                                        .firstOrNull()
-                                        ?.path
-                                } catch (_: Exception) { null }
+                    null
+                }
 
-                                if (selected.isNullOrBlank()) {
-                                    // Fallback: no active file; do not match anything to avoid
-                                    // returning whole-project results under a current_file scope
-                                    false
-                                } else {
-                                    // Compare absolute paths; also allow endsWith as a light fallback
-                                    filePath == selected || filePath.endsWith(selected)
-                                }
-                            }
-                            else -> {
-                                filePath.contains(scope, ignoreCase = true)
-                            }
-                        }
-                    }
-                    filtered
-                }
-                
-                val problemTypeFilteredProblems = if (problemType != null) {
-                    scopeFilteredProblems.filter { problem ->
-                        val inspectionType = problem["inspectionType"] as? String ?: ""
-                        val category = problem["category"] as? String ?: ""
-                        inspectionType.contains(problemType, ignoreCase = true) || 
-                        category.contains(problemType, ignoreCase = true)
-                    }
-                } else {
-                    scopeFilteredProblems
-                }
-                
-                val filePatternFilteredProblems = if (filePattern != null) {
-                    val pattern = filePattern.trim()
-                    val regex = compileFilePatternRegex(pattern)
-                    if (regex != null) {
-                        problemTypeFilteredProblems.filter { problem ->
-                            val filePath = problem["file"] as? String ?: ""
-                            regex.containsMatchIn(filePath)
-                        }
-                    } else {
-                        problemTypeFilteredProblems.filter { problem ->
-                            val filePath = problem["file"] as? String ?: ""
-                            filePath.contains(pattern, ignoreCase = true)
-                        }
-                    }
-                } else {
-                    problemTypeFilteredProblems
-                }
-                
-                val totalFilteredProblems = filePatternFilteredProblems.size
-                
-                val paginatedProblems = filePatternFilteredProblems
-                    .drop(offset)
-                    .take(limit)
-                
-                val hasMore = offset + paginatedProblems.size < totalFilteredProblems
-                val nextOffset = if (hasMore) offset + limit else null
+                val filteredProblems = filterProblems(
+                    problems = problems,
+                    severity = severity,
+                    scope = normalizedScope,
+                    currentFilePath = currentFilePath,
+                    problemType = problemType,
+                    filePattern = filePattern
+                )
+
+                val page = paginateProblems(filteredProblems, limit, offset)
                 
                 val response = mapOf(
                     "status" to "results_available",
                     "project" to project.name,
                     "timestamp" to (resultsStore.getTimestamp(project.name) ?: System.currentTimeMillis()),
-                    "total_problems" to totalFilteredProblems,
-                    "problems_shown" to paginatedProblems.size,
-                    "problems" to paginatedProblems,
+                    "total_problems" to page.total,
+                    "problems_shown" to page.shown,
+                    "problems" to page.problems,
                     "pagination" to mapOf(
                         "limit" to limit,
                         "offset" to offset,
-                        "has_more" to hasMore,
-                        "next_offset" to nextOffset
+                        "has_more" to page.hasMore,
+                        "next_offset" to page.nextOffset
                     ),
                     "filters" to mapOf(
                         "severity" to severity,
@@ -261,20 +208,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun normalizeProblemsScope(scopeRaw: String): String {
-        val trimmed = scopeRaw.trim()
-        if (trimmed.isBlank()) {
-            return "whole_project"
-        }
-
-        return when (trimmed.lowercase()) {
-            "whole_project" -> "whole_project"
-            "current_file" -> "current_file"
-            "files", "directory", "changed_files" -> "whole_project"
-            else -> trimmed
-        }
-    }
-    
     private fun getInspectionStatus(project: Project): String {
         return try {
             val status = buildInspectionStatus(project)
@@ -808,20 +741,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
     
-    private fun formatJsonManually(data: Any?): String {
-        return when (data) {
-            is String -> "\"${data.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")}\""
-            is Number -> data.toString()
-            is Boolean -> data.toString()
-            is List<*> -> data.joinToString(",", "[", "]") { formatJsonManually(it) }
-            is Map<*, *> -> data.entries.joinToString(",\n  ", "{\n  ", "\n}") { (k, v) ->
-                "\"$k\": ${formatJsonManually(v)}"
-            }
-            null -> "null"
-            else -> "\"$data\""
-        }
-    }
-
     private fun sendJsonResponse(
         context: ChannelHandlerContext, 
         jsonContent: String, 

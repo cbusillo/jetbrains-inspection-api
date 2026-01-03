@@ -1,4 +1,4 @@
-package com.shiny.inspectionmcp
+package com.shiny.inspectionmcp.core
 
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotNull
@@ -33,4 +33,3 @@ class FilePatternTest {
         assertNull(compileFilePatternRegex("   "))
     }
 }
-

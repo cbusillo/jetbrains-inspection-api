@@ -1,7 +1,8 @@
 # Testing
 
-This project has two test surfaces:
+This project has three test surfaces:
 
+- **Core (Kotlin/JVM)**: shared filtering and JSON helpers (no IDE dependencies).
 - **Plugin (Kotlin/Gradle)**: HTTP handler and inspection extraction/trigger logic.
 - **MCP server (JVM)**: tool wiring + URL/param handling + error behavior.
 
@@ -22,6 +23,9 @@ escalation.
 # Plugin tests
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
+# Core tests
+./gradlew :inspection-core:test
+
 # MCP server tests
 ./gradlew :mcp-server-jvm:test
 
@@ -34,8 +38,8 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
 ## Automated IDE smoke test
 
-`./scripts/test-automated.sh` can install the plugin into a local IDE, start it with a
-test project, and hit a few API endpoints.
+`./scripts/test-automated.sh` can install the plugin into a local IDE,
+start it with a test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 
