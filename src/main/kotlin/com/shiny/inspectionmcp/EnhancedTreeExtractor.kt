@@ -7,6 +7,7 @@ import com.intellij.codeInspection.ui.InspectionNode
 import com.intellij.codeInspection.ui.InspectionTreeNode
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.codeInspection.ProblemHighlightType
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
@@ -18,6 +19,7 @@ import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.injected.editor.DocumentWindow
 import com.intellij.injected.editor.VirtualFileWindow
+import com.intellij.ui.content.ContentManager
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
 import java.awt.Component
@@ -87,8 +89,9 @@ class EnhancedTreeExtractor {
 
     private fun toolWindowHasInspectionResults(toolWindow: ToolWindow): Boolean {
         try {
-            for (i in 0 until toolWindow.contentManager.contentCount) {
-                val content = toolWindow.contentManager.getContent(i) ?: continue
+            val contentManager = getContentManager(toolWindow) ?: return false
+            for (i in 0 until contentManager.contentCount) {
+                val content = contentManager.getContent(i) ?: continue
                 val component = content.component
                 if (findInspectionResultsView(component) != null) {
                     return true
@@ -106,8 +109,9 @@ class EnhancedTreeExtractor {
         project: Project,
         seen: MutableSet<String>,
     ) {
-        for (i in 0 until toolWindow.contentManager.contentCount) {
-            val content = toolWindow.contentManager.getContent(i) ?: continue
+        val contentManager = getContentManager(toolWindow) ?: return
+        for (i in 0 until contentManager.contentCount) {
+            val content = contentManager.getContent(i) ?: continue
             val component = content.component
 
             val before = problems.size
@@ -155,6 +159,29 @@ class EnhancedTreeExtractor {
         }
         
         return null
+    }
+
+    private fun getContentManager(toolWindow: ToolWindow): ContentManager? {
+        val app = ApplicationManager.getApplication()
+        if (app.isDispatchThread) {
+            return try {
+                toolWindow.contentManager
+            } catch (_: Exception) {
+                null
+            }
+        }
+        return getContentManagerIfCreated(toolWindow)
+    }
+
+    private fun getContentManagerIfCreated(toolWindow: ToolWindow): ContentManager? {
+        return try {
+            val method = toolWindow.javaClass.methods.firstOrNull {
+                it.name == "getContentManagerIfCreated" && it.parameterCount == 0
+            }
+            method?.invoke(toolWindow) as? ContentManager
+        } catch (_: Exception) {
+            null
+        }
     }
     
     private fun findInspectionTree(component: Component): JTree? {
