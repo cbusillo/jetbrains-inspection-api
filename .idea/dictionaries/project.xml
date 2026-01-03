@@ -16,6 +16,7 @@
       <w>readarray</w>
       <w>setlocal</w>
       <w>ulimit</w>
+      <w>urlencode</w>
     </words>
   </dictionary>
 </component>
