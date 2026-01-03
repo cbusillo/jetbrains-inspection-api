@@ -231,6 +231,7 @@ class McpServerTest {
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("scope=directory"))
             assertTrue(query.contains("dir=src%2Fmy+dir"))
+            @Suppress("SpellCheckingInspection")
             assertTrue(query.contains("file=src%2Fmain.py"))
             assertTrue(query.contains("include_unversioned=true"))
             assertTrue(query.contains("changed_files_mode=staged"))
@@ -327,7 +328,7 @@ class McpServerTest {
 
             executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val query = server.lastQuery.get()
-            assertTrue(query == null || query.isEmpty())
+            assertTrue(query.isNullOrEmpty())
         }
     }
 

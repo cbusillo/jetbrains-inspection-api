@@ -323,11 +323,11 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 - `is_scanning: true` → Inspection running, wait
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
-- All false and `time_since_last_trigger_ms` is recent → Inspection finished but results were not captured (clean run or Inspection Results view unavailable). Re-run inspection or open the Inspection Results tool window.
+- All false and `time_since_last_trigger_ms` is recent → Inspection finished but results were not captured (clean run or Inspection Results view unavailable). Re-run the inspection or open the Inspection Results tool window.
 - All false and `time_since_last_trigger_ms` is old → No recent inspection, trigger one first
 
 ### Wait Response Notes
-`/api/inspection/wait` may return `completion_reason: "no_results"` when an inspection finished recently but no results were captured. This is most common for clean runs or when the Inspection Results view is unavailable. Re-run inspection or open the Inspection Results tool window.
+`/api/inspection/wait` may return `completion_reason: "no_results"` when an inspection finished recently but no results were captured. This is most common for clean runs or when the Inspection Results view is unavailable. Re-run the inspection or open the Inspection Results tool window.
 
 ## MCP Server Details
 
