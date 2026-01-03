@@ -113,7 +113,7 @@ private fun handleRequest(element: JsonElement, toolExecutor: ToolExecutor): Jso
                 })
                 put(
                     "instructions",
-                    JsonPrimitive("Use inspection_trigger then inspection_get_status, then inspection_get_problems.")
+                    JsonPrimitive("Workflow: inspection_trigger -> inspection_wait (blocks; preferred) or poll inspection_get_status -> inspection_get_problems.")
                 )
             }
             successResponse(id, result)
@@ -177,9 +177,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_get_problems"))
                     put(
                         "description",
-                        JsonPrimitive(
-                            "List inspection problems (scoped, filterable). Use inspection_get_status first and only call when is_scanning=false and has_inspection_results=true."
-                        )
+                        JsonPrimitive("Fetch problems after inspection completes.")
                     )
                     put("inputSchema", getProblemsSchema())
                 },
@@ -187,7 +185,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_trigger"))
                     put(
                         "description",
-                        JsonPrimitive("Trigger an inspection run. Scopes: whole_project|current_file|directory|changed_files|files (see parameters).")
+                        JsonPrimitive("Start an inspection run (async).")
                     )
                     put("inputSchema", triggerSchema())
                 },
@@ -195,7 +193,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_get_status"))
                     put(
                         "description",
-                        JsonPrimitive("Get inspection status (is_scanning, has_inspection_results). Wait until is_scanning=false before calling inspection_get_problems.")
+                        JsonPrimitive("Check inspection status.")
                     )
                     put("inputSchema", statusSchema())
                 },
@@ -203,7 +201,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_wait"))
                     put(
                         "description",
-                        JsonPrimitive("Long-poll until inspection results are ready or timeout is reached.")
+                        JsonPrimitive("Block until inspection completes or timeout.")
                     )
                     put("inputSchema", waitSchema())
                 }
@@ -282,7 +280,7 @@ internal class ToolExecutor(
             val result = httpGet(url)
 
             val text = prettyJson.encodeToString(JsonElement.serializer(), result) +
-                "\n\nUse inspection_get_status to wait before fetching problems."
+                "\n\nUse inspection_wait (preferred) or poll inspection_get_status before fetching problems."
             toolText(text)
         } catch (error: Exception) {
             toolError("Error triggering inspection: ${error.message}")
@@ -469,37 +467,37 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Name of the project to inspect (e.g., 'odoo-ai', 'MyProject'). If not specified, inspects the currently focused project")
+                    stringProp("Project name (optional; defaults to focused project)")
                 )
                 put(
                     "scope",
                     stringProp(
-                        "Inspection scope: 'whole_project', 'current_file', or custom scope name (e.g., 'odoo_intelligence_mcp') to filter by file path",
+                        "Scope: whole_project | current_file | <path substring>",
                         defaultValue = "whole_project"
                     )
                 )
                 put(
                     "severity",
                     stringProp(
-                        "Severity filter: 'error', 'warning', 'weak_warning', 'info', 'grammar', 'typo', or 'all'",
+                        "error | warning | weak_warning | info | grammar | typo | all",
                         defaultValue = "all"
                     )
                 )
                 put(
                     "problem_type",
-                    stringProp("Filter by inspection type (e.g., 'PyUnresolvedReferencesInspection', 'SpellCheck', 'Unused') - matches against inspection type or category")
+                    stringProp("Filter by inspection type/category")
                 )
                 put(
                     "file_pattern",
-                    stringProp("Filter by file path pattern - can be a simple string match or regex (e.g., '*.py', 'src/.*\\.js$', 'test')")
+                    stringProp("Path filter (string or regex)")
                 )
                 put(
                     "limit",
-                    intProp("Maximum number of problems to return (default: 100)", defaultValue = 100)
+                    intProp("Max problems to return", defaultValue = 100)
                 )
                 put(
                     "offset",
-                    intProp("Number of problems to skip for pagination (default: 0)", defaultValue = 0)
+                    intProp("Pagination offset", defaultValue = 0)
                 )
             })
         }
@@ -513,29 +511,29 @@ internal class ToolExecutor(
                 put(
                     "scope",
                     enumProp(
-                        "Analysis scope",
+                        "Scope (directory->dir, files->files)",
                         listOf("whole_project", "current_file", "directory", "changed_files", "files")
                     )
                 )
-                put("dir", stringProp("Directory when scope=directory"))
+                put("dir", stringProp("Directory for scope=directory (required)"))
                 put("directory", stringProp("Alias for dir"))
                 put("path", stringProp("Alias for dir"))
                 put("files", buildJsonObject {
                     put("type", JsonPrimitive("array"))
-                    put("description", JsonPrimitive("File paths when scope=files"))
+                    put("description", JsonPrimitive("File paths for scope=files (required)"))
                     put("items", buildJsonObject {
                         put("type", JsonPrimitive("string"))
                     })
                 })
                 put("include_unversioned", buildJsonObject {
                     put("type", JsonPrimitive("boolean"))
-                    put("description", JsonPrimitive("Include unversioned (default true)"))
+                    put("description", JsonPrimitive("changed_files only; default true"))
                 })
                 put(
                     "changed_files_mode",
-                    enumProp("Best-effort Git filter: 'staged' or 'unstaged'", listOf("all", "staged", "unstaged"))
+                    enumProp("changed_files only: all | staged | unstaged", listOf("all", "staged", "unstaged"))
                 )
-                put("max_files", intProp("Limit files for speed"))
+                put("max_files", intProp("Max files (changed_files only)"))
                 put("profile", stringProp("Inspection profile name"))
             })
         }
@@ -547,7 +545,7 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Name of the project to check status for (e.g., 'odoo-ai', 'MyProject'). If not specified, checks status for the currently focused project")
+                    stringProp("Project name (optional; defaults to focused project)")
                 )
             })
         }
@@ -559,15 +557,15 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Name of the project to wait on (optional)")
+                    stringProp("Project name (optional)")
                 )
                 put(
                     "timeout_ms",
-                    intProp("Maximum time to wait in milliseconds (default: 180000)", defaultValue = 180000)
+                    intProp("Max wait ms", defaultValue = 180000)
                 )
                 put(
                     "poll_ms",
-                    intProp("Polling interval in milliseconds (default: 1000)", defaultValue = 1000)
+                    intProp("Poll interval ms", defaultValue = 1000)
                 )
             })
         }
