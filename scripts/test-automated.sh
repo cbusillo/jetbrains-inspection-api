@@ -27,6 +27,10 @@ java_major() {
     echo "$major"
 }
 
+urlencode() {
+    printf '%s' "$1" | jq -sRr @uri
+}
+
 is_java21() {
     [ "$(java_major "$1")" = "21" ]
 }
@@ -116,6 +120,14 @@ echo "  IDE: $IDE_TYPE${IDE_VERSION:+ $IDE_VERSION}"
 echo "  Port: $IDE_PORT"
 echo "  Project: $TEST_PROJECT_PATH"
 echo "  Plugin Dir: $PLUGIN_DIR"
+if [ -f "$TEST_PROJECT_PATH/.idea/.name" ]; then
+    PROJECT_NAME=$(head -n 1 "$TEST_PROJECT_PATH/.idea/.name" | tr -d '\r')
+else
+    PROJECT_NAME=$(basename "$TEST_PROJECT_PATH")
+fi
+PROJECT_HINT="$TEST_PROJECT_PATH"
+PROJECT_PARAM="project=$(urlencode "$PROJECT_HINT")"
+echo "  Project Name: $PROJECT_NAME"
 echo ""
 
 # Function to check if IDE is running
@@ -140,6 +152,27 @@ wait_for_api() {
     done
 }
 
+wait_for_project_ready() {
+    echo "⏳ Waiting for project to be ready..."
+    for i in {1..120}; do
+        STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status?$PROJECT_PARAM")
+        STATUS_ERROR=$(echo "$STATUS" | jq -r '.error // empty')
+        PROJECT_READY=$(echo "$STATUS" | jq -r '.project_name // empty')
+        if [ -n "$PROJECT_READY" ] && [ -z "$STATUS_ERROR" ]; then
+            echo "✅ Project ready: $PROJECT_READY"
+            return 0
+        fi
+        if [ "$i" -eq 120 ]; then
+            echo "❌ Project not ready after 120 seconds"
+            if [ -n "$STATUS_ERROR" ]; then
+                echo "   Last error: $STATUS_ERROR"
+            fi
+            return 1
+        fi
+        sleep 1
+    done
+}
+
 # Function to run API tests
 run_api_tests() {
     echo ""
@@ -149,51 +182,71 @@ run_api_tests() {
     # First trigger an inspection
     echo ""
     echo "📍 Triggering Inspection..."
-    TRIGGER_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/trigger")
+    TRIGGER_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/trigger?$PROJECT_PARAM")
+    TRIGGER_ERROR=$(echo "$TRIGGER_RESPONSE" | jq -r '.error // empty')
+    if [ -n "$TRIGGER_ERROR" ]; then
+        echo "❌ Trigger failed: $TRIGGER_ERROR"
+        return 1
+    fi
     echo "   Response: $(echo "$TRIGGER_RESPONSE" | jq -r '.message // "triggered"')"
 
     # Wait for inspection to complete (long-poll)
     echo "⏳ Waiting for inspection to complete..."
-    WAIT_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/wait?timeout_ms=180000&poll_ms=1000")
+    WAIT_TIMEOUT_MS=180000
+    WAIT_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/wait?$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000")
     WAIT_COMPLETED=$(echo "$WAIT_RESPONSE" | jq -r '.wait_completed // false')
     WAIT_REASON=$(echo "$WAIT_RESPONSE" | jq -r '.completion_reason // "unknown"')
     WAIT_TIMED_OUT=$(echo "$WAIT_RESPONSE" | jq -r '.timed_out // false')
+    WAIT_NOTE=$(echo "$WAIT_RESPONSE" | jq -r '.wait_note // empty')
 
     if [ "$WAIT_COMPLETED" = "true" ]; then
         echo "✅ Inspection wait completed ($WAIT_REASON)"
     elif [ "$WAIT_TIMED_OUT" = "true" ]; then
-        echo "⚠️  Inspection wait timed out after 120s"
+        WAIT_TIMEOUT_S=$((WAIT_TIMEOUT_MS / 1000))
+        echo "⚠️  Inspection wait timed out after ${WAIT_TIMEOUT_S}s"
         echo "   Continuing with tests anyway..."
     else
         echo "⚠️  Inspection wait did not complete"
         echo "   Continuing with tests anyway..."
+    fi
+    if [ -n "$WAIT_NOTE" ]; then
+        echo "   Note: $WAIT_NOTE"
     fi
     echo ""
     
     # Test 1: Get inspection results
     echo ""
     echo "📍 Test 1: Inspection Results"
-    RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?severity=all")
+    RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?$PROJECT_PARAM&severity=all")
+    PROBLEMS_STATUS=$(echo "$RESPONSE" | jq -r '.status // "unknown"')
     METHOD=$(echo "$RESPONSE" | jq -r '.method // "unknown"')
     TOTAL_PROBLEMS=$(echo "$RESPONSE" | jq -r '.total_problems // 0')
     
+    echo "   Status: $PROBLEMS_STATUS"
     echo "   Method: $METHOD"
     echo "   Total Problems: $TOTAL_PROBLEMS"
     
     # Test 2: Check inspection status
     echo ""
     echo "📍 Test 2: Inspection Status"
-    STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status")
+    STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status?$PROJECT_PARAM")
     HAS_RESULTS=$(echo "$STATUS" | jq -r '.has_inspection_results // false')
     IS_SCANNING=$(echo "$STATUS" | jq -r '.is_scanning // false')
+    CLEAN_INSPECTION=$(echo "$STATUS" | jq -r '.clean_inspection // false')
+    STATUS_ERROR=$(echo "$STATUS" | jq -r '.error // empty')
+    if [ -n "$STATUS_ERROR" ]; then
+        echo "   Error: $STATUS_ERROR"
+        return 1
+    fi
     echo "   Has results: $HAS_RESULTS"
     echo "   Is scanning: $IS_SCANNING"
+    echo "   Clean inspection: $CLEAN_INSPECTION"
     
     # Test 3: Severity filtering
     echo ""
     echo "📍 Test 3: Severity Filtering"
     for severity in "error" "warning" "weak_warning" "info"; do
-        count=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?severity=$severity" | jq -r '.total_problems // 0')
+        count=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?$PROJECT_PARAM&severity=$severity" | jq -r '.total_problems // 0')
         echo "   $severity: $count problems"
     done
     
@@ -208,14 +261,26 @@ run_api_tests() {
             echo "✅ Inspection results are available"
         fi
         return 0
-    else
-        echo "⚠️  No problems found"
-        if [ "$HAS_RESULTS" = "false" ]; then
-            echo "   No inspection results available yet"
-            echo "   Try triggering inspection with: curl http://localhost:$IDE_PORT/api/inspection/trigger"
-        fi
+    fi
+
+    if [ "$WAIT_COMPLETED" = "true" ] && \
+        { [ "$WAIT_REASON" = "clean" ] || [ "$CLEAN_INSPECTION" = "true" ]; }; then
+        echo "✅ Inspection completed with no problems ($WAIT_REASON)"
+        return 0
+    fi
+
+    if [ "$WAIT_REASON" = "no_results" ]; then
+        echo "❌ Inspection finished but no results were captured"
+        echo "   Open the Inspection Results tool window and retry."
         return 1
     fi
+
+    echo "⚠️  No problems found"
+    if [ "$HAS_RESULTS" = "false" ]; then
+        echo "   No inspection results available yet"
+        echo "   Try triggering inspection with: curl http://localhost:$IDE_PORT/api/inspection/trigger"
+    fi
+    return 1
 }
 
 # Step 1: Build plugin
@@ -287,21 +352,25 @@ echo "⏳ Step 5: Waiting for IDE to be ready..."
 echo "   (This may take 30-60 seconds for indexing...)"
 
 if wait_for_api; then
-    # Give IDE a bit more time to fully index
-    echo "⏳ Waiting additional 15 seconds for project indexing..."
-    sleep 15
-    
-    # Run tests
-    run_api_tests
-    TEST_RESULT=$?
-    
-    # If no problems detected, try once more after waiting
-    if [ "$TEST_RESULT" -ne 0 ]; then
-        echo ""
-        echo "🔄 Retrying after additional wait..."
+    if ! wait_for_project_ready; then
+        TEST_RESULT=1
+    else
+        # Give IDE a bit more time to fully index
+        echo "⏳ Waiting additional 15 seconds for project indexing..."
         sleep 15
+
+        # Run tests
         run_api_tests
         TEST_RESULT=$?
+
+        # If no problems detected, try once more after waiting
+        if [ "$TEST_RESULT" -ne 0 ]; then
+            echo ""
+            echo "🔄 Retrying after additional wait..."
+            sleep 15
+            run_api_tests
+            TEST_RESULT=$?
+        fi
     fi
 else
     echo "❌ Failed to connect to API"

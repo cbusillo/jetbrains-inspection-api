@@ -2,14 +2,20 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionManager
+import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.lang.injection.InjectedLanguageManager
+import com.intellij.injected.editor.DocumentWindow
+import com.intellij.injected.editor.VirtualFileWindow
 import com.shiny.inspectionmcp.core.filterProblems
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
@@ -18,7 +24,9 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
+import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 class InspectionHandler : HttpRequestHandler() {
     
@@ -72,11 +80,16 @@ class InspectionHandler : HttpRequestHandler() {
                     val changedFilesMode = urlDecoder.parameters()["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
                     val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
                     val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
+                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+                    if (project == null) {
+                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
+                        return true
+                    }
                     lastInspectionTriggerTime = System.currentTimeMillis()
                     inspectionInProgress = true
-                    com.intellij.openapi.application.ApplicationManager.getApplication().invokeLater {
+                    ApplicationManager.getApplication().invokeLater {
                         triggerInspectionAsync(
-                            projectName = projectName,
+                            project = project,
                             scopeParam = scope,
                             directoryParam = directory,
                             files = if (filesList.isEmpty()) null else filesList,
@@ -144,14 +157,17 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
             val cachedProblems = resultsStore.getProblems(project.name)
-            val problems = if (cachedProblems != null) {
-                cachedProblems
-            } else {
-                val extractor = EnhancedTreeExtractor()
-                extractor.extractAllProblems(project)
+            val hasSnapshot = resultsStore.hasSnapshot(project.name)
+            val problems = when {
+                cachedProblems != null -> cachedProblems
+                hasSnapshot -> emptyList()
+                else -> {
+                    val extractor = EnhancedTreeExtractor()
+                    extractor.extractAllProblems(project)
+                }
             }
             
-            if (problems.isNotEmpty()) {
+            if (problems.isNotEmpty() || hasSnapshot) {
                 val currentFilePath = if (normalizedScope == "current_file") {
                     try {
                         com.intellij.openapi.fileEditor.FileEditorManager
@@ -196,7 +212,7 @@ class InspectionHandler : HttpRequestHandler() {
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     ),
-                    "method" to "enhanced_tree"
+                    "method" to if (hasSnapshot) "inspection_view" else "enhanced_tree"
                 )
                 
                 formatJsonManually(response)
@@ -259,7 +275,7 @@ class InspectionHandler : HttpRequestHandler() {
             status["active_tool_window"] = "Problems View"
         }
 
-        val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 30000
+        val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 300000
 
         if (problemsAvailable && inspectionInProgress && timeSinceLastTrigger > 5000) {
             inspectionInProgress = false
@@ -409,7 +425,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
     
     private fun triggerInspectionAsync(
-        projectName: String? = null,
+        project: Project,
         scopeParam: String? = null,
         directoryParam: String? = null,
         files: List<String>? = null,
@@ -418,10 +434,9 @@ class InspectionHandler : HttpRequestHandler() {
         maxFiles: Int? = null,
         profileName: String? = null,
     ) {
-        val project = getCurrentProject(projectName) ?: return
-        
         try {
             inspectionInProgress = true
+            resultsStore.clear(project.name)
             
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             // Clear prior results from both known locations to avoid stale reads
@@ -475,27 +490,103 @@ class InspectionHandler : HttpRequestHandler() {
 
             try {
                 @Suppress("UnstableApiUsage")
-                globalContext.initializeViewIfNeeded()
-                val view = try {
+                val viewReady = globalContext.initializeViewIfNeeded()
+                val initialView = try {
                     @Suppress("UnstableApiUsage")
                     globalContext.view
                 } catch (_: Exception) {
                     null
                 }
-                if (view != null) {
+
+                val projectName = project.name
+                ApplicationManager.getApplication().executeOnPooledThread {
                     val extractor = EnhancedTreeExtractor()
-                    val extracted = ReadAction.compute<List<Map<String, Any>>, Exception> {
-                        extractor.extractAllProblemsFromInspectionView(view, project)
+                    val extractedFromContext = try {
+                        ReadAction.compute<List<Map<String, Any>>, Exception> {
+                            extractProblemsFromContext(globalContext, project)
+                        }
+                    } catch (_: Exception) {
+                        emptyList()
                     }
-                    resultsStore.setProblems(project.name, extracted)
-                } else {
-                    resultsStore.clear(project.name)
+
+                    val deadlineMs = System.currentTimeMillis() + 60000
+                    var bestResults: List<Map<String, Any>> = extractedFromContext
+                    var lastSize = bestResults.size
+                    var lastChangeMs = System.currentTimeMillis()
+
+                    fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
+                        val app = ApplicationManager.getApplication()
+                        if (app.isDispatchThread) {
+                            return extractor.extractAllProblemsFromInspectionView(view, project)
+                        }
+                        val holder = AtomicReference<List<Map<String, Any>>>()
+                        app.invokeAndWait {
+                            holder.set(extractor.extractAllProblemsFromInspectionView(view, project))
+                        }
+                        return holder.get() ?: emptyList()
+                    }
+
+                    val viewReadyOk = try {
+                        viewReady.waitFor(60000)
+                    } catch (_: Exception) {
+                        false
+                    }
+
+                    while (System.currentTimeMillis() < deadlineMs) {
+                        val view = try {
+                            @Suppress("UnstableApiUsage")
+                            globalContext.view
+                        } catch (_: Exception) {
+                            null
+                        } ?: initialView
+
+                        if (viewReadyOk && view != null) {
+                            val attempt = try {
+                                extractFromViewSafe(view)
+                            } catch (_: Exception) {
+                                emptyList()
+                            }
+                            if (attempt.size > bestResults.size) {
+                                bestResults = attempt
+                            }
+                        }
+
+                        val toolResults = try {
+                            ReadAction.compute<List<Map<String, Any>>, Exception> {
+                                extractor.extractAllProblems(project)
+                            }
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        if (toolResults.size > bestResults.size) {
+                            bestResults = toolResults
+                        }
+
+                        if (bestResults.size != lastSize) {
+                            lastSize = bestResults.size
+                            lastChangeMs = System.currentTimeMillis()
+                        }
+
+                        if (viewReadyOk && System.currentTimeMillis() - lastChangeMs >= 5000) {
+                            break
+                        }
+
+                        try {
+                            Thread.sleep(1000)
+                        } catch (_: Exception) {
+                            break
+                        }
+                    }
+
+                    val extracted = bestResults
+
+                    resultsStore.setProblems(projectName, extracted)
+                    inspectionInProgress = false
                 }
             } catch (_: Exception) {
-                resultsStore.clear(project.name)
+                resultsStore.setProblems(project.name, emptyList())
+                inspectionInProgress = false
             }
-
-            inspectionInProgress = false
         } catch (_: Exception) {
             inspectionInProgress = false
         }
@@ -506,11 +597,15 @@ class InspectionHandler : HttpRequestHandler() {
         private val timestampByProject = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
         fun getProblems(projectName: String): List<Map<String, Any>>? {
-            return problemsByProject[projectName]?.takeIf { it.isNotEmpty() }
+            return problemsByProject[projectName]
         }
 
         fun getTimestamp(projectName: String): Long? {
             return timestampByProject[projectName]
+        }
+
+        fun hasSnapshot(projectName: String): Boolean {
+            return timestampByProject.containsKey(projectName)
         }
 
         fun setProblems(projectName: String, problems: List<Map<String, Any>>) {
@@ -745,13 +840,179 @@ class InspectionHandler : HttpRequestHandler() {
     private fun getProjectByName(projectName: String): Project? {
         val projectManager = ProjectManager.getInstance()
         val openProjects = projectManager.openProjects
-        
+        val trimmed = projectName.trim()
+        val pathHint = normalizeProjectPath(trimmed)
+
         return openProjects.firstOrNull { project ->
-            !project.isDefault && 
-            !project.isDisposed && 
-            project.isInitialized && 
-            project.name == projectName
+            !project.isDefault &&
+            !project.isDisposed &&
+            project.isInitialized &&
+            projectMatches(project, trimmed, pathHint)
         }
+    }
+
+    private fun projectMatches(project: Project, projectName: String, pathHint: String?): Boolean {
+        if (project.name == projectName) return true
+        if (pathHint == null) return false
+
+        val basePath = normalizeProjectPath(project.basePath)
+        if (basePath != null && basePath == pathHint) return true
+
+        val projectFilePath = normalizeProjectPath(project.projectFilePath)
+        if (projectFilePath != null && projectFilePath == pathHint) return true
+
+        return false
+    }
+
+    private fun normalizeProjectPath(value: String?): String? {
+        val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (!looksLikePath(raw)) return null
+        val expanded = if (raw.startsWith("~")) {
+            System.getProperty("user.home") + raw.removePrefix("~")
+        } else {
+            raw
+        }
+        return try {
+            Paths.get(expanded).normalize().toAbsolutePath().toString()
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun looksLikePath(value: String): Boolean {
+        return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
+    }
+
+    private fun extractProblemsFromContext(
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        project: Project,
+    ): List<Map<String, Any>> {
+        val problems = mutableListOf<Map<String, Any>>()
+        val seen = LinkedHashSet<String>()
+        val tools = globalContext.tools.values
+
+        for (toolGroup in tools) {
+            val scopeStates = try {
+                toolGroup.tools
+            } catch (_: Exception) {
+                emptyList()
+            }
+            for (state in scopeStates) {
+                if (!state.isEnabled) continue
+                val wrapper = try {
+                    state.tool
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+
+                val presentation = try {
+                    globalContext.getPresentation(wrapper)
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+
+                try {
+                    presentation.updateContent()
+                } catch (_: Exception) {
+                }
+
+                val descriptors = try {
+                    val elements = presentation.problemElements
+                    val values = elements.getValues()
+                    if (!values.isNullOrEmpty()) values else presentation.problemDescriptors
+                } catch (_: Exception) {
+                    emptyList()
+                }
+
+                for (descriptor in descriptors) {
+                    val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                    val key = listOf(
+                        map["severity"],
+                        map["inspectionType"],
+                        map["file"],
+                        map["line"],
+                        map["column"],
+                        map["description"],
+                    ).joinToString("|")
+                    if (seen.add(key)) {
+                        problems.add(map)
+                    }
+                }
+            }
+        }
+
+        return problems
+    }
+
+    private fun buildProblemMap(
+        descriptor: com.intellij.codeInspection.CommonProblemDescriptor,
+        wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+        project: Project,
+    ): Map<String, Any>? {
+        val description = descriptor.descriptionTemplate?.takeIf { it.isNotBlank() } ?: return null
+        val inspectionType = wrapper.shortName ?: wrapper.id
+        val category = wrapper.groupDisplayName ?: wrapper.displayName
+
+        var filePath = "unknown"
+        var line = 0
+        var column = 0
+        var severity = "warning"
+
+        if (descriptor is com.intellij.codeInspection.ProblemDescriptor) {
+            val element = descriptor.psiElement
+            if (element != null && element.isValid) {
+                val containingFile = element.containingFile
+                val virtualFile = containingFile?.virtualFile
+                if (virtualFile != null) {
+                    val documentManager = PsiDocumentManager.getInstance(project)
+                    val document = documentManager.getDocument(containingFile)
+                    val textRange = element.textRange
+                    if (virtualFile is VirtualFileWindow && document is DocumentWindow) {
+                        val hostFile = virtualFile.delegate
+                        val hostPsi = InjectedLanguageManager.getInstance(project).getTopLevelFile(containingFile)
+                        val hostDocument = hostPsi?.let { psi -> documentManager.getDocument(psi) }
+                        val hostOffset = document.injectedToHost(textRange.startOffset)
+                        filePath = hostFile.path
+                        if (hostDocument != null) {
+                            line = hostDocument.getLineNumber(hostOffset) + 1
+                            column = hostOffset - hostDocument.getLineStartOffset(line - 1)
+                        } else {
+                            line = document.getLineNumber(textRange.startOffset) + 1
+                            column = textRange.startOffset - document.getLineStartOffset(line - 1)
+                        }
+                    } else {
+                        filePath = virtualFile.path
+                        if (document != null) {
+                            line = document.getLineNumber(textRange.startOffset) + 1
+                            column = textRange.startOffset - document.getLineStartOffset(line - 1)
+                        }
+                    }
+                }
+
+                severity = when (descriptor.highlightType) {
+                    com.intellij.codeInspection.ProblemHighlightType.ERROR -> "error"
+                    com.intellij.codeInspection.ProblemHighlightType.WARNING -> "warning"
+                    com.intellij.codeInspection.ProblemHighlightType.WEAK_WARNING -> "weak_warning"
+                    com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR_OR_WARNING -> "warning"
+                    com.intellij.codeInspection.ProblemHighlightType.LIKE_UNKNOWN_SYMBOL -> "error"
+                    com.intellij.codeInspection.ProblemHighlightType.LIKE_DEPRECATED -> "weak_warning"
+                    com.intellij.codeInspection.ProblemHighlightType.LIKE_UNUSED_SYMBOL -> "weak_warning"
+                    com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR -> "error"
+                    else -> "info"
+                }
+            }
+        }
+
+        return mapOf(
+            "description" to description,
+            "file" to filePath,
+            "line" to line,
+            "column" to column,
+            "severity" to severity,
+            "category" to category,
+            "inspectionType" to inspectionType,
+            "source" to "inspection_context",
+        )
     }
     
     private fun sendJsonResponse(

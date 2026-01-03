@@ -24,9 +24,32 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
 import java.awt.Component
 import java.awt.Container
+import java.lang.reflect.Method
+import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JTree
 
 class EnhancedTreeExtractor {
+
+    private companion object {
+        private val noMethod = Any()
+        private val zeroArgMethodCache = ConcurrentHashMap<Class<*>, ConcurrentHashMap<String, Any>>()
+    }
+
+    private fun getZeroArgMethod(targetClass: Class<*>, name: String): Method? {
+        val perClassCache = zeroArgMethodCache.computeIfAbsent(targetClass) { ConcurrentHashMap() }
+        val cached = perClassCache[name]
+        if (cached != null) {
+            return if (cached === noMethod) null else cached as Method
+        }
+
+        val resolved = try {
+            targetClass.getMethod(name)
+        } catch (_: Exception) {
+            null
+        }
+        perClassCache[name] = resolved ?: noMethod
+        return resolved
+    }
 
     fun extractAllProblemsFromInspectionView(view: InspectionResultsView, project: Project): List<Map<String, Any>> {
         val problems = mutableListOf<Map<String, Any>>()
@@ -175,10 +198,8 @@ class EnhancedTreeExtractor {
 
     private fun getContentManagerIfCreated(toolWindow: ToolWindow): ContentManager? {
         return try {
-            val method = toolWindow.javaClass.methods.firstOrNull {
-                it.name == "getContentManagerIfCreated" && it.parameterCount == 0
-            }
-            method?.invoke(toolWindow) as? ContentManager
+            val method = getZeroArgMethod(toolWindow.javaClass, "getContentManagerIfCreated") ?: return null
+            method.invoke(toolWindow) as? ContentManager
         } catch (_: Exception) {
             null
         }
@@ -361,8 +382,8 @@ class EnhancedTreeExtractor {
     private fun tryCall(target: Any?, name: String): Any? {
         if (target == null) return null
         return try {
-            val method = target.javaClass.methods.firstOrNull { it.name == name && it.parameterCount == 0 }
-            method?.invoke(target)
+            val method = getZeroArgMethod(target.javaClass, name) ?: return null
+            method.invoke(target)
         } catch (_: Exception) {
             null
         }
