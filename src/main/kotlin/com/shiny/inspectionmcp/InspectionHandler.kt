@@ -319,6 +319,19 @@ class InspectionHandler : HttpRequestHandler() {
             return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
         }
 
+        val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
+        if (
+            resultsSource == "tool_window" &&
+            !hasResults &&
+            !isScanning &&
+            !inProgress &&
+            timeSinceTrigger != null &&
+            timeSinceTrigger < 60000
+        ) {
+            status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window."
+            return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+        }
+
         if (hasResults && !isScanning && !inProgress) {
             if (resultsSource == "inspection_view") {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")

@@ -146,6 +146,7 @@ Typical response (truncated):
       "file": "/abs/path/to/file.py",
       "line": 42,
       "column": 12,
+      "locationKnown": true,
       "severity": "warning",
       "category": "Python",
       "inspectionType": "PyUnresolvedReferencesInspection"
@@ -166,6 +167,9 @@ Typical response (truncated):
   "method": "enhanced_tree"
 }
 ```
+
+Notes:
+- `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 
 ## API Reference
 
@@ -319,7 +323,11 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 - `is_scanning: true` → Inspection running, wait
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
-- All false → No recent inspection, trigger one first
+- All false and `time_since_last_trigger_ms` is recent → Inspection finished but results were not captured (clean run or Inspection Results view unavailable). Re-run inspection or open the Inspection Results tool window.
+- All false and `time_since_last_trigger_ms` is old → No recent inspection, trigger one first
+
+### Wait Response Notes
+`/api/inspection/wait` may return `completion_reason: "no_results"` when an inspection finished recently but no results were captured. This is most common for clean runs or when the Inspection Results view is unavailable. Re-run inspection or open the Inspection Results tool window.
 
 ## MCP Server Details
 

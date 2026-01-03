@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedReader
 import java.io.BufferedWriter
@@ -356,10 +357,14 @@ internal class ToolExecutor(
         val clean = obj["clean_inspection"]?.jsonPrimitive?.booleanOrNull == true
         val hasResults = obj["has_inspection_results"]?.jsonPrimitive?.booleanOrNull == true
 
+        val timeSince = obj["time_since_last_trigger_ms"]?.jsonPrimitive?.longOrNull
+
         return when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
             clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
+            timeSince != null && timeSince < 60000 ->
+                "\n\nSTATUS: Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run inspection or open the Inspection Results tool window."
             else -> "\n\nSTATUS: No recent inspection - trigger inspection first."
         }
     }
@@ -373,6 +378,8 @@ internal class ToolExecutor(
         return when {
             completed && reason == "clean" -> "\n\nSTATUS: Inspection complete - codebase is clean."
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
+            completed && reason == "no_results" ->
+                "\n\nSTATUS: Inspection finished but no results were captured. Re-run inspection or open the Inspection Results tool window."
             reason == "no_project" -> "\n\nSTATUS: No project found yet - ensure the IDE has an open project."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
             timedOut -> "\n\nSTATUS: Wait timed out - try inspection_get_status or increase timeout_ms."

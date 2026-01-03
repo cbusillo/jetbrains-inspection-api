@@ -278,13 +278,25 @@ class McpServerTest {
 
     @Test
     fun inspectionGetStatusHandlesNoRecentInspection() {
-        val response = """{"is_scanning":false,"has_inspection_results":false}"""
+        val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":120000}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
             assertTrue(result.firstText().contains("No recent inspection"))
+        }
+    }
+
+    @Test
+    fun inspectionGetStatusHandlesRecentNoResults() {
+        val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":5000}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            assertTrue(result.firstText().contains("no results were captured"))
         }
     }
 
@@ -352,6 +364,18 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             assertTrue(result.firstText().contains("Wait timed out"))
+        }
+    }
+
+    @Test
+    fun inspectionWaitHandlesNoResults() {
+        val response = """{"wait_completed":true,"completion_reason":"no_results"}"""
+        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            assertTrue(result.firstText().contains("no results were captured"))
         }
     }
 
