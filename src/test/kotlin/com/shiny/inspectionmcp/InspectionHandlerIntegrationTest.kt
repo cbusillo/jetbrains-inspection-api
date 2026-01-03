@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Assertions.*
+import org.assertj.core.api.Assertions.assertThat
 import org.mockito.Mock
 import org.mockito.MockitoAnnotations
 import org.mockito.kotlin.*
@@ -43,8 +44,12 @@ class InspectionHandlerIntegrationTest {
         verify(mockContext).writeAndFlush(responseCaptor.capture())
         
         val response = responseCaptor.value
-        assertEquals("application/json", response.headers()["Content-Type"])
-        assertEquals("*", response.headers()["Access-Control-Allow-Origin"])
+        val contentType = response.headers()["Content-Type"]?.toString()
+            ?: error("Content-Type header missing")
+        val corsOrigin = response.headers()["Access-Control-Allow-Origin"]?.toString()
+            ?: error("Access-Control-Allow-Origin header missing")
+        assertThat(contentType).isEqualTo("application/json")
+        assertThat(corsOrigin).isEqualTo("*")
         assertTrue(response.headers().contains("Content-Length"))
     }
     
@@ -218,11 +223,11 @@ class InspectionHandlerIntegrationTest {
         
         val response = responseCaptor.value
         val content = response.content().toString(Charsets.UTF_8)
-        val contentLength = response.headers()["Content-Length"]?.toIntOrNull()
+        val contentLength = response.headers()["Content-Length"]?.toString()?.toIntOrNull()
+            ?: error("Content-Length header missing or not an int")
         
-        assertNotNull(contentLength)
-        assertTrue(contentLength!! > 0)
-        assertEquals(content.toByteArray(Charsets.UTF_8).size, contentLength)
+        assertTrue(contentLength > 0)
+        assertThat(contentLength).isEqualTo(content.toByteArray(Charsets.UTF_8).size)
     }
     
     @Test
@@ -247,8 +252,12 @@ class InspectionHandlerIntegrationTest {
             verify(mockContext).writeAndFlush(responseCaptor.capture())
             
             val response = responseCaptor.value
-            assertEquals("application/json", response.headers()["Content-Type"])
-            assertEquals("*", response.headers()["Access-Control-Allow-Origin"])
+            val contentType = response.headers()["Content-Type"]?.toString()
+                ?: error("Content-Type header missing")
+            val corsOrigin = response.headers()["Access-Control-Allow-Origin"]?.toString()
+                ?: error("Access-Control-Allow-Origin header missing")
+            assertThat(contentType).isEqualTo("application/json")
+            assertThat(corsOrigin).isEqualTo("*")
         }
     }
 }
