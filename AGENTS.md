@@ -52,4 +52,9 @@ If you need machine-specific paths/ports/log locations, copy `AGENTS.local.templ
 - Run tests: `./scripts/test-all.sh`.
 - Build zip: `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`.
 - Tag + push: `git tag vX.Y.Z && git push && git push --tags`.
-- Create a GitHub Release and upload the zip from `build/distributions/`.
+- GitHub Actions (`release.yml`) runs on tag push and will:
+  - run `./scripts/commit-gate.sh --ci`
+  - build the plugin zip
+  - publish to JetBrains Marketplace (requires `PUBLISH_TOKEN` secret)
+  - create the GitHub Release and upload the zip from
+    `build/distributions/`
