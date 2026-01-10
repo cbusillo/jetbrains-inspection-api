@@ -44,9 +44,9 @@ class InspectionHandlerIntegrationTest {
         verify(mockContext).writeAndFlush(responseCaptor.capture())
         
         val response = responseCaptor.value
-        val contentType = response.headers()["Content-Type"]?.toString()
+        val contentType = response.headers()["Content-Type"]
             ?: error("Content-Type header missing")
-        val corsOrigin = response.headers()["Access-Control-Allow-Origin"]?.toString()
+        val corsOrigin = response.headers()["Access-Control-Allow-Origin"]
             ?: error("Access-Control-Allow-Origin header missing")
         assertThat(contentType).isEqualTo("application/json")
         assertThat(corsOrigin).isEqualTo("*")
@@ -223,7 +223,7 @@ class InspectionHandlerIntegrationTest {
         
         val response = responseCaptor.value
         val content = response.content().toString(Charsets.UTF_8)
-        val contentLength = response.headers()["Content-Length"]?.toString()?.toIntOrNull()
+        val contentLength = response.headers()["Content-Length"]?.toIntOrNull()
             ?: error("Content-Length header missing or not an int")
         
         assertTrue(contentLength > 0)
@@ -252,9 +252,9 @@ class InspectionHandlerIntegrationTest {
             verify(mockContext).writeAndFlush(responseCaptor.capture())
             
             val response = responseCaptor.value
-            val contentType = response.headers()["Content-Type"]?.toString()
+            val contentType = response.headers()["Content-Type"]
                 ?: error("Content-Type header missing")
-            val corsOrigin = response.headers()["Access-Control-Allow-Origin"]?.toString()
+            val corsOrigin = response.headers()["Access-Control-Allow-Origin"]
                 ?: error("Access-Control-Allow-Origin header missing")
             assertThat(contentType).isEqualTo("application/json")
             assertThat(corsOrigin).isEqualTo("*")
