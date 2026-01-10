@@ -180,8 +180,10 @@ Notes:
 - `scope` (optional): `whole_project` (default) | `current_file` | custom path filter
   - `files`, `directory`, `changed_files` are treated as `whole_project` (trigger-only scopes); use `file_pattern` for filtering.
 - `severity` (optional): `error` | `warning` | `weak_warning` | `info` | `grammar` | `typo` | `all` (default)
-- `problem_type` (optional): Filter by inspection type (e.g., `PyUnresolvedReferencesInspection`, `SpellCheck`, `Unused`)
-- `file_pattern` (optional): Filter by file path pattern - simple string or regex (e.g., `*.py`, `src/.*\.js$`)
+- `problem_type` (optional): Filter by inspection type (e.g., `PyUnresolvedReferencesInspection`, `SpellCheck`, `Unused`).
+  Use `all` or leave blank to disable the filter.
+- `file_pattern` (optional): Filter by file path pattern - simple string or regex (e.g., `*.py`, `src/.*\.js$`).
+  Use `all` or leave blank to disable the filter.
 - `limit` (optional): Maximum problems to return (default: 100)
 - `offset` (optional): Number of problems to skip for pagination (default: 0)
 

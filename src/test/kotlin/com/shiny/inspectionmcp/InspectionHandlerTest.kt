@@ -322,6 +322,16 @@ class InspectionHandlerTest {
         assertTrue(result)
         verify { mockContext.writeAndFlush(any()) }
     }
+
+    @Test
+    fun `normalizeOptionalFilter handles all and blanks`() {
+        assertNull(normalizeOptionalFilter(null))
+        assertNull(normalizeOptionalFilter(""))
+        assertNull(normalizeOptionalFilter("   "))
+        assertNull(normalizeOptionalFilter("all"))
+        assertNull(normalizeOptionalFilter("ALL"))
+        assertEquals("src/", normalizeOptionalFilter(" src/ "))
+    }
     
     @Test
     fun `test getInspectionProblems method signature accepts scope parameter`() {

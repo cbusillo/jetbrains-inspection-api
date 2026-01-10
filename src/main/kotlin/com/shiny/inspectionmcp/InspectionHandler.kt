@@ -26,6 +26,17 @@ import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
+internal fun normalizeOptionalFilter(raw: String?): String? {
+    val trimmed = raw?.trim() ?: return null
+    if (trimmed.isBlank()) {
+        return null
+    }
+    if (trimmed.equals("all", ignoreCase = true)) {
+        return null
+    }
+    return trimmed
+}
+
 class InspectionHandler : HttpRequestHandler() {
     
     @Volatile
@@ -51,8 +62,10 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
-                    val problemType = urlDecoder.parameters()["problem_type"]?.firstOrNull()
-                    val filePattern = urlDecoder.parameters()["file_pattern"]?.firstOrNull()
+                    val problemTypeRaw = urlDecoder.parameters()["problem_type"]?.firstOrNull()
+                    val filePatternRaw = urlDecoder.parameters()["file_pattern"]?.firstOrNull()
+                    val problemType = normalizeOptionalFilter(problemTypeRaw)
+                    val filePattern = normalizeOptionalFilter(filePatternRaw)
                     val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
                     val result = ReadAction.compute<String, Exception> {
