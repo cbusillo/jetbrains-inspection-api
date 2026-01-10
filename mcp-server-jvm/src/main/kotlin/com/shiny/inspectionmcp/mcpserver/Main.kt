@@ -434,7 +434,7 @@ internal class ToolExecutor(
             } catch (parseError: Exception) {
                 throw RuntimeException("Invalid JSON response: ${parseError.message}")
             }
-        } catch (error: HttpTimeoutException) {
+        } catch (_: HttpTimeoutException) {
             throw RuntimeException("Request timeout | Ensure IDE on port $idePort is reachable")
         } catch (error: Exception) {
             if (error is RuntimeException && error.message?.startsWith("Invalid JSON response") == true) {
