@@ -178,7 +178,9 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_get_problems"))
                     put(
                         "description",
-                        JsonPrimitive("Fetch problems after inspection completes.")
+                        JsonPrimitive(
+                            "Fetch problems after inspection completes. Results mirror the IDE Problems/Inspection Results view; hidden or filtered views can hide warnings."
+                        )
                     )
                     put("inputSchema", getProblemsSchema())
                 },
@@ -194,7 +196,9 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_get_status"))
                     put(
                         "description",
-                        JsonPrimitive("Check inspection status.")
+                        JsonPrimitive(
+                            "Check inspection status. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
+                        )
                     )
                     put("inputSchema", statusSchema())
                 },
@@ -202,7 +206,9 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_wait"))
                     put(
                         "description",
-                        JsonPrimitive("Block until inspection completes or timeout.")
+                        JsonPrimitive(
+                            "Block until inspection completes or timeout. May report no_results if the IDE view is unavailable or filtered."
+                        )
                     )
                     put("inputSchema", waitSchema())
                 }
