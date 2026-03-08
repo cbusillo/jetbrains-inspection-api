@@ -2,7 +2,8 @@
 <module version="4">
   <component name="AdditionalModuleElements">
     <content url="file://$MODULE_DIR$/../.." dumb="true">
-      <excludeFolder url="file://$MODULE_DIR$/../../.code" />
+      <excludeFolder url="file://$MODULE_DIR$/../../inspection-core/build" />
+      <excludeFolder url="file://$MODULE_DIR$/../../mcp-server-jvm/build" />
     </content>
   </component>
 </module>
