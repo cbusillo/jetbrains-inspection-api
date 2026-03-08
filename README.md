@@ -251,7 +251,7 @@ curl "http://localhost:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```json
 {
   "status": "triggered",
-  "message": "Inspection triggered. Wait 10-15 seconds then call /api/inspection/problems",
+  "message": "Inspection triggered. Wait 10-15 seconds then check status",
   "scope": "directory",
   "directory": "src"
 }
@@ -275,7 +275,7 @@ curl "http://localhost:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
 
 **Key Status Fields**:
-- `clean_inspection`: **NEW** - `true` when inspection completed with no problems
+- `clean_inspection`: `true` when inspection completed with no problems
 - `is_scanning`: `true` if inspection is currently running
 - `has_inspection_results`: `true` when problems were found and are available
 - `time_since_last_trigger_ms`: Time since last inspection was triggered
@@ -311,7 +311,7 @@ curl "http://localhost:63340/api/inspection/problems?severity=all"
 
 ### Understanding Status Response
 
-The status endpoint now includes a `clean_inspection` field that makes it crystal clear:
+The status endpoint includes a `clean_inspection` field that makes the outcome explicit:
 
 ```json
 {

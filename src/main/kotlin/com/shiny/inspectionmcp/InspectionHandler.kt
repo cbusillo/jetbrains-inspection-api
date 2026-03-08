@@ -287,10 +287,13 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun buildInspectionStatus(project: Project): MutableMap<String, Any> {
         val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-        val problemsWindows = listOf("Problems View", "Problems", "Inspection Results")
-            .mapNotNull { toolWindowManager.getToolWindow(it) }
-        val problemsWindow = problemsWindows.firstOrNull()
-        val inspectionResultsWindow = toolWindowManager.getToolWindow("Inspection Results")
+        val inspectionWindows = inspectionResultsToolWindowIds.mapNotNull { toolWindowId ->
+            toolWindowManager.getToolWindow(toolWindowId)?.let { toolWindowId to it }
+        }
+        val problemsWindow = inspectionWindows.firstOrNull()?.second
+        val inspectionResultsWindow = inspectionWindows.firstOrNull { (toolWindowId, _) ->
+            toolWindowId == "Inspection Results"
+        }?.second
 
         val status = mutableMapOf<String, Any>()
         status["project_name"] = project.name
@@ -326,10 +329,11 @@ class InspectionHandler : HttpRequestHandler() {
         val problemsVisible = problemsWindow?.isVisible ?: false
         val inspectionVisible = inspectionResultsWindow?.isVisible ?: false
         status["problems_window_visible"] = problemsVisible || inspectionVisible
-        if (inspectionResultsWindow != null && inspectionResultsWindow.isVisible) {
-            status["active_tool_window"] = "Inspection Results"
-        } else if (problemsWindow != null && problemsWindow.isVisible) {
-            status["active_tool_window"] = "Problems View"
+        val activeInspectionWindow = inspectionWindows.firstOrNull { (_, toolWindow) ->
+            toolWindow.isVisible
+        }?.first
+        if (activeInspectionWindow != null) {
+            status["active_tool_window"] = activeInspectionWindow
         }
 
         val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 300000
@@ -372,63 +376,62 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         val activeProject = project
-            ?: return formatWaitError("No project found", start, timeoutMs, pollMs, "no_project")
         var lastStableCount: Int? = null
         var stableCountHits = 0
         var stableSince: Long? = null
         var status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
-        val hasResults = status["has_inspection_results"] as? Boolean ?: false
-        val cleanInspection = status["clean_inspection"] as? Boolean ?: false
-        val isScanning = status["is_scanning"] as? Boolean ?: false
-        val inProgress = status["inspection_in_progress"] as? Boolean ?: false
-        val totalProblems = (status["total_problems"] as? Number)?.toInt()
-        val resultsSource = status["results_source"] as? String
-        val minStableMs = 5000L
-        val now = System.currentTimeMillis()
+            val hasResults = status["has_inspection_results"] as? Boolean ?: false
+            val cleanInspection = status["clean_inspection"] as? Boolean ?: false
+            val isScanning = status["is_scanning"] as? Boolean ?: false
+            val inProgress = status["inspection_in_progress"] as? Boolean ?: false
+            val totalProblems = (status["total_problems"] as? Number)?.toInt()
+            val resultsSource = status["results_source"] as? String
+            val minStableMs = 5000L
+            val now = System.currentTimeMillis()
 
-        if (cleanInspection && !isScanning && !inProgress) {
-            return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
-        }
-
-        val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
-        if (
-            resultsSource == "tool_window" &&
-            !hasResults &&
-            !isScanning &&
-            !inProgress &&
-            timeSinceTrigger != null &&
-            timeSinceTrigger < 60000
-        ) {
-            status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window."
-            return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
-        }
-
-        if (hasResults && !isScanning && !inProgress) {
-            if (resultsSource == "inspection_view") {
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+            if (cleanInspection && !isScanning && !inProgress) {
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
             }
 
-            if (totalProblems != null) {
-                if (totalProblems == lastStableCount) {
-                    if (stableCountHits == 0) {
-                        stableSince = now
-                    }
-                    stableCountHits += 1
-                } else {
-                    stableCountHits = 0
-                    stableSince = null
-                    lastStableCount = totalProblems
-                }
+            val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
+            if (
+                resultsSource == "tool_window" &&
+                !hasResults &&
+                !isScanning &&
+                !inProgress &&
+                timeSinceTrigger != null &&
+                timeSinceTrigger < 60000
+            ) {
+                status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window."
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+            }
 
-                if (stableSince != null && now - stableSince >= minStableMs) {
+            if (hasResults && !isScanning && !inProgress) {
+                if (resultsSource == "inspection_view") {
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
                 }
-            } else {
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+
+                if (totalProblems != null) {
+                    if (totalProblems == lastStableCount) {
+                        if (stableCountHits == 0) {
+                            stableSince = now
+                        }
+                        stableCountHits += 1
+                    } else {
+                        stableCountHits = 0
+                        stableSince = null
+                        lastStableCount = totalProblems
+                    }
+
+                    if (stableSince != null && now - stableSince >= minStableMs) {
+                        return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+                    }
+                } else {
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+                }
             }
-        }
 
             if (System.currentTimeMillis() - start >= timeoutMs) {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout")
@@ -497,7 +500,7 @@ class InspectionHandler : HttpRequestHandler() {
             
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             // Clear prior results from both known locations to avoid stale reads
-            listOf("Problems View", "Problems", "Inspection Results").forEach { name ->
+            inspectionResultsToolWindowIds.forEach { name ->
                 val tw = toolWindowManager.getToolWindow(name)
                 if (tw != null) {
                     for (i in 0 until tw.contentManager.contentCount) {
@@ -641,10 +644,8 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                     }
 
-                    val extracted = bestResults
-
                     syncProjectState(project)
-                    resultsStore.setProblems(projectName, extracted, captureProjectState(project))
+                    resultsStore.setProblems(projectName, bestResults, captureProjectState(project))
                     inspectionInProgress = false
                 }
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {

@@ -193,7 +193,7 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No results found"))
+            assertTrue(result.firstText().contains("No results were captured"))
         }
     }
 

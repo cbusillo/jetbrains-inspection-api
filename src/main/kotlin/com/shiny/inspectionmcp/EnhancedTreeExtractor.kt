@@ -72,9 +72,9 @@ class EnhancedTreeExtractor {
             }
 
             // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
-            // JetBrains 2025.3 renamed "Problems View" to "Problems" in some IDEs; include both.
-            val fallbackNames = listOf("Problems View", "Problems", "Inspections")
-            val fallback = fallbackNames.firstNotNullOfOrNull { name -> toolWindowManager.getToolWindow(name) }
+            val fallback = inspectionFallbackToolWindowIds.firstNotNullOfOrNull { name ->
+                toolWindowManager.getToolWindow(name)
+            }
                 ?: return problems
             extractFromToolWindow(fallback, problems, project, seen)
             
@@ -91,7 +91,7 @@ class EnhancedTreeExtractor {
             emptyList()
         }
         if (ids.isEmpty()) {
-            val direct = toolWindowManager.getToolWindow("Inspection Results")
+            val direct = toolWindowManager.getToolWindow(inspectionResultsToolWindowIds.first())
             return if (direct != null) listOf(direct) else emptyList()
         }
 

@@ -349,7 +349,7 @@ internal class ToolExecutor(
             status == "stale_results" ->
                 "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
             status == "no_results" ->
-                "\n\nWARN: No results found. Trigger an inspection first, or the codebase is clean."
+                "\n\nWARN: No results were captured. The codebase may be clean, or the Inspection Results view was unavailable. Re-run the inspection or check status for more detail."
             total == 0 ->
                 "\n\nOK: No problems found matching filters."
             total != null ->
