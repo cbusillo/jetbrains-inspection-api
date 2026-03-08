@@ -16,6 +16,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedReader
 import java.io.BufferedWriter
+import java.io.IOException
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.net.ConnectException
@@ -49,10 +50,7 @@ private object VersionAnchor
 fun main() {
     val idePort = System.getenv("IDE_PORT")?.takeIf { it.isNotBlank() } ?: DEFAULT_PORT
     val baseUrl = "http://localhost:$idePort/api/inspection"
-    val httpClient = HttpClient.newBuilder()
-        .connectTimeout(Duration.ofSeconds(5))
-        .build()
-    val toolExecutor = ToolExecutor(baseUrl, httpClient, idePort)
+    val toolExecutor = ToolExecutor(baseUrl, buildHttpClient(), idePort)
 
     System.err.println("[DEBUG] Starting Inspection MCP Server...")
     System.err.println("[DEBUG] Inspection MCP Server started successfully")
@@ -79,6 +77,12 @@ fun main() {
             writer.flush()
         }
     }
+}
+
+private fun buildHttpClient(): HttpClient {
+    return HttpClient.newBuilder()
+        .connectTimeout(Duration.ofSeconds(5))
+        .build()
 }
 
 internal fun handleIncomingMessage(message: String, toolExecutor: ToolExecutor): JsonElement? {
@@ -168,8 +172,9 @@ private fun serverVersion(): String {
 
 internal class ToolExecutor(
     private val baseUrl: String,
-    private val httpClient: HttpClient,
-    private val idePort: String
+    private var httpClient: HttpClient,
+    private val idePort: String,
+    private val httpClientFactory: () -> HttpClient = ::buildHttpClient
 ) {
     fun toolList(): JsonArray {
         return JsonArray(
@@ -341,6 +346,8 @@ internal class ToolExecutor(
         val nextOffset = pagination?.get("next_offset")?.jsonPrimitive?.intOrNull
 
         val guidance = when {
+            status == "stale_results" ->
+                "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
             status == "no_results" ->
                 "\n\nWARN: No results found. Trigger an inspection first, or the codebase is clean."
             total == 0 ->
@@ -362,11 +369,13 @@ internal class ToolExecutor(
         val isScanning = obj["is_scanning"]?.jsonPrimitive?.booleanOrNull == true
         val clean = obj["clean_inspection"]?.jsonPrimitive?.booleanOrNull == true
         val hasResults = obj["has_inspection_results"]?.jsonPrimitive?.booleanOrNull == true
+        val stale = obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull == true
 
         val timeSince = obj["time_since_last_trigger_ms"]?.jsonPrimitive?.longOrNull
 
         return when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
+            stale -> "\n\nSTATUS: Project changed after the last inspection - trigger inspection again before trusting cached results."
             clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
             timeSince != null && timeSince < 60000 ->
@@ -422,6 +431,13 @@ internal class ToolExecutor(
             .timeout(Duration.ofSeconds(timeoutSeconds))
             .build()
 
+        return executeRequest(request, retryOnTransportFailure = true)
+    }
+
+    private fun executeRequest(
+        request: HttpRequest,
+        retryOnTransportFailure: Boolean
+    ): JsonElement {
         try {
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             val status = response.statusCode()
@@ -434,11 +450,19 @@ internal class ToolExecutor(
             } catch (parseError: Exception) {
                 throw RuntimeException("Invalid JSON response: ${parseError.message}")
             }
-        } catch (_: HttpTimeoutException) {
+        } catch (error: HttpTimeoutException) {
+            if (retryOnTransportFailure) {
+                refreshHttpClient()
+                return executeRequest(request, retryOnTransportFailure = false)
+            }
             throw RuntimeException("Request timeout | Ensure IDE on port $idePort is reachable")
         } catch (error: Exception) {
             if (error is RuntimeException && error.message?.startsWith("Invalid JSON response") == true) {
                 throw error
+            }
+            if (retryOnTransportFailure && isRetryableTransportFailure(error)) {
+                refreshHttpClient()
+                return executeRequest(request, retryOnTransportFailure = false)
             }
             val hint = if (isConnectionRefused(error)) {
                 "Ensure JetBrains IDE is running, plugin installed, and built-in server enabled on port $idePort (Allow unsigned requests)."
@@ -457,6 +481,10 @@ internal class ToolExecutor(
         }
     }
 
+    private fun refreshHttpClient() {
+        httpClient = httpClientFactory()
+    }
+
     private fun buildUrl(base: String, params: List<Pair<String, String>>): String {
         if (params.isEmpty()) return base
         val query = params.joinToString("&") { (key, value) ->
@@ -472,6 +500,24 @@ internal class ToolExecutor(
     private fun isConnectionRefused(error: Throwable): Boolean {
         return error is ConnectException || error.cause is ConnectException ||
             (error.message?.contains("Connection refused", ignoreCase = true) == true)
+    }
+
+    private fun isRetryableTransportFailure(error: Throwable): Boolean {
+        if (error is InterruptedException) {
+            Thread.currentThread().interrupt()
+            return false
+        }
+        if (error is ConnectException || error is IOException) {
+            return true
+        }
+        val message = error.message ?: return false
+        return listOf(
+            "connection refused",
+            "connection reset",
+            "broken pipe",
+            "eof",
+            "timed out"
+        ).any { token -> message.contains(token, ignoreCase = true) }
     }
 
     private fun getProblemsSchema(): JsonObject {

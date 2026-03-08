@@ -52,7 +52,7 @@ class EnhancedTreeExtractor {
             extractProblemsFromView(view, problems, project)
         } catch (_: Exception) {
         }
-        return problems
+        return dedupeProblems(problems)
     }
     
     fun extractAllProblems(project: Project): List<Map<String, Any>> {
@@ -145,21 +145,27 @@ class EnhancedTreeExtractor {
 
             if (problems.size != before) {
                 val newSlice = problems.subList(before, problems.size)
-                val deduped = newSlice.filter { p ->
-                    val key = listOf(
-                        p["severity"],
-                        p["inspectionType"],
-                        p["file"],
-                        p["line"],
-                        p["column"],
-                        p["description"],
-                    ).joinToString("|")
-                    seen.add(key)
-                }
+                val deduped = newSlice.filter { p -> seen.add(problemDedupKey(p)) }
                 newSlice.clear()
                 problems.addAll(deduped)
             }
         }
+    }
+
+    internal fun dedupeProblems(problems: List<Map<String, Any>>): List<Map<String, Any>> {
+        val seen = LinkedHashSet<String>()
+        return problems.filter { problem -> seen.add(problemDedupKey(problem)) }
+    }
+
+    private fun problemDedupKey(problem: Map<String, Any>): String {
+        return listOf(
+            problem["severity"],
+            problem["inspectionType"],
+            problem["file"],
+            problem["line"],
+            problem["column"],
+            problem["description"],
+        ).joinToString("|")
     }
     
     private fun findInspectionResultsView(component: Component): InspectionResultsView? {

@@ -338,7 +338,7 @@ class InspectionHandlerTest {
         // Use reflection to verify the method signature includes all filtering parameters
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems", 
-            String::class.java,  // projectName (nullable)
+            Project::class.java, // project
             String::class.java,  // severity
             String::class.java,  // scope
             String::class.java,  // problemType (nullable)

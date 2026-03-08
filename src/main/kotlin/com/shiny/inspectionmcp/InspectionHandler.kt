@@ -8,12 +8,17 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
+import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
+import com.intellij.psi.util.PsiModificationTracker
 import com.shiny.inspectionmcp.core.filterProblems
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
@@ -45,6 +50,16 @@ class InspectionHandler : HttpRequestHandler() {
     private var inspectionInProgress: Boolean = false
 
     private val resultsStore = InspectionResultsStore
+
+    private data class ProjectStateSnapshot(
+        val psiModificationCount: Long,
+        val unsavedProjectDocuments: Int,
+    )
+
+    private data class SnapshotStaleness(
+        val stale: Boolean,
+        val reasons: List<String>,
+    )
     
     override fun isSupported(request: FullHttpRequest): Boolean {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
@@ -68,8 +83,16 @@ class InspectionHandler : HttpRequestHandler() {
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
                     val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
+                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+                    if (project == null) {
+                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
+                        return true
+                    }
+                    if (!inspectionInProgress) {
+                        syncProjectState(project)
+                    }
                     val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(projectName, severity, scope, problemType, filePattern, limit, offset)
+                        getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
                     }
                     sendJsonResponse(context, result)
                 }
@@ -125,13 +148,16 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 "/api/inspection/status" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+                    if (project == null) {
+                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
+                        return true
+                    }
+                    if (!inspectionInProgress) {
+                        syncProjectState(project)
+                    }
                     val result = ReadAction.compute<String, Exception> {
-                        val project = getCurrentProject(projectName)
-                        if (project != null) {
-                            getInspectionStatus(project)
-                        } else {
-                            """{"error": "No project found"}"""
-                        }
+                        getInspectionStatus(project)
                     }
                     sendJsonResponse(context, result)
                 }
@@ -154,21 +180,36 @@ class InspectionHandler : HttpRequestHandler() {
     }
     
     private fun getInspectionProblems(
-        projectName: String? = null,
-        severity: String = "all", 
+        project: Project,
+        severity: String = "all",
         scope: String = "whole_project",
         problemType: String? = null,
         filePattern: String? = null,
         limit: Int = 100,
         offset: Int = 0
     ): String {
-        val project = getCurrentProject(projectName)
-            ?: return """{"error": "No project found"}"""
-
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
             val cachedProblems = resultsStore.getProblems(project.name)
             val hasSnapshot = resultsStore.hasSnapshot(project.name)
+            val staleness = getSnapshotStaleness(project)
+            if (hasSnapshot && staleness.stale) {
+                val response = mapOf(
+                    "status" to "stale_results",
+                    "project" to project.name,
+                    "timestamp" to (resultsStore.getTimestamp(project.name) ?: System.currentTimeMillis()),
+                    "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
+                    "results_may_be_stale" to true,
+                    "stale_reasons" to staleness.reasons,
+                    "filters" to mapOf(
+                        "severity" to severity,
+                        "scope" to normalizedScope,
+                        "problem_type" to (problemType ?: "all"),
+                        "file_pattern" to (filePattern ?: "all")
+                    )
+                )
+                return formatJsonManually(response)
+            }
             val problems = when {
                 cachedProblems != null -> cachedProblems
                 hasSnapshot -> emptyList()
@@ -264,6 +305,7 @@ class InspectionHandler : HttpRequestHandler() {
         val cachedProblems = resultsStore.getProblems(project.name)
         val cachedTimestamp = resultsStore.getTimestamp(project.name)
         val hasInspectionSnapshot = cachedTimestamp != null
+        val staleness = getSnapshotStaleness(project)
         val extractor = EnhancedTreeExtractor()
         val problemsSnapshot = if (hasInspectionSnapshot) {
             cachedProblems ?: emptyList()
@@ -272,9 +314,13 @@ class InspectionHandler : HttpRequestHandler() {
                 extractor.extractAllProblems(project)
             } catch (_: Exception) { emptyList() }
         }
-        val problemsAvailable = problemsSnapshot.isNotEmpty()
+        val problemsAvailable = problemsSnapshot.isNotEmpty() && !staleness.stale
         status["total_problems"] = problemsSnapshot.size
         status["results_source"] = if (hasInspectionSnapshot) "inspection_view" else "tool_window"
+        status["results_may_be_stale"] = hasInspectionSnapshot && staleness.stale
+        if (staleness.reasons.isNotEmpty()) {
+            status["stale_reasons"] = staleness.reasons
+        }
 
         // Window visibility hints (best-effort)
         val problemsVisible = problemsWindow?.isVisible ?: false
@@ -293,14 +339,14 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         status["is_scanning"] = isIndexing || isLikelyStillRunning
-        status["has_inspection_results"] = hasInspectionSnapshot || problemsAvailable
+        status["has_inspection_results"] = problemsAvailable
         status["inspection_in_progress"] = inspectionInProgress
         status["time_since_last_trigger_ms"] = timeSinceLastTrigger
         status["indexing"] = isIndexing
 
         // Clear indicator for a clean inspection (recent, finished, and no problems)
         val recentlyCompleted = timeSinceLastTrigger < 60000
-        val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !problemsAvailable && hasInspectionSnapshot
+        val cleanInspection = recentlyCompleted && !isLikelyStillRunning && !inspectionInProgress && !problemsAvailable && hasInspectionSnapshot && !staleness.stale
         status["clean_inspection"] = cleanInspection
 
         return status
@@ -342,7 +388,7 @@ class InspectionHandler : HttpRequestHandler() {
         val minStableMs = 5000L
         val now = System.currentTimeMillis()
 
-        if (cleanInspection && hasResults && !isScanning && !inProgress) {
+        if (cleanInspection && !isScanning && !inProgress) {
             return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
         }
 
@@ -465,7 +511,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
             
-            FileDocumentManager.getInstance().saveAllDocuments()
+            syncProjectState(project)
 
             val scope: AnalysisScope = buildAnalysisScope(
                 project = project,
@@ -597,13 +643,14 @@ class InspectionHandler : HttpRequestHandler() {
 
                     val extracted = bestResults
 
-                    resultsStore.setProblems(projectName, extracted)
+                    syncProjectState(project)
+                    resultsStore.setProblems(projectName, extracted, captureProjectState(project))
                     inspectionInProgress = false
                 }
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw e
             } catch (e: Exception) {
-                resultsStore.setProblems(project.name, emptyList())
+                resultsStore.setProblems(project.name, emptyList(), captureProjectState(project))
                 inspectionInProgress = false
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
@@ -619,9 +666,62 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun syncProjectState(project: Project) {
+        val application = ApplicationManager.getApplication()
+        val refreshTask = Runnable {
+            FileDocumentManager.getInstance().saveAllDocuments()
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+            VirtualFileManager.getInstance().syncRefresh()
+            PsiDocumentManager.getInstance(project).commitAllDocuments()
+        }
+        if (application.isDispatchThread) {
+            refreshTask.run()
+        } else {
+            application.invokeAndWait(refreshTask)
+        }
+    }
+
+    private fun captureProjectState(project: Project): ProjectStateSnapshot {
+        return ProjectStateSnapshot(
+            psiModificationCount = PsiModificationTracker.getInstance(project).modificationCount,
+            unsavedProjectDocuments = countProjectUnsavedDocuments(project)
+        )
+    }
+
+    private fun getSnapshotStaleness(project: Project): SnapshotStaleness {
+        val snapshotState = resultsStore.getProjectState(project.name) ?: return SnapshotStaleness(false, emptyList())
+        val currentState = captureProjectState(project)
+        val reasons = mutableListOf<String>()
+        if (currentState.unsavedProjectDocuments > 0) {
+            reasons += "unsaved_documents"
+        }
+        if (currentState.psiModificationCount != snapshotState.psiModificationCount) {
+            reasons += "project_changed_since_inspection"
+        }
+        return SnapshotStaleness(reasons.isNotEmpty(), reasons)
+    }
+
+    private fun countProjectUnsavedDocuments(project: Project): Int {
+        val fileDocumentManager = FileDocumentManager.getInstance()
+        return fileDocumentManager.unsavedDocuments.count { document ->
+            val file = fileDocumentManager.getFile(document) ?: return@count false
+            file.belongsToProject(project)
+        }
+    }
+
+    private fun VirtualFile.belongsToProject(project: Project): Boolean {
+        val projectIndex = ProjectFileIndex.getInstance(project)
+        if (projectIndex.isInContent(this)) {
+            return true
+        }
+        val basePath = project.basePath ?: return false
+        return path == basePath || path.startsWith("$basePath/")
+    }
+
     private object InspectionResultsStore {
         private val problemsByProject = java.util.concurrent.ConcurrentHashMap<String, List<Map<String, Any>>>()
         private val timestampByProject = java.util.concurrent.ConcurrentHashMap<String, Long>()
+        private val stateByProject = java.util.concurrent.ConcurrentHashMap<String, ProjectStateSnapshot>()
 
         fun getProblems(projectName: String): List<Map<String, Any>>? {
             return problemsByProject[projectName]
@@ -635,14 +735,20 @@ class InspectionHandler : HttpRequestHandler() {
             return timestampByProject.containsKey(projectName)
         }
 
-        fun setProblems(projectName: String, problems: List<Map<String, Any>>) {
+        fun getProjectState(projectName: String): ProjectStateSnapshot? {
+            return stateByProject[projectName]
+        }
+
+        fun setProblems(projectName: String, problems: List<Map<String, Any>>, projectState: ProjectStateSnapshot) {
             problemsByProject[projectName] = problems
             timestampByProject[projectName] = System.currentTimeMillis()
+            stateByProject[projectName] = projectState
         }
 
         fun clear(projectName: String) {
             problemsByProject.remove(projectName)
             timestampByProject.remove(projectName)
+            stateByProject.remove(projectName)
         }
     }
 

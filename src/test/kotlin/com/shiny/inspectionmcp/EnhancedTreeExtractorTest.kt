@@ -95,4 +95,33 @@ class EnhancedTreeExtractorTest {
     fun testExtractorInstantiation() {
         assertNotNull(extractor)
     }
+
+    @Test
+    @DisplayName("Should dedupe repeated problem maps from inspection view snapshots")
+    fun testDedupeProblems() {
+        val repeatedProblem = mapOf<String, Any>(
+            "severity" to "warning",
+            "inspectionType" to "KotlinUnreachableCode",
+            "file" to "/tmp/example.kt",
+            "line" to 42,
+            "column" to 1,
+            "description" to "Unreachable code",
+        )
+        val uniqueProblem = mapOf<String, Any>(
+            "severity" to "warning",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/example.kt",
+            "line" to 43,
+            "column" to 1,
+            "description" to "Parameter is never used",
+        )
+
+        val dedupedProblems = extractor.dedupeProblems(
+            listOf(repeatedProblem, repeatedProblem.toMap(), uniqueProblem)
+        )
+
+        assertEquals(2, dedupedProblems.size)
+        assertEquals(repeatedProblem, dedupedProblems[0])
+        assertEquals(uniqueProblem, dedupedProblems[1])
+    }
 }

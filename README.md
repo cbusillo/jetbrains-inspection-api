@@ -294,8 +294,9 @@ while true; do
   STATUS=$(curl -s "http://localhost:63340/api/inspection/status")
   IS_SCANNING=$(echo $STATUS | jq -r '.is_scanning')
   HAS_RESULTS=$(echo $STATUS | jq -r '.has_inspection_results')
+  CLEAN=$(echo $STATUS | jq -r '.clean_inspection')
   
-  if [ "$IS_SCANNING" = "false" ] && [ "$HAS_RESULTS" = "true" ]; then
+  if [ "$IS_SCANNING" = "false" ] && { [ "$HAS_RESULTS" = "true" ] || [ "$CLEAN" = "true" ]; }; then
     echo "✅ Inspection complete!"
     break
   else
@@ -323,6 +324,7 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 
 **Status Indicators**:
 - `is_scanning: true` → Inspection running, wait
+- `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting cached results
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - All false and `time_since_last_trigger_ms` is recent → Inspection finished but results were not captured (clean run or Inspection Results view unavailable). Re-run the inspection or open the Inspection Results tool window.
@@ -330,6 +332,11 @@ The status endpoint now includes a `clean_inspection` field that makes it crysta
 
 ### Wait Response Notes
 `/api/inspection/wait` may return `completion_reason: "no_results"` when an inspection finished recently but no results were captured. This is most common for clean runs or when the Inspection Results view is unavailable. Re-run the inspection or open the Inspection Results tool window.
+
+### Freshness Notes
+- The plugin saves documents and refreshes external file changes before starting a new inspection run.
+- `/api/inspection/status` and `/api/inspection/problems` refresh project state before evaluating cached snapshots.
+- If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"` instead of serving stale findings.
 
 ## MCP Server Details
 
