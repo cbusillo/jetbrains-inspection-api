@@ -7,6 +7,7 @@ import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
@@ -27,6 +28,7 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
+import java.io.File
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -74,7 +76,6 @@ class InspectionHandler : HttpRequestHandler() {
             val path = urlDecoder.path()
             when (path) {
                 "/api/inspection/problems" -> {
-                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
                     val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
                     val problemTypeRaw = urlDecoder.parameters()["problem_type"]?.firstOrNull()
@@ -83,18 +84,13 @@ class InspectionHandler : HttpRequestHandler() {
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
                     val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
-                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
-                    if (project == null) {
-                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
-                        return true
+                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    withCurrentProject(context, projectName, refreshProjectState = true) { project ->
+                        val result = ReadAction.compute<String, Exception> {
+                            getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
+                        }
+                        sendJsonResponse(context, result)
                     }
-                    if (!inspectionInProgress) {
-                        syncProjectState(project)
-                    }
-                    val result = ReadAction.compute<String, Exception> {
-                        getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
-                    }
-                    sendJsonResponse(context, result)
                 }
                 "/api/inspection/trigger" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
@@ -114,52 +110,43 @@ class InspectionHandler : HttpRequestHandler() {
                     val changedFilesMode = urlDecoder.parameters()["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
                     val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
                     val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
-                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
-                    if (project == null) {
-                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
-                        return true
-                    }
-                    lastInspectionTriggerTime = System.currentTimeMillis()
-                    inspectionInProgress = true
-                    ApplicationManager.getApplication().invokeLater {
-                        triggerInspectionAsync(
-                            project = project,
-                            scopeParam = scope,
-                            directoryParam = directory,
-                            files = if (filesList.isEmpty()) null else filesList,
-                            includeUnversioned = includeUnversioned,
-                            changedFilesMode = changedFilesMode,
-                            maxFiles = maxFiles,
-                            profileName = profile
+                    withCurrentProject(context, projectName) { project ->
+                        lastInspectionTriggerTime = System.currentTimeMillis()
+                        inspectionInProgress = true
+                        ApplicationManager.getApplication().invokeLater {
+                            triggerInspectionAsync(
+                                project = project,
+                                scopeParam = scope,
+                                directoryParam = directory,
+                                files = if (filesList.isEmpty()) null else filesList,
+                                includeUnversioned = includeUnversioned,
+                                changedFilesMode = changedFilesMode,
+                                maxFiles = maxFiles,
+                                profileName = profile
+                            )
+                        }
+                        val details = mutableMapOf<String, Any>(
+                            "status" to "triggered",
+                            "message" to "Inspection triggered. Wait 10-15 seconds then check status"
                         )
+                        if (!scope.isNullOrBlank()) details["scope"] = scope
+                        if (!directory.isNullOrBlank()) details["directory"] = directory
+                        if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
+                        details["include_unversioned"] = includeUnversioned
+                        if (!changedFilesMode.isNullOrBlank()) details["changed_files_mode"] = changedFilesMode
+                        if (maxFiles != null) details["max_files"] = maxFiles
+                        if (!profile.isNullOrBlank()) details["profile"] = profile
+                        sendJsonResponse(context, formatJsonManually(details))
                     }
-                    val details = mutableMapOf<String, Any>(
-                        "status" to "triggered",
-                        "message" to "Inspection triggered. Wait 10-15 seconds then check status"
-                    )
-                    if (!scope.isNullOrBlank()) details["scope"] = scope
-                    if (!directory.isNullOrBlank()) details["directory"] = directory
-                    if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
-                    details["include_unversioned"] = includeUnversioned
-                    if (!changedFilesMode.isNullOrBlank()) details["changed_files_mode"] = changedFilesMode
-                    if (maxFiles != null) details["max_files"] = maxFiles
-                    if (!profile.isNullOrBlank()) details["profile"] = profile
-                    sendJsonResponse(context, formatJsonManually(details))
                 }
                 "/api/inspection/status" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
-                    val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
-                    if (project == null) {
-                        sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
-                        return true
+                    withCurrentProject(context, projectName, refreshProjectState = true) { project ->
+                        val result = ReadAction.compute<String, Exception> {
+                            getInspectionStatus(project)
+                        }
+                        sendJsonResponse(context, result)
                     }
-                    if (!inspectionInProgress) {
-                        syncProjectState(project)
-                    }
-                    val result = ReadAction.compute<String, Exception> {
-                        getInspectionStatus(project)
-                    }
-                    sendJsonResponse(context, result)
                 }
                 "/api/inspection/wait" -> {
                     val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
@@ -222,7 +209,7 @@ class InspectionHandler : HttpRequestHandler() {
             if (problems.isNotEmpty() || hasSnapshot) {
                 val currentFilePath = if (normalizedScope == "current_file") {
                     try {
-                        com.intellij.openapi.fileEditor.FileEditorManager
+                        FileEditorManager
                             .getInstance(project)
                             .selectedFiles
                             .firstOrNull()
@@ -274,6 +261,23 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: Exception) {
             """{"error": "Failed to get inspection problems"}"""
         }
+    }
+
+    private fun withCurrentProject(
+        context: ChannelHandlerContext,
+        projectName: String?,
+        refreshProjectState: Boolean = false,
+        action: (Project) -> Unit,
+    ) {
+        val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+        if (project == null) {
+            sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
+            return
+        }
+        if (refreshProjectState && !inspectionInProgress) {
+            syncProjectState(project)
+        }
+        action(project)
     }
 
     private fun getInspectionStatus(project: Project): String {
@@ -814,7 +818,7 @@ class InspectionHandler : HttpRequestHandler() {
                     try {
                         val method = clm.javaClass.getMethod("getUnversionedFiles")
                         @Suppress("UNCHECKED_CAST")
-                        val unversioned = method.invoke(clm) as? Collection<com.intellij.openapi.vfs.VirtualFile>
+                        val unversioned = method.invoke(clm) as? Collection<VirtualFile>
                         if (unversioned != null) changeFiles.addAll(unversioned)
                     } catch (_: Exception) {
                     }
@@ -868,7 +872,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (!gitDir.exists()) return null
         return try {
             val pb = ProcessBuilder("git", "status", "--porcelain", "-z")
-            pb.directory(java.io.File(basePath))
+            pb.directory(File(basePath))
             pb.redirectErrorStream(true)
             val proc = pb.start()
             val bytes = proc.inputStream.readAllBytes()
@@ -902,14 +906,14 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun resolveActiveEditorFile(project: Project): com.intellij.openapi.vfs.VirtualFile? {
+    private fun resolveActiveEditorFile(project: Project): VirtualFile? {
         return try {
-            val fem = com.intellij.openapi.fileEditor.FileEditorManager.getInstance(project)
+            val fem = FileEditorManager.getInstance(project)
             val candidates = buildList {
                 addAll(runCatching { fem.selectedFiles.asList() }.getOrNull() ?: emptyList())
                 addAll(runCatching { fem.openFiles.asList() }.getOrNull() ?: emptyList())
             }
-            val index = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
+            val index = ProjectFileIndex.getInstance(project)
             candidates.firstOrNull { vf ->
                 try {
                     vf.isValid && vf.isInLocalFileSystem && index.isInContent(vf)
