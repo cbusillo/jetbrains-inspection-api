@@ -35,7 +35,7 @@ dependencies {
     testImplementation("org.mockito:mockito-junit-jupiter:5.8.0")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
     testImplementation("io.mockk:mockk:1.13.8")
-    testImplementation("org.assertj:assertj-core:3.24.2")
+    testImplementation("org.assertj:assertj-core:3.27.7")
     
     intellijPlatform {
         intellijIdea("2025.1.1")
