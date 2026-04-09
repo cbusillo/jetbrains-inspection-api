@@ -342,7 +342,16 @@ class InspectionHandler : HttpRequestHandler() {
     ) {
         val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
         if (project == null) {
-            sendJsonResponse(context, """{"error": "No project found"}""", HttpResponseStatus.NOT_FOUND)
+            val message = if (!projectName.isNullOrBlank()) {
+                "Requested project '$projectName' is not open in the IDE."
+            } else {
+                "No project found"
+            }
+            sendJsonResponse(
+                context,
+                formatJsonManually(mapOf("error" to message)),
+                HttpResponseStatus.NOT_FOUND,
+            )
             return
         }
         if (refreshProjectState && !inspectionInProgress) {
@@ -493,7 +502,12 @@ class InspectionHandler : HttpRequestHandler() {
         var project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
         while (project == null) {
             if (System.currentTimeMillis() - start >= timeoutMs) {
-                return formatWaitError("No project found", start, timeoutMs, pollMs, "no_project")
+                val message = if (!projectName.isNullOrBlank()) {
+                    "Requested project '$projectName' is not open in the IDE."
+                } else {
+                    "No project found"
+                }
+                return formatWaitError(message, start, timeoutMs, pollMs, "no_project")
             }
 
             try {
@@ -1069,9 +1083,7 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             if (projectName != null) {
                 val projectByName = getProjectByName(projectName)
-                if (projectByName != null) {
-                    return projectByName
-                }
+                return projectByName
             }
             
             val lastFocusedFrame = IdeFocusManager.getGlobalInstance().lastFocusedFrame

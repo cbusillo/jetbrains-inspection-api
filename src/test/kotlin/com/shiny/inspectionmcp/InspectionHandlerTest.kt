@@ -7,6 +7,8 @@ import io.mockk.*
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
+import com.intellij.openapi.application.Application
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -17,6 +19,7 @@ import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.openapi.util.ThrowableComputable
 import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.HttpMethod
@@ -50,6 +53,7 @@ class InspectionHandlerTest {
         mockGlobalContext = mockk<GlobalInspectionContext>()
         mockProfileManager = mockk<InspectionProjectProfileManager>()
         mockProfile = mockk<InspectionProfileImpl>()
+        val mockApplication = mockk<Application>()
         
         every { mockProject.isDefault } returns false
         every { mockProject.isDisposed } returns false
@@ -60,6 +64,12 @@ class InspectionHandlerTest {
         
         mockkStatic(ProjectManager::class)
         every { ProjectManager.getInstance() } returns mockProjectManager
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns mockApplication
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            firstArg<ThrowableComputable<Any, Exception>>().compute()
+        }
         
         mockkStatic(IdeFocusManager::class)
         val mockIdeFocusManager = mockk<IdeFocusManager>()
@@ -517,7 +527,24 @@ class InspectionHandlerTest {
         assertEquals("ProjectOne", result2?.name)
         
         val result3 = method.invoke(handler, "NonExistent") as Project?
-        assertNotNull(result3)
+        assertNull(result3)
+    }
+
+    @Test
+    fun `test waitForInspection reports missing explicit project clearly`() {
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "waitForInspection",
+            String::class.java,
+            java.lang.Long::class.java,
+            java.lang.Long::class.java,
+        )
+        method.isAccessible = true
+
+        val response = method.invoke(handler, "NonExistent", 10L, 10L) as String
+
+        assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
+        assertTrue(response.contains("\"completion_reason\": \"no_project\""))
     }
     
     @Test
