@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.11.6</version>
+    <version>1.11.7</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -27,6 +27,12 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.11.7</b>
+        <ul>
+            <li>Fixes false-clean inspection results by distinguishing confirmed clean runs from incomplete result capture.</li>
+            <li>Returns <code>capture_incomplete</code> instead of reporting a clean run when the IDE results could not be captured conclusively.</li>
+            <li>Improves wait/status/problems consistency and adds regression coverage for the false-clean case.</li>
+        </ul>
         <b>Version 1.11.0</b>
         <ul>
             <li>Bundled JVM MCP server (no Node.js dependency).</li>
@@ -40,7 +46,7 @@
         <b>Version 1.10.11</b>
         <ul>
             <li>Prefers Inspect Code results over Problems View when available (reduces noise from generated files).</li>
-            <li>Improves file_pattern filtering (regex + simple globs like <code>*.py</code>).</li>
+            <li>Improves file_pattern filtering (regex and simple globs like <code>*.py</code>).</li>
         </ul>
         <b>Version 1.10.10</b>
         <ul>
