@@ -219,7 +219,6 @@ class InspectionHandler : HttpRequestHandler() {
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
             var snapshot = resultsStore.getSnapshot(project.name)
-            val cachedProblems = snapshot?.problems
             val hasSnapshot = snapshot != null
             val staleness = getSnapshotStaleness(project)
             if (hasSnapshot && staleness.stale) {
@@ -390,7 +389,6 @@ class InspectionHandler : HttpRequestHandler() {
 
         // Use the same extractor as the /problems endpoint so status matches real availability
         var snapshot = resultsStore.getSnapshot(project.name)
-        val cachedProblems = snapshot?.problems
         val hasInspectionSnapshot = snapshot != null
         val staleness = getSnapshotStaleness(project)
         if (!staleness.stale) {
