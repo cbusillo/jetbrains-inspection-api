@@ -327,11 +327,11 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting cached results
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
-- All false and `time_since_last_trigger_ms` is recent → Inspection finished but results were not captured (clean run or Inspection Results view unavailable). Re-run the inspection or open the Inspection Results tool window.
-- All false and `time_since_last_trigger_ms` is old → No recent inspection, trigger one first
+- If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
+- If all three are false and `time_since_last_trigger_ms` is old, there was no recent inspection. Trigger one first.
 
 ### Wait Response Notes
-`/api/inspection/wait` may return `completion_reason: "no_results"` when an inspection finished recently but no results were captured. This is most common for clean runs or when the Inspection Results view is unavailable. Re-run the inspection or open the Inspection Results tool window.
+`/api/inspection/wait` may return `completion_reason: "capture_incomplete"` when an inspection finished but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Inspection Results tool window.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.

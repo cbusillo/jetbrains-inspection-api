@@ -31,6 +31,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
     
     testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.1")
     testImplementation("org.mockito:mockito-core:5.8.0")
     testImplementation("org.mockito:mockito-junit-jupiter:5.8.0")
     testImplementation("org.mockito.kotlin:mockito-kotlin:5.2.1")
@@ -105,7 +106,7 @@ tasks {
             files(classDirectories.files.map {
                 fileTree(it) {
                     exclude("**/META-INF/**")
-                    exclude("**/*\$WhenMappings.*")
+                    exclude($$"**/*$WhenMappings.*")
                     include("com/shiny/inspectionmcp/**")
                 }
             })
@@ -134,7 +135,7 @@ tasks {
             files(classDirectories.files.map {
                 fileTree(it) {
                     exclude("**/META-INF/**")
-                    exclude("**/*\$WhenMappings.*")
+                    exclude($$"**/*$WhenMappings.*")
                     include("com/shiny/inspectionmcp/**")
                 }
             })

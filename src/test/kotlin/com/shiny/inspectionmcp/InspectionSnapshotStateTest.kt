@@ -1,0 +1,213 @@
+package com.shiny.inspectionmcp
+
+import com.intellij.openapi.application.Application
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.editor.Document
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.openapi.util.ThrowableComputable
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.DisplayName
+import org.junit.jupiter.api.Test
+
+class InspectionSnapshotStateTest {
+
+    private lateinit var handler: InspectionHandler
+    private lateinit var mockProject: Project
+
+    @BeforeEach
+    fun setup() {
+        handler = InspectionHandler()
+        mockProject = mockk<Project>()
+        val mockProjectManager = mockk<ProjectManager>()
+        val mockDumbService = mockk<DumbService>()
+        val mockToolWindowManager = mockk<ToolWindowManager>()
+        val mockFileDocumentManager = mockk<FileDocumentManager>()
+        val mockPsiModificationTracker = mockk<PsiModificationTracker>()
+        val mockApplication = mockk<Application>()
+
+        every { mockProject.isDefault } returns false
+        every { mockProject.isDisposed } returns false
+        every { mockProject.isInitialized } returns true
+        every { mockProject.name } returns "TestProject"
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/TestProject.iml"
+
+        mockkStatic(ProjectManager::class)
+        every { ProjectManager.getInstance() } returns mockProjectManager
+        every { mockProjectManager.openProjects } returns arrayOf(mockProject)
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns mockApplication
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            firstArg<ThrowableComputable<Any, Exception>>().compute()
+        }
+
+        mockkStatic(DumbService::class)
+        every { DumbService.getInstance(mockProject) } returns mockDumbService
+        every { mockDumbService.isDumb } returns false
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(mockProject) } returns mockToolWindowManager
+        every { mockToolWindowManager.getToolWindow(any()) } returns null
+
+        mockkStatic(FileDocumentManager::class)
+        every { FileDocumentManager.getInstance() } returns mockFileDocumentManager
+        every { mockFileDocumentManager.unsavedDocuments } returns emptyArray<Document>()
+
+        mockkStatic(PsiModificationTracker::class)
+        every { PsiModificationTracker.getInstance(mockProject) } returns mockPsiModificationTracker
+        every { mockPsiModificationTracker.modificationCount } returns 7L
+
+        setLastInspectionTriggerTime(System.currentTimeMillis())
+        InspectionResultsStore.clear("TestProject")
+    }
+
+    @AfterEach
+    fun tearDown() {
+        InspectionResultsStore.clear("TestProject")
+        unmockkAll()
+    }
+
+    @Test
+    @DisplayName("Empty capture snapshot is not reported as a clean inspection")
+    fun testCaptureIncompleteSnapshotDoesNotLookClean() {
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "capture note",
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("capture note", status["snapshot_note"])
+        assertEquals(true, status["capture_incomplete"])
+        assertFalse(status["clean_inspection"] as Boolean)
+        assertFalse(status["has_inspection_results"] as Boolean)
+    }
+
+    @Test
+    @DisplayName("Confirmed clean snapshot is the only zero-problem state reported as clean")
+    fun testCleanSnapshotRequiresConfirmedOutcome() {
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals(false, status["capture_incomplete"])
+    }
+
+    @Test
+    @DisplayName("Problems endpoint reports capture incomplete instead of fake empty results")
+    fun testProblemsEndpointReportsCaptureIncomplete() {
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "capture note",
+            ),
+        )
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"status\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"results_may_be_incomplete\": true"))
+        assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
+        assertFalse(response.contains("\"status\": \"results_available\""))
+    }
+
+    @Test
+    @DisplayName("Wait returns capture_incomplete instead of clean for empty inconclusive snapshots")
+    fun testWaitReturnsCaptureIncompleteForInconclusiveSnapshot() {
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "capture note",
+            ),
+        )
+
+        val response = waitForInspection()
+
+        assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"wait_completed\": true"))
+        assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    private fun buildInspectionStatus(): MutableMap<String, Any> {
+        val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(handler, mockProject) as MutableMap<String, Any>
+    }
+
+    private fun getInspectionProblems(): String {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "getInspectionProblems",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject, "all", "whole_project", null, null, 100, 0) as String
+    }
+
+    private fun waitForInspection(): String {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "waitForInspection",
+            String::class.java,
+            java.lang.Long::class.java,
+            java.lang.Long::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, "TestProject", 1000L, 200L) as String
+    }
+
+    private fun setLastInspectionTriggerTime(value: Long) {
+        val field = InspectionHandler::class.java.getDeclaredField("lastInspectionTriggerTime")
+        field.isAccessible = true
+        field.setLong(handler, value)
+    }
+}
