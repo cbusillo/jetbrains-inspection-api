@@ -88,6 +88,8 @@ internal object InspectionResultsStore {
     }
 }
 
+internal var enhancedTreeExtractorFactory: () -> EnhancedTreeExtractor = { EnhancedTreeExtractor() }
+
 class InspectionHandler : HttpRequestHandler() {
     
     @Volatile
@@ -216,7 +218,7 @@ class InspectionHandler : HttpRequestHandler() {
     ): String {
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
-            val snapshot = resultsStore.getSnapshot(project.name)
+            var snapshot = resultsStore.getSnapshot(project.name)
             val cachedProblems = snapshot?.problems
             val hasSnapshot = snapshot != null
             val staleness = getSnapshotStaleness(project)
@@ -237,6 +239,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 return formatJsonManually(response)
             }
+            snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
                 val response = mutableMapOf(
                     "status" to "capture_incomplete",
@@ -267,10 +270,10 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 return formatJsonManually(response)
             }
-            val problems = if (cachedProblems != null) {
-                cachedProblems
+            val problems = if (snapshot?.problems != null) {
+                snapshot.problems
             } else {
-                val extractor = EnhancedTreeExtractor()
+                val extractor = enhancedTreeExtractorFactory()
                 extractor.extractAllProblems(project)
             }
             
@@ -377,13 +380,16 @@ class InspectionHandler : HttpRequestHandler() {
         val isIndexing = dumbService.isDumb
 
         // Use the same extractor as the /problems endpoint so status matches real availability
-        val snapshot = resultsStore.getSnapshot(project.name)
+        var snapshot = resultsStore.getSnapshot(project.name)
         val cachedProblems = snapshot?.problems
         val hasInspectionSnapshot = snapshot != null
         val staleness = getSnapshotStaleness(project)
-        val extractor = EnhancedTreeExtractor()
+        if (!staleness.stale) {
+            snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
+        }
+        val extractor = enhancedTreeExtractorFactory()
         val problemsSnapshot = if (hasInspectionSnapshot) {
-            cachedProblems ?: emptyList()
+            snapshot?.problems ?: emptyList()
         } else {
             try {
                 extractor.extractAllProblems(project)
@@ -391,7 +397,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
         val captureIncomplete = snapshot?.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale
         val resultsAvailable = if (hasInspectionSnapshot) {
-            snapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale
+            snapshot?.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale
         } else {
             problemsSnapshot.isNotEmpty()
         }
@@ -444,6 +450,40 @@ class InspectionHandler : HttpRequestHandler() {
         status["clean_inspection"] = cleanInspection
 
         return status
+    }
+
+    private fun reconcileSnapshotWithLiveProblems(
+        project: Project,
+        snapshot: InspectionResultsSnapshot?,
+    ): InspectionResultsSnapshot? {
+        if (
+            snapshot == null ||
+                snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED ||
+                snapshot.problems.isNotEmpty()
+        ) {
+            return snapshot
+        }
+
+        val liveProblems = try {
+            enhancedTreeExtractorFactory().extractAllProblems(project)
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+        if (liveProblems.isEmpty()) {
+            return snapshot
+        }
+
+        val reconciledSnapshot = snapshot.copy(
+            problems = liveProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = captureProjectState(project),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "tool_window",
+            note = null,
+        )
+        resultsStore.setSnapshot(project.name, reconciledSnapshot)
+        return reconciledSnapshot
     }
 
     private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
@@ -659,7 +699,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                     val projectName = project.name
                     ApplicationManager.getApplication().executeOnPooledThread {
-                        val extractor = EnhancedTreeExtractor()
+                        val extractor = enhancedTreeExtractorFactory()
                         val extractedFromContext = try {
                         ReadAction.compute<List<Map<String, Any>>, Exception> {
                             extractProblemsFromContext(globalContext, project)
