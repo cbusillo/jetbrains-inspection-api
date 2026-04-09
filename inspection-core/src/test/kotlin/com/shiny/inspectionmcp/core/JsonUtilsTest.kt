@@ -76,8 +76,7 @@ class JsonUtilsTest {
         )
         
         val result = formatJsonManually(testData)
-        
-        @Suppress("SpellCheckingInspection")
+
         assertTrue(result.contains("Test \\\"quoted\\\" text with\\nnewline and\\ttab"))
         assertTrue(result.contains("C:\\\\Windows\\\\System32\\\\file.txt"))
         assertTrue(result.contains("Unicode: éñü"))
