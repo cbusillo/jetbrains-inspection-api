@@ -12,7 +12,7 @@ IDE_VERSION=""
 IDE_PORT="63341"
 TEST_PROJECT_PATH=""  # Must be set in AGENTS.local.md
 PLUGIN_DIR=""
-JAVA_HOME_21=""
+JAVA_HOME_21="${JAVA_HOME_21:-}"
 
 java_major() {
     local java_bin="$1/bin/java"
