@@ -125,7 +125,7 @@ if [ -f "$TEST_PROJECT_PATH/.idea/.name" ]; then
 else
     PROJECT_NAME=$(basename "$TEST_PROJECT_PATH")
 fi
-PROJECT_HINT="$TEST_PROJECT_PATH"
+PROJECT_HINT="$PROJECT_NAME"
 PROJECT_PARAM="project=$(urlencode "$PROJECT_HINT")"
 echo "  Project Name: $PROJECT_NAME"
 echo ""
