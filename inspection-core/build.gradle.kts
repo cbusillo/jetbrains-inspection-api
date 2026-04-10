@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
-    kotlin("jvm") version "2.1.21"
+    kotlin("jvm") version "2.3.20"
     id("jacoco")
 }
 
@@ -14,8 +14,8 @@ repositories {
 
 dependencies {
     implementation(kotlin("stdlib"))
-    testImplementation("org.junit.jupiter:junit-jupiter:5.10.1")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher:1.10.1")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.0.3")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.0.3")
 }
 
 kotlin {
