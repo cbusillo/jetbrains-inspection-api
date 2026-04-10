@@ -5,6 +5,7 @@ multi-ecosystem-groups:
   tooling:
     schedule:
       interval: weekly
+    open-pull-requests-limit: 2
 
 updates:
   - package-ecosystem: gradle
@@ -12,7 +13,6 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: tooling
-    open-pull-requests-limit: 2
     labels:
       - dependencies
       - gradle
@@ -27,7 +27,6 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: tooling
-    open-pull-requests-limit: 2
     labels:
       - dependencies
       - github-actions
