@@ -22,11 +22,14 @@ import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
 import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
+import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
+import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.channel.ChannelHandlerContext
 import org.jetbrains.concurrency.Promise
 import org.jetbrains.concurrency.resolvedPromise
 import org.jetbrains.concurrency.rejectedPromise
+import java.nio.file.Files
 import javax.swing.JFrame
 
 class InspectionHandlerTest {
@@ -40,6 +43,7 @@ class InspectionHandlerTest {
     private lateinit var mockGlobalContext: GlobalInspectionContext
     private lateinit var mockProfileManager: InspectionProjectProfileManager
     private lateinit var mockProfile: InspectionProfileImpl
+    private lateinit var mockApplication: Application
     
     @BeforeEach
     fun setup() {
@@ -53,7 +57,7 @@ class InspectionHandlerTest {
         mockGlobalContext = mockk<GlobalInspectionContext>()
         mockProfileManager = mockk<InspectionProjectProfileManager>()
         mockProfile = mockk<InspectionProfileImpl>()
-        val mockApplication = mockk<Application>()
+        mockApplication = mockk<Application>()
         
         every { mockProject.isDefault } returns false
         every { mockProject.isDisposed } returns false
@@ -69,6 +73,9 @@ class InspectionHandlerTest {
         every { ApplicationManager.getApplication() } returns mockApplication
         every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
             firstArg<ThrowableComputable<Any, Exception>>().compute()
+        }
+        every { mockApplication.invokeLater(any()) } answers {
+            Unit
         }
         
         mockkStatic(IdeFocusManager::class)
@@ -531,6 +538,18 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test getCurrentProject treats blank project name as fallback selector`() {
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
+        method.isAccessible = true
+
+        val result = method.invoke(handler, "   ") as Project?
+
+        assertNotNull(result)
+        assertEquals("TestProject", result?.name)
+    }
+
+    @Test
     fun `test waitForInspection reports missing explicit project clearly`() {
         val handler = InspectionHandler()
         val method = InspectionHandler::class.java.getDeclaredMethod(
@@ -545,6 +564,84 @@ class InspectionHandlerTest {
 
         assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
         assertTrue(response.contains("\"completion_reason\": \"no_project\""))
+    }
+
+    @Test
+    fun `test buildMissingProjectResponse includes recent project suggestions`() {
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "buildMissingProjectResponse",
+            String::class.java,
+        )
+        method.isAccessible = true
+
+        val recentProjectManager = mockk<com.intellij.ide.RecentProjectsManagerBase>()
+        val recentProjectPath = Files.createTempDirectory("inspection-recent-project").toAbsolutePath().toString()
+
+        every { recentProjectManager.getRecentPaths() } returns listOf(recentProjectPath)
+        every { recentProjectManager.getProjectName(recentProjectPath) } returns "Odoo API"
+        every { recentProjectManager.getDisplayName(recentProjectPath) } returns "Odoo API"
+
+        val originalProvider = recentProjectsManagerProvider
+        recentProjectsManagerProvider = { recentProjectManager }
+
+        val response = try {
+            method.invoke(handler, "odoo api") as Map<*, *>
+        } finally {
+            recentProjectsManagerProvider = originalProvider
+        }
+
+        assertEquals("Requested project 'odoo api' is not open in the IDE.", response["error"])
+        val recentSuggestions = response["suggested_recent_projects"] as List<*>
+        assertEquals(1, recentSuggestions.size)
+        val suggestion = recentSuggestions.first() as Map<*, *>
+        assertEquals("Odoo API", suggestion["name"])
+        assertEquals(recentProjectPath, suggestion["path"])
+    }
+
+    @Test
+    fun `test process trigger falls back for blank project query`() {
+        val response = processTriggerRequest("/api/inspection/trigger?project=")
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertFalse(response.content().toString(Charsets.UTF_8).contains("No project found"))
+    }
+
+    @Test
+    fun `test process trigger falls back for whitespace project query`() {
+        val response = processTriggerRequest("/api/inspection/trigger?project=%20%20")
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertFalse(response.content().toString(Charsets.UTF_8).contains("No project found"))
+    }
+
+    @Test
+    fun `test process trigger reports invalid explicit project`() {
+        val response = processTriggerRequest("/api/inspection/trigger?project=does-not-exist")
+
+        assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
+        assertTrue(response.content().toString(Charsets.UTF_8).contains("Requested project 'does-not-exist' is not open in the IDE."))
+    }
+
+    @Test
+    fun `test getCurrentProject still falls back when focus lookup throws`() {
+        every { IdeFocusManager.getGlobalInstance() } throws IllegalStateException("focus unavailable")
+
+        val mockDataManager = mockk<DataManager>()
+        val promise: Promise<DataContext> = rejectedPromise("No context")
+        every { mockDataManager.dataContextFromFocusAsync } returns promise
+        every { DataManager.getInstance() } returns mockDataManager
+
+        every { mockWindowManager.suggestParentWindow(mockProject) } returns null
+
+        val handler = InspectionHandler()
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
+        method.isAccessible = true
+
+        val result = method.invoke(handler, null) as Project?
+
+        assertNotNull(result)
+        assertEquals("TestProject", result?.name)
     }
     
     @Test
@@ -571,5 +668,20 @@ class InspectionHandlerTest {
         val result = method.invoke(handler, "TargetProject") as Project?
         assertNotNull(result)
         assertEquals("TargetProject", result?.name)
+    }
+
+    private fun processTriggerRequest(uri: String): FullHttpResponse {
+        val urlDecoder = QueryStringDecoder(uri)
+        val mockRequest = mockk<FullHttpRequest>()
+        val mockContext = mockk<ChannelHandlerContext>()
+        val responseSlot = slot<Any>()
+
+        every { mockRequest.uri() } returns uri
+        every { mockContext.writeAndFlush(capture(responseSlot)) } returns mockk(relaxed = true)
+
+        val result = handler.process(urlDecoder, mockRequest, mockContext)
+
+        assertTrue(result)
+        return responseSlot.captured as FullHttpResponse
     }
 }

@@ -4,6 +4,7 @@ import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
+import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.ApplicationManager
@@ -29,6 +30,7 @@ import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import org.jetbrains.ide.HttpRequestHandler
 import java.io.File
+import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
@@ -89,8 +91,21 @@ internal object InspectionResultsStore {
 }
 
 internal var enhancedTreeExtractorFactory: () -> EnhancedTreeExtractor = { EnhancedTreeExtractor() }
+internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
+    try {
+        RecentProjectsManagerBase.getInstanceEx()
+    } catch (_: Exception) {
+        null
+    }
+}
 
 class InspectionHandler : HttpRequestHandler() {
+
+    private data class ProjectSuggestion(
+        val name: String,
+        val path: String,
+        val score: Int,
+    )
     
     @Volatile
     private var lastInspectionTriggerTime: Long = 0
@@ -125,7 +140,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
                     val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
-                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
                         val result = ReadAction.compute<String, Exception> {
                             getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
@@ -134,7 +149,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/trigger" -> {
-                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val projectName = extractProjectSelector(urlDecoder, request)
                     val scope = urlDecoder.parameters()["scope"]?.firstOrNull()
                     // Accept either `dir`, `directory`, or `path` for directory scoping
                     val directory = urlDecoder.parameters()["dir"]?.firstOrNull()
@@ -181,7 +196,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/status" -> {
-                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
                         val result = ReadAction.compute<String, Exception> {
                             getInspectionStatus(project)
@@ -190,7 +205,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/wait" -> {
-                    val projectName = urlDecoder.parameters()["project"]?.firstOrNull()
+                    val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = urlDecoder.parameters()["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = urlDecoder.parameters()["poll_ms"]?.firstOrNull()?.toLongOrNull()
                     val result = waitForInspection(projectName, timeoutMs, pollMs)
@@ -339,16 +354,12 @@ class InspectionHandler : HttpRequestHandler() {
         refreshProjectState: Boolean = false,
         action: (Project) -> Unit,
     ) {
-        val project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+        val resolvedProjectName = normalizeProjectSelector(projectName)
+        val project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         if (project == null) {
-            val message = if (!projectName.isNullOrBlank()) {
-                "Requested project '$projectName' is not open in the IDE."
-            } else {
-                "No project found"
-            }
             sendJsonResponse(
                 context,
-                formatJsonManually(mapOf("error" to message)),
+                formatJsonManually(buildMissingProjectResponse(resolvedProjectName)),
                 HttpResponseStatus.NOT_FOUND,
             )
             return
@@ -497,24 +508,32 @@ class InspectionHandler : HttpRequestHandler() {
         val timeoutMs = (timeoutMsRaw ?: 180000L).coerceIn(1000L, 300000L)
         val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
         val start = System.currentTimeMillis()
-        var project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+        val resolvedProjectName = normalizeProjectSelector(projectName)
+        var project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         while (project == null) {
             if (System.currentTimeMillis() - start >= timeoutMs) {
-                val message = if (!projectName.isNullOrBlank()) {
-                    "Requested project '$projectName' is not open in the IDE."
-                } else {
-                    "No project found"
-                }
-                return formatWaitError(message, start, timeoutMs, pollMs, "no_project")
+                return formatWaitError(
+                    buildMissingProjectResponse(resolvedProjectName),
+                    start,
+                    timeoutMs,
+                    pollMs,
+                    "no_project"
+                )
             }
 
             try {
                 TimeUnit.MILLISECONDS.sleep(pollMs)
             } catch (_: Exception) {
-                return formatWaitError("Wait interrupted", start, timeoutMs, pollMs, "interrupted")
+                return formatWaitError(
+                    mutableMapOf("error" to "Wait interrupted"),
+                    start,
+                    timeoutMs,
+                    pollMs,
+                    "interrupted"
+                )
             }
 
-            project = ReadAction.compute<Project?, Exception> { getCurrentProject(projectName) }
+            project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         }
 
         val activeProject = project
@@ -618,14 +637,13 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun formatWaitError(
-        message: String,
+        responseData: MutableMap<String, Any>,
         startMs: Long,
         timeoutMs: Long,
         pollMs: Long,
         reason: String
     ): String {
-        val response = mutableMapOf<String, Any>()
-        response["error"] = message
+        val response = responseData.toMutableMap()
         response["wait_completed"] = false
         response["timed_out"] = reason == "no_project" || reason == "timeout"
         response["completion_reason"] = reason
@@ -633,6 +651,161 @@ class InspectionHandler : HttpRequestHandler() {
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
         return formatJsonManually(response)
+    }
+
+    private fun buildMissingProjectResponse(projectName: String?): MutableMap<String, Any> {
+        val response = mutableMapOf<String, Any>()
+        if (projectName == null) {
+            response["error"] = "No project found"
+            return response
+        }
+
+        response["error"] = "Requested project '$projectName' is not open in the IDE."
+
+        val openProjectNames = ProjectManager.getInstance().openProjects
+            .filter { project -> !project.isDefault && !project.isDisposed && project.isInitialized }
+            .map { project -> project.name }
+            .distinct()
+            .sorted()
+
+        if (openProjectNames.isNotEmpty()) {
+            response["open_projects"] = openProjectNames.take(5)
+            val suggestedOpenProjects = suggestOpenProjects(projectName, openProjectNames)
+            if (suggestedOpenProjects.isNotEmpty()) {
+                response["suggested_open_projects"] = suggestedOpenProjects
+            }
+        }
+
+        val suggestedRecentProjects = suggestRecentProjects(projectName, openProjectNames)
+        if (suggestedRecentProjects.isNotEmpty()) {
+            response["suggested_recent_projects"] = suggestedRecentProjects.map { suggestion ->
+                mapOf(
+                    "name" to suggestion.name,
+                    "path" to suggestion.path,
+                )
+            }
+        }
+
+        return response
+    }
+
+    private fun suggestOpenProjects(projectName: String, openProjectNames: List<String>): List<String> {
+        return openProjectNames
+            .mapNotNull { candidateName ->
+                val score = scoreProjectSelector(projectName, candidateName, null)
+                if (score >= 70) candidateName to score else null
+            }
+            .sortedWith(compareByDescending<Pair<String, Int>> { (_, score) -> score }.thenBy { (name, _) -> name })
+            .map { (name, _) -> name }
+            .take(3)
+    }
+
+    private fun suggestRecentProjects(projectName: String, openProjectNames: List<String>): List<ProjectSuggestion> {
+        return try {
+            val recentProjectsManager = recentProjectsManagerProvider() ?: return emptyList()
+            recentProjectsManager.getRecentPaths()
+                .mapNotNull { recentPath: String ->
+                    val normalizedPath = normalizeProjectPath(recentPath) ?: return@mapNotNull null
+                    if (!Files.exists(Paths.get(normalizedPath))) {
+                        return@mapNotNull null
+                    }
+
+                    val candidateName = recentProjectsManager.getProjectName(recentPath)
+                        ?.trim()
+                        ?.takeIf { it.isNotEmpty() }
+                        ?: recentProjectsManager.getDisplayName(recentPath)
+                            ?.trim()
+                            ?.takeIf { it.isNotEmpty() }
+                        ?: Paths.get(normalizedPath).fileName?.toString()
+                        ?: return@mapNotNull null
+
+                    if (openProjectNames.any { openProjectName -> openProjectName.equals(candidateName, ignoreCase = true) }) {
+                        return@mapNotNull null
+                    }
+
+                    val score = scoreProjectSelector(projectName, candidateName, normalizedPath)
+                    if (score < 70) {
+                        return@mapNotNull null
+                    }
+
+                    ProjectSuggestion(candidateName, normalizedPath, score)
+                }
+                .distinctBy { suggestion: ProjectSuggestion -> suggestion.path }
+                .sortedWith(
+                    compareByDescending<ProjectSuggestion> { suggestion -> suggestion.score }
+                        .thenBy { suggestion -> suggestion.name }
+                )
+                .take(3)
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun scoreProjectSelector(projectSelector: String, candidateName: String, candidatePath: String?): Int {
+        val normalizedSelector = canonicalProjectToken(projectSelector)
+        val normalizedCandidateName = canonicalProjectToken(candidateName)
+        if (normalizedSelector.isEmpty() || normalizedCandidateName.isEmpty()) {
+            return 0
+        }
+
+        val normalizedCandidatePath = canonicalProjectToken(candidatePath ?: "")
+        val selectorPathHint = normalizeProjectPath(projectSelector)
+        if (candidatePath != null && selectorPathHint != null && selectorPathHint == candidatePath) {
+            return 100
+        }
+        if (normalizedSelector == normalizedCandidateName) {
+            return 95
+        }
+        if (normalizedCandidateName.startsWith(normalizedSelector) || normalizedSelector.startsWith(normalizedCandidateName)) {
+            return 85
+        }
+        if (normalizedCandidateName.contains(normalizedSelector) || normalizedSelector.contains(normalizedCandidateName)) {
+            return 80
+        }
+        if (normalizedCandidatePath.isNotEmpty() && normalizedCandidatePath.contains(normalizedSelector)) {
+            return 78
+        }
+
+        val editDistance = levenshteinDistance(normalizedSelector, normalizedCandidateName)
+        return when {
+            editDistance <= 1 -> 76
+            editDistance == 2 -> 72
+            else -> 0
+        }
+    }
+
+    private fun canonicalProjectToken(value: String): String {
+        return value.lowercase().filter { character -> character.isLetterOrDigit() }
+    }
+
+    private fun levenshteinDistance(left: String, right: String): Int {
+        if (left == right) {
+            return 0
+        }
+        if (left.isEmpty()) {
+            return right.length
+        }
+        if (right.isEmpty()) {
+            return left.length
+        }
+
+        val previousRow = IntArray(right.length + 1) { index -> index }
+        val currentRow = IntArray(right.length + 1)
+
+        for (leftIndex in left.indices) {
+            currentRow[0] = leftIndex + 1
+            for (rightIndex in right.indices) {
+                val substitutionCost = if (left[leftIndex] == right[rightIndex]) 0 else 1
+                currentRow[rightIndex + 1] = minOf(
+                    currentRow[rightIndex] + 1,
+                    previousRow[rightIndex + 1] + 1,
+                    previousRow[rightIndex] + substitutionCost,
+                )
+            }
+            currentRow.copyInto(previousRow)
+        }
+
+        return previousRow[right.length]
     }
     
     private fun triggerInspectionAsync(
@@ -1078,52 +1251,49 @@ class InspectionHandler : HttpRequestHandler() {
     }
     
     private fun getCurrentProject(projectName: String? = null): Project? {
-        return try {
-            if (projectName != null) {
-                val projectByName = getProjectByName(projectName)
-                return projectByName
-            }
-            
-            val lastFocusedFrame = IdeFocusManager.getGlobalInstance().lastFocusedFrame
-            val projectFromFrame = lastFocusedFrame?.project
-            if (projectFromFrame != null && !projectFromFrame.isDefault && !projectFromFrame.isDisposed && projectFromFrame.isInitialized) {
-                return projectFromFrame
-            }
-            
-            val dataContextFuture = DataManager.getInstance().dataContextFromFocusAsync
-            val dataContext = try {
-                dataContextFuture.blockingGet(1000, TimeUnit.MILLISECONDS)
-            } catch (_: Exception) {
-                null
-            }
-            
-            val projectFromDataContext = dataContext?.let { CommonDataKeys.PROJECT.getData(it) }
-            if (projectFromDataContext != null && !projectFromDataContext.isDefault && !projectFromDataContext.isDisposed && projectFromDataContext.isInitialized) {
-                return projectFromDataContext
-            }
-            
-            val projectManager = ProjectManager.getInstance()
-            val openProjects = projectManager.openProjects
-            
-            val validProjects = openProjects.filter { project ->
-                !project.isDefault && !project.isDisposed && project.isInitialized
-            }
-            
-            if (validProjects.isEmpty()) {
-                return null
-            }
-            
-            for (project in validProjects) {
-                val window = WindowManager.getInstance().suggestParentWindow(project)
-                if (window != null && window.isActive) {
-                    return project
-                }
-            }
-            
-            validProjects.firstOrNull()
-        } catch (_: Exception) {
-            null
+        val resolvedProjectName = normalizeProjectSelector(projectName)
+        if (resolvedProjectName != null) {
+            return runCatching { getProjectByName(resolvedProjectName) }.getOrNull()
         }
+
+        val projectFromFrame = runCatching {
+            IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project
+        }.getOrNull()
+        if (isUsableProject(projectFromFrame)) {
+            return projectFromFrame
+        }
+
+        val dataContext = runCatching {
+            DataManager.getInstance().dataContextFromFocusAsync.blockingGet(1000, TimeUnit.MILLISECONDS)
+        }.getOrNull()
+        val projectFromDataContext = runCatching {
+            dataContext?.let { CommonDataKeys.PROJECT.getData(it) }
+        }.getOrNull()
+        if (isUsableProject(projectFromDataContext)) {
+            return projectFromDataContext
+        }
+
+        val validProjects = runCatching {
+            ProjectManager.getInstance().openProjects.filter(::isUsableProject)
+        }.getOrElse { emptyList() }
+        if (validProjects.isEmpty()) {
+            return null
+        }
+
+        for (project in validProjects) {
+            val isActiveWindow = runCatching {
+                WindowManager.getInstance().suggestParentWindow(project)?.isActive == true
+            }.getOrDefault(false)
+            if (isActiveWindow) {
+                return project
+            }
+        }
+
+        return validProjects.firstOrNull()
+    }
+
+    private fun isUsableProject(project: Project?): Boolean {
+        return project != null && !project.isDefault && !project.isDisposed && project.isInitialized
     }
     
     private fun getProjectByName(projectName: String): Project? {
@@ -1164,6 +1334,46 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun normalizeProjectSelector(projectName: String?): String? {
+        return projectName?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun extractProjectSelector(urlDecoder: QueryStringDecoder, request: FullHttpRequest): String? {
+        val queryValue = extractQueryParameter(urlDecoder, request, "project")
+        return normalizeProjectSelector(queryValue)
+    }
+
+    private fun extractQueryParameter(
+        urlDecoder: QueryStringDecoder,
+        request: FullHttpRequest,
+        parameterName: String,
+    ): String? {
+        val parameterValues = urlDecoder.parameters()[parameterName]
+        if (parameterValues != null) {
+            return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
+        }
+
+        val rawQuery = request.uri().substringAfter('?', missingDelimiterValue = "")
+        if (rawQuery.isEmpty()) {
+            return null
+        }
+
+        for (segment in rawQuery.split('&')) {
+            if (segment.isEmpty()) {
+                continue
+            }
+            val nameAndValue = segment.split('=', limit = 2)
+            val decodedName = QueryStringDecoder.decodeComponent(nameAndValue[0])
+            if (decodedName != parameterName) {
+                continue
+            }
+            val encodedValue = nameAndValue.getOrElse(1) { "" }
+            return QueryStringDecoder.decodeComponent(encodedValue)
+        }
+
+        return null
     }
 
     private fun looksLikePath(value: String): Boolean {

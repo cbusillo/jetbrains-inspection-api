@@ -27,6 +27,11 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.11.8</b>
+        <ul>
+            <li>Improves automated validation with more reliable Java 21 selection in the test script.</li>
+            <li>Uses the opened project name in the automated smoke test for clearer, deterministic project targeting.</li>
+        </ul>
         <b>Version 1.11.7</b>
         <ul>
             <li>Fixes false-clean inspection results by distinguishing confirmed clean runs from incomplete result capture.</li>

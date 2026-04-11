@@ -12,6 +12,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.io.BufferedReader
@@ -193,7 +194,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_trigger"))
                     put(
                         "description",
-                        JsonPrimitive("Start an inspection run (async).")
+                        JsonPrimitive("Start an inspection run (async). Blank or omitted project uses the focused or active open project.")
                     )
                     put("inputSchema", triggerSchema())
                 },
@@ -202,7 +203,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Check inspection status. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
+                            "Check inspection status. Blank or omitted project uses the focused or active open project. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
                         )
                     )
                     put("inputSchema", statusSchema())
@@ -212,7 +213,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. May report no_results if the IDE view is unavailable or filtered."
+                            "Block until inspection completes or timeout. Blank or omitted project uses the focused or active open project. May report no_results if the IDE view is unavailable or filtered."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -240,7 +241,7 @@ internal class ToolExecutor(
     private fun handleGetProblems(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.string("project")?.let { params += "project" to it }
+            args.optionalProject()?.let { params += "project" to it }
             val scope = args.string("scope") ?: "whole_project"
             val severity = args.string("severity") ?: "all"
             params += "scope" to scope
@@ -266,7 +267,7 @@ internal class ToolExecutor(
     private fun handleTrigger(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.string("project")?.let { params += "project" to it }
+            args.optionalProject()?.let { params += "project" to it }
             args.string("scope")?.let { params += "scope" to it }
             val dir = args.string("dir") ?: args.string("directory") ?: args.string("path")
             dir?.let { params += "dir" to it }
@@ -302,7 +303,7 @@ internal class ToolExecutor(
     private fun handleGetStatus(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.string("project")?.let { params += "project" to it }
+            args.optionalProject()?.let { params += "project" to it }
 
             val url = buildUrl("$baseUrl/status", params)
             val result = httpGet(url)
@@ -317,7 +318,7 @@ internal class ToolExecutor(
     private fun handleWait(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.string("project")?.let { params += "project" to it }
+            args.optionalProject()?.let { params += "project" to it }
             val timeoutProvided = args["timeout_ms"] != null
             val pollProvided = args["poll_ms"] != null
             val timeoutMs = args.int("timeout_ms") ?: 180000
@@ -443,7 +444,13 @@ internal class ToolExecutor(
             val status = response.statusCode()
             val body = response.body()
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_ACCEPTED) {
-                throw RuntimeException("Unexpected HTTP status $status")
+                val responseSummary = summarizeErrorBody(body)
+                val detailSuffix = if (responseSummary != null) {
+                    ": $responseSummary"
+                } else {
+                    ""
+                }
+                throw RuntimeException("Unexpected HTTP status $status$detailSuffix")
             }
             return try {
                 json.parseToJsonElement(body)
@@ -526,7 +533,7 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Project name (optional; defaults to focused project)")
+                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
                 )
                 put(
                     "scope",
@@ -566,7 +573,7 @@ internal class ToolExecutor(
         return buildJsonObject {
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
-                put("project", stringProp("Project name (optional)"))
+                put("project", stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)"))
                 put(
                     "scope",
                     enumProp(
@@ -604,7 +611,7 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Project name (optional; defaults to focused project)")
+                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
                 )
             })
         }
@@ -616,7 +623,7 @@ internal class ToolExecutor(
             put("properties", buildJsonObject {
                 put(
                     "project",
-                    stringProp("Project name (optional)")
+                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
                 )
                 put(
                     "timeout_ms",
@@ -662,6 +669,34 @@ internal class ToolExecutor(
 
 private fun JsonObject.string(name: String): String? {
     return (this[name] as? JsonPrimitive)?.contentOrNull
+}
+
+private fun JsonObject.optionalProject(): String? {
+    return string("project")?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+private fun summarizeErrorBody(body: String): String? {
+    return try {
+        val parsedBody = json.parseToJsonElement(body) as? JsonObject ?: return body.trim().takeIf { it.isNotEmpty() }
+        val parts = mutableListOf<String>()
+        parsedBody["error"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += it }
+        parsedBody["suggested_open_projects"]?.jsonArray
+            ?.mapNotNull { element -> element.jsonPrimitive.contentOrNull }
+            ?.takeIf { suggestions -> suggestions.isNotEmpty() }
+            ?.let { suggestions -> parts += "Open: ${suggestions.joinToString(", ")}" }
+        parsedBody["suggested_recent_projects"]?.jsonArray
+            ?.mapNotNull { element ->
+                val suggestion = element as? JsonObject ?: return@mapNotNull null
+                val name = suggestion["name"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val path = suggestion["path"]?.jsonPrimitive?.contentOrNull
+                if (path.isNullOrBlank()) name else "$name ($path)"
+            }
+            ?.takeIf { suggestions -> suggestions.isNotEmpty() }
+            ?.let { suggestions -> parts += "Recent: ${suggestions.joinToString(", ")}" }
+        if (parts.isEmpty()) body.trim().takeIf { it.isNotEmpty() } else parts.joinToString(" | ")
+    } catch (_: Exception) {
+        body.trim().takeIf { it.isNotEmpty() }
+    }
 }
 
 private fun JsonObject.int(name: String): Int? {

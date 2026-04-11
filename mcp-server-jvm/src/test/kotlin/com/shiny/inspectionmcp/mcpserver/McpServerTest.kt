@@ -283,6 +283,26 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusOmitsBlankProjectParam() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(
+                buildToolCall(
+                    "inspection_get_status",
+                    buildJsonObject {
+                        put("project", JsonPrimitive("   "))
+                    },
+                ),
+            )
+
+            val query = server.lastQuery.get()
+            assertTrue(query.isNullOrEmpty())
+        }
+    }
+
+    @Test
     fun inspectionGetStatusHandlesScanning() {
         val response = """{"is_scanning":true}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
@@ -388,6 +408,26 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionWaitOmitsBlankProjectParam() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(
+                buildToolCall(
+                    "inspection_wait",
+                    buildJsonObject {
+                        put("project", JsonPrimitive(""))
+                    },
+                ),
+            )
+
+            val query = server.lastQuery.get()
+            assertTrue(query.isNullOrEmpty())
+        }
+    }
+
+    @Test
     fun inspectionWaitHandlesNoProject() {
         val response = """{"wait_completed":true,"completion_reason":"no_project"}"""
         MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
@@ -449,14 +489,20 @@ class McpServerTest {
 
     @Test
     fun inspectionGetProblemsHandlesNon200Status() {
-        val response = MockResponse("""{"error":"boom"}""", status = 500)
+        val response = MockResponse(
+            """{"error":"Requested project 'missing' is not open in the IDE.","suggested_open_projects":["odoo-ai"],"suggested_recent_projects":[{"name":"odoo-api","path":"/tmp/odoo-api"}]}""",
+            status = 404,
+        )
         MockIdeServer(mapOf("/api/inspection/problems" to response)).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             assertTrue(result.isError())
-            assertTrue(result.firstText().contains("Unexpected HTTP status 500"))
+            assertTrue(result.firstText().contains("Unexpected HTTP status 404"))
+            assertTrue(result.firstText().contains("Requested project 'missing' is not open in the IDE."))
+            assertTrue(result.firstText().contains("Open: odoo-ai"))
+            assertTrue(result.firstText().contains("Recent: odoo-api (/tmp/odoo-api)"))
         }
     }
 

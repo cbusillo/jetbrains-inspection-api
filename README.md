@@ -101,6 +101,8 @@ inspection_get_problems(project="MyProject")
 inspection_get_problems(project="odoo-ai", severity="error")
 ```
 
+Note: blank or omitted `project` uses the focused or active open project. Nonblank values must match an open project.
+
 ### Direct HTTP API
 ```bash
 # Trigger inspection
@@ -186,6 +188,7 @@ Notes:
   Use `all` or leave blank to disable the filter.
 - `limit` (optional): Maximum problems to return (default: 100)
 - `offset` (optional): Number of problems to skip for pagination (default: 0)
+- `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
 
 **Examples**:
 ```bash
@@ -208,6 +211,7 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 
 **Parameters**:
 - `project` (optional): Project name to target when multiple projects are open
+- Blank or omitted `project` uses the focused or active open project. Nonblank values must match an open project.
 - `scope` (optional):
   - `whole_project` (default)
   - `current_file` (inspect the currently selected editor file)
