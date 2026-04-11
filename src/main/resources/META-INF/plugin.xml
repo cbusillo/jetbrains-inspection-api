@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.11.8</version>
+    <version>1.11.9</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -27,6 +27,12 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.11.9</b>
+        <ul>
+            <li>Treats blank or whitespace <code>project</code> selectors like omitted selectors, falling back to the focused or active open project.</li>
+            <li>Improves missing-project responses with suggested open and recent project matches.</li>
+            <li>Clarifies bundled MCP tool descriptions and preserves compact suggestion details in non-200 error messages.</li>
+        </ul>
         <b>Version 1.11.8</b>
         <ul>
             <li>Improves automated validation with more reliable Java 21 selection in the test script.</li>
