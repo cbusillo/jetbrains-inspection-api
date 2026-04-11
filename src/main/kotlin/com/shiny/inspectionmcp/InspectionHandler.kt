@@ -1341,16 +1341,15 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun extractProjectSelector(urlDecoder: QueryStringDecoder, request: FullHttpRequest): String? {
-        val queryValue = extractQueryParameter(urlDecoder, request, "project")
+        val queryValue = extractProjectQueryParameter(urlDecoder, request)
         return normalizeProjectSelector(queryValue)
     }
 
-    private fun extractQueryParameter(
+    private fun extractProjectQueryParameter(
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
-        parameterName: String,
     ): String? {
-        val parameterValues = urlDecoder.parameters()[parameterName]
+        val parameterValues = urlDecoder.parameters()["project"]
         if (parameterValues != null) {
             return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
         }
@@ -1366,7 +1365,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val nameAndValue = segment.split('=', limit = 2)
             val decodedName = QueryStringDecoder.decodeComponent(nameAndValue[0])
-            if (decodedName != parameterName) {
+            if (decodedName != "project") {
                 continue
             }
             val encodedValue = nameAndValue.getOrElse(1) { "" }

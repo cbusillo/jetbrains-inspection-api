@@ -74,9 +74,7 @@ class InspectionHandlerTest {
         every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
             firstArg<ThrowableComputable<Any, Exception>>().compute()
         }
-        every { mockApplication.invokeLater(any()) } answers {
-            Unit
-        }
+        every { mockApplication.invokeLater(any()) } just Runs
         
         mockkStatic(IdeFocusManager::class)
         val mockIdeFocusManager = mockk<IdeFocusManager>()
