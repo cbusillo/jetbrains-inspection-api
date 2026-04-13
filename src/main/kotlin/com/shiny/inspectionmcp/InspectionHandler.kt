@@ -28,12 +28,14 @@ import com.shiny.inspectionmcp.core.paginateProblems
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
+import com.intellij.openapi.diagnostic.Logger
 import org.jetbrains.ide.HttpRequestHandler
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.tree.TreeNode
 
 internal fun normalizeOptionalFilter(raw: String?): String? {
     val trimmed = raw?.trim() ?: return null
@@ -99,7 +101,60 @@ internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
     }
 }
 
+internal fun classifyEmptyInspectionCapture(
+    viewReadyOk: Boolean,
+    observedInspectionView: Boolean,
+    observedExplicitlyEmptyInspectionTree: Boolean,
+    observedNonEmptyInspectionTree: Boolean,
+): Pair<InspectionSnapshotOutcome, String?> {
+    if (viewReadyOk && observedInspectionView && observedExplicitlyEmptyInspectionTree && !observedNonEmptyInspectionTree) {
+        return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
+    }
+
+    return InspectionSnapshotOutcome.CAPTURE_INCOMPLETE to
+        "Inspection finished, but the plugin could not conclusively confirm that the IDE results were empty. Re-run the inspection or open the Inspection Results/Problems tool window."
+}
+
+internal fun cleanWaitHasSettled(
+    now: Long,
+    resultsTimestampMs: Long?,
+    cleanStableSince: Long?,
+    timeSinceTriggerMs: Long?,
+    minStableMs: Long = 5000L,
+    minTimeSinceTriggerMs: Long = 15000L,
+): Boolean {
+    val cleanStableStart = resultsTimestampMs ?: cleanStableSince ?: now
+    val cleanStableEnough = now - cleanStableStart >= minStableMs
+    val triggerSettled = timeSinceTriggerMs == null || timeSinceTriggerMs >= minTimeSinceTriggerMs
+    return cleanStableEnough && triggerSettled
+}
+
+internal fun shouldStopCapturePolling(
+    viewReadyOk: Boolean,
+    observedInspectionView: Boolean,
+    bestResultsCount: Int,
+    stableForMs: Long,
+    pollingElapsedMs: Long,
+    minStableMs: Long = 5000L,
+    maxFallbackWaitMs: Long = 15000L,
+): Boolean {
+    if (bestResultsCount > 0 && stableForMs >= minStableMs) {
+        return true
+    }
+
+    if (viewReadyOk && observedInspectionView && stableForMs >= minStableMs) {
+        return true
+    }
+
+    if ((!viewReadyOk || !observedInspectionView) && stableForMs >= minStableMs && pollingElapsedMs >= maxFallbackWaitMs) {
+        return true
+    }
+
+    return false
+}
+
 class InspectionHandler : HttpRequestHandler() {
+    private val logger = Logger.getInstance(InspectionHandler::class.java)
 
     private data class ProjectSuggestion(
         val name: String,
@@ -423,6 +478,7 @@ class InspectionHandler : HttpRequestHandler() {
         status["results_source"] = snapshot?.source ?: "tool_window"
         status["results_may_be_stale"] = hasInspectionSnapshot && staleness.stale
         if (snapshot != null) {
+            status["results_timestamp_ms"] = snapshot.timestamp
             status["snapshot_outcome"] = snapshot.outcome.apiValue
             if (!snapshot.note.isNullOrBlank()) {
                 status["snapshot_note"] = snapshot.note
@@ -540,6 +596,7 @@ class InspectionHandler : HttpRequestHandler() {
         var lastStableCount: Int? = null
         var stableCountHits = 0
         var stableSince: Long? = null
+        var cleanStableSince: Long? = null
         var status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
@@ -550,11 +607,21 @@ class InspectionHandler : HttpRequestHandler() {
             val inProgress = status["inspection_in_progress"] as? Boolean ?: false
             val totalProblems = (status["total_problems"] as? Number)?.toInt()
             val resultsSource = status["results_source"] as? String
+            val resultsTimestampMs = (status["results_timestamp_ms"] as? Number)?.toLong()
+            val snapshotOutcome = status["snapshot_outcome"] as? String
+            val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
             val minStableMs = 5000L
             val now = System.currentTimeMillis()
 
             if (cleanInspection && !isScanning && !inProgress) {
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
+                if (cleanStableSince == null && resultsTimestampMs == null) {
+                    cleanStableSince = now
+                }
+                if (cleanWaitHasSettled(now, resultsTimestampMs, cleanStableSince, timeSinceTrigger, minStableMs)) {
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
+                }
+            } else {
+                cleanStableSince = null
             }
 
             if (captureIncomplete && !isScanning && !inProgress) {
@@ -565,7 +632,6 @@ class InspectionHandler : HttpRequestHandler() {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, true, "capture_incomplete")
             }
 
-            val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
             if (
                 resultsSource == "tool_window" &&
                 !hasResults &&
@@ -578,7 +644,12 @@ class InspectionHandler : HttpRequestHandler() {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
             }
 
-            if (hasResults && !isScanning && !inProgress) {
+            if (
+                hasResults &&
+                snapshotOutcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED.apiValue &&
+                !isScanning &&
+                !inProgress
+            ) {
                 if (resultsSource == "inspection_view") {
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
                 }
@@ -894,12 +965,15 @@ class InspectionHandler : HttpRequestHandler() {
                         emptyList()
                     }
 
-                        val deadlineMs = System.currentTimeMillis() + 60000
+                        val captureStartMs = System.currentTimeMillis()
+                        val deadlineMs = captureStartMs + 60000
                     var bestResults: List<Map<String, Any>> = extractedFromContext
                     var bestSource = if (extractedFromContext.isNotEmpty()) "global_context" else "inspection_view"
                     var lastSize = bestResults.size
                     var lastChangeMs = System.currentTimeMillis()
                     var observedInspectionView = false
+                    var observedExplicitlyEmptyInspectionTree = false
+                    var observedNonEmptyInspectionTree = false
 
                     fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                         val app = ApplicationManager.getApplication()
@@ -921,6 +995,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
 
                     while (System.currentTimeMillis() < deadlineMs) {
+                        val loopNow = System.currentTimeMillis()
                         val view = try {
                             @Suppress("UnstableApiUsage")
                             globalContext.view
@@ -931,6 +1006,16 @@ class InspectionHandler : HttpRequestHandler() {
 
                         if (viewReadyOk && view != null) {
                             observedInspectionView = true
+                            val rootChildCount = try {
+                                (view.tree.model.root as? TreeNode)?.childCount
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                                null
+                            }
+                            when {
+                                rootChildCount == 0 -> observedExplicitlyEmptyInspectionTree = true
+                                rootChildCount != null && rootChildCount > 0 -> observedNonEmptyInspectionTree = true
+                            }
                             val attempt = try {
                                 extractFromViewSafe(view)
                             } catch (e: Exception) {
@@ -958,10 +1043,12 @@ class InspectionHandler : HttpRequestHandler() {
 
                         if (bestResults.size != lastSize) {
                             lastSize = bestResults.size
-                            lastChangeMs = System.currentTimeMillis()
+                            lastChangeMs = loopNow
                         }
 
-                        if (viewReadyOk && System.currentTimeMillis() - lastChangeMs >= 5000) {
+                        val stableForMs = loopNow - lastChangeMs
+                        val pollingElapsedMs = loopNow - captureStartMs
+                        if (shouldStopCapturePolling(viewReadyOk, observedInspectionView, bestResults.size, stableForMs, pollingElapsedMs)) {
                             break
                         }
 
@@ -975,6 +1062,12 @@ class InspectionHandler : HttpRequestHandler() {
 
                     syncProjectState(project)
                     val snapshotState = captureProjectState(project)
+                    val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
+                        viewReadyOk = viewReadyOk,
+                        observedInspectionView = observedInspectionView,
+                        observedExplicitlyEmptyInspectionTree = observedExplicitlyEmptyInspectionTree,
+                        observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                    )
                     val snapshot = when {
                         bestResults.isNotEmpty() -> InspectionResultsSnapshot(
                             problems = bestResults,
@@ -983,7 +1076,7 @@ class InspectionHandler : HttpRequestHandler() {
                             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
                             source = bestSource,
                         )
-                        viewReadyOk && observedInspectionView -> InspectionResultsSnapshot(
+                        emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
                             problems = emptyList(),
                             timestamp = System.currentTimeMillis(),
                             projectState = snapshotState,
@@ -996,7 +1089,16 @@ class InspectionHandler : HttpRequestHandler() {
                             projectState = snapshotState,
                             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                             source = if (viewReadyOk) "inspection_view" else "tool_window",
-                            note = "Inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Inspection Results tool window.",
+                            note = emptyNote,
+                        )
+                    }
+                    if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
+                        logger.info(
+                            "Inspection capture incomplete for ${project.name}: " +
+                                "viewReadyOk=$viewReadyOk, " +
+                                "observedInspectionView=$observedInspectionView, " +
+                                "observedExplicitlyEmptyInspectionTree=$observedExplicitlyEmptyInspectionTree, " +
+                                "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree"
                         )
                     }
                     resultsStore.setSnapshot(projectName, snapshot)

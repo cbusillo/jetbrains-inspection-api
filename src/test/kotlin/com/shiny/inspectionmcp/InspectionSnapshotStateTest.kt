@@ -244,6 +244,127 @@ class InspectionSnapshotStateTest {
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
     }
 
+    @Test
+    @DisplayName("Wait does not declare clean until the zero-problem snapshot has stabilized")
+    fun testWaitDoesNotReturnCleanBeforeFreshSnapshotStabilizes() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val liveProblems = listOf(
+            mapOf(
+                "description" to "Live warning",
+                "file" to "/tmp/TestProject/src/app.js",
+                "line" to 12,
+                "column" to 4,
+                "severity" to "weak_warning",
+                "inspectionType" to "JSUnresolvedReference",
+            )
+        )
+        var extractorCalls = 0
+        every { extractor.extractAllProblems(mockProject) } answers {
+            extractorCalls += 1
+            if (extractorCalls == 1) emptyList() else liveProblems
+        }
+        enhancedTreeExtractorFactory = { extractor }
+
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+
+        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
+
+        assertTrue(extractorCalls > 1)
+        assertTrue(response.contains("\"completion_reason\": \"results\""))
+        assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    @Test
+    @DisplayName("Empty inspection capture is only marked clean when the tree is explicitly empty")
+    fun testClassifyEmptyInspectionCapture() {
+        val ambiguous = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedExplicitlyEmptyInspectionTree = false,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, ambiguous.first)
+        assertTrue(ambiguous.second?.contains("could not conclusively confirm") == true)
+
+        val confirmedClean = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedExplicitlyEmptyInspectionTree = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, confirmedClean.first)
+        assertEquals(null, confirmedClean.second)
+    }
+
+    @Test
+    @DisplayName("Clean wait requires a post-trigger settle window")
+    fun testCleanWaitHasSettledRequiresTriggerAge() {
+        val now = System.currentTimeMillis()
+
+        assertFalse(
+            cleanWaitHasSettled(
+                now = now,
+                resultsTimestampMs = now - 8000,
+                cleanStableSince = null,
+                timeSinceTriggerMs = 10000,
+            )
+        )
+
+        assertTrue(
+            cleanWaitHasSettled(
+                now = now,
+                resultsTimestampMs = now - 8000,
+                cleanStableSince = null,
+                timeSinceTriggerMs = 16000,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Capture polling settles on stable tool-window findings without inspection view")
+    fun testShouldStopCapturePollingForStableToolResultsWithoutView() {
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                bestResultsCount = 3,
+                stableForMs = 6000,
+                pollingElapsedMs = 7000,
+            )
+        )
+
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 4000,
+                pollingElapsedMs = 16000,
+            )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 16000,
+            )
+        )
+    }
+
     private fun buildInspectionStatus(): MutableMap<String, Any> {
         val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
         method.isAccessible = true
@@ -266,7 +387,7 @@ class InspectionSnapshotStateTest {
         return method.invoke(handler, mockProject, "all", "whole_project", null, null, 100, 0) as String
     }
 
-    private fun waitForInspection(): String {
+    private fun waitForInspection(timeoutMs: Long = 1000L, pollMs: Long = 200L): String {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "waitForInspection",
             String::class.java,
@@ -274,7 +395,7 @@ class InspectionSnapshotStateTest {
             java.lang.Long::class.java,
         )
         method.isAccessible = true
-        return method.invoke(handler, "TestProject", 1000L, 200L) as String
+        return method.invoke(handler, "TestProject", timeoutMs, pollMs) as String
     }
 
     private fun setLastInspectionTriggerTime(value: Long) {
