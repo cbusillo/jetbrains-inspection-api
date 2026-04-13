@@ -6,7 +6,6 @@ import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.openapi.actionSystem.CommonDataKeys
-import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
@@ -197,7 +196,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
-                        val result = ReadAction.compute<String, Exception> {
+                        val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                             getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
                         }
                         sendJsonResponse(context, result)
@@ -253,7 +252,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "/api/inspection/status" -> {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
-                        val result = ReadAction.compute<String, Exception> {
+                        val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                             getInspectionStatus(project)
                         }
                         sendJsonResponse(context, result)
@@ -410,7 +409,7 @@ class InspectionHandler : HttpRequestHandler() {
         action: (Project) -> Unit,
     ) {
         val resolvedProjectName = normalizeProjectSelector(projectName)
-        val project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
+        val project = ApplicationManager.getApplication().runReadAction<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         if (project == null) {
             sendJsonResponse(
                 context,
@@ -565,7 +564,7 @@ class InspectionHandler : HttpRequestHandler() {
         val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
         val start = System.currentTimeMillis()
         val resolvedProjectName = normalizeProjectSelector(projectName)
-        var project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
+        var project = ApplicationManager.getApplication().runReadAction<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         while (project == null) {
             if (System.currentTimeMillis() - start >= timeoutMs) {
                 return formatWaitError(
@@ -589,7 +588,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
             }
 
-            project = ReadAction.compute<Project?, Exception> { getCurrentProject(resolvedProjectName) }
+            project = ApplicationManager.getApplication().runReadAction<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         }
 
         val activeProject = project
@@ -597,7 +596,7 @@ class InspectionHandler : HttpRequestHandler() {
         var stableCountHits = 0
         var stableSince: Long? = null
         var cleanStableSince: Long? = null
-        var status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
+        var status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
             val hasResults = status["has_inspection_results"] as? Boolean ?: false
@@ -684,7 +683,7 @@ class InspectionHandler : HttpRequestHandler() {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted")
             }
 
-            status = ReadAction.compute<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
+            status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
         }
     }
 
@@ -957,7 +956,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ApplicationManager.getApplication().executeOnPooledThread {
                         val extractor = enhancedTreeExtractorFactory()
                         val extractedFromContext = try {
-                        ReadAction.compute<List<Map<String, Any>>, Exception> {
+                        ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
                             extractProblemsFromContext(globalContext, project)
                         }
                     } catch (e: Exception) {
@@ -1029,7 +1028,7 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         val toolResults = try {
-                            ReadAction.compute<List<Map<String, Any>>, Exception> {
+                            ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
                                 extractor.extractAllProblems(project)
                             }
                         } catch (e: Exception) {
