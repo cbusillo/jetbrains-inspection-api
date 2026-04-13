@@ -74,6 +74,7 @@ class InspectionHandlerTest {
         every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
             firstArg<ThrowableComputable<Any, Exception>>().compute()
         }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } returns mockk(relaxed = true)
         every { mockApplication.invokeLater(any()) } just Runs
         
         mockkStatic(IdeFocusManager::class)
@@ -611,6 +612,15 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertFalse(response.content().toString(Charsets.UTF_8).contains("No project found"))
+    }
+
+    @Test
+    fun `test process trigger schedules inspection on pooled thread`() {
+        val response = processTriggerRequest("/api/inspection/trigger")
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+        verify(exactly = 0) { mockApplication.invokeLater(any()) }
     }
 
     @Test

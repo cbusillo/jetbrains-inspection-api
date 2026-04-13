@@ -223,17 +223,22 @@ class InspectionHandler : HttpRequestHandler() {
                     withCurrentProject(context, projectName) { project ->
                         lastInspectionTriggerTime = System.currentTimeMillis()
                         inspectionInProgress = true
-                        ApplicationManager.getApplication().invokeLater {
-                            triggerInspectionAsync(
-                                project = project,
-                                scopeParam = scope,
-                                directoryParam = directory,
-                                files = if (filesList.isEmpty()) null else filesList,
-                                includeUnversioned = includeUnversioned,
-                                changedFilesMode = changedFilesMode,
-                                maxFiles = maxFiles,
-                                profileName = profile
-                            )
+                        try {
+                            ApplicationManager.getApplication().executeOnPooledThread {
+                                triggerInspectionAsync(
+                                    project = project,
+                                    scopeParam = scope,
+                                    directoryParam = directory,
+                                    files = if (filesList.isEmpty()) null else filesList,
+                                    includeUnversioned = includeUnversioned,
+                                    changedFilesMode = changedFilesMode,
+                                    maxFiles = maxFiles,
+                                    profileName = profile
+                                )
+                            }
+                        } catch (e: Exception) {
+                            inspectionInProgress = false
+                            throw e
                         }
                         val details = mutableMapOf<String, Any>(
                             "status" to "triggered",
@@ -891,22 +896,8 @@ class InspectionHandler : HttpRequestHandler() {
         try {
             inspectionInProgress = true
             resultsStore.clear(project.name)
-            
-            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
-            // Clear prior results from both known locations to avoid stale reads
-            inspectionResultsToolWindowIds.forEach { name ->
-                val tw = toolWindowManager.getToolWindow(name)
-                if (tw != null) {
-                    for (i in 0 until tw.contentManager.contentCount) {
-                        val content = tw.contentManager.getContent(i)
-                        if (content != null && content.component.javaClass.name.contains("InspectionResultsView")) {
-                            tw.contentManager.removeContent(content, true)
-                            try { Thread.sleep(200) } catch (_: Exception) {}
-                            break
-                        }
-                    }
-                }
-            }
+
+            clearPriorInspectionResults(project)
             
             syncProjectState(project)
 
@@ -1144,6 +1135,29 @@ class InspectionHandler : HttpRequestHandler() {
             refreshTask.run()
         } else {
             application.invokeAndWait(refreshTask)
+        }
+    }
+
+    private fun clearPriorInspectionResults(project: Project) {
+        val application = ApplicationManager.getApplication()
+        val clearTask = Runnable {
+            val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
+            inspectionResultsToolWindowIds.forEach { name ->
+                val toolWindow = toolWindowManager.getToolWindow(name) ?: return@forEach
+                for (i in 0 until toolWindow.contentManager.contentCount) {
+                    val content = toolWindow.contentManager.getContent(i) ?: continue
+                    if (content.component.javaClass.name.contains("InspectionResultsView")) {
+                        toolWindow.contentManager.removeContent(content, true)
+                        break
+                    }
+                }
+            }
+        }
+
+        if (application.isDispatchThread) {
+            clearTask.run()
+        } else {
+            application.invokeAndWait(clearTask)
         }
     }
 
