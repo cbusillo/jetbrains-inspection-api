@@ -67,6 +67,12 @@ internal data class InspectionResultsSnapshot(
     val note: String? = null,
 )
 
+internal data class InspectionViewObservation(
+    val isUpdating: Boolean,
+    val hasProblems: Boolean,
+    val rootChildCount: Int?,
+)
+
 internal object InspectionResultsStore {
     private val snapshotsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionResultsSnapshot>()
 
@@ -103,10 +109,10 @@ internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
 internal fun classifyEmptyInspectionCapture(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
-    observedExplicitlyEmptyInspectionTree: Boolean,
+    observedSettledEmptyInspectionView: Boolean,
     observedNonEmptyInspectionTree: Boolean,
 ): Pair<InspectionSnapshotOutcome, String?> {
-    if (viewReadyOk && observedInspectionView && observedExplicitlyEmptyInspectionTree && !observedNonEmptyInspectionTree) {
+    if (viewReadyOk && observedInspectionView && observedSettledEmptyInspectionView && !observedNonEmptyInspectionTree) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
 
@@ -144,18 +150,28 @@ internal fun resultsWaitHasSettled(
 internal fun shouldStopCapturePolling(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
+    inspectionViewUpdating: Boolean,
+    observedSettledEmptyInspectionView: Boolean,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
     minResultsWaitMs: Long = 15000L,
+    minEmptyResultsWaitMs: Long = 15000L,
     maxFallbackWaitMs: Long = 15000L,
 ): Boolean {
     if (bestResultsCount > 0 && stableForMs >= minStableMs && pollingElapsedMs >= minResultsWaitMs) {
         return true
     }
 
-    if (viewReadyOk && observedInspectionView && stableForMs >= minStableMs) {
+    if (
+        viewReadyOk &&
+            observedInspectionView &&
+            !inspectionViewUpdating &&
+            observedSettledEmptyInspectionView &&
+            stableForMs >= minStableMs &&
+            pollingElapsedMs >= minEmptyResultsWaitMs
+    ) {
         return true
     }
 
@@ -792,8 +808,8 @@ class InspectionHandler : HttpRequestHandler() {
                     }
 
                     val candidateName = recentProjectsManager.getProjectName(recentPath)
-                        ?.trim()
-                        ?.takeIf { it.isNotEmpty() }
+                        .trim()
+                        .takeIf { it.isNotEmpty() }
                         ?: recentProjectsManager.getDisplayName(recentPath)
                             ?.trim()
                             ?.takeIf { it.isNotEmpty() }
@@ -921,8 +937,10 @@ class InspectionHandler : HttpRequestHandler() {
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
             val profile = if (!profileName.isNullOrBlank()) {
-                profileManager.getProfile(profileName) ?: profileManager.currentProfile
-            } else profileManager.currentProfile
+                profileManager.getProfile(profileName)
+            } else {
+                profileManager.currentProfile
+            }
             
             @Suppress("UnstableApiUsage", "USELESS_CAST")
             val globalContext = inspectionManager.createNewGlobalContext() as com.intellij.codeInspection.ex.GlobalInspectionContextImpl
@@ -968,8 +986,9 @@ class InspectionHandler : HttpRequestHandler() {
                     var lastSize = bestResults.size
                     var lastChangeMs = System.currentTimeMillis()
                     var observedInspectionView = false
-                    var observedExplicitlyEmptyInspectionTree = false
+                    var observedSettledEmptyInspectionView = false
                     var observedNonEmptyInspectionTree = false
+                    var inspectionViewUpdating = false
 
                     fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                         val app = ApplicationManager.getApplication()
@@ -981,6 +1000,50 @@ class InspectionHandler : HttpRequestHandler() {
                             holder.set(extractor.extractAllProblemsFromInspectionView(view, project))
                         }
                         return holder.get() ?: emptyList()
+                    }
+
+                    fun inspectViewStateSafe(view: InspectionResultsView): InspectionViewObservation {
+                        val app = ApplicationManager.getApplication()
+
+                        fun inspectViewState(): InspectionViewObservation {
+                            val rootChildCount = try {
+                                (view.tree.model.root as? TreeNode)?.childCount
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                                null
+                            }
+                            val hasProblems = try {
+                                view.hasProblems()
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                                false
+                            }
+                            val isUpdating = try {
+                                view.isUpdating
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                                false
+                            }
+                            return InspectionViewObservation(
+                                isUpdating = isUpdating,
+                                hasProblems = hasProblems,
+                                rootChildCount = rootChildCount,
+                            )
+                        }
+
+                        if (app.isDispatchThread) {
+                            return inspectViewState()
+                        }
+
+                        val holder = AtomicReference<InspectionViewObservation>()
+                        app.invokeAndWait {
+                            holder.set(inspectViewState())
+                        }
+                        return holder.get() ?: InspectionViewObservation(
+                            isUpdating = false,
+                            hasProblems = false,
+                            rootChildCount = null,
+                        )
                     }
 
                     val viewReadyOk = try {
@@ -1002,15 +1065,26 @@ class InspectionHandler : HttpRequestHandler() {
 
                         if (viewReadyOk && view != null) {
                             observedInspectionView = true
-                            val rootChildCount = try {
-                                (view.tree.model.root as? TreeNode)?.childCount
+                            val viewObservation = try {
+                                inspectViewStateSafe(view)
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
-                                null
+                                InspectionViewObservation(
+                                    isUpdating = false,
+                                    hasProblems = false,
+                                    rootChildCount = null,
+                                )
                             }
+                            inspectionViewUpdating = viewObservation.isUpdating
                             when {
-                                rootChildCount == 0 -> observedExplicitlyEmptyInspectionTree = true
-                                rootChildCount != null && rootChildCount > 0 -> observedNonEmptyInspectionTree = true
+                                viewObservation.hasProblems ||
+                                    (viewObservation.rootChildCount != null && viewObservation.rootChildCount > 0) -> {
+                                    observedNonEmptyInspectionTree = true
+                                }
+                                !viewObservation.isUpdating &&
+                                    viewObservation.rootChildCount == 0 -> {
+                                    observedSettledEmptyInspectionView = true
+                                }
                             }
                             val attempt = try {
                                 extractFromViewSafe(view)
@@ -1044,7 +1118,17 @@ class InspectionHandler : HttpRequestHandler() {
 
                         val stableForMs = loopNow - lastChangeMs
                         val pollingElapsedMs = loopNow - captureStartMs
-                        if (shouldStopCapturePolling(viewReadyOk, observedInspectionView, bestResults.size, stableForMs, pollingElapsedMs)) {
+                        if (
+                            shouldStopCapturePolling(
+                                viewReadyOk = viewReadyOk,
+                                observedInspectionView = observedInspectionView,
+                                inspectionViewUpdating = inspectionViewUpdating,
+                                observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
+                                bestResultsCount = bestResults.size,
+                                stableForMs = stableForMs,
+                                pollingElapsedMs = pollingElapsedMs,
+                            )
+                        ) {
                             break
                         }
 
@@ -1061,7 +1145,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
                         viewReadyOk = viewReadyOk,
                         observedInspectionView = observedInspectionView,
-                        observedExplicitlyEmptyInspectionTree = observedExplicitlyEmptyInspectionTree,
+                        observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                         observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
                     )
                     val snapshot = when {
@@ -1093,7 +1177,7 @@ class InspectionHandler : HttpRequestHandler() {
                             "Inspection capture incomplete for ${project.name}: " +
                                 "viewReadyOk=$viewReadyOk, " +
                                 "observedInspectionView=$observedInspectionView, " +
-                                "observedExplicitlyEmptyInspectionTree=$observedExplicitlyEmptyInspectionTree, " +
+                                "observedSettledEmptyInspectionView=$observedSettledEmptyInspectionView, " +
                                 "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree"
                         )
                     }
@@ -1102,7 +1186,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw e
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 resultsStore.setSnapshot(
                     project.name,
                     InspectionResultsSnapshot(
@@ -1118,7 +1202,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
             throw e
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             inspectionInProgress = false
         }
     }
@@ -1567,9 +1651,9 @@ class InspectionHandler : HttpRequestHandler() {
         wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
         project: Project,
     ): Map<String, Any>? {
-        val description = descriptor.descriptionTemplate?.takeIf { it.isNotBlank() } ?: return null
-        val inspectionType = wrapper.shortName ?: wrapper.id
-        val category = wrapper.groupDisplayName ?: wrapper.displayName
+        val description = descriptor.descriptionTemplate.takeIf { it.isNotBlank() } ?: return null
+        val inspectionType = wrapper.shortName
+        val category = wrapper.groupDisplayName
 
         var filePath = "unknown"
         var line = 0

@@ -315,12 +315,12 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Empty inspection capture is only marked clean when the tree is explicitly empty")
+    @DisplayName("Empty inspection capture is only marked clean when the inspection view has settled empty")
     fun testClassifyEmptyInspectionCapture() {
         val ambiguous = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
-            observedExplicitlyEmptyInspectionTree = false,
+            observedSettledEmptyInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -330,7 +330,7 @@ class InspectionSnapshotStateTest {
         val confirmedClean = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
-            observedExplicitlyEmptyInspectionTree = true,
+            observedSettledEmptyInspectionView = true,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -385,6 +385,8 @@ class InspectionSnapshotStateTest {
             shouldStopCapturePolling(
                 viewReadyOk = false,
                 observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 7000,
@@ -395,6 +397,8 @@ class InspectionSnapshotStateTest {
             shouldStopCapturePolling(
                 viewReadyOk = false,
                 observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
@@ -405,6 +409,8 @@ class InspectionSnapshotStateTest {
             shouldStopCapturePolling(
                 viewReadyOk = false,
                 observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 4000,
                 pollingElapsedMs = 16000,
@@ -415,6 +421,48 @@ class InspectionSnapshotStateTest {
             shouldStopCapturePolling(
                 viewReadyOk = false,
                 observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 16000,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Capture polling does not stop on an empty inspection view until the view finishes updating")
+    fun testShouldNotStopCapturePollingForUpdatingEmptyInspectionView() {
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 16000,
+            )
+        )
+
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 7000,
+            )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = true,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
