@@ -128,6 +128,19 @@ internal fun cleanWaitHasSettled(
     return cleanStableEnough && triggerSettled
 }
 
+internal fun resultsWaitHasSettled(
+    now: Long,
+    resultsStableSince: Long?,
+    timeSinceTriggerMs: Long?,
+    minStableMs: Long = 5000L,
+    minTimeSinceTriggerMs: Long = 15000L,
+): Boolean {
+    val resultsStableStart = resultsStableSince ?: now
+    val resultsStableEnough = now - resultsStableStart >= minStableMs
+    val triggerSettled = timeSinceTriggerMs == null || timeSinceTriggerMs >= minTimeSinceTriggerMs
+    return resultsStableEnough && triggerSettled
+}
+
 internal fun shouldStopCapturePolling(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
@@ -135,9 +148,10 @@ internal fun shouldStopCapturePolling(
     stableForMs: Long,
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
+    minResultsWaitMs: Long = 15000L,
     maxFallbackWaitMs: Long = 15000L,
 ): Boolean {
-    if (bestResultsCount > 0 && stableForMs >= minStableMs) {
+    if (bestResultsCount > 0 && stableForMs >= minStableMs && pollingElapsedMs >= minResultsWaitMs) {
         return true
     }
 
@@ -505,10 +519,6 @@ class InspectionHandler : HttpRequestHandler() {
 
         val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 300000
 
-        if (resultsAvailable && inspectionInProgress && timeSinceLastTrigger > 5000) {
-            inspectionInProgress = false
-        }
-
         status["is_scanning"] = isIndexing || isLikelyStillRunning
         status["has_inspection_results"] = resultsAvailable
         status["capture_incomplete"] = captureIncomplete
@@ -654,10 +664,6 @@ class InspectionHandler : HttpRequestHandler() {
                 !isScanning &&
                 !inProgress
             ) {
-                if (resultsSource == "inspection_view") {
-                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
-                }
-
                 if (totalProblems != null) {
                     if (totalProblems == lastStableCount) {
                         if (stableCountHits == 0) {
@@ -670,7 +676,7 @@ class InspectionHandler : HttpRequestHandler() {
                         lastStableCount = totalProblems
                     }
 
-                    if (stableSince != null && now - stableSince >= minStableMs) {
+                    if (resultsWaitHasSettled(now, stableSince, timeSinceTrigger, minStableMs)) {
                         return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
                     }
                 } else {

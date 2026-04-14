@@ -248,6 +248,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Wait does not declare clean until the zero-problem snapshot has stabilized")
     fun testWaitDoesNotReturnCleanBeforeFreshSnapshotStabilizes() {
         val extractor = mockk<EnhancedTreeExtractor>()
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
         val liveProblems = listOf(
             mapOf(
                 "description" to "Live warning",
@@ -281,6 +282,36 @@ class InspectionSnapshotStateTest {
         assertTrue(extractorCalls > 1)
         assertTrue(response.contains("\"completion_reason\": \"results\""))
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    @Test
+    @DisplayName("Wait does not report results immediately for fresh inspection-view snapshots")
+    fun testWaitDoesNotReturnResultsBeforeSnapshotSettles() {
+        setLastInspectionTriggerTime(System.currentTimeMillis())
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Early warning",
+                        "file" to "/tmp/TestProject/src/app.js",
+                        "line" to 12,
+                        "column" to 4,
+                        "severity" to "weak_warning",
+                        "inspectionType" to "JSUnresolvedReference",
+                    )
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+
+        val response = waitForInspection(timeoutMs = 3000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"timeout\""))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
     }
 
     @Test
@@ -329,18 +360,44 @@ class InspectionSnapshotStateTest {
                 timeSinceTriggerMs = 16000,
             )
         )
+
+        assertFalse(
+            resultsWaitHasSettled(
+                now = now,
+                resultsStableSince = now - 8000,
+                timeSinceTriggerMs = 10000,
+            )
+        )
+
+        assertTrue(
+            resultsWaitHasSettled(
+                now = now,
+                resultsStableSince = now - 8000,
+                timeSinceTriggerMs = 16000,
+            )
+        )
     }
 
     @Test
     @DisplayName("Capture polling settles on stable tool-window findings without inspection view")
     fun testShouldStopCapturePollingForStableToolResultsWithoutView() {
-        assertTrue(
+        assertFalse(
             shouldStopCapturePolling(
                 viewReadyOk = false,
                 observedInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 7000,
+            )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                bestResultsCount = 3,
+                stableForMs = 6000,
+                pollingElapsedMs = 16000,
             )
         )
 
