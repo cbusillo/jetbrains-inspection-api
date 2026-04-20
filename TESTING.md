@@ -13,7 +13,7 @@ This project has three test surfaces:
 If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts.
 
-In the Code sandbox, Gradle may need escalated permissions. If you see
+In the Every Code sandbox, Gradle may need escalated permissions. If you see
 "Operation not permitted" from NativeServices, re-run the command with
 escalation.
 

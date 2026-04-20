@@ -367,51 +367,23 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | java -jar /path/to/plugi
 IDE_PORT=63340 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
-## Development Workflow Example
+## Agent Workflow Guidance
 
-Add this to your project's `AGENTS.md` (or your repo's agent instructions file):
+Prefer repo-scoped skills or other on-demand agent guidance for inspection
+workflows instead of pasting long command lists into always-on instructions.
 
-```markdown
-## Code Quality Checks
+For agentic code-quality checks:
 
-### JetBrains Inspection API
+1. Make code changes.
+2. Trigger the narrowest useful inspection scope.
+3. Wait for completion or check status.
+4. Fetch filtered or paginated problems.
+5. Fix critical issues found.
+6. Run tests.
+7. Commit changes.
 
-**Usage**: Use MCP tools for inspection results:
-
-- `inspection_trigger()` - Trigger a full project inspection
-- `inspection_trigger(scope="current_file")` - Trigger for the active file only
-- `inspection_trigger(scope="directory", dir="src")` - Trigger for a specific directory
-- `inspection_trigger(scope="files", files=["src/a.py","src/b.py"])` - Trigger for specific files
-- `inspection_trigger(scope="changed_files", max_files=50)` - Trigger for changed files only
-- `inspection_get_status()` - Check if inspection is complete
-- `inspection_wait()` - Wait for inspection completion (long-poll)
-- `inspection_get_problems()` - Get all project problems (paginated)
-- `inspection_get_problems(scope="current_file")` - Get problems in open files only
-- `inspection_get_problems(severity="error")` - Get only error-level problems
-- `inspection_get_problems(problem_type="Unused")` - Get specific inspection types
-- `inspection_get_problems(file_pattern="*.test.js")` - Get problems in matching files
-- `inspection_get_problems(limit=50, offset=0)` - Paginate through results
-
-**Handling Large Results**: When you encounter token limit errors, use filtering:
-- Filter by severity: `severity="error"` (most critical issues only)
-- Filter by problem type: `problem_type="PyUnresolvedReferences"`
-- Filter by file pattern: `file_pattern="src/"`
-- Use pagination: `limit=50` then increment `offset`
-
-**Features**:
-- Trigger and monitor inspections
-- Supports Kotlin, Java, JavaScript, TypeScript, Python
-- Returns detailed problems with description, category, and severity
-- Use for project-wide code quality assessment before commits
-
-## Development Workflow
-
-1. Make code changes
-2. Check real-time results with `inspection_get_problems()`
-3. Fix any critical issues found
-4. Run tests
-5. Commit changes
-```
+When result sets are large, filter by severity, problem type, file pattern, or
+pagination before loading findings into an LLM context.
 
 ## Optional commit gate
 

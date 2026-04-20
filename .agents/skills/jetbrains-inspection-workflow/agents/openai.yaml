@@ -1,0 +1,10 @@
+---
+interface:
+  display_name: "JetBrains Inspection Workflow"
+  short_description: "Develop and validate inspection API work"
+  default_prompt: >-
+    Use $jetbrains-inspection-workflow for JetBrains Inspection API development
+    and validation.
+
+policy:
+  allow_implicit_invocation: true
