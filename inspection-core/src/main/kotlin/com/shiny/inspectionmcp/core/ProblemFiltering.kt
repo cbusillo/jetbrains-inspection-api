@@ -78,7 +78,7 @@ fun filterProblems(
                 regex.containsMatchIn(filePath)
             }
         }
-        if (literalMatches != null && literalMatches.isNotEmpty()) {
+        if (!literalMatches.isNullOrEmpty()) {
             return literalMatches
         }
 
