@@ -259,6 +259,38 @@ class EnhancedTreeExtractorTest {
         assertEquals(0, extractor.clampDocumentOffset(5, -1))
     }
 
+    @Test
+    @DisplayName("Should locate typo occurrences inside YAML block scalars")
+    fun testYamlBlockScalarTypoLocations() {
+        val lines = listOf(
+            "      - name: Request Launchplane preview refresh",
+            "        env:",
+            "          LAUNCHPLANE_URL: https://launchplane.shinycomputers.com",
+            "        run: |",
+            "          node scripts/ops/request-launchplane-preview-refresh.mjs \\",
+            "            --launchplane-url \"\$LAUNCHPLANE_URL\" \\",
+            "            --audience \"\$LAUNCHPLANE_AUDIENCE\" \\",
+            "        shell: bash",
+        )
+
+        val locations = extractor.yamlBlockScalarTypoLocations(lines, 4, "LAUNCHPLANE")
+
+        assertEquals(listOf(6 to 32, 7 to 25), locations)
+    }
+
+    @Test
+    @DisplayName("Should ignore non block-scalar YAML lines")
+    fun testYamlBlockScalarTypoLocationsRequiresScalarHeader() {
+        val lines = listOf(
+            "        env:",
+            "          LAUNCHPLANE_URL: https://launchplane.shinycomputers.com",
+        )
+
+        val locations = extractor.yamlBlockScalarTypoLocations(lines, 2, "LAUNCHPLANE")
+
+        assertTrue(locations.isEmpty())
+    }
+
     @Suppress("unused", "SameReturnValue")
     private class FallbackProblem(private val virtualFile: VirtualFile) {
         fun getDescription(): String = "Fallback warning"

@@ -19,6 +19,7 @@ import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.TreeNode
 import java.awt.Component
 import java.awt.Container
+import java.io.File
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JTree
@@ -376,6 +377,39 @@ class EnhancedTreeExtractor {
         return offset.coerceIn(0, textLength.coerceAtLeast(0))
     }
 
+    internal fun yamlBlockScalarTypoLocations(
+        lines: List<String>,
+        startLine: Int,
+        word: String,
+    ): List<Pair<Int, Int>> {
+        val headerIndex = startLine - 1
+        if (headerIndex !in lines.indices || word.isEmpty()) return emptyList()
+
+        val header = lines[headerIndex]
+        val headerIndent = header.indexOfFirst { !it.isWhitespace() }.takeIf { it >= 0 } ?: return emptyList()
+        if (!Regex(":\\s*[|>][-+]?\\s*(?:#.*)?$").containsMatchIn(header)) {
+            return emptyList()
+        }
+
+        val locations = mutableListOf<Pair<Int, Int>>()
+        for (index in (headerIndex + 1) until lines.size) {
+            val line = lines[index]
+            if (line.isNotBlank()) {
+                val indent = line.indexOfFirst { !it.isWhitespace() }
+                if (indent <= headerIndent) break
+            }
+
+            var searchFrom = 0
+            while (searchFrom <= line.length) {
+                val column = line.indexOf(word, searchFrom)
+                if (column < 0) break
+                locations.add((index + 1) to column)
+                searchFrom = column + word.length
+            }
+        }
+        return locations
+    }
+
     private fun normalizeSeverity(raw: Any?): String {
         val severity = raw?.toString()?.lowercase() ?: return "warning"
         return when {
@@ -408,6 +442,38 @@ class EnhancedTreeExtractor {
             }
         }
         return null
+    }
+
+    private fun relocateYamlBlockScalarTypo(
+        problems: List<Map<String, Any>>,
+        file: String,
+        line: Int,
+        description: String,
+    ): Pair<Int, Int>? {
+        if (line <= 0 || file == "unknown" || !(file.endsWith(".yml") || file.endsWith(".yaml"))) {
+            return null
+        }
+
+        val word = typoWord(description) ?: return null
+        val lines = try {
+            File(file).readLines()
+        } catch (_: Exception) {
+            return null
+        }
+        val locations = yamlBlockScalarTypoLocations(lines, line, word)
+        if (locations.isEmpty()) return null
+
+        val locationSet = locations.toSet()
+        val duplicateOrdinal = problems.count { problem ->
+            problem["file"] == file &&
+                problem["description"] == description &&
+                (problem["line"] == line || locationSet.contains(problem["line"] to problem["column"]))
+        }
+        return locations.getOrNull(duplicateOrdinal)
+    }
+
+    private fun typoWord(description: String): String? {
+        return Regex("(?i)\\bword '([^']+)'").find(description)?.groupValues?.getOrNull(1)
     }
     
     private fun extractProblemFromNode(node: ProblemDescriptionNode, problems: MutableList<Map<String, Any>>, project: Project) {
@@ -569,6 +635,13 @@ class EnhancedTreeExtractor {
                             }
                         }
                 } catch (e: Exception) {
+                }
+
+                if (inspectionType == "GrazieInspection") {
+                    relocateYamlBlockScalarTypo(problems, file, line, description)?.let { adjusted ->
+                        line = adjusted.first
+                        column = adjusted.second
+                    }
                 }
                 
                 val locationKnown = file != "unknown" && line > 0
