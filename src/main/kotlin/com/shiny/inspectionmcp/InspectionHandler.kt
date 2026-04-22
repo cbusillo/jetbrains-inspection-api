@@ -33,6 +33,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.tree.TreeNode
 
@@ -72,6 +73,36 @@ internal data class InspectionViewObservation(
     val hasProblems: Boolean,
     val rootChildCount: Int?,
 )
+
+internal data class InspectionRunState(
+    val runId: Long,
+    val triggerTimeMs: Long,
+    val inProgress: Boolean,
+)
+
+internal fun projectKey(project: Project): String {
+    val basePath = runCatching { project.basePath }.getOrNull()
+    normalizeProjectKeyPath(basePath)?.let { return "path:$it" }
+
+    val projectFilePath = runCatching { project.projectFilePath }.getOrNull()
+    normalizeProjectKeyPath(projectFilePath)?.let { return "file:$it" }
+
+    return "name:${project.name}"
+}
+
+private fun normalizeProjectKeyPath(value: String?): String? {
+    val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val expanded = if (raw.startsWith("~")) {
+        System.getProperty("user.home") + raw.removePrefix("~")
+    } else {
+        raw
+    }
+    return try {
+        Paths.get(expanded).normalize().toAbsolutePath().toString()
+    } catch (_: Exception) {
+        null
+    }
+}
 
 internal object InspectionResultsStore {
     private val snapshotsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionResultsSnapshot>()
@@ -191,9 +222,8 @@ class InspectionHandler : HttpRequestHandler() {
         val score: Int,
     )
     
-    private val lastInspectionTriggerTimesByProject = java.util.concurrent.ConcurrentHashMap<String, Long>()
-    @Volatile
-    private var inspectionInProgress: Boolean = false
+    private val runIdSequence = AtomicLong()
+    private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
 
     private val resultsStore = InspectionResultsStore
 
@@ -250,12 +280,12 @@ class InspectionHandler : HttpRequestHandler() {
                     val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
                     val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
                     withCurrentProject(context, projectName) { project ->
-                        recordInspectionTrigger(project, System.currentTimeMillis())
-                        inspectionInProgress = true
+                        val runState = beginInspectionRun(project)
                         try {
                             ApplicationManager.getApplication().executeOnPooledThread {
                                 triggerInspectionAsync(
                                     project = project,
+                                    runId = runState.runId,
                                     scopeParam = scope,
                                     directoryParam = directory,
                                     files = if (filesList.isEmpty()) null else filesList,
@@ -266,13 +296,14 @@ class InspectionHandler : HttpRequestHandler() {
                                 )
                             }
                         } catch (e: Exception) {
-                            inspectionInProgress = false
+                            finishInspectionRun(projectKey(project), runState.runId)
                             throw e
                         }
                         val details = mutableMapOf<String, Any>(
                             "status" to "triggered",
                             "message" to "Inspection triggered. Wait 10-15 seconds then check status"
                         )
+                        details["run_id"] = runState.runId
                         if (!scope.isNullOrBlank()) details["scope"] = scope
                         if (!directory.isNullOrBlank()) details["directory"] = directory
                         if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
@@ -321,14 +352,16 @@ class InspectionHandler : HttpRequestHandler() {
     ): String {
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
-            var snapshot = resultsStore.getSnapshot(project.name)
+            val key = projectKey(project)
+            var snapshot = resultsStore.getSnapshot(key)
             val hasSnapshot = snapshot != null
             val staleness = getSnapshotStaleness(project)
             if (hasSnapshot && staleness.stale) {
                 val response = mapOf(
                     "status" to "stale_results",
                     "project" to project.name,
-                    "timestamp" to (resultsStore.getTimestamp(project.name) ?: System.currentTimeMillis()),
+                    "project_key" to key,
+                    "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
                     "stale_reasons" to staleness.reasons,
@@ -346,6 +379,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val response = mutableMapOf(
                     "status" to "capture_incomplete",
                     "project" to project.name,
+                    "project_key" to key,
                     "timestamp" to snapshot.timestamp,
                     "message" to (
                         snapshot.note
@@ -408,7 +442,8 @@ class InspectionHandler : HttpRequestHandler() {
                 val response = mapOf(
                     "status" to "results_available",
                     "project" to project.name,
-                    "timestamp" to (resultsStore.getTimestamp(project.name) ?: System.currentTimeMillis()),
+                    "project_key" to key,
+                    "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "total_problems" to page.total,
                     "problems_shown" to page.shown,
                     "problems" to page.problems,
@@ -452,7 +487,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
             return
         }
-        if (refreshProjectState && !inspectionInProgress) {
+        if (refreshProjectState && !isInspectionInProgress(project)) {
             syncProjectState(project)
         }
         action(project)
@@ -479,9 +514,12 @@ class InspectionHandler : HttpRequestHandler() {
 
         val status = mutableMapOf<String, Any>()
         status["project_name"] = project.name
+        val key = projectKey(project)
+        status["project_key"] = key
 
         val currentTime = System.currentTimeMillis()
-        val lastInspectionTriggerTime = lastInspectionTriggerTimesByProject[project.name] ?: 0L
+        val runState = inspectionRunStatesByProject[key]
+        val lastInspectionTriggerTime = runState?.triggerTimeMs ?: 0L
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
         status["inspection_triggered"] = lastInspectionTriggerTime > 0L
 
@@ -489,7 +527,7 @@ class InspectionHandler : HttpRequestHandler() {
         val isIndexing = dumbService.isDumb
 
         // Use the same extractor as the /problems endpoint so status matches real availability
-        var snapshot = resultsStore.getSnapshot(project.name)
+        var snapshot = resultsStore.getSnapshot(key)
         val hasInspectionSnapshot = snapshot != null
         val staleness = getSnapshotStaleness(project)
         if (!staleness.stale) {
@@ -534,6 +572,7 @@ class InspectionHandler : HttpRequestHandler() {
             status["active_tool_window"] = activeInspectionWindow
         }
 
+        val inspectionInProgress = runState?.inProgress == true
         val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 300000
 
         status["is_scanning"] = isIndexing || isLikelyStillRunning
@@ -541,13 +580,17 @@ class InspectionHandler : HttpRequestHandler() {
         status["capture_incomplete"] = captureIncomplete
         status["inspection_in_progress"] = inspectionInProgress
         status["time_since_last_trigger_ms"] = timeSinceLastTrigger
+        if (runState != null) {
+            status["inspection_run_id"] = runState.runId
+        }
+        if (snapshot != null) {
+            status["results_age_ms"] = (currentTime - snapshot.timestamp).coerceAtLeast(0L)
+        }
         status["indexing"] = isIndexing
 
-        // Clear indicator for a clean inspection (recent, finished, and no problems)
-        val recentlyCompleted = timeSinceLastTrigger < 60000
+        // Clear indicator for a clean inspection (finished, confirmed, and not stale)
         val cleanInspection = (
-            recentlyCompleted &&
-                !isLikelyStillRunning &&
+            !isLikelyStillRunning &&
                 !inspectionInProgress &&
                 snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
                 !staleness.stale
@@ -585,7 +628,7 @@ class InspectionHandler : HttpRequestHandler() {
             source = "tool_window",
             note = null,
         )
-        resultsStore.setSnapshot(project.name, reconciledSnapshot)
+        resultsStore.setSnapshot(projectKey(project), reconciledSnapshot)
         return reconciledSnapshot
     }
 
@@ -640,8 +683,14 @@ class InspectionHandler : HttpRequestHandler() {
             val resultsTimestampMs = (status["results_timestamp_ms"] as? Number)?.toLong()
             val snapshotOutcome = status["snapshot_outcome"] as? String
             val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
+            val resultsMayBeStale = status["results_may_be_stale"] as? Boolean ?: false
             val minStableMs = 5000L
             val now = System.currentTimeMillis()
+
+            if (resultsMayBeStale && !isScanning && !inProgress) {
+                status["wait_note"] = "Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "stale_results")
+            }
 
             if (cleanInspection && !isScanning && !inProgress) {
                 if (cleanStableSince == null && resultsTimestampMs == null) {
@@ -929,6 +978,7 @@ class InspectionHandler : HttpRequestHandler() {
     
     private fun triggerInspectionAsync(
         project: Project,
+        runId: Long,
         scopeParam: String? = null,
         directoryParam: String? = null,
         files: List<String>? = null,
@@ -937,10 +987,13 @@ class InspectionHandler : HttpRequestHandler() {
         maxFiles: Int? = null,
         profileName: String? = null,
     ) {
+        val key = projectKey(project)
+        var captureScheduled = false
         try {
-            inspectionInProgress = true
-            recordInspectionTrigger(project, System.currentTimeMillis())
-            resultsStore.clear(project.name)
+            if (!isCurrentInspectionRun(key, runId)) {
+                return
+            }
+            resultsStore.clear(key)
 
             clearPriorInspectionResults(project)
             
@@ -989,18 +1042,17 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (_: Exception) {
                     null
                 }
-
-                    val projectName = project.name
-                    ApplicationManager.getApplication().executeOnPooledThread {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    try {
                         val extractor = enhancedTreeExtractorFactory()
                         val extractedFromContext = try {
-                        ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
-                            extractProblemsFromContext(globalContext, project)
+                            ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
+                                extractProblemsFromContext(globalContext, project)
+                            }
+                        } catch (e: Exception) {
+                            rethrowIfCanceled(e)
+                            emptyList()
                         }
-                    } catch (e: Exception) {
-                        rethrowIfCanceled(e)
-                        emptyList()
-                    }
 
                         val captureStartMs = System.currentTimeMillis()
                         val deadlineMs = captureStartMs + 60000
@@ -1204,29 +1256,43 @@ class InspectionHandler : HttpRequestHandler() {
                                 "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree"
                         )
                     }
-                    resultsStore.setSnapshot(projectName, snapshot)
-                    inspectionInProgress = false
+                            if (isCurrentInspectionRun(key, runId)) {
+                                resultsStore.setSnapshot(key, snapshot)
+                            }
+                        } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+                            throw e
+                        } catch (_: Exception) {
+                            if (isCurrentInspectionRun(key, runId)) {
+                                resultsStore.setSnapshot(
+                                    key,
+                                    InspectionResultsSnapshot(
+                                        problems = emptyList(),
+                                        timestamp = System.currentTimeMillis(),
+                                        projectState = captureProjectState(project),
+                                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                                        source = "inspection_view",
+                                        note = "Inspection failed before results could be captured.",
+                                    )
+                                )
+                            }
+                        } finally {
+                            finishInspectionRun(key, runId)
+                        }
                 }
+                captureScheduled = true
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw e
             } catch (_: Exception) {
-                resultsStore.setSnapshot(
-                    project.name,
-                    InspectionResultsSnapshot(
-                        problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
-                        projectState = captureProjectState(project),
-                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                        source = "inspection_view",
-                        note = "Inspection failed before results could be captured.",
-                    )
-                )
-                inspectionInProgress = false
+                publishCaptureFailureIfCurrent(key, runId, project)
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
             throw e
         } catch (_: Exception) {
-            inspectionInProgress = false
+            publishCaptureFailureIfCurrent(key, runId, project)
+        } finally {
+            if (!captureScheduled) {
+                finishInspectionRun(key, runId)
+            }
         }
     }
 
@@ -1236,8 +1302,49 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun recordInspectionTrigger(project: Project, timestampMs: Long) {
-        lastInspectionTriggerTimesByProject[project.name] = timestampMs
+    private fun beginInspectionRun(project: Project): InspectionRunState {
+        val runState = InspectionRunState(
+            runId = runIdSequence.incrementAndGet(),
+            triggerTimeMs = System.currentTimeMillis(),
+            inProgress = true,
+        )
+        inspectionRunStatesByProject[projectKey(project)] = runState
+        return runState
+    }
+
+    private fun isInspectionInProgress(project: Project): Boolean {
+        return inspectionRunStatesByProject[projectKey(project)]?.inProgress == true
+    }
+
+    private fun isCurrentInspectionRun(key: String, runId: Long): Boolean {
+        return inspectionRunStatesByProject[key]?.runId == runId
+    }
+
+    private fun finishInspectionRun(key: String, runId: Long) {
+        inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
+            if (state.runId == runId) {
+                state.copy(inProgress = false)
+            } else {
+                state
+            }
+        }
+    }
+
+    private fun publishCaptureFailureIfCurrent(key: String, runId: Long, project: Project) {
+        if (!isCurrentInspectionRun(key, runId)) {
+            return
+        }
+        resultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = captureProjectState(project),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "Inspection failed before results could be captured.",
+            )
+        )
     }
 
     private fun syncProjectState(project: Project) {
@@ -1286,7 +1393,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun getSnapshotStaleness(project: Project): SnapshotStaleness {
-        val snapshotState = resultsStore.getProjectState(project.name) ?: return SnapshotStaleness(false, emptyList())
+        val snapshotState = resultsStore.getProjectState(projectKey(project)) ?: return SnapshotStaleness(false, emptyList())
         val currentState = captureProjectState(project)
         val reasons = mutableListOf<String>()
         if (currentState.unsavedProjectDocuments > 0) {

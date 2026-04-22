@@ -72,13 +72,13 @@ class InspectionSnapshotStateTest {
         every { mockPsiModificationTracker.modificationCount } returns 7L
 
         setLastInspectionTriggerTime(System.currentTimeMillis())
-        InspectionResultsStore.clear("TestProject")
+        InspectionResultsStore.clear(snapshotKey())
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
     }
 
     @AfterEach
     fun tearDown() {
-        InspectionResultsStore.clear("TestProject")
+        InspectionResultsStore.clear(snapshotKey())
         unmockkAll()
     }
 
@@ -86,7 +86,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Empty capture snapshot is not reported as a clean inspection")
     fun testCaptureIncompleteSnapshotDoesNotLookClean() {
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -110,7 +110,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Confirmed clean snapshot is the only zero-problem state reported as clean")
     fun testCleanSnapshotRequiresConfirmedOutcome() {
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -126,6 +126,92 @@ class InspectionSnapshotStateTest {
         assertEquals(true, status["clean_inspection"])
         assertEquals(true, status["has_inspection_results"])
         assertEquals(false, status["capture_incomplete"])
+    }
+
+    @Test
+    @DisplayName("Confirmed clean snapshot remains clean after the recent trigger window")
+    fun testCleanSnapshotDoesNotExpireAfterRecentTriggerWindow() {
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 120000L)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis() - 120000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+    }
+
+    @Test
+    @DisplayName("Snapshots are isolated for same-name projects with different paths")
+    fun testSnapshotsUseStableProjectKeysForSameNameProjects() {
+        val otherProject = mockk<Project>()
+        every { otherProject.name } returns "TestProject"
+        every { otherProject.basePath } returns "/tmp/OtherTestProject"
+        every { otherProject.projectFilePath } returns "/tmp/OtherTestProject/.idea/TestProject.iml"
+
+        InspectionResultsStore.setSnapshot(
+            projectKey(otherProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Other project warning",
+                        "file" to "/tmp/OtherTestProject/src/app.js",
+                        "line" to 12,
+                        "column" to 4,
+                        "severity" to "weak_warning",
+                        "inspectionType" to "JSUnresolvedReference",
+                    )
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(0, status["total_problems"])
+        assertEquals(snapshotKey(), status["project_key"])
+    }
+
+    @Test
+    @DisplayName("Older run completion does not clear a newer run")
+    fun testOlderRunCannotFinishNewerRun() {
+        val firstRun = beginInspectionRun()
+        val secondRun = beginInspectionRun()
+
+        finishInspectionRun(snapshotKey(), firstRun.runId)
+        val statusAfterOldFinish = buildInspectionStatus()
+
+        assertEquals(true, statusAfterOldFinish["inspection_in_progress"])
+        assertEquals(secondRun.runId, statusAfterOldFinish["inspection_run_id"])
+
+        finishInspectionRun(snapshotKey(), secondRun.runId)
+        val statusAfterCurrentFinish = buildInspectionStatus()
+
+        assertEquals(false, statusAfterCurrentFinish["inspection_in_progress"])
+        assertEquals(secondRun.runId, statusAfterCurrentFinish["inspection_run_id"])
     }
 
     @Test
@@ -145,7 +231,7 @@ class InspectionSnapshotStateTest {
         enhancedTreeExtractorFactory = { extractor }
 
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -168,7 +254,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Problems endpoint reports capture incomplete instead of fake empty results")
     fun testProblemsEndpointReportsCaptureIncomplete() {
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -204,7 +290,7 @@ class InspectionSnapshotStateTest {
         enhancedTreeExtractorFactory = { extractor }
 
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -239,7 +325,7 @@ class InspectionSnapshotStateTest {
         enhancedTreeExtractorFactory = { extractor }
 
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -262,7 +348,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Wait returns capture_incomplete instead of clean for empty inconclusive snapshots")
     fun testWaitReturnsCaptureIncompleteForInconclusiveSnapshot() {
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -278,6 +364,38 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
         assertTrue(response.contains("\"wait_completed\": true"))
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    @Test
+    @DisplayName("Wait returns stale_results when cached results changed after inspection")
+    fun testWaitReturnsStaleResultsForStaleSnapshot() {
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Old warning",
+                        "file" to "/tmp/TestProject/src/app.js",
+                        "line" to 12,
+                        "column" to 4,
+                        "severity" to "weak_warning",
+                        "inspectionType" to "JSUnresolvedReference",
+                    )
+                ),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
     }
 
     @Test
@@ -303,7 +421,7 @@ class InspectionSnapshotStateTest {
         enhancedTreeExtractorFactory = { extractor }
 
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = emptyList(),
                 timestamp = System.currentTimeMillis(),
@@ -402,7 +520,7 @@ class InspectionSnapshotStateTest {
     fun testWaitDoesNotReturnResultsBeforeSnapshotSettles() {
         setLastInspectionTriggerTime(System.currentTimeMillis())
         InspectionResultsStore.setSnapshot(
-            "TestProject",
+            snapshotKey(),
             InspectionResultsSnapshot(
                 problems = listOf(
                     mapOf(
@@ -616,19 +734,45 @@ class InspectionSnapshotStateTest {
         return method.invoke(handler, "TestProject", timeoutMs, pollMs) as String
     }
 
+    private fun snapshotKey(project: Project = mockProject): String {
+        return projectKey(project)
+    }
+
+    private fun beginInspectionRun(): InspectionRunState {
+        val method = InspectionHandler::class.java.getDeclaredMethod("beginInspectionRun", Project::class.java)
+        method.isAccessible = true
+        return method.invoke(handler, mockProject) as InspectionRunState
+    }
+
+    private fun finishInspectionRun(projectKey: String, runId: Long) {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "finishInspectionRun",
+            String::class.java,
+            Long::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        method.invoke(handler, projectKey, runId)
+    }
+
     private fun setLastInspectionTriggerTime(value: Long) {
         setLastInspectionTriggerTime("TestProject", value)
     }
 
     private fun setLastInspectionTriggerTime(projectName: String, value: Long) {
-        val field = InspectionHandler::class.java.getDeclaredField("lastInspectionTriggerTimesByProject")
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
         field.isAccessible = true
         @Suppress("UNCHECKED_CAST")
-        val triggerTimes = field.get(handler) as MutableMap<String, Long>
+        val runStates = field.get(handler) as MutableMap<String, InspectionRunState>
+        val key = if (projectName == "TestProject") snapshotKey() else "name:$projectName"
         if (value > 0L) {
-            triggerTimes[projectName] = value
+            val current = runStates[key]
+            runStates[key] = InspectionRunState(
+                runId = current?.runId ?: 1L,
+                triggerTimeMs = value,
+                inProgress = current?.inProgress ?: false,
+            )
         } else {
-            triggerTimes.remove(projectName)
+            runStates.remove(key)
         }
     }
 }

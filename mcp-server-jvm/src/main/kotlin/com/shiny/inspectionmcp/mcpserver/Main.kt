@@ -400,6 +400,8 @@ internal class ToolExecutor(
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
             completed && reason == "capture_incomplete" ->
                 "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
+            completed && reason == "stale_results" ->
+                "\n\nSTATUS: Cached inspection results are stale - trigger inspection again before trusting findings."
             completed && reason == "no_results" ->
                 "\n\nSTATUS: Inspection finished with no captured results. This can be a clean run; re-run inspection or open the IDE Problems/Inspection Results view if findings were expected."
             reason == "no_recent_inspection" -> "\n\nSTATUS: No recent inspection - trigger inspection first."

@@ -520,6 +520,20 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionWaitHandlesStaleResults() {
+        val response = """{"wait_completed":true,"completion_reason":"stale_results","results_may_be_stale":true}"""
+        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("results are stale"))
+            assertTrue(text.contains("trigger inspection again"))
+        }
+    }
+
+    @Test
     fun inspectionWaitHandlesCaptureIncomplete() {
         val response = """{"wait_completed":true,"completion_reason":"capture_incomplete"}"""
         MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
