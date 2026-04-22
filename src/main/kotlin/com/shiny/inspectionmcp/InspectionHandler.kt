@@ -198,6 +198,14 @@ internal fun classifyEmptyInspectionCapture(
         "Inspection finished, but the plugin could not conclusively confirm that the IDE results were empty. Re-run the inspection or open the Inspection Results/Problems tool window."
 }
 
+internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
+    return !observation.isUpdating && !observation.hasProblems && observation.rootChildCount != null
+}
+
+internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
+    return observation.hasProblems
+}
+
 internal fun cleanWaitHasSettled(
     now: Long,
     resultsTimestampMs: Long?,
@@ -1292,12 +1300,10 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             inspectionViewUpdating = viewObservation.isUpdating
                             when {
-                                viewObservation.hasProblems ||
-                                    (viewObservation.rootChildCount != null && viewObservation.rootChildCount > 0) -> {
+                                hasInspectionViewProblems(viewObservation) -> {
                                     observedNonEmptyInspectionTree = true
                                 }
-                                !viewObservation.isUpdating &&
-                                    viewObservation.rootChildCount == 0 -> {
+                                isSettledCleanInspectionView(viewObservation) -> {
                                     observedSettledEmptyInspectionView = true
                                 }
                             }

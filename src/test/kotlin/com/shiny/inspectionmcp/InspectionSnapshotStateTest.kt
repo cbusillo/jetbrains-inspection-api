@@ -615,6 +615,43 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Settled views without problems are clean even when the tree has grouping nodes")
+    fun testSettledCleanInspectionViewAllowsGroupingNodes() {
+        val groupedCleanView = InspectionViewObservation(
+            isUpdating = false,
+            hasProblems = false,
+            rootChildCount = 3,
+        )
+
+        assertTrue(isSettledCleanInspectionView(groupedCleanView))
+        assertFalse(hasInspectionViewProblems(groupedCleanView))
+    }
+
+    @Test
+    @DisplayName("Updating or unreadable inspection views are not settled clean")
+    fun testSettledCleanInspectionViewRequiresFinishedReadableTree() {
+        assertFalse(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = true,
+                    hasProblems = false,
+                    rootChildCount = 0,
+                )
+            )
+        )
+
+        assertFalse(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = false,
+                    rootChildCount = null,
+                )
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Clean wait requires a post-trigger settle window")
     fun testCleanWaitHasSettledRequiresTriggerAge() {
         val now = System.currentTimeMillis()
