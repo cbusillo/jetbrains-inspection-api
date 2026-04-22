@@ -27,6 +27,15 @@ class FilePatternTest {
     }
 
     @Test
+    @DisplayName("compileFilePatternRegex: invalid regex glob still compiles as glob")
+    fun testInvalidRegexGlobPattern() {
+        val rx = compileFilePatternRegex("*[fixture].kt")
+        assertNotNull(rx)
+        assertTrue(rx!!.containsMatchIn("src/generated[fixture].kt"))
+        assertFalse(rx.containsMatchIn("src/generated.kt"))
+    }
+
+    @Test
     @DisplayName("compileFilePatternRegex: empty returns null")
     fun testBlankPattern() {
         assertNull(compileFilePatternRegex(""))

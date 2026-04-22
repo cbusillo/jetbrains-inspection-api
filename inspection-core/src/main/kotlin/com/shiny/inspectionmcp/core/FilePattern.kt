@@ -6,19 +6,24 @@ fun compileFilePatternRegex(patternRaw: String): Regex? {
         return null
     }
 
-    if (looksLikeGlobPattern(pattern)) {
-        return compileGlobPattern(pattern)
-    }
-
-    if (!looksLikeRegexPattern(pattern)) {
-        return Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE)
-    }
-
     return try {
         Regex(pattern, RegexOption.IGNORE_CASE)
     } catch (_: Exception) {
-        Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE)
+        val looksLikeGlob = pattern.contains('*') || pattern.contains('?')
+        if (looksLikeGlob) {
+            compileGlobPattern(pattern)
+        } else {
+            null
+        }
     }
+}
+
+fun compileLiteralFilePatternRegex(patternRaw: String): Regex? {
+    val pattern = patternRaw.trim()
+    if (pattern.isBlank() || !isPlainFilePattern(pattern)) {
+        return null
+    }
+    return Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE)
 }
 
 fun normalizedPathMatchesCurrentFile(problemFilePath: String, currentFilePath: String): Boolean {
@@ -31,42 +36,6 @@ fun normalizedPathMatchesCurrentFile(problemFilePath: String, currentFilePath: S
     return problemPath.equals(currentPath, ignoreCase = true) ||
         problemPath.endsWithPathSegment(currentPath) ||
         currentPath.endsWithPathSegment(problemPath)
-}
-
-private fun looksLikeRegexPattern(pattern: String): Boolean {
-    return pattern.any { it in setOf('^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\') } ||
-        pattern.contains(".*") ||
-        pattern.contains(".+") ||
-        pattern.contains(".?")
-}
-
-private fun looksLikeGlobPattern(pattern: String): Boolean {
-    if (!pattern.contains('*') && !pattern.contains('?')) {
-        return false
-    }
-    return !looksLikeRegexPattern(pattern)
-}
-
-private fun compileGlobPattern(pattern: String): Regex? {
-    val special = setOf('.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\')
-    val sb = StringBuilder(pattern.length * 2)
-    for (ch in pattern) {
-        when (ch) {
-            '*' -> sb.append(".*")
-            '?' -> sb.append('.')
-            else -> {
-                if (ch in special) sb.append('\\')
-                sb.append(ch)
-            }
-        }
-    }
-    val regexPattern = sb.toString()
-
-    return try {
-        Regex(regexPattern, RegexOption.IGNORE_CASE)
-    } catch (_: Exception) {
-        null
-    }
 }
 
 private fun normalizeFilePathForMatching(path: String): String {
@@ -86,4 +55,29 @@ private fun String.endsWithPathSegment(suffix: String): Boolean {
     }
     val boundary = length - suffix.length - 1
     return boundary < 0 || this[boundary] == '/'
+}
+
+private fun isPlainFilePattern(pattern: String): Boolean {
+    return pattern.none { it in setOf('*', '?', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\') }
+}
+
+private fun compileGlobPattern(pattern: String): Regex? {
+    val special = setOf('.', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\')
+    val sb = StringBuilder(pattern.length * 2)
+    for (ch in pattern) {
+        when (ch) {
+            '*' -> sb.append(".*")
+            '?' -> sb.append('.')
+            else -> {
+                if (ch in special) sb.append('\\')
+                sb.append(ch)
+            }
+        }
+    }
+
+    return try {
+        Regex(sb.toString(), RegexOption.IGNORE_CASE)
+    } catch (_: Exception) {
+        null
+    }
 }

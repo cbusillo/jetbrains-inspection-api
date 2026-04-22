@@ -186,6 +186,26 @@ class ProblemFilteringTest {
     }
 
     @Test
+    @DisplayName("filterProblems falls back to legacy regex matching when a plain pattern has no literal matches")
+    fun filterByPlainPatternFallsBackToRegex() {
+        val problems = listOf(
+            problem(file = "src/appXpy", severity = "warning"),
+            problem(file = "src/other.py", severity = "warning")
+        )
+
+        val regexFallback = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "app.py"
+        )
+
+        assertEquals(listOf("src/appXpy"), regexFallback.map { it["file"] })
+    }
+
+    @Test
     @DisplayName("paginateProblems returns metadata")
     fun paginate() {
         val problems = listOf(
