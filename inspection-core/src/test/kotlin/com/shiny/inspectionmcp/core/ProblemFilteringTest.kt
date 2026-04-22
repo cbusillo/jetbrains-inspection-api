@@ -190,7 +190,8 @@ class ProblemFilteringTest {
             problem(file = "src/app.py", severity = "warning"),
             problem(file = "src/appXpy", severity = "warning"),
             problem(file = "src/test/app.js", severity = "warning"),
-            problem(file = "src/test/app.jsx", severity = "warning")
+            problem(file = "src/test/app.jsx", severity = "warning"),
+            problem(file = "src/test/App.java", severity = "warning")
         )
 
         val literalFiltered = filterProblems(
@@ -213,6 +214,41 @@ class ProblemFilteringTest {
             filePattern = "src/.*\\.js$"
         )
         assertEquals(listOf("src/test/app.js"), regexFiltered.map { it["file"] })
+
+        val groupedRegexFiltered = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "src/.+\\.(js|java)$"
+        )
+        assertEquals(listOf("src/test/app.js", "src/test/App.java"), groupedRegexFiltered.map { it["file"] })
+    }
+
+    @Test
+    @DisplayName("filterProblems runs regex filters even when the pattern text matches literally")
+    fun filterByPatternSyntaxDoesNotShortCircuitOnLiteralMatches() {
+        val problems = listOf(
+            problem(file = "docs/.*app.*", severity = "warning"),
+            problem(file = "src/app.py", severity = "warning"),
+            problem(file = "src/deep/app.test.py", severity = "warning"),
+            problem(file = "src/other.py", severity = "warning")
+        )
+
+        val regexFiltered = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = ".*app.*"
+        )
+
+        assertEquals(
+            listOf("docs/.*app.*", "src/app.py", "src/deep/app.test.py"),
+            regexFiltered.map { it["file"] }
+        )
     }
 
     @Test

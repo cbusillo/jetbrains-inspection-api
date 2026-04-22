@@ -33,9 +33,16 @@ fun usesPatternFileSyntax(patternRaw: String): Boolean {
         pattern.contains('\\') ||
         pattern.startsWith('^') ||
         pattern.endsWith('$') ||
+        pattern.contains('(') ||
+        pattern.contains(')') ||
+        pattern.contains('{') ||
+        pattern.contains('}') ||
         pattern.contains(".*") ||
         pattern.contains(".+") ||
         pattern.contains(".?") ||
+        pattern.contains("\\d") ||
+        pattern.contains("\\w") ||
+        pattern.contains("\\s") ||
         pattern.contains('|') ||
         pattern.contains("(?")
 }

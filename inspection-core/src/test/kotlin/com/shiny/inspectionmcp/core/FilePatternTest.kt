@@ -50,5 +50,7 @@ class FilePatternTest {
         assertFalse(usesPatternFileSyntax("component+story.tsx"))
         assertTrue(usesPatternFileSyntax("*.py"))
         assertTrue(usesPatternFileSyntax("src/.*\\.js$"))
+        assertTrue(usesPatternFileSyntax("src/.+\\.(kt|java)$"))
+        assertTrue(usesPatternFileSyntax("src/File\\d+\\.kt"))
     }
 }

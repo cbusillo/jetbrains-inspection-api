@@ -74,6 +74,19 @@ fun filterProblems(
         if (pattern.isBlank()) {
             return problemTypeFiltered
         }
+        val usesPatternSyntax = usesPatternFileSyntax(pattern)
+        if (usesPatternSyntax) {
+            val regex = compileFilePatternRegex(pattern)
+            return if (regex != null) {
+                problemTypeFiltered.filter { problem ->
+                    val filePath = problem["file"] as? String ?: ""
+                    regex.containsMatchIn(filePath)
+                }
+            } else {
+                emptyList()
+            }
+        }
+
         val literalRegex = compileLiteralFilePatternRegex(pattern)
         val literalMatches = literalRegex?.let { regex ->
             problemTypeFiltered.filter { problem ->
@@ -81,22 +94,7 @@ fun filterProblems(
                 regex.containsMatchIn(filePath)
             }
         }
-        if (!literalMatches.isNullOrEmpty()) {
-            return literalMatches
-        }
-        if (!usesPatternFileSyntax(pattern)) {
-            return literalMatches ?: emptyList()
-        }
-
-        val regex = compileFilePatternRegex(pattern)
-        if (regex != null) {
-            problemTypeFiltered.filter { problem ->
-                val filePath = problem["file"] as? String ?: ""
-                regex.containsMatchIn(filePath)
-            }
-        } else {
-            emptyList()
-        }
+        literalMatches ?: emptyList()
     } else {
         problemTypeFiltered
     }
