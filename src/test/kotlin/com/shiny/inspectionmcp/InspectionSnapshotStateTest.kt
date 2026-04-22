@@ -350,6 +350,30 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Wait returns no_results, not capture_incomplete, for settled empty states without a snapshot")
+    fun testWaitDoesNotInferCaptureIncompleteFromGenericNoResults() {
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 120000L)
+
+        val response = waitForInspection()
+
+        assertTrue(response.contains("\"completion_reason\": \"no_results\""))
+        assertTrue(response.contains("clean runs"))
+        assertFalse(response.contains("\"completion_reason\": \"capture_incomplete\""))
+    }
+
+    @Test
+    @DisplayName("Wait reports no recent inspection before any trigger has run")
+    fun testWaitReportsNoRecentInspectionBeforeFirstTrigger() {
+        setLastInspectionTriggerTime(0L)
+
+        val response = waitForInspection()
+
+        assertTrue(response.contains("\"completion_reason\": \"no_recent_inspection\""))
+        assertTrue(response.contains("\"wait_completed\": false"))
+        assertFalse(response.contains("\"completion_reason\": \"no_results\""))
+    }
+
+    @Test
     @DisplayName("Wait does not report results immediately for fresh inspection-view snapshots")
     fun testWaitDoesNotReturnResultsBeforeSnapshotSettles() {
         setLastInspectionTriggerTime(System.currentTimeMillis())

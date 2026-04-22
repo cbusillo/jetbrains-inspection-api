@@ -483,6 +483,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         val currentTime = System.currentTimeMillis()
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
+        status["inspection_triggered"] = lastInspectionTriggerTime > 0L
 
         val dumbService = com.intellij.openapi.project.DumbService.getInstance(project)
         val isIndexing = dumbService.isDumb
@@ -629,6 +630,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         while (true) {
             val hasResults = status["has_inspection_results"] as? Boolean ?: false
+            val inspectionTriggered = status["inspection_triggered"] as? Boolean ?: false
             val cleanInspection = status["clean_inspection"] as? Boolean ?: false
             val captureIncomplete = status["capture_incomplete"] as? Boolean ?: false
             val isScanning = status["is_scanning"] as? Boolean ?: false
@@ -661,6 +663,16 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             if (
+                !hasResults &&
+                !isScanning &&
+                !inProgress &&
+                !inspectionTriggered
+            ) {
+                status["wait_note"] = "No recent inspection - trigger inspection first."
+                return formatWaitError(status, start, timeoutMs, pollMs, "no_recent_inspection")
+            }
+
+            if (
                 resultsSource == "tool_window" &&
                 !hasResults &&
                 !isScanning &&
@@ -668,9 +680,8 @@ class InspectionHandler : HttpRequestHandler() {
                 timeSinceTrigger != null &&
                 timeSinceTrigger >= 60000
             ) {
-                status["wait_note"] = "Inspection finished but no results were captured. Re-run the inspection or open the Inspection Results tool window."
-                val reason = if (timeSinceTrigger < 300000) "capture_incomplete" else "no_results"
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, reason)
+                status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
             }
 
             if (

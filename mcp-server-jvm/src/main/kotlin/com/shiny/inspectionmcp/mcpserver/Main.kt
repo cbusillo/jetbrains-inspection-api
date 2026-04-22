@@ -352,7 +352,7 @@ internal class ToolExecutor(
             status == "capture_incomplete" ->
                 "\n\nWARN: Inspection capture was incomplete. Findings may be missing; re-run inspection or open the IDE Problems/Inspection Results view before treating this as clean."
             status == "no_results" ->
-                "\n\nWARN: No inspection results were captured. Trigger or re-run inspection before treating this as clean."
+                "\n\nWARN: No inspection results were captured. This can happen for clean runs or when the IDE results view was unavailable; re-run inspection if findings were expected."
             total == 0 ->
                 "\n\nOK: No problems found matching filters."
             total != null ->
@@ -401,7 +401,8 @@ internal class ToolExecutor(
             completed && reason == "capture_incomplete" ->
                 "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
             completed && reason == "no_results" ->
-                "\n\nSTATUS: Inspection finished but no results were captured. Trigger or re-run inspection before treating this as clean."
+                "\n\nSTATUS: Inspection finished with no captured results. This can be a clean run; re-run inspection or open the IDE Problems/Inspection Results view if findings were expected."
+            reason == "no_recent_inspection" -> "\n\nSTATUS: No recent inspection - trigger inspection first."
             reason == "no_project" -> "\n\nSTATUS: No project found yet - ensure the IDE has an open project."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
             timedOut -> "\n\nSTATUS: Wait timed out - try inspection_get_status or increase timeout_ms."

@@ -193,7 +193,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No inspection results were captured"))
+            val text = result.firstText()
+            assertTrue(text.contains("No inspection results were captured"))
+            assertTrue(text.contains("clean runs"))
         }
     }
 
@@ -499,7 +501,21 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            assertTrue(result.firstText().contains("no results were captured"))
+            val text = result.firstText()
+            assertTrue(text.contains("no captured results"))
+            assertTrue(text.contains("clean run"))
+        }
+    }
+
+    @Test
+    fun inspectionWaitHandlesNoRecentInspection() {
+        val response = """{"wait_completed":false,"completion_reason":"no_recent_inspection"}"""
+        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            assertTrue(result.firstText().contains("No recent inspection"))
         }
     }
 
