@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ui.InspectionResultsView
+import com.intellij.codeInspection.ui.InspectionTree
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
@@ -165,6 +166,56 @@ class EnhancedTreeExtractorTest {
         assertEquals("Fallback warning", problems[0]["description"])
         assertEquals("FallbackInspection", problems[0]["inspectionType"])
         assertEquals("problems_view", problems[0]["source"])
+    }
+
+    @Test
+    @DisplayName("Should not fall back to Problems view when Inspection Results are settled empty")
+    fun testDoesNotFallbackWhenInspectionResultsAreSettledEmpty() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val problemsWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val problemsContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val problemsContent = mockk<Content>()
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Problems View")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        every { inspectionContent.component } returns inspectionView
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionView.isUpdating } returns false
+        every { inspectionView.hasProblems() } returns false
+        every { inspectionTree.model.root } returns DefaultMutableTreeNode("empty")
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { problemsContent.component } returns panel
+
+        val problems = extractor.extractAllProblems(project)
+
+        assertEquals(emptyList<Map<String, Any>>(), problems)
     }
 
     @Test
