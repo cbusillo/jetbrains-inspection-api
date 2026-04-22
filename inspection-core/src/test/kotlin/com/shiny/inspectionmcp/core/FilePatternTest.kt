@@ -41,4 +41,14 @@ class FilePatternTest {
         assertNull(compileFilePatternRegex(""))
         assertNull(compileFilePatternRegex("   "))
     }
+
+    @Test
+    @DisplayName("usesPatternFileSyntax: plain filenames stay literal")
+    fun testUsesPatternFileSyntax() {
+        assertFalse(usesPatternFileSyntax("app.py"))
+        assertFalse(usesPatternFileSyntax("generated[fixture].kt"))
+        assertFalse(usesPatternFileSyntax("component+story.tsx"))
+        assertTrue(usesPatternFileSyntax("*.py"))
+        assertTrue(usesPatternFileSyntax("src/.*\\.js$"))
+    }
 }

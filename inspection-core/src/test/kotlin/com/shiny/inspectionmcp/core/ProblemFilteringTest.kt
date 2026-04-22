@@ -112,6 +112,36 @@ class ProblemFilteringTest {
     }
 
     @Test
+    @DisplayName("filterProblems preserves significant spaces in current_file paths")
+    fun filterByCurrentFilePreservesSignificantPathSpaces() {
+        val problems = listOf(
+            problem(file = "/project/src/Name.kt", severity = "warning"),
+            problem(file = "/project/src/Name.kt ", severity = "warning"),
+            problem(file = "/project/src/ Leading.kt", severity = "warning")
+        )
+
+        val trailingSpaceFile = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "current_file",
+            currentFilePath = "/project/src/Name.kt ",
+            problemType = null,
+            filePattern = null
+        )
+        assertEquals(listOf("/project/src/Name.kt "), trailingSpaceFile.map { it["file"] })
+
+        val leadingSpaceFile = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "current_file",
+            currentFilePath = "/project/src/ Leading.kt",
+            problemType = null,
+            filePattern = null
+        )
+        assertEquals(listOf("/project/src/ Leading.kt"), leadingSpaceFile.map { it["file"] })
+    }
+
+    @Test
     @DisplayName("filterProblems supports type and file pattern filtering")
     fun filterByTypeAndPattern() {
         val problems = listOf(
@@ -207,14 +237,15 @@ class ProblemFilteringTest {
     }
 
     @Test
-    @DisplayName("filterProblems falls back to legacy regex matching when a plain pattern has no literal matches")
-    fun filterByPlainPatternFallsBackToRegex() {
+    @DisplayName("filterProblems keeps plain file patterns literal when there are no matches")
+    fun filterByPlainPatternDoesNotFallBackToRegex() {
         val problems = listOf(
             problem(file = "src/appXpy", severity = "warning"),
-            problem(file = "src/other.py", severity = "warning")
+            problem(file = "src/componentstory.tsx", severity = "warning"),
+            problem(file = "src/generatedf.kt", severity = "warning")
         )
 
-        val regexFallback = filterProblems(
+        val dotPattern = filterProblems(
             problems = problems,
             severity = "all",
             scope = "whole_project",
@@ -222,8 +253,27 @@ class ProblemFilteringTest {
             problemType = null,
             filePattern = "app.py"
         )
+        assertEquals(emptyList<String>(), dotPattern.map { it["file"] })
 
-        assertEquals(listOf("src/appXpy"), regexFallback.map { it["file"] })
+        val plusPattern = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "component+story.tsx"
+        )
+        assertEquals(emptyList<String>(), plusPattern.map { it["file"] })
+
+        val bracketPattern = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "generated[fixture].kt"
+        )
+        assertEquals(emptyList<String>(), bracketPattern.map { it["file"] })
     }
 
     @Test

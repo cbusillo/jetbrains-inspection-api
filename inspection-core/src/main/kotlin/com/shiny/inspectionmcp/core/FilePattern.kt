@@ -26,6 +26,20 @@ fun compileLiteralFilePatternRegex(patternRaw: String): Regex? {
     return Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE)
 }
 
+fun usesPatternFileSyntax(patternRaw: String): Boolean {
+    val pattern = patternRaw.trim()
+    return pattern.contains('*') ||
+        pattern.contains('?') ||
+        pattern.contains('\\') ||
+        pattern.startsWith('^') ||
+        pattern.endsWith('$') ||
+        pattern.contains(".*") ||
+        pattern.contains(".+") ||
+        pattern.contains(".?") ||
+        pattern.contains('|') ||
+        pattern.contains("(?")
+}
+
 fun normalizedPathMatchesCurrentFile(problemFilePath: String, currentFilePath: String): Boolean {
     val problemPath = normalizeFilePathForMatching(problemFilePath)
     val currentPath = normalizeFilePathForMatching(currentFilePath)
@@ -39,7 +53,10 @@ fun normalizedPathMatchesCurrentFile(problemFilePath: String, currentFilePath: S
 }
 
 private fun normalizeFilePathForMatching(path: String): String {
-    return path.trim()
+    if (path.isBlank()) {
+        return ""
+    }
+    return path
         .removePrefix("file://")
         .replace('\\', '/')
         .replace(Regex("/+"), "/")
