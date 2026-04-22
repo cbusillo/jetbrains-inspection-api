@@ -191,8 +191,7 @@ class InspectionHandler : HttpRequestHandler() {
         val score: Int,
     )
     
-    @Volatile
-    private var lastInspectionTriggerTime: Long = 0
+    private val lastInspectionTriggerTimesByProject = java.util.concurrent.ConcurrentHashMap<String, Long>()
     @Volatile
     private var inspectionInProgress: Boolean = false
 
@@ -251,7 +250,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
                     val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
                     withCurrentProject(context, projectName) { project ->
-                        lastInspectionTriggerTime = System.currentTimeMillis()
+                        recordInspectionTrigger(project, System.currentTimeMillis())
                         inspectionInProgress = true
                         try {
                             ApplicationManager.getApplication().executeOnPooledThread {
@@ -482,6 +481,7 @@ class InspectionHandler : HttpRequestHandler() {
         status["project_name"] = project.name
 
         val currentTime = System.currentTimeMillis()
+        val lastInspectionTriggerTime = lastInspectionTriggerTimesByProject[project.name] ?: 0L
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
         status["inspection_triggered"] = lastInspectionTriggerTime > 0L
 
@@ -711,6 +711,18 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             if (System.currentTimeMillis() - start >= timeoutMs) {
+                if (
+                    resultsSource == "tool_window" &&
+                    !hasResults &&
+                    !isScanning &&
+                    !inProgress &&
+                    inspectionTriggered &&
+                    timeSinceTrigger != null &&
+                    timeSinceTrigger >= 15000
+                ) {
+                    status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                }
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout")
             }
 
@@ -927,6 +939,7 @@ class InspectionHandler : HttpRequestHandler() {
     ) {
         try {
             inspectionInProgress = true
+            recordInspectionTrigger(project, System.currentTimeMillis())
             resultsStore.clear(project.name)
 
             clearPriorInspectionResults(project)
@@ -1221,6 +1234,10 @@ class InspectionHandler : HttpRequestHandler() {
         if (e is com.intellij.openapi.progress.ProcessCanceledException) {
             throw e
         }
+    }
+
+    private fun recordInspectionTrigger(project: Project, timestampMs: Long) {
+        lastInspectionTriggerTimesByProject[project.name] = timestampMs
     }
 
     private fun syncProjectState(project: Project) {

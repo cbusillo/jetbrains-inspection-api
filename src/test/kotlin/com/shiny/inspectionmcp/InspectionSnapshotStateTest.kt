@@ -362,6 +362,18 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Wait returns no_results at timeout for short settled empty waits")
+    fun testWaitReturnsNoResultsAtShortTimeoutForSettledEmptyRun() {
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"no_results\""))
+        assertTrue(response.contains("\"wait_completed\": true"))
+        assertFalse(response.contains("\"completion_reason\": \"timeout\""))
+    }
+
+    @Test
     @DisplayName("Wait reports no recent inspection before any trigger has run")
     fun testWaitReportsNoRecentInspectionBeforeFirstTrigger() {
         setLastInspectionTriggerTime(0L)
@@ -370,6 +382,18 @@ class InspectionSnapshotStateTest {
 
         assertTrue(response.contains("\"completion_reason\": \"no_recent_inspection\""))
         assertTrue(response.contains("\"wait_completed\": false"))
+        assertFalse(response.contains("\"completion_reason\": \"no_results\""))
+    }
+
+    @Test
+    @DisplayName("Wait does not treat another project's trigger as this project's trigger")
+    fun testWaitNoRecentInspectionIgnoresOtherProjectTrigger() {
+        setLastInspectionTriggerTime("OtherProject", System.currentTimeMillis() - 16000L)
+        setLastInspectionTriggerTime("TestProject", 0L)
+
+        val response = waitForInspection()
+
+        assertTrue(response.contains("\"completion_reason\": \"no_recent_inspection\""))
         assertFalse(response.contains("\"completion_reason\": \"no_results\""))
     }
 
@@ -593,8 +617,18 @@ class InspectionSnapshotStateTest {
     }
 
     private fun setLastInspectionTriggerTime(value: Long) {
-        val field = InspectionHandler::class.java.getDeclaredField("lastInspectionTriggerTime")
+        setLastInspectionTriggerTime("TestProject", value)
+    }
+
+    private fun setLastInspectionTriggerTime(projectName: String, value: Long) {
+        val field = InspectionHandler::class.java.getDeclaredField("lastInspectionTriggerTimesByProject")
         field.isAccessible = true
-        field.setLong(handler, value)
+        @Suppress("UNCHECKED_CAST")
+        val triggerTimes = field.get(handler) as MutableMap<String, Long>
+        if (value > 0L) {
+            triggerTimes[projectName] = value
+        } else {
+            triggerTimes.remove(projectName)
+        }
     }
 }
