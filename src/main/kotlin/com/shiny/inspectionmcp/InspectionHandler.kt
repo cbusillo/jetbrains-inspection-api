@@ -560,11 +560,9 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         snapshot: InspectionResultsSnapshot?,
     ): InspectionResultsSnapshot? {
-        if (
-            snapshot == null ||
-                snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED ||
-                snapshot.problems.isNotEmpty()
-        ) {
+        val canReconcile = snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED ||
+            snapshot?.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+        if (snapshot == null || !canReconcile || snapshot.problems.isNotEmpty()) {
             return snapshot
         }
 
@@ -668,10 +666,11 @@ class InspectionHandler : HttpRequestHandler() {
                 !isScanning &&
                 !inProgress &&
                 timeSinceTrigger != null &&
-                timeSinceTrigger < 60000
+                timeSinceTrigger >= 60000
             ) {
-                status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window."
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                status["wait_note"] = "Inspection finished but no results were captured. Re-run the inspection or open the Inspection Results tool window."
+                val reason = if (timeSinceTrigger < 300000) "capture_incomplete" else "no_results"
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, reason)
             }
 
             if (

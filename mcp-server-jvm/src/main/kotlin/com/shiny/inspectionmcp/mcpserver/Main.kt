@@ -349,8 +349,10 @@ internal class ToolExecutor(
         val guidance = when {
             status == "stale_results" ->
                 "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
+            status == "capture_incomplete" ->
+                "\n\nWARN: Inspection capture was incomplete. Findings may be missing; re-run inspection or open the IDE Problems/Inspection Results view before treating this as clean."
             status == "no_results" ->
-                "\n\nWARN: No results were captured. The codebase may be clean, or the Inspection Results view was unavailable. Re-run the inspection or check status for more detail."
+                "\n\nWARN: No inspection results were captured. Trigger or re-run inspection before treating this as clean."
             total == 0 ->
                 "\n\nOK: No problems found matching filters."
             total != null ->
@@ -371,16 +373,18 @@ internal class ToolExecutor(
         val clean = obj["clean_inspection"]?.jsonPrimitive?.booleanOrNull == true
         val hasResults = obj["has_inspection_results"]?.jsonPrimitive?.booleanOrNull == true
         val stale = obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull == true
+        val captureIncomplete = obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull == true
 
         val timeSince = obj["time_since_last_trigger_ms"]?.jsonPrimitive?.longOrNull
 
         return when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
             stale -> "\n\nSTATUS: Project changed after the last inspection - trigger inspection again before trusting cached results."
+            captureIncomplete -> "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
             clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
             timeSince != null && timeSince < 60000 ->
-                "\n\nSTATUS: Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run inspection or open the Inspection Results tool window."
+                "\n\nSTATUS: Inspection finished but no results were captured yet. Re-run inspection or open the IDE Problems/Inspection Results view before treating this as clean."
             else -> "\n\nSTATUS: No recent inspection - trigger inspection first."
         }
     }
@@ -394,8 +398,10 @@ internal class ToolExecutor(
         return when {
             completed && reason == "clean" -> "\n\nSTATUS: Inspection complete - codebase is clean."
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
+            completed && reason == "capture_incomplete" ->
+                "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
             completed && reason == "no_results" ->
-                "\n\nSTATUS: Inspection finished but no results were captured. Re-run inspection or open the Inspection Results tool window."
+                "\n\nSTATUS: Inspection finished but no results were captured. Trigger or re-run inspection before treating this as clean."
             reason == "no_project" -> "\n\nSTATUS: No project found yet - ensure the IDE has an open project."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
             timedOut -> "\n\nSTATUS: Wait timed out - try inspection_get_status or increase timeout_ms."

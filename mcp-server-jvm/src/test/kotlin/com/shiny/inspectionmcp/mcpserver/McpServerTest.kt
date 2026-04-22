@@ -193,7 +193,21 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No results were captured"))
+            assertTrue(result.firstText().contains("No inspection results were captured"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsWarnsWhenCaptureIncomplete() {
+        val response = """{"status":"capture_incomplete","total_problems":0,"problems_shown":0,"problems":[]}"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("capture was incomplete"))
+            assertFalse(text.contains("OK: No problems found matching filters"))
         }
     }
 
@@ -339,6 +353,20 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusHandlesCaptureIncomplete() {
+        val response = """{"capture_incomplete":true,"has_inspection_results":false,"clean_inspection":false}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("capture was incomplete"))
+            assertFalse(text.contains("codebase is clean"))
+        }
+    }
+
+    @Test
     fun inspectionGetStatusHandlesNoRecentInspection() {
         val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":120000}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
@@ -472,6 +500,20 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             assertTrue(result.firstText().contains("no results were captured"))
+        }
+    }
+
+    @Test
+    fun inspectionWaitHandlesCaptureIncomplete() {
+        val response = """{"wait_completed":true,"completion_reason":"capture_incomplete"}"""
+        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("capture was incomplete"))
+            assertFalse(text.contains("codebase is clean"))
         }
     }
 

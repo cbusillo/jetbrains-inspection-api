@@ -223,6 +223,42 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Problems endpoint returns live findings when incomplete snapshot is contradicted")
+    fun testProblemsEndpointReconcilesCaptureIncompleteSnapshot() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns listOf(
+            mapOf(
+                "description" to "Late warning",
+                "file" to "/tmp/TestProject/src/app.js",
+                "line" to 12,
+                "column" to 4,
+                "severity" to "weak_warning",
+                "inspectionType" to "JSUnresolvedReference",
+            )
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        InspectionResultsStore.setSnapshot(
+            "TestProject",
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "capture note",
+            ),
+        )
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"status\": \"results_available\""))
+        assertTrue(response.contains("\"total_problems\": 1"))
+        assertTrue(response.contains("Late warning"))
+        assertFalse(response.contains("\"status\": \"capture_incomplete\""))
+    }
+
+    @Test
     @DisplayName("Wait returns capture_incomplete instead of clean for empty inconclusive snapshots")
     fun testWaitReturnsCaptureIncompleteForInconclusiveSnapshot() {
         InspectionResultsStore.setSnapshot(
@@ -282,6 +318,35 @@ class InspectionSnapshotStateTest {
         assertTrue(extractorCalls > 1)
         assertTrue(response.contains("\"completion_reason\": \"results\""))
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    @Test
+    @DisplayName("Wait keeps polling through a transient empty live view after a recent trigger")
+    fun testWaitKeepsPollingWhenRecentRunHasNoSnapshotYet() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        val liveProblems = listOf(
+            mapOf(
+                "description" to "Late warning",
+                "file" to "/tmp/TestProject/src/app.js",
+                "line" to 12,
+                "column" to 4,
+                "severity" to "weak_warning",
+                "inspectionType" to "JSUnresolvedReference",
+            )
+        )
+        var extractorCalls = 0
+        every { extractor.extractAllProblems(mockProject) } answers {
+            extractorCalls += 1
+            if (extractorCalls == 1) emptyList() else liveProblems
+        }
+        enhancedTreeExtractorFactory = { extractor }
+
+        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
+
+        assertTrue(extractorCalls > 1)
+        assertTrue(response.contains("\"completion_reason\": \"results\""))
+        assertFalse(response.contains("\"completion_reason\": \"no_results\""))
     }
 
     @Test
