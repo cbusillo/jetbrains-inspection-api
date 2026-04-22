@@ -173,7 +173,7 @@ Typical response (truncated):
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
-- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run inspection or open the Problems/Inspection Results view before treating the project as clean.
+- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean.
 - `status: "stale_results"` means project files changed after the last inspection. Trigger a new inspection before trusting cached findings.
 
 ## API Reference
@@ -347,7 +347,7 @@ Common completion reasons:
 - `results`: inspection completed and problems are ready to fetch.
 - `clean`: inspection completed and a clean empty result was confirmed.
 - `no_results`: inspection finished, but no results were captured. This can be a clean run or an unavailable/filtered IDE view.
-- `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. Re-run inspection or open the Problems/Inspection Results view.
+- `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view.
 - `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings.
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
