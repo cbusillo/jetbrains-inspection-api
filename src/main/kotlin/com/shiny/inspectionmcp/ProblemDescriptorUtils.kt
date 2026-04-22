@@ -24,7 +24,11 @@ fun resolveProblemLocation(descriptor: ProblemDescriptor, project: Project): Pro
     val documentManager = PsiDocumentManager.getInstance(project)
     val document = documentManager.getDocument(containingFile)
     val textRange = element.textRange
-    val startOffset = problemDescriptorStartOffset(textRange.startOffset, descriptor.textRangeInElement)
+    val startOffset = problemDescriptorStartOffset(
+        elementStartOffset = textRange.startOffset,
+        textRangeInElement = descriptor.textRangeInElement,
+        descriptorTextRange = descriptorTextRange(descriptor),
+    )
 
     var filePath = virtualFile.path
     var line = 0
@@ -51,8 +55,20 @@ fun resolveProblemLocation(descriptor: ProblemDescriptor, project: Project): Pro
     return ProblemLocation(filePath, line, column)
 }
 
-internal fun problemDescriptorStartOffset(elementStartOffset: Int, textRangeInElement: TextRange?): Int {
-    return elementStartOffset + (textRangeInElement?.startOffset ?: 0)
+internal fun problemDescriptorStartOffset(
+    elementStartOffset: Int,
+    textRangeInElement: TextRange?,
+    descriptorTextRange: TextRange?,
+): Int {
+    return descriptorTextRange?.startOffset ?: elementStartOffset + (textRangeInElement?.startOffset ?: 0)
+}
+
+private fun descriptorTextRange(descriptor: ProblemDescriptor): TextRange? {
+    return try {
+        descriptor.javaClass.getMethod("getTextRange").invoke(descriptor) as? TextRange
+    } catch (_: Exception) {
+        null
+    }
 }
 
 fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
