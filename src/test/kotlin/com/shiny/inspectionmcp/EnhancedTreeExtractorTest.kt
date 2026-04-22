@@ -263,19 +263,19 @@ class EnhancedTreeExtractorTest {
     @DisplayName("Should locate typo occurrences inside YAML block scalars")
     fun testYamlBlockScalarTypoLocations() {
         val lines = listOf(
-            "      - name: Request Launchplane preview refresh",
+            "      - name: Request preview refresh",
             "        env:",
-            "          LAUNCHPLANE_URL: https://launchplane.shinycomputers.com",
+            "          SERVICE_URL: https://example.com",
             "        run: |",
-            "          node scripts/ops/request-launchplane-preview-refresh.mjs \\",
-            "            --launchplane-url \"\$LAUNCHPLANE_URL\" \\",
-            "            --audience \"\$LAUNCHPLANE_AUDIENCE\" \\",
+            "          node scripts/ops/request-preview-refresh.mjs \\",
+            "            --service-url SERVICE_URL \\",
+            "            --audience SERVICE_AUDIENCE \\",
             "        shell: bash",
         )
 
-        val locations = extractor.yamlBlockScalarTypoLocations(lines, 4, "LAUNCHPLANE")
+        val locations = extractor.yamlBlockScalarTypoLocations(lines, 4, "SERVICE")
 
-        assertEquals(listOf(6 to 32, 7 to 25), locations)
+        assertEquals(listOf(6 to 26, 7 to 23), locations)
     }
 
     @Test
@@ -283,10 +283,10 @@ class EnhancedTreeExtractorTest {
     fun testYamlBlockScalarTypoLocationsRequiresScalarHeader() {
         val lines = listOf(
             "        env:",
-            "          LAUNCHPLANE_URL: https://launchplane.shinycomputers.com",
+            "          SERVICE_URL: https://example.com",
         )
 
-        val locations = extractor.yamlBlockScalarTypoLocations(lines, 2, "LAUNCHPLANE")
+        val locations = extractor.yamlBlockScalarTypoLocations(lines, 2, "SERVICE")
 
         assertTrue(locations.isEmpty())
     }

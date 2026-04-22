@@ -591,12 +591,11 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Empty inspection capture is only marked clean when the inspection view has settled empty")
+    @DisplayName("Empty inspection capture is clean when a ready view has no problem tree")
     fun testClassifyEmptyInspectionCapture() {
         val ambiguous = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
+            viewReadyOk = false,
+            observedInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -606,12 +605,19 @@ class InspectionSnapshotStateTest {
         val confirmedClean = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
             observedNonEmptyInspectionTree = false,
         )
 
         assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, confirmedClean.first)
         assertEquals(null, confirmedClean.second)
+
+        val nonEmptyTree = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedNonEmptyInspectionTree = true,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, nonEmptyTree.first)
     }
 
     @Test
@@ -628,8 +634,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Updating or unreadable inspection views are not settled clean")
-    fun testSettledCleanInspectionViewRequiresFinishedReadableTree() {
+    @DisplayName("Settled clean inspection views require finished problem state")
+    fun testSettledCleanInspectionViewRequiresFinishedProblemState() {
         assertFalse(
             isSettledCleanInspectionView(
                 InspectionViewObservation(
@@ -641,6 +647,16 @@ class InspectionSnapshotStateTest {
         )
 
         assertFalse(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = true,
+                    rootChildCount = null,
+                )
+            )
+        )
+
+        assertTrue(
             isSettledCleanInspectionView(
                 InspectionViewObservation(
                     isUpdating = false,

@@ -187,10 +187,9 @@ internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
 internal fun classifyEmptyInspectionCapture(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
-    observedSettledEmptyInspectionView: Boolean,
     observedNonEmptyInspectionTree: Boolean,
 ): Pair<InspectionSnapshotOutcome, String?> {
-    if (viewReadyOk && observedInspectionView && observedSettledEmptyInspectionView && !observedNonEmptyInspectionTree) {
+    if (viewReadyOk && observedInspectionView && !observedNonEmptyInspectionTree) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
 
@@ -199,7 +198,7 @@ internal fun classifyEmptyInspectionCapture(
 }
 
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
-    return !observation.isUpdating && !observation.hasProblems && observation.rootChildCount != null
+    return !observation.isUpdating && !observation.hasProblems
 }
 
 internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
@@ -1366,7 +1365,6 @@ class InspectionHandler : HttpRequestHandler() {
                     val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
                         viewReadyOk = viewReadyOk,
                         observedInspectionView = observedInspectionView,
-                        observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                         observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
                     )
                     val snapshot = when {

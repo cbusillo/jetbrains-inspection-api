@@ -60,7 +60,7 @@ internal fun problemDescriptorStartOffset(
     textRangeInElement: TextRange?,
     descriptorTextRange: TextRange?,
 ): Int {
-    return descriptorTextRange?.startOffset ?: elementStartOffset + (textRangeInElement?.startOffset ?: 0)
+    return descriptorTextRange?.startOffset ?: (elementStartOffset + (textRangeInElement?.startOffset ?: 0))
 }
 
 private fun descriptorTextRange(descriptor: ProblemDescriptor): TextRange? {
