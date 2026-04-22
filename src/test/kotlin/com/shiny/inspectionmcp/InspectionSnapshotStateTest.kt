@@ -631,15 +631,14 @@ class InspectionSnapshotStateTest {
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, unreadableView.first)
 
-        val exhaustedCleanView = classifyEmptyInspectionCapture(
+        val stillUnreadableView = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
             observedSettledEmptyInspectionView = false,
             observedNonEmptyInspectionTree = false,
-            captureWindowElapsed = true,
         )
 
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, exhaustedCleanView.first)
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, stillUnreadableView.first)
     }
 
     @Test
@@ -679,6 +678,16 @@ class InspectionSnapshotStateTest {
         )
 
         assertTrue(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = false,
+                    rootChildCount = 0,
+                )
+            )
+        )
+
+        assertFalse(
             isSettledCleanInspectionView(
                 InspectionViewObservation(
                     isUpdating = false,

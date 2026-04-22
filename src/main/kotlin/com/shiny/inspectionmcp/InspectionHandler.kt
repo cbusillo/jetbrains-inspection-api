@@ -191,13 +191,12 @@ internal fun classifyEmptyInspectionCapture(
     observedInspectionView: Boolean,
     observedSettledEmptyInspectionView: Boolean,
     observedNonEmptyInspectionTree: Boolean,
-    captureWindowElapsed: Boolean = false,
 ): Pair<InspectionSnapshotOutcome, String?> {
     if (
         viewReadyOk &&
             observedInspectionView &&
             !observedNonEmptyInspectionTree &&
-            (observedSettledEmptyInspectionView || captureWindowElapsed)
+            observedSettledEmptyInspectionView
     ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
@@ -209,6 +208,7 @@ internal fun classifyEmptyInspectionCapture(
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
         observation.problemStateReadable &&
+        observation.rootChildCount != null &&
         !observation.isUpdating &&
         !observation.hasProblems
 }
@@ -1311,6 +1311,8 @@ class InspectionHandler : HttpRequestHandler() {
                                     isUpdating = false,
                                     hasProblems = false,
                                     rootChildCount = null,
+                                    updateStateReadable = false,
+                                    problemStateReadable = false,
                                 )
                             }
                             inspectionViewUpdating = viewObservation.isUpdating
@@ -1378,13 +1380,11 @@ class InspectionHandler : HttpRequestHandler() {
 
                     syncProjectState(project)
                     val snapshotState = captureProjectState(project)
-                    val captureWindowElapsed = System.currentTimeMillis() >= deadlineMs
                     val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
                         viewReadyOk = viewReadyOk,
                         observedInspectionView = observedInspectionView,
                         observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                         observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                        captureWindowElapsed = captureWindowElapsed,
                     )
                     val snapshot = when {
                         bestResults.isNotEmpty() -> InspectionResultsSnapshot(
