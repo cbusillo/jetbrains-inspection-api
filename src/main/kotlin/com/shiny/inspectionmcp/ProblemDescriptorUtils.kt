@@ -6,6 +6,7 @@ import com.intellij.injected.editor.DocumentWindow
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiDocumentManager
 
 data class ProblemLocation(
@@ -23,6 +24,7 @@ fun resolveProblemLocation(descriptor: ProblemDescriptor, project: Project): Pro
     val documentManager = PsiDocumentManager.getInstance(project)
     val document = documentManager.getDocument(containingFile)
     val textRange = element.textRange
+    val startOffset = problemDescriptorStartOffset(textRange.startOffset, descriptor.textRangeInElement)
 
     var filePath = virtualFile.path
     var line = 0
@@ -32,21 +34,25 @@ fun resolveProblemLocation(descriptor: ProblemDescriptor, project: Project): Pro
         val hostFile = virtualFile.delegate
         val hostPsi = InjectedLanguageManager.getInstance(project).getTopLevelFile(containingFile)
         val hostDocument = hostPsi?.let { psi -> documentManager.getDocument(psi) }
-        val hostOffset = document.injectedToHost(textRange.startOffset)
+        val hostOffset = document.injectedToHost(startOffset)
         filePath = hostFile.path
         if (hostDocument != null) {
             line = hostDocument.getLineNumber(hostOffset) + 1
             column = hostOffset - hostDocument.getLineStartOffset(line - 1)
         } else {
-            line = document.getLineNumber(textRange.startOffset) + 1
-            column = textRange.startOffset - document.getLineStartOffset(line - 1)
+            line = document.getLineNumber(startOffset) + 1
+            column = startOffset - document.getLineStartOffset(line - 1)
         }
     } else if (document != null) {
-        line = document.getLineNumber(textRange.startOffset) + 1
-        column = textRange.startOffset - document.getLineStartOffset(line - 1)
+        line = document.getLineNumber(startOffset) + 1
+        column = startOffset - document.getLineStartOffset(line - 1)
     }
 
     return ProblemLocation(filePath, line, column)
+}
+
+internal fun problemDescriptorStartOffset(elementStartOffset: Int, textRangeInElement: TextRange?): Int {
+    return elementStartOffset + (textRangeInElement?.startOffset ?: 0)
 }
 
 fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
