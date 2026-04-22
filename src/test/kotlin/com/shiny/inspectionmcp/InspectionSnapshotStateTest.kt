@@ -492,6 +492,34 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Recently finished empty tool-window runs settle before the wait timeout")
+    fun testRecentlyFinishedEmptyToolWindowRunSettlesBeforeTimeout() {
+        val now = System.currentTimeMillis()
+
+        assertFalse(
+            noResultsWaitHasSettled(
+                now = now,
+                noResultsStableSince = now - 4000L,
+                timeSinceTriggerMs = 16000L,
+            )
+        )
+        assertTrue(
+            noResultsWaitHasSettled(
+                now = now,
+                noResultsStableSince = now - 5000L,
+                timeSinceTriggerMs = 16000L,
+            )
+        )
+        assertTrue(
+            noResultsWaitHasSettled(
+                now = now,
+                noResultsStableSince = null,
+                timeSinceTriggerMs = 60000L,
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Wait reports no recent inspection before any trigger has run")
     fun testWaitReportsNoRecentInspectionBeforeFirstTrigger() {
         setLastInspectionTriggerTime(0L)

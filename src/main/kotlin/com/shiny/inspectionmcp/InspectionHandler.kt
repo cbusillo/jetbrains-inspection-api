@@ -178,6 +178,25 @@ internal fun resultsWaitHasSettled(
     return resultsStableEnough && triggerSettled
 }
 
+internal fun noResultsWaitHasSettled(
+    now: Long,
+    noResultsStableSince: Long?,
+    timeSinceTriggerMs: Long?,
+    minStableMs: Long = 5000L,
+    minTimeSinceTriggerMs: Long = 15000L,
+    immediateNoResultsAfterTriggerMs: Long = 60000L,
+): Boolean {
+    val timeSinceTrigger = timeSinceTriggerMs ?: return false
+    if (timeSinceTrigger >= immediateNoResultsAfterTriggerMs) {
+        return true
+    }
+
+    val stableStart = noResultsStableSince ?: now
+    val stableEnough = now - stableStart >= minStableMs
+    val triggerSettled = timeSinceTrigger >= minTimeSinceTriggerMs
+    return stableEnough && triggerSettled
+}
+
 internal fun shouldStopCapturePolling(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
@@ -669,6 +688,7 @@ class InspectionHandler : HttpRequestHandler() {
         var stableCountHits = 0
         var stableSince: Long? = null
         var cleanStableSince: Long? = null
+        var noResultsStableSince: Long? = null
         var status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
@@ -721,16 +741,21 @@ class InspectionHandler : HttpRequestHandler() {
                 return formatWaitError(status, start, timeoutMs, pollMs, "no_recent_inspection")
             }
 
-            if (
-                resultsSource == "tool_window" &&
+            val toolWindowNoResults = resultsSource == "tool_window" &&
                 !hasResults &&
                 !isScanning &&
                 !inProgress &&
-                timeSinceTrigger != null &&
-                timeSinceTrigger >= 60000
-            ) {
-                status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                inspectionTriggered
+            if (toolWindowNoResults) {
+                if (noResultsStableSince == null) {
+                    noResultsStableSince = now
+                }
+                if (noResultsWaitHasSettled(now, noResultsStableSince, timeSinceTrigger, minStableMs)) {
+                    status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                }
+            } else {
+                noResultsStableSince = null
             }
 
             if (
