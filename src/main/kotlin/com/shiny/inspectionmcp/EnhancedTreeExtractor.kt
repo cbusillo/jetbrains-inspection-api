@@ -68,7 +68,9 @@ class EnhancedTreeExtractor {
                 for (tw in inspectionWindows) {
                     extractFromToolWindow(tw, problems, project, seen)
                 }
-                return problems
+                if (problems.isNotEmpty()) {
+                    return problems
+                }
             }
 
             // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
@@ -364,9 +366,14 @@ class EnhancedTreeExtractor {
                 else -> null
             }
         } ?: return 0 to 0
-        val line = document.getLineNumber(startOffset) + 1
-        val column = startOffset - document.getLineStartOffset(line - 1)
+        val safeOffset = clampDocumentOffset(startOffset, document.textLength)
+        val line = document.getLineNumber(safeOffset) + 1
+        val column = safeOffset - document.getLineStartOffset(line - 1)
         return line to column
+    }
+
+    internal fun clampDocumentOffset(offset: Int, textLength: Int): Int {
+        return offset.coerceIn(0, textLength.coerceAtLeast(0))
     }
 
     private fun normalizeSeverity(raw: Any?): String {

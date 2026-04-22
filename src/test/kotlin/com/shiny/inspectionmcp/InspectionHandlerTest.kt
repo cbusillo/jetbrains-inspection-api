@@ -14,12 +14,17 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
+import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
+import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.ui.content.Content
+import com.intellij.ui.content.ContentManager
 import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.FullHttpResponse
@@ -31,6 +36,7 @@ import org.jetbrains.concurrency.resolvedPromise
 import org.jetbrains.concurrency.rejectedPromise
 import java.nio.file.Files
 import javax.swing.JFrame
+import javax.swing.JPanel
 
 class InspectionHandlerTest {
     
@@ -621,6 +627,44 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
         verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val toolWindow = mockk<ToolWindow>()
+        val contentManager = mockk<ContentManager>()
+        val nestedContent = mockk<Content>()
+        val directContent = mockk<Content>()
+        val otherContent = mockk<Content>()
+        val nestedInspectionView = mockk<InspectionResultsView>(relaxed = true)
+        val directInspectionView = mockk<InspectionResultsView>(relaxed = true)
+        val nestedPanel = JPanel()
+        nestedPanel.add(nestedInspectionView)
+
+        every { mockApplication.isDispatchThread } returns true
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(mockProject) } returns toolWindowManager
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns toolWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindow.contentManager } returns contentManager
+        every { contentManager.contentCount } returns 3
+        every { contentManager.getContent(2) } returns otherContent
+        every { contentManager.getContent(1) } returns directContent
+        every { contentManager.getContent(0) } returns nestedContent
+        every { otherContent.component } returns JPanel()
+        every { directContent.component } returns directInspectionView
+        every { nestedContent.component } returns nestedPanel
+        every { contentManager.removeContent(any(), true) } returns true
+
+        val method = InspectionHandler::class.java.getDeclaredMethod("clearPriorInspectionResults", Project::class.java)
+        method.isAccessible = true
+        method.invoke(handler, mockProject)
+
+        verify(exactly = 1) { contentManager.removeContent(directContent, true) }
+        verify(exactly = 1) { contentManager.removeContent(nestedContent, true) }
+        verify(exactly = 0) { contentManager.removeContent(otherContent, true) }
     }
 
     @Test

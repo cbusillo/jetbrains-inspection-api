@@ -29,6 +29,8 @@ import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import com.intellij.openapi.diagnostic.Logger
 import org.jetbrains.ide.HttpRequestHandler
+import java.awt.Component
+import java.awt.Container
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Paths
@@ -1393,11 +1395,10 @@ class InspectionHandler : HttpRequestHandler() {
             val toolWindowManager = com.intellij.openapi.wm.ToolWindowManager.getInstance(project)
             inspectionResultsToolWindowIds.forEach { name ->
                 val toolWindow = toolWindowManager.getToolWindow(name) ?: return@forEach
-                for (i in 0 until toolWindow.contentManager.contentCount) {
+                for (i in toolWindow.contentManager.contentCount - 1 downTo 0) {
                     val content = toolWindow.contentManager.getContent(i) ?: continue
-                    if (content.component.javaClass.name.contains("InspectionResultsView")) {
+                    if (containsInspectionResultsView(content.component)) {
                         toolWindow.contentManager.removeContent(content, true)
-                        break
                     }
                 }
             }
@@ -1408,6 +1409,22 @@ class InspectionHandler : HttpRequestHandler() {
         } else {
             application.invokeAndWait(clearTask)
         }
+    }
+
+    private fun containsInspectionResultsView(component: Component): Boolean {
+        if (component is InspectionResultsView || component.javaClass.name.contains("InspectionResultsView")) {
+            return true
+        }
+
+        if (component is Container) {
+            for (child in component.components) {
+                if (containsInspectionResultsView(child)) {
+                    return true
+                }
+            }
+        }
+
+        return false
     }
 
     private fun captureProjectState(project: Project): InspectionProjectStateSnapshot {

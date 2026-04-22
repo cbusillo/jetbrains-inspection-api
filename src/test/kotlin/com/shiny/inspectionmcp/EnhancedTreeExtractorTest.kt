@@ -2,9 +2,26 @@ package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import com.intellij.codeInspection.ProblemHighlightType
+import com.intellij.codeInspection.ui.InspectionResultsView
+import com.intellij.openapi.application.Application
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.project.Project
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.wm.ToolWindow
+import com.intellij.openapi.wm.ToolWindowManager
+import com.intellij.ui.content.Content
+import com.intellij.ui.content.ContentManager
+import io.mockk.every
+import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkAll
+import javax.swing.JPanel
+import javax.swing.JTree
+import javax.swing.tree.DefaultMutableTreeNode
 
 class EnhancedTreeExtractorTest {
     
@@ -13,6 +30,11 @@ class EnhancedTreeExtractorTest {
     @BeforeEach
     fun setup() {
         extractor = EnhancedTreeExtractor()
+    }
+
+    @AfterEach
+    fun tearDown() {
+        unmockkAll()
     }
     
     @Test
@@ -97,6 +119,55 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should fall back to Problems view when Inspection Results are empty")
+    fun testFallsBackToProblemsViewWhenInspectionResultsAreEmpty() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val problemsWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val problemsContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val problemsContent = mockk<Content>()
+        val inspectionView = mockk<InspectionResultsView>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Problems View")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        every { inspectionContent.component } returns inspectionView
+        every { inspectionView.tree } throws IllegalStateException("empty inspection view")
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { problemsContent.component } returns panel
+
+        val problems = extractor.extractAllProblems(project)
+
+        assertEquals(1, problems.size)
+        assertEquals("Fallback warning", problems[0]["description"])
+        assertEquals("FallbackInspection", problems[0]["inspectionType"])
+        assertEquals("problems_view", problems[0]["source"])
+    }
+
+    @Test
     @DisplayName("Should dedupe repeated problem maps from inspection view snapshots")
     fun testDedupeProblems() {
         val repeatedProblem = mapOf<String, Any>(
@@ -123,5 +194,22 @@ class EnhancedTreeExtractorTest {
         assertEquals(2, dedupedProblems.size)
         assertEquals(repeatedProblem, dedupedProblems[0])
         assertEquals(uniqueProblem, dedupedProblems[1])
+    }
+
+    @Test
+    @DisplayName("Should clamp stale document offsets")
+    fun testClampDocumentOffset() {
+        assertEquals(0, extractor.clampDocumentOffset(-10, 25))
+        assertEquals(12, extractor.clampDocumentOffset(12, 25))
+        assertEquals(25, extractor.clampDocumentOffset(100, 25))
+        assertEquals(0, extractor.clampDocumentOffset(5, -1))
+    }
+
+    private class FallbackProblem(private val virtualFile: VirtualFile) {
+        fun getDescription(): String = "Fallback warning"
+        fun getVirtualFile(): VirtualFile = virtualFile
+        fun getSeverity(): String = "WARNING"
+        fun getCategory(): String = "General"
+        fun getInspectionToolId(): String = "FallbackInspection"
     }
 }
