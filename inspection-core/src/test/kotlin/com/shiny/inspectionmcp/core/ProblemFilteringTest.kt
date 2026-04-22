@@ -1,6 +1,7 @@
 package com.shiny.inspectionmcp.core
 
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
@@ -71,6 +72,46 @@ class ProblemFilteringTest {
     }
 
     @Test
+    @DisplayName("filterProblems matches current_file across absolute, relative, and slash-normalized paths")
+    fun filterByCurrentFileNormalizesPaths() {
+        val problems = listOf(
+            problem(file = "src/main/kotlin/App.kt", severity = "warning"),
+            problem(file = "/project/src/main/kotlin/Other.kt", severity = "warning"),
+            problem(file = "src\\main\\kotlin\\Win.kt", severity = "warning")
+        )
+
+        val relativeProblem = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "current_file",
+            currentFilePath = "/project/src/main/kotlin/App.kt",
+            problemType = null,
+            filePattern = null
+        )
+        assertEquals(listOf("src/main/kotlin/App.kt"), relativeProblem.map { it["file"] })
+
+        val relativeCurrentFile = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "current_file",
+            currentFilePath = "src/main/kotlin/Other.kt",
+            problemType = null,
+            filePattern = null
+        )
+        assertEquals(listOf("/project/src/main/kotlin/Other.kt"), relativeCurrentFile.map { it["file"] })
+
+        val slashNormalized = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "current_file",
+            currentFilePath = "/project/src/main/kotlin/Win.kt",
+            problemType = null,
+            filePattern = null
+        )
+        assertEquals(listOf("src\\main\\kotlin\\Win.kt"), slashNormalized.map { it["file"] })
+    }
+
+    @Test
     @DisplayName("filterProblems supports type and file pattern filtering")
     fun filterByTypeAndPattern() {
         val problems = listOf(
@@ -110,6 +151,38 @@ class ProblemFilteringTest {
         )
         assertEquals(1, invalidRegexFiltered.size)
         assertEquals("src/[brackets].kt", invalidRegexFiltered.first()["file"])
+    }
+
+    @Test
+    @DisplayName("filterProblems treats plain file patterns literally while keeping regex support")
+    fun filterByLiteralAndRegexFilePatterns() {
+        val problems = listOf(
+            problem(file = "src/app.py", severity = "warning"),
+            problem(file = "src/appXpy", severity = "warning"),
+            problem(file = "src/test/app.js", severity = "warning"),
+            problem(file = "src/test/app.jsx", severity = "warning")
+        )
+
+        val literalFiltered = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "app.py"
+        )
+        assertEquals(listOf("src/app.py"), literalFiltered.map { it["file"] })
+        assertFalse(literalFiltered.any { it["file"] == "src/appXpy" })
+
+        val regexFiltered = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "src/.*\\.js$"
+        )
+        assertEquals(listOf("src/test/app.js"), regexFiltered.map { it["file"] })
     }
 
     @Test

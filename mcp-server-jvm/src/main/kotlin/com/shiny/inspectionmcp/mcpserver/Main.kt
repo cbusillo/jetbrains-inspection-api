@@ -564,7 +564,7 @@ internal class ToolExecutor(
                 )
                 put(
                     "file_pattern",
-                    stringProp("Path filter (string or regex)")
+                    stringProp("Path filter (literal string, glob, or regex)")
                 )
                 put(
                     "limit",

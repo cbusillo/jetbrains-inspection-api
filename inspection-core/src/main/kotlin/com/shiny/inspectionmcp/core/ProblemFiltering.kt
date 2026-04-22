@@ -48,7 +48,7 @@ fun filterProblems(
             } else {
                 severityFiltered.filter { problem ->
                     val filePath = problem["file"] as? String ?: ""
-                    filePath == currentFilePath || filePath.endsWith(currentFilePath)
+                    normalizedPathMatchesCurrentFile(filePath, currentFilePath)
                 }
             }
         }

@@ -187,7 +187,8 @@ Notes:
 - `severity` (optional): `error` | `warning` | `weak_warning` | `info` | `grammar` | `typo` | `all` (default)
 - `problem_type` (optional): Filter by inspection type (e.g., `PyUnresolvedReferencesInspection`, `SpellCheck`, `Unused`).
   Use `all` or leave blank to disable the filter.
-- `file_pattern` (optional): Filter by file path pattern - simple string or regex (e.g., `*.py`, `src/.*\.js$`).
+- `file_pattern` (optional): Filter by file path pattern. Plain strings are literal;
+  globs and regexes are supported (e.g., `app.py`, `*.py`, `src/.*\.js$`).
   Use `all` or leave blank to disable the filter.
 - `limit` (optional): Maximum problems to return, `1..1000` (default: 100)
 - `offset` (optional): Number of problems to skip for pagination, `>=0` (default: 0)

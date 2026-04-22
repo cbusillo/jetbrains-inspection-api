@@ -82,6 +82,42 @@ internal data class InspectionRunState(
     val inProgress: Boolean,
 )
 
+internal fun parseGitStatusPorcelainZ(output: String): Pair<Set<String>, Set<String>> {
+    val staged = mutableSetOf<String>()
+    val unstaged = mutableSetOf<String>()
+    var i = 0
+    while (i < output.length) {
+        val zero = output.indexOf('\u0000', i)
+        if (zero == -1) break
+        val entry = output.substring(i, zero)
+        i = zero + 1
+
+        if (entry.length < 3) {
+            continue
+        }
+
+        val x = entry[0]
+        val y = entry[1]
+        val spaceIdx = entry.indexOf(' ', 2)
+        if (spaceIdx < 2) {
+            continue
+        }
+
+        val pathPart = entry.substring(spaceIdx + 1).trimStart()
+        val normalized = pathPart.replace('\\', '/')
+        if (normalized.isNotBlank()) {
+            if (x != ' ' && x != '?' && x != '!') staged.add(normalized)
+            if (y != ' ' && y != '!') unstaged.add(normalized)
+        }
+
+        if (x == 'R' || x == 'C') {
+            val nextZero = output.indexOf('\u0000', i)
+            i = if (nextZero == -1) output.length else nextZero + 1
+        }
+    }
+    return Pair(staged, unstaged)
+}
+
 internal class BadRequestException(
     val parameter: String,
     override val message: String,
@@ -1658,29 +1694,7 @@ class InspectionHandler : HttpRequestHandler() {
             val bytes = proc.inputStream.readAllBytes()
             proc.waitFor(2, TimeUnit.SECONDS)
             val out = bytes.toString(Charsets.UTF_8)
-            val staged = mutableSetOf<String>()
-            val unstaged = mutableSetOf<String>()
-            var i = 0
-            while (i < out.length) {
-                val zero = out.indexOf('\u0000', i)
-                if (zero == -1) break
-                val entry = out.substring(i, zero)
-                if (entry.length >= 3) {
-                    val x = entry[0]
-                    val y = entry[1]
-                    // Entry format: XY<space>path or for renames: R<score><space>old<null>new
-                    val spaceIdx = entry.indexOf(' ', 2)
-                    if (spaceIdx >= 2) {
-                        // Path may start after XY and one separating space; trim leading spaces
-                        val pathPart = entry.substring(spaceIdx + 1).trimStart()
-                        val normalized = pathPart.replace('\\', '/')
-                        if (x != ' ') staged.add(normalized)
-                        if (y != ' ') unstaged.add(normalized)
-                    }
-                }
-                i = zero + 1
-            }
-            Pair(staged, unstaged)
+            parseGitStatusPorcelainZ(out)
         } catch (_: Exception) {
             null
         }
