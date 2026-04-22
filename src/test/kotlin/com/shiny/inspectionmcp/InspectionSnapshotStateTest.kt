@@ -596,6 +596,7 @@ class InspectionSnapshotStateTest {
         val ambiguous = classifyEmptyInspectionCapture(
             viewReadyOk = false,
             observedInspectionView = false,
+            observedSettledEmptyInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -605,6 +606,7 @@ class InspectionSnapshotStateTest {
         val confirmedClean = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -614,10 +616,30 @@ class InspectionSnapshotStateTest {
         val nonEmptyTree = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
             observedNonEmptyInspectionTree = true,
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, nonEmptyTree.first)
+
+        val unreadableView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, unreadableView.first)
+
+        val exhaustedCleanView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+            captureWindowElapsed = true,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, exhaustedCleanView.first)
     }
 
     @Test
@@ -662,6 +684,30 @@ class InspectionSnapshotStateTest {
                     isUpdating = false,
                     hasProblems = false,
                     rootChildCount = null,
+                )
+            )
+        )
+
+        assertFalse(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = false,
+                    rootChildCount = null,
+                    updateStateReadable = false,
+                    problemStateReadable = true,
+                )
+            )
+        )
+
+        assertFalse(
+            isSettledCleanInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = false,
+                    rootChildCount = null,
+                    updateStateReadable = true,
+                    problemStateReadable = false,
                 )
             )
         )

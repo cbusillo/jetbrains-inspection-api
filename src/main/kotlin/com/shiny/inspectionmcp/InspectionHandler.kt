@@ -74,6 +74,8 @@ internal data class InspectionViewObservation(
     val isUpdating: Boolean,
     val hasProblems: Boolean,
     val rootChildCount: Int?,
+    val updateStateReadable: Boolean = true,
+    val problemStateReadable: Boolean = true,
 )
 
 internal data class InspectionRunState(
@@ -187,9 +189,16 @@ internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
 internal fun classifyEmptyInspectionCapture(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
+    observedSettledEmptyInspectionView: Boolean,
     observedNonEmptyInspectionTree: Boolean,
+    captureWindowElapsed: Boolean = false,
 ): Pair<InspectionSnapshotOutcome, String?> {
-    if (viewReadyOk && observedInspectionView && !observedNonEmptyInspectionTree) {
+    if (
+        viewReadyOk &&
+            observedInspectionView &&
+            !observedNonEmptyInspectionTree &&
+            (observedSettledEmptyInspectionView || captureWindowElapsed)
+    ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
 
@@ -198,7 +207,10 @@ internal fun classifyEmptyInspectionCapture(
 }
 
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
-    return !observation.isUpdating && !observation.hasProblems
+    return observation.updateStateReadable &&
+        observation.problemStateReadable &&
+        !observation.isUpdating &&
+        !observation.hasProblems
 }
 
 internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
@@ -1234,22 +1246,24 @@ class InspectionHandler : HttpRequestHandler() {
                                 rethrowIfCanceled(e)
                                 null
                             }
-                            val hasProblems = try {
-                                view.hasProblems()
+                            val (hasProblems, problemStateReadable) = try {
+                                view.hasProblems() to true
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
-                                false
+                                false to false
                             }
-                            val isUpdating = try {
-                                view.isUpdating
+                            val (isUpdating, updateStateReadable) = try {
+                                view.isUpdating to true
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
-                                false
+                                false to false
                             }
                             return InspectionViewObservation(
                                 isUpdating = isUpdating,
                                 hasProblems = hasProblems,
                                 rootChildCount = rootChildCount,
+                                updateStateReadable = updateStateReadable,
+                                problemStateReadable = problemStateReadable,
                             )
                         }
 
@@ -1265,6 +1279,8 @@ class InspectionHandler : HttpRequestHandler() {
                             isUpdating = false,
                             hasProblems = false,
                             rootChildCount = null,
+                            updateStateReadable = false,
+                            problemStateReadable = false,
                         )
                     }
 
@@ -1362,10 +1378,13 @@ class InspectionHandler : HttpRequestHandler() {
 
                     syncProjectState(project)
                     val snapshotState = captureProjectState(project)
+                    val captureWindowElapsed = System.currentTimeMillis() >= deadlineMs
                     val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
                         viewReadyOk = viewReadyOk,
                         observedInspectionView = observedInspectionView,
+                        observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                         observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                        captureWindowElapsed = captureWindowElapsed,
                     )
                     val snapshot = when {
                         bestResults.isNotEmpty() -> InspectionResultsSnapshot(
