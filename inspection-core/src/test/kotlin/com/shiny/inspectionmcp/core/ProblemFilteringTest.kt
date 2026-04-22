@@ -186,6 +186,27 @@ class ProblemFilteringTest {
     }
 
     @Test
+    @DisplayName("filterProblems treats paths with regex metacharacters literally when they match")
+    fun filterByLiteralFilePatternWithRegexMetacharacters() {
+        val problems = listOf(
+            problem(file = "src/generated[fixture].kt", severity = "warning"),
+            problem(file = "src/generatedf.kt", severity = "warning"),
+            problem(file = "src/generatedi.kt", severity = "warning")
+        )
+
+        val literalFiltered = filterProblems(
+            problems = problems,
+            severity = "all",
+            scope = "whole_project",
+            currentFilePath = null,
+            problemType = null,
+            filePattern = "generated[fixture].kt"
+        )
+
+        assertEquals(listOf("src/generated[fixture].kt"), literalFiltered.map { it["file"] })
+    }
+
+    @Test
     @DisplayName("filterProblems falls back to legacy regex matching when a plain pattern has no literal matches")
     fun filterByPlainPatternFallsBackToRegex() {
         val problems = listOf(

@@ -20,7 +20,7 @@ fun compileFilePatternRegex(patternRaw: String): Regex? {
 
 fun compileLiteralFilePatternRegex(patternRaw: String): Regex? {
     val pattern = patternRaw.trim()
-    if (pattern.isBlank() || !isPlainFilePattern(pattern)) {
+    if (pattern.isBlank()) {
         return null
     }
     return Regex(Regex.escape(pattern), RegexOption.IGNORE_CASE)
@@ -55,10 +55,6 @@ private fun String.endsWithPathSegment(suffix: String): Boolean {
     }
     val boundary = length - suffix.length - 1
     return boundary < 0 || this[boundary] == '/'
-}
-
-private fun isPlainFilePattern(pattern: String): Boolean {
-    return pattern.none { it in setOf('*', '?', '^', '$', '+', '(', ')', '[', ']', '{', '}', '|', '\\') }
 }
 
 private fun compileGlobPattern(pattern: String): Regex? {

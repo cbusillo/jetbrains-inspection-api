@@ -71,9 +71,6 @@ class EnhancedTreeExtractor {
                 if (problems.isNotEmpty()) {
                     return problems
                 }
-                if (inspectionWindows.any { hasSettledEmptyInspectionResultsView(it) }) {
-                    return problems
-                }
             }
 
             // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
@@ -124,27 +121,6 @@ class EnhancedTreeExtractor {
             return false
         }
         return false
-    }
-
-    private fun hasSettledEmptyInspectionResultsView(toolWindow: ToolWindow): Boolean {
-        val contentManager = getContentManager(toolWindow) ?: return false
-        for (i in 0 until contentManager.contentCount) {
-            val content = contentManager.getContent(i) ?: continue
-            val inspectionView = findInspectionResultsView(content.component) ?: continue
-            if (isSettledEmptyInspectionResultsView(inspectionView)) {
-                return true
-            }
-        }
-        return false
-    }
-
-    private fun isSettledEmptyInspectionResultsView(view: InspectionResultsView): Boolean {
-        return try {
-            val rootChildCount = (view.tree.model.root as? TreeNode)?.childCount ?: return false
-            !view.isUpdating && !view.hasProblems() && rootChildCount == 0
-        } catch (_: Exception) {
-            false
-        }
     }
 
     private fun extractFromToolWindow(

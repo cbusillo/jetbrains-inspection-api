@@ -169,8 +169,8 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
-    @DisplayName("Should not fall back to Problems view when Inspection Results are settled empty")
-    fun testDoesNotFallbackWhenInspectionResultsAreSettledEmpty() {
+    @DisplayName("Should fall back to Problems view when Inspection Results are settled empty")
+    fun testFallsBackWhenInspectionResultsAreSettledEmpty() {
         val app = mockk<Application>()
         val project = mockk<Project>(relaxed = true)
         val toolWindowManager = mockk<ToolWindowManager>()
@@ -215,7 +215,10 @@ class EnhancedTreeExtractorTest {
 
         val problems = extractor.extractAllProblems(project)
 
-        assertEquals(emptyList<Map<String, Any>>(), problems)
+        assertEquals(1, problems.size)
+        assertEquals("Fallback warning", problems[0]["description"])
+        assertEquals("FallbackInspection", problems[0]["inspectionType"])
+        assertEquals("problems_view", problems[0]["source"])
     }
 
     @Test
