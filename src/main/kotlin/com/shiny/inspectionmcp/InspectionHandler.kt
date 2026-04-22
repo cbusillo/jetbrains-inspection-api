@@ -82,6 +82,11 @@ internal data class InspectionRunState(
     val inProgress: Boolean,
 )
 
+internal class BadRequestException(
+    val parameter: String,
+    override val message: String,
+) : RuntimeException(message)
+
 internal fun projectKey(project: Project): String {
     val basePath = runCatching { project.basePath }.getOrNull()
     normalizeProjectKeyPath(basePath)?.let { return "path:$it" }
@@ -264,16 +269,17 @@ class InspectionHandler : HttpRequestHandler() {
     ): Boolean {
         try {
             val path = urlDecoder.path()
+            val parameters = urlDecoder.parameters() ?: emptyMap()
             when (path) {
                 "/api/inspection/problems" -> {
-                    val severity = urlDecoder.parameters()["severity"]?.firstOrNull() ?: "all"
-                    val scope = urlDecoder.parameters()["scope"]?.firstOrNull() ?: "whole_project"
-                    val problemTypeRaw = urlDecoder.parameters()["problem_type"]?.firstOrNull()
-                    val filePatternRaw = urlDecoder.parameters()["file_pattern"]?.firstOrNull()
+                    val severity = parameters["severity"]?.firstOrNull() ?: "all"
+                    val scope = parameters["scope"]?.firstOrNull() ?: "whole_project"
+                    val problemTypeRaw = parameters["problem_type"]?.firstOrNull()
+                    val filePatternRaw = parameters["file_pattern"]?.firstOrNull()
                     val problemType = normalizeOptionalFilter(problemTypeRaw)
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
-                    val limit = urlDecoder.parameters()["limit"]?.firstOrNull()?.toIntOrNull() ?: 100
-                    val offset = urlDecoder.parameters()["offset"]?.firstOrNull()?.toIntOrNull() ?: 0
+                    val limit = parseIntParameter(parameters, "limit", defaultValue = 100, min = 1, max = 1000)
+                    val offset = parseIntParameter(parameters, "offset", defaultValue = 0, min = 0)
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
                         val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
@@ -283,23 +289,23 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/trigger" -> {
-                    val projectName = extractProjectSelector(urlDecoder, request)
-                    val scope = urlDecoder.parameters()["scope"]?.firstOrNull()
+                    val scope = parameters["scope"]?.firstOrNull()
                     // Accept either `dir`, `directory`, or `path` for directory scoping
-                    val directory = urlDecoder.parameters()["dir"]?.firstOrNull()
-                        ?: urlDecoder.parameters()["directory"]?.firstOrNull()
-                        ?: urlDecoder.parameters()["path"]?.firstOrNull()
+                    val directory = parameters["dir"]?.firstOrNull()
+                        ?: parameters["directory"]?.firstOrNull()
+                        ?: parameters["path"]?.firstOrNull()
                     val filesList = mutableListOf<String>()
-                    val repeatedFiles = urlDecoder.parameters()["file"] ?: emptyList()
+                    val repeatedFiles = parameters["file"] ?: emptyList()
                     if (repeatedFiles.isNotEmpty()) filesList.addAll(repeatedFiles)
-                    val filesParam = urlDecoder.parameters()["files"]?.firstOrNull()
+                    val filesParam = parameters["files"]?.firstOrNull()
                     if (!filesParam.isNullOrBlank()) {
                         filesList.addAll(filesParam.split('\n', ',', ';').map { it.trim() }.filter { it.isNotEmpty() })
                     }
-                    val includeUnversioned = urlDecoder.parameters()["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
-                    val changedFilesMode = urlDecoder.parameters()["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
-                    val maxFiles = urlDecoder.parameters()["max_files"]?.firstOrNull()?.toIntOrNull()
-                    val profile = urlDecoder.parameters()["profile"]?.firstOrNull()
+                    val includeUnversioned = parameters["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
+                    val changedFilesMode = parameters["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
+                    val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
+                    val profile = parameters["profile"]?.firstOrNull()
+                    val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName) { project ->
                         val runState = beginInspectionRun(project)
                         try {
@@ -346,8 +352,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 "/api/inspection/wait" -> {
                     val projectName = extractProjectSelector(urlDecoder, request)
-                    val timeoutMs = urlDecoder.parameters()["timeout_ms"]?.firstOrNull()?.toLongOrNull()
-                    val pollMs = urlDecoder.parameters()["poll_ms"]?.firstOrNull()?.toLongOrNull()
+                    val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
+                    val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
                     val result = waitForInspection(projectName, timeoutMs, pollMs)
                     sendJsonResponse(context, result)
                 }
@@ -356,10 +362,51 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
             return true
+        } catch (error: BadRequestException) {
+            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+            return true
         } catch (_: Exception) {
             sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
             return true
         }
+    }
+
+    private fun parseIntParameter(
+        parameters: Map<String, List<String>>,
+        name: String,
+        defaultValue: Int,
+        min: Int? = null,
+        max: Int? = null,
+    ): Int {
+        return parseOptionalIntParameter(parameters, name, min, max) ?: defaultValue
+    }
+
+    private fun parseOptionalIntParameter(
+        parameters: Map<String, List<String>>,
+        name: String,
+        min: Int? = null,
+        max: Int? = null,
+    ): Int? {
+        val raw = parameters[name]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val value = raw.toIntOrNull()
+            ?: throw BadRequestException(name, "Parameter '$name' must be an integer.")
+        if (min != null && value < min) {
+            throw BadRequestException(name, "Parameter '$name' must be at least $min.")
+        }
+        if (max != null && value > max) {
+            throw BadRequestException(name, "Parameter '$name' must be at most $max.")
+        }
+        return value
+    }
+
+    private fun formatBadRequest(error: BadRequestException): String {
+        return formatJsonManually(
+            mapOf(
+                "error" to "Invalid request parameter",
+                "parameter" to error.parameter,
+                "message" to error.message,
+            )
+        )
     }
     
     private fun getInspectionProblems(
@@ -485,7 +532,30 @@ class InspectionHandler : HttpRequestHandler() {
                 
                 formatJsonManually(response)
             } else {
-                """{"status": "no_results", "message": "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass)."}"""
+                val response = mapOf(
+                    "status" to "no_results",
+                    "project" to project.name,
+                    "project_key" to key,
+                    "timestamp" to System.currentTimeMillis(),
+                    "message" to "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass).",
+                    "total_problems" to 0,
+                    "problems_shown" to 0,
+                    "problems" to emptyList<Map<String, Any>>(),
+                    "pagination" to mapOf(
+                        "limit" to limit,
+                        "offset" to offset,
+                        "has_more" to false,
+                        "next_offset" to null,
+                    ),
+                    "filters" to mapOf(
+                        "severity" to severity,
+                        "scope" to normalizedScope,
+                        "problem_type" to (problemType ?: "all"),
+                        "file_pattern" to (filePattern ?: "all"),
+                    ),
+                    "method" to "enhanced_tree",
+                )
+                formatJsonManually(response)
             }
         } catch (_: Exception) {
             """{"error": "Failed to get inspection problems"}"""
@@ -840,7 +910,10 @@ class InspectionHandler : HttpRequestHandler() {
     ): String {
         val response = responseData.toMutableMap()
         response["wait_completed"] = false
-        response["timed_out"] = reason == "no_project" || reason == "timeout"
+        response["timed_out"] = reason == "timeout"
+        if (reason == "no_project" && response["wait_note"] == null) {
+            response["wait_note"] = "No project found - ensure the IDE has an open project, or pass the exact project name."
+        }
         response["completion_reason"] = reason
         response["wait_ms"] = System.currentTimeMillis() - startMs
         response["timeout_ms"] = timeoutMs

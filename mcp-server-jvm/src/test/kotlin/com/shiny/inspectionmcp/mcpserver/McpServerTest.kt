@@ -187,7 +187,7 @@ class McpServerTest {
 
     @Test
     fun inspectionGetProblemsHandlesNoResults() {
-        val response = """{"status":"no_results"}"""
+        val response = """{"status":"no_results","total_problems":0,"problems_shown":0,"problems":[],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null},"filters":{"severity":"all","scope":"whole_project","problem_type":"all","file_pattern":"all"}}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -196,6 +196,29 @@ class McpServerTest {
             val text = result.firstText()
             assertTrue(text.contains("No inspection results were captured"))
             assertTrue(text.contains("clean runs"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsReportsInvalidParameterDetails() {
+        val response = """{"error":"Invalid request parameter","parameter":"limit","message":"Parameter 'limit' must be at least 1."}"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response, 400))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(
+                buildToolCall(
+                    "inspection_get_problems",
+                    buildJsonObject { put("limit", JsonPrimitive(0)) },
+                )
+            )
+
+            val text = result.firstText()
+            assertTrue(result.isError())
+            assertTrue(text.contains("Unexpected HTTP status 400"))
+            assertTrue(text.contains("Invalid request parameter"))
+            assertTrue(text.contains("Parameter: limit"))
+            assertTrue(text.contains("must be at least 1"))
         }
     }
 
@@ -459,13 +482,14 @@ class McpServerTest {
 
     @Test
     fun inspectionWaitHandlesNoProject() {
-        val response = """{"wait_completed":true,"completion_reason":"no_project"}"""
+        val response = """{"wait_completed":false,"timed_out":false,"completion_reason":"no_project"}"""
         MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             assertTrue(result.firstText().contains("No project found"))
+            assertTrue(result.firstText().contains("exact project name"))
         }
     }
 

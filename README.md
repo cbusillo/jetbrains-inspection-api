@@ -172,6 +172,9 @@ Typical response (truncated):
 
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
+- `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
+- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run inspection or open the Problems/Inspection Results view before treating the project as clean.
+- `status: "stale_results"` means project files changed after the last inspection. Trigger a new inspection before trusting cached findings.
 
 ## API Reference
 
@@ -186,9 +189,11 @@ Notes:
   Use `all` or leave blank to disable the filter.
 - `file_pattern` (optional): Filter by file path pattern - simple string or regex (e.g., `*.py`, `src/.*\.js$`).
   Use `all` or leave blank to disable the filter.
-- `limit` (optional): Maximum problems to return (default: 100)
-- `offset` (optional): Number of problems to skip for pagination (default: 0)
+- `limit` (optional): Maximum problems to return, `1..1000` (default: 100)
+- `offset` (optional): Number of problems to skip for pagination, `>=0` (default: 0)
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
+
+Invalid `limit` or `offset` values return HTTP 400 with `error`, `parameter`, and `message` fields.
 
 **Examples**:
 ```bash
@@ -223,7 +228,7 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 - `files` (optional): Comma or newline‑separated list of file paths when `scope=files`.
 - `include_unversioned` (optional): `true|false` when `scope=changed_files` (default `true`).
 - `changed_files_mode` (optional): `all|staged|unstaged` (best‑effort; falls back to `all`).
-- `max_files` (optional): Positive integer to cap files inspected for responsiveness.
+- `max_files` (optional): Positive integer to cap files inspected for responsiveness. Invalid values return HTTP 400 with `error`, `parameter`, and `message` fields.
 - `profile` (optional): Name of inspection profile to use; falls back to current profile if not found.
 
 **Examples**:
@@ -335,7 +340,16 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - If all three are false and `time_since_last_trigger_ms` is old, there was no recent inspection. Trigger one first.
 
 ### Wait Response Notes
-`/api/inspection/wait` may return `completion_reason: "capture_incomplete"` when an inspection finished but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Inspection Results tool window.
+`/api/inspection/wait` always includes `wait_completed`, `timed_out`, `completion_reason`, `wait_ms`, `timeout_ms`, and `poll_ms`.
+
+Common completion reasons:
+- `results`: inspection completed and problems are ready to fetch.
+- `clean`: inspection completed and a clean empty result was confirmed.
+- `no_results`: inspection finished, but no results were captured. This can be a clean run or an unavailable/filtered IDE view.
+- `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. Re-run inspection or open the Problems/Inspection Results view.
+- `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings.
+- `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
+- `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.

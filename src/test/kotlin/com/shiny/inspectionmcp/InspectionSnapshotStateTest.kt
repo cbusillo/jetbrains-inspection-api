@@ -274,6 +274,23 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Problems endpoint returns normalized no_results response")
+    fun testProblemsEndpointNormalizesNoResultsResponse() {
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 120000L)
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"status\": \"no_results\""))
+        assertTrue(response.contains("\"project\": \"TestProject\""))
+        assertTrue(response.contains("\"project_key\":"))
+        assertTrue(response.contains("\"total_problems\": 0"))
+        assertTrue(response.contains("\"problems_shown\": 0"))
+        assertTrue(response.contains("\"problems\": []"))
+        assertTrue(response.contains("\"pagination\":"))
+        assertTrue(response.contains("\"filters\":"))
+    }
+
+    @Test
     @DisplayName("Problems endpoint returns live findings when clean snapshot is contradicted")
     fun testProblemsEndpointReconcilesCleanSnapshot() {
         val extractor = mockk<EnhancedTreeExtractor>()

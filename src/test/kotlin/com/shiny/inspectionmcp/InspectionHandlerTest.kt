@@ -569,6 +569,9 @@ class InspectionHandlerTest {
 
         assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
         assertTrue(response.contains("\"completion_reason\": \"no_project\""))
+        assertTrue(response.contains("\"wait_completed\": false"))
+        assertTrue(response.contains("\"timed_out\": false"))
+        assertTrue(response.contains("\"wait_note\":"))
     }
 
     @Test

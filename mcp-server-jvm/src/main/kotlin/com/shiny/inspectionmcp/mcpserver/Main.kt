@@ -185,7 +185,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Results mirror the IDE Problems/Inspection Results view; hidden or filtered views can hide warnings."
+                            "Fetch problems after inspection completes. Results mirror the IDE Problems/Inspection Results view; hidden or filtered views can hide warnings. May return no_results, capture_incomplete, or stale_results with guidance."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -213,7 +213,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. Blank or omitted project uses the focused or active open project. May report no_results if the IDE view is unavailable or filtered."
+                            "Block until inspection completes or timeout. Blank or omitted project uses the focused or active open project. Completion reasons include results, clean, no_results, capture_incomplete, stale_results, no_recent_inspection, and no_project."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -405,7 +405,7 @@ internal class ToolExecutor(
             completed && reason == "no_results" ->
                 "\n\nSTATUS: Inspection finished with no captured results. This can be a clean run; re-run inspection or open the IDE Problems/Inspection Results view if findings were expected."
             reason == "no_recent_inspection" -> "\n\nSTATUS: No recent inspection - trigger inspection first."
-            reason == "no_project" -> "\n\nSTATUS: No project found yet - ensure the IDE has an open project."
+            reason == "no_project" -> "\n\nSTATUS: No project found - ensure the IDE has an open project, or pass the exact project name."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
             timedOut -> "\n\nSTATUS: Wait timed out - try inspection_get_status or increase timeout_ms."
             else -> ""
@@ -568,11 +568,11 @@ internal class ToolExecutor(
                 )
                 put(
                     "limit",
-                    intProp("Max problems to return", defaultValue = 100)
+                    intProp("Max problems to return", defaultValue = 100, minimum = 1, maximum = 1000)
                 )
                 put(
                     "offset",
-                    intProp("Pagination offset", defaultValue = 0)
+                    intProp("Pagination offset", defaultValue = 0, minimum = 0)
                 )
             })
         }
@@ -608,7 +608,7 @@ internal class ToolExecutor(
                     "changed_files_mode",
                     enumProp("changed_files only: all | staged | unstaged", listOf("all", "staged", "unstaged"))
                 )
-                put("max_files", intProp("Max files (changed_files only)"))
+                put("max_files", intProp("Max files (changed_files only)", minimum = 1))
                 put("profile", stringProp("Inspection profile name"))
             })
         }
@@ -664,12 +664,23 @@ internal class ToolExecutor(
         }
     }
 
-    private fun intProp(description: String, defaultValue: Int? = null): JsonObject {
+    private fun intProp(
+        description: String,
+        defaultValue: Int? = null,
+        minimum: Int? = null,
+        maximum: Int? = null,
+    ): JsonObject {
         return buildJsonObject {
             put("type", JsonPrimitive("integer"))
             put("description", JsonPrimitive(description))
             if (defaultValue != null) {
                 put("default", JsonPrimitive(defaultValue))
+            }
+            if (minimum != null) {
+                put("minimum", JsonPrimitive(minimum))
+            }
+            if (maximum != null) {
+                put("maximum", JsonPrimitive(maximum))
             }
         }
     }
@@ -689,6 +700,8 @@ private fun summarizeErrorBody(body: String): String? {
         val parsedBody = json.parseToJsonElement(body) as? JsonObject ?: return body.trim().takeIf { it.isNotEmpty() }
         val parts = mutableListOf<String>()
         parsedBody["error"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += it }
+        parsedBody["parameter"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += "Parameter: $it" }
+        parsedBody["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += it }
         parsedBody["suggested_open_projects"]?.jsonArray
             ?.mapNotNull { element -> element.jsonPrimitive.contentOrNull }
             ?.takeIf { suggestions -> suggestions.isNotEmpty() }
