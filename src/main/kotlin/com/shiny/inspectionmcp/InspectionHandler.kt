@@ -125,15 +125,15 @@ internal class BadRequestException(
 
 internal fun projectKey(project: Project): String {
     val basePath = runCatching { project.basePath }.getOrNull()
-    normalizeProjectKeyPath(basePath)?.let { return "path:$it" }
+    normalizeFileSystemPath(basePath)?.let { return "path:$it" }
 
     val projectFilePath = runCatching { project.projectFilePath }.getOrNull()
-    normalizeProjectKeyPath(projectFilePath)?.let { return "file:$it" }
+    normalizeFileSystemPath(projectFilePath)?.let { return "file:$it" }
 
     return "name:${project.name}"
 }
 
-private fun normalizeProjectKeyPath(value: String?): String? {
+private fun normalizeFileSystemPath(value: String?): String? {
     val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val expanded = if (raw.startsWith("~")) {
         System.getProperty("user.home") + raw.removePrefix("~")
@@ -145,6 +145,10 @@ private fun normalizeProjectKeyPath(value: String?): String? {
     } catch (_: Exception) {
         null
     }
+}
+
+private fun looksLikePath(value: String): Boolean {
+    return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
 }
 
 internal object InspectionResultsStore {
@@ -1792,16 +1796,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun normalizeProjectPath(value: String?): String? {
         val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         if (!looksLikePath(raw)) return null
-        val expanded = if (raw.startsWith("~")) {
-            System.getProperty("user.home") + raw.removePrefix("~")
-        } else {
-            raw
-        }
-        return try {
-            Paths.get(expanded).normalize().toAbsolutePath().toString()
-        } catch (_: Exception) {
-            null
-        }
+        return normalizeFileSystemPath(raw)
     }
 
     private fun normalizeProjectSelector(projectName: String?): String? {
@@ -1841,10 +1836,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         return null
-    }
-
-    private fun looksLikePath(value: String): Boolean {
-        return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
     }
 
     @Suppress("UnstableApiUsage")

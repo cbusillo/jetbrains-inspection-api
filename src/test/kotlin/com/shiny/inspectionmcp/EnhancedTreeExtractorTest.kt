@@ -256,6 +256,7 @@ class EnhancedTreeExtractorTest {
         assertEquals(0, extractor.clampDocumentOffset(5, -1))
     }
 
+    @Suppress("unused", "SameReturnValue")
     private class FallbackProblem(private val virtualFile: VirtualFile) {
         fun getDescription(): String = "Fallback warning"
         fun getVirtualFile(): VirtualFile = virtualFile
