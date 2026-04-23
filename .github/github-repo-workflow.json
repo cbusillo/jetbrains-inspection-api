@@ -1,0 +1,13 @@
+{
+  "defaultBranch": "master",
+  "importantWorkflows": ["Release"],
+  "qaLabels": [],
+  "deployLabels": [],
+  "healthUrls": [],
+  "relatedRepos": [],
+  "validatedThrough": [],
+  "cleanup": {
+    "deleteMergedLocalBranches": true,
+    "removeMergedCleanWorktrees": true
+  }
+}
