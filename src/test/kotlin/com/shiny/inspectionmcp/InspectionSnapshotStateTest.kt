@@ -655,6 +655,20 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Root child count falls back to reflective getChildCount access")
+    fun testReadInspectionRootChildCountFallback() {
+        class ReflectiveRoot(private val childCount: Int) {
+            fun getChildCount(): Int = childCount
+        }
+
+        class OpaqueRoot
+
+        assertEquals(4, readInspectionRootChildCount(ReflectiveRoot(4)))
+        assertEquals(null, readInspectionRootChildCount(OpaqueRoot()))
+        assertEquals(null, readInspectionRootChildCount(null))
+    }
+
+    @Test
     @DisplayName("Settled clean inspection views require finished problem state")
     fun testSettledCleanInspectionViewRequiresFinishedProblemState() {
         assertFalse(

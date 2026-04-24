@@ -32,6 +32,7 @@ import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
 import java.awt.Container
 import java.io.File
+import java.lang.reflect.Method
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
@@ -77,6 +78,38 @@ internal data class InspectionViewObservation(
     val updateStateReadable: Boolean = true,
     val problemStateReadable: Boolean = true,
 )
+
+private val noMethod = Any()
+private val zeroArgMethodCache = java.util.concurrent.ConcurrentHashMap<Class<*>, java.util.concurrent.ConcurrentHashMap<String, Any>>()
+
+private fun getZeroArgMethod(targetClass: Class<*>, name: String): Method? {
+    val perClassCache = zeroArgMethodCache.computeIfAbsent(targetClass) { java.util.concurrent.ConcurrentHashMap() }
+    val cached = perClassCache[name]
+    if (cached != null) {
+        return if (cached === noMethod) null else cached as Method
+    }
+
+    val resolved = try {
+        targetClass.getMethod(name)
+    } catch (_: Exception) {
+        null
+    }
+    perClassCache[name] = resolved ?: noMethod
+    return resolved
+}
+
+internal fun readInspectionRootChildCount(root: Any?): Int? {
+    return when (root) {
+        null -> null
+        is TreeNode -> root.childCount
+        else -> try {
+            val childCountMethod = getZeroArgMethod(root.javaClass, "getChildCount") ?: return null
+            (childCountMethod.invoke(root) as? Number)?.toInt()
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
 
 internal data class InspectionRunState(
     val runId: Long,
@@ -1223,6 +1256,7 @@ class InspectionHandler : HttpRequestHandler() {
                     var observedSettledEmptyInspectionView = false
                     var observedNonEmptyInspectionTree = false
                     var inspectionViewUpdating = false
+                    var lastViewObservation: InspectionViewObservation? = null
 
                     fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                         val app = ApplicationManager.getApplication()
@@ -1241,7 +1275,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                         fun inspectViewState(): InspectionViewObservation {
                             val rootChildCount = try {
-                                (view.tree.model.root as? TreeNode)?.childCount
+                                readInspectionRootChildCount(view.tree.model.root)
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
                                 null
@@ -1315,6 +1349,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     problemStateReadable = false,
                                 )
                             }
+                            lastViewObservation = viewObservation
                             inspectionViewUpdating = viewObservation.isUpdating
                             when {
                                 hasInspectionViewProblems(viewObservation) -> {
@@ -1416,7 +1451,9 @@ class InspectionHandler : HttpRequestHandler() {
                                 "viewReadyOk=$viewReadyOk, " +
                                 "observedInspectionView=$observedInspectionView, " +
                                 "observedSettledEmptyInspectionView=$observedSettledEmptyInspectionView, " +
-                                "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree"
+                                "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree, " +
+                                "inspectionViewUpdating=$inspectionViewUpdating, " +
+                                "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                         )
                     }
                             if (isCurrentInspectionRun(key, runId)) {
