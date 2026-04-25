@@ -251,6 +251,46 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Scoped clean snapshot ignores unrelated live tool-window problems")
+    fun testScopedCleanSnapshotIgnoresUnrelatedLiveProblems() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns listOf(
+            mapOf(
+                "description" to "Unrelated warning",
+                "file" to "/tmp/TestProject/src/app.js",
+                "line" to 12,
+                "column" to 4,
+                "severity" to "weak_warning",
+                "inspectionType" to "JSUnresolvedReference",
+            )
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf("README.md"),
+                ),
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals(0, status["total_problems"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals("inspection_view", status["results_source"])
+    }
+
+    @Test
     @DisplayName("Problems endpoint reports capture incomplete instead of fake empty results")
     fun testProblemsEndpointReportsCaptureIncomplete() {
         InspectionResultsStore.setSnapshot(
@@ -1050,6 +1090,35 @@ class InspectionSnapshotStateTest {
                 observedSettledEmptyInspectionView = true,
                 observedStableReadableEmptyInspectionView = false,
                 observedNonEmptyInspectionTree = false,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Whole-project no-view capture keeps tool-window results")
+    fun testSelectTrustedToolResultsForWholeProjectCapture() {
+        val toolResults = listOf(
+            mapOf("file" to "/tmp/TestProject/src/app.js", "description" to "warning")
+        )
+        val compatibleToolResults = emptyList<Map<String, Any>>()
+
+        assertEquals(
+            toolResults,
+            selectTrustedToolResults(
+                toolResults = toolResults,
+                compatibleToolResults = compatibleToolResults,
+                observedInspectionView = false,
+                hasScopedMatcher = false,
+            )
+        )
+
+        assertEquals(
+            compatibleToolResults,
+            selectTrustedToolResults(
+                toolResults = toolResults,
+                compatibleToolResults = compatibleToolResults,
+                observedInspectionView = false,
+                hasScopedMatcher = true,
             )
         )
     }

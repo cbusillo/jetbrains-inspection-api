@@ -61,6 +61,15 @@ internal data class InspectionProjectStateSnapshot(
     val unsavedProjectDocuments: Int,
 )
 
+internal data class InspectionCaptureScope(
+    val scopeParam: String? = null,
+    val directoryParam: String? = null,
+    val files: List<String>? = null,
+    val includeUnversioned: Boolean = true,
+    val changedFilesMode: String? = null,
+    val maxFiles: Int? = null,
+)
+
 internal data class InspectionResultsSnapshot(
     val problems: List<Map<String, Any>>,
     val timestamp: Long,
@@ -68,6 +77,7 @@ internal data class InspectionResultsSnapshot(
     val outcome: InspectionSnapshotOutcome,
     val source: String,
     val note: String? = null,
+    val captureScope: InspectionCaptureScope? = null,
 )
 
 internal data class InspectionViewObservation(
@@ -260,6 +270,19 @@ internal fun hasUsableInspectionViewEvidence(
         observedStableReadableEmptyInspectionView ||
         observedNonEmptyInspectionTree ||
         (inspectionViewObservationCount > 0 && nullRootChildObservationCount < inspectionViewObservationCount)
+}
+
+internal fun selectTrustedToolResults(
+    toolResults: List<Map<String, Any>>,
+    compatibleToolResults: List<Map<String, Any>>,
+    observedInspectionView: Boolean,
+    hasScopedMatcher: Boolean,
+): List<Map<String, Any>> {
+    return when {
+        observedInspectionView -> compatibleToolResults
+        hasScopedMatcher -> compatibleToolResults
+        else -> toolResults
+    }
 }
 
 internal fun cleanWaitHasSettled(
@@ -823,12 +846,25 @@ class InspectionHandler : HttpRequestHandler() {
             emptyList()
         }
 
-        if (liveProblems.isEmpty()) {
+        val captureScopeMatcher = snapshot.captureScope?.let { captureScope ->
+            buildScopeProblemMatcher(
+                project = project,
+                scopeParam = captureScope.scopeParam,
+                directoryParam = captureScope.directoryParam,
+                files = captureScope.files,
+                includeUnversioned = captureScope.includeUnversioned,
+                changedFilesMode = captureScope.changedFilesMode,
+                maxFiles = captureScope.maxFiles,
+            )
+        }
+        val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
+
+        if (compatibleLiveProblems.isEmpty()) {
             return snapshot
         }
 
         val reconciledSnapshot = snapshot.copy(
-            problems = liveProblems,
+            problems = compatibleLiveProblems,
             timestamp = System.currentTimeMillis(),
             projectState = captureProjectState(project),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
@@ -1204,6 +1240,14 @@ class InspectionHandler : HttpRequestHandler() {
         profileName: String? = null,
     ) {
         val key = projectKey(project)
+        val captureScope = InspectionCaptureScope(
+            scopeParam = scopeParam,
+            directoryParam = directoryParam,
+            files = files,
+            includeUnversioned = includeUnversioned,
+            changedFilesMode = changedFilesMode,
+            maxFiles = maxFiles,
+        )
         var captureScheduled = false
         try {
             if (!isCurrentInspectionRun(key, runId)) {
@@ -1456,11 +1500,12 @@ class InspectionHandler : HttpRequestHandler() {
                             if (compatibleToolResults.isNotEmpty()) {
                                 compatibleToolWindowObservationCount += 1
                             }
-                            val trustedToolResults = when {
-                                observedInspectionView -> compatibleToolResults
-                                scopeProblemMatcher != null -> compatibleToolResults
-                                else -> emptyList()
-                            }
+                            val trustedToolResults = selectTrustedToolResults(
+                                toolResults = toolResults,
+                                compatibleToolResults = compatibleToolResults,
+                                observedInspectionView = observedInspectionView,
+                                hasScopedMatcher = scopeProblemMatcher != null,
+                            )
                             if (trustedToolResults.size > bestResults.size) {
                                 bestResults = trustedToolResults
                                 bestSource = "tool_window"
@@ -1558,6 +1603,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 projectState = snapshotState,
                                 outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
                                 source = bestSource,
+                                captureScope = captureScope,
                             )
                             emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
                                 problems = emptyList(),
@@ -1565,6 +1611,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 projectState = snapshotState,
                                 outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
                                 source = "inspection_view",
+                                captureScope = captureScope,
                             )
                             else -> InspectionResultsSnapshot(
                                 problems = emptyList(),
@@ -1573,6 +1620,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                                 source = if (viewReadyOk) "inspection_view" else "tool_window",
                                 note = emptyNote,
+                                captureScope = captureScope,
                             )
                         }
                         if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
@@ -1611,6 +1659,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                                         source = "inspection_view",
                                         note = "Inspection failed before results could be captured.",
+                                        captureScope = captureScope,
                                     )
                                 )
                             }
@@ -1622,12 +1671,12 @@ class InspectionHandler : HttpRequestHandler() {
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw e
             } catch (_: Exception) {
-                publishCaptureFailureIfCurrent(key, runId, project)
+                publishCaptureFailureIfCurrent(key, runId, project, captureScope)
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
             throw e
         } catch (_: Exception) {
-            publishCaptureFailureIfCurrent(key, runId, project)
+            publishCaptureFailureIfCurrent(key, runId, project, captureScope)
         } finally {
             if (!captureScheduled) {
                 finishInspectionRun(key, runId)
@@ -1669,7 +1718,12 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun publishCaptureFailureIfCurrent(key: String, runId: Long, project: Project) {
+    private fun publishCaptureFailureIfCurrent(
+        key: String,
+        runId: Long,
+        project: Project,
+        captureScope: InspectionCaptureScope,
+    ) {
         if (!isCurrentInspectionRun(key, runId)) {
             return
         }
@@ -1682,6 +1736,7 @@ class InspectionHandler : HttpRequestHandler() {
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
                 note = "Inspection failed before results could be captured.",
+                captureScope = captureScope,
             )
         )
     }
