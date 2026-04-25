@@ -4,9 +4,12 @@ import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.openapi.util.ThrowableComputable
@@ -277,6 +280,61 @@ class InspectionSnapshotStateTest {
                 captureScope = InspectionCaptureScope(
                     scopeParam = "files",
                     files = listOf("README.md"),
+                ),
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals(0, status["total_problems"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals("inspection_view", status["results_source"])
+    }
+
+    @Test
+    @DisplayName("Current-file clean snapshot stays bound to the captured file during reconciliation")
+    fun testCurrentFileCleanSnapshotUsesCapturedFilePath() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns listOf(
+            mapOf(
+                "description" to "Different editor tab warning",
+                "file" to "/tmp/TestProject/src/other.kt",
+                "line" to 8,
+                "column" to 2,
+                "severity" to "warning",
+                "inspectionType" to "DifferentFileInspection",
+            )
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        val mockFileEditorManager = mockk<FileEditorManager>()
+        val mockActiveFile = mockk<VirtualFile>()
+        val mockProjectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } returns mockFileEditorManager
+        every { mockFileEditorManager.selectedFiles } returns arrayOf(mockActiveFile)
+        every { mockFileEditorManager.openFiles } returns arrayOf(mockActiveFile)
+        every { mockActiveFile.isValid } returns true
+        every { mockActiveFile.isInLocalFileSystem } returns true
+        every { mockActiveFile.path } returns "/tmp/TestProject/src/other.kt"
+
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns mockProjectFileIndex
+        every { mockProjectFileIndex.isInContent(mockActiveFile) } returns true
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/original.kt",
                 ),
             ),
         )
@@ -758,7 +816,7 @@ class InspectionSnapshotStateTest {
     @Test
     @DisplayName("Settled clean inspection views require finished problem state")
     fun testSettledCleanInspectionViewRequiresFinishedProblemState() {
-        assertTrue(
+        assertFalse(
             isReadableEmptyInspectionView(
                 InspectionViewObservation(
                     isUpdating = true,

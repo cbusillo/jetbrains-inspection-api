@@ -65,6 +65,7 @@ internal data class InspectionCaptureScope(
     val scopeParam: String? = null,
     val directoryParam: String? = null,
     val files: List<String>? = null,
+    val resolvedCurrentFile: String? = null,
     val includeUnversioned: Boolean = true,
     val changedFilesMode: String? = null,
     val maxFiles: Int? = null,
@@ -242,6 +243,7 @@ internal fun isSettledCleanInspectionView(observation: InspectionViewObservation
 
 internal fun isReadableEmptyInspectionView(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
+        observation.problemStateReadable &&
         observation.rootChildCount == 0 &&
         !observation.hasProblems
 }
@@ -852,6 +854,7 @@ class InspectionHandler : HttpRequestHandler() {
                 scopeParam = captureScope.scopeParam,
                 directoryParam = captureScope.directoryParam,
                 files = captureScope.files,
+                resolvedCurrentFile = captureScope.resolvedCurrentFile,
                 includeUnversioned = captureScope.includeUnversioned,
                 changedFilesMode = captureScope.changedFilesMode,
                 maxFiles = captureScope.maxFiles,
@@ -1240,10 +1243,16 @@ class InspectionHandler : HttpRequestHandler() {
         profileName: String? = null,
     ) {
         val key = projectKey(project)
+        val resolvedCurrentFile = if (scopeParam?.lowercase()?.trim() == "current_file") {
+            resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
+        } else {
+            null
+        }
         val captureScope = InspectionCaptureScope(
             scopeParam = scopeParam,
             directoryParam = directoryParam,
             files = files,
+            resolvedCurrentFile = resolvedCurrentFile,
             includeUnversioned = includeUnversioned,
             changedFilesMode = changedFilesMode,
             maxFiles = maxFiles,
@@ -1264,6 +1273,7 @@ class InspectionHandler : HttpRequestHandler() {
                 scopeParam = scopeParam,
                 directoryParam = directoryParam,
                 files = files,
+                resolvedCurrentFile = resolvedCurrentFile,
                 includeUnversioned = includeUnversioned,
                 changedFilesMode = changedFilesMode,
                 maxFiles = maxFiles
@@ -1273,6 +1283,7 @@ class InspectionHandler : HttpRequestHandler() {
                 scopeParam = scopeParam,
                 directoryParam = directoryParam,
                 files = files,
+                resolvedCurrentFile = resolvedCurrentFile,
                 includeUnversioned = includeUnversioned,
                 changedFilesMode = changedFilesMode,
                 maxFiles = maxFiles,
@@ -1840,6 +1851,28 @@ class InspectionHandler : HttpRequestHandler() {
         changedFilesMode: String?,
         maxFiles: Int?
     ): AnalysisScope {
+        return buildAnalysisScope(
+            project = project,
+            scopeParam = scopeParam,
+            directoryParam = directoryParam,
+            files = files,
+            resolvedCurrentFile = null,
+            includeUnversioned = includeUnversioned,
+            changedFilesMode = changedFilesMode,
+            maxFiles = maxFiles,
+        )
+    }
+
+    private fun buildAnalysisScope(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?,
+        files: List<String>?,
+        resolvedCurrentFile: String?,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?
+    ): AnalysisScope {
         return try {
             val scopeLower = scopeParam?.lowercase()?.trim()
 
@@ -1904,7 +1937,7 @@ class InspectionHandler : HttpRequestHandler() {
 
             // 1) Explicit current file
             if (scopeLower == "current_file") {
-                val vf = resolveActiveEditorFile(project)
+                val vf = resolvedCurrentFile?.let { LocalFileSystem.getInstance().findFileByPath(it) } ?: resolveActiveEditorFile(project)
                 if (vf != null) {
                     val psiFile = PsiManager.getInstance(project).findFile(vf)
                     if (psiFile != null) return AnalysisScope(psiFile)
@@ -1945,6 +1978,7 @@ class InspectionHandler : HttpRequestHandler() {
         scopeParam: String?,
         directoryParam: String?,
         files: List<String>?,
+        resolvedCurrentFile: String?,
         includeUnversioned: Boolean,
         changedFilesMode: String?,
         maxFiles: Int?,
@@ -2032,7 +2066,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         if (scopeLower == "current_file") {
-            val activeFile = resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
+            val activeFile = resolvedCurrentFile ?: resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
             return activeFile?.let { exactFileMatcher(setOf(it)) }
         }
 
