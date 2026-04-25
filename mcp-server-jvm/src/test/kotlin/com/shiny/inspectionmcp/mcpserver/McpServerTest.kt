@@ -31,6 +31,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
@@ -749,6 +750,201 @@ class McpServerTest {
             val recovered = resolver.resolve(args)
             assertEquals(sessionId, recovered.identity?.get("session_id")?.jsonPrimitive?.contentOrNull)
         }
+    }
+
+    @Test
+    fun inspectionListProjectsReportsFixedTargetMode() {
+        val executor = ToolExecutor("http://localhost:63343/api/inspection", HttpClient.newHttpClient(), "63343")
+
+        val result = executor.handleToolCall(buildToolCall("inspection_list_projects", buildJsonObject { }))
+        val text = result.firstText()
+
+        assertFalse(result.isError())
+        assertTrue(text.contains("\"mode\": \"fixed\""))
+        assertTrue(text.contains("\"port\": \"63343\""))
+        assertTrue(text.contains("http://localhost:63343/api/inspection"))
+    }
+
+    @Test
+    fun autoRoutingUsesFreshRegistryIdentityBeforePortScan() {
+        MockIdeServer(identityProjectName = "registry-project", identityBasePath = "/tmp/registry-project").use { server ->
+            server.start()
+            Files.writeString(tempDir.resolve("registry-project.json"), registryIdentityBody(server.port, "/tmp/registry-project"))
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = emptyList(),
+            )
+
+            val target = resolver.resolve(
+                buildJsonObject { put("project_path", JsonPrimitive("/tmp/registry-project")) }
+            )
+
+            assertEquals(server.port.toString(), target.idePort)
+            assertEquals("registry-project", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+        }
+    }
+
+    @Test
+    fun autoRoutingIgnoresStaleRegistryIdentityAndFallsBackToPortScan() {
+        MockIdeServer().use { server ->
+            server.start()
+            Files.writeString(
+                tempDir.resolve("stale.json"),
+                registryIdentityBody(server.port, "/tmp/stale-project", heartbeatMs = 1),
+            )
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+                nowMs = { 1_000_000 },
+            )
+
+            val target = resolver.resolve(
+                buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api")) }
+            )
+
+            assertEquals(server.port.toString(), target.idePort)
+            assertEquals("jetbrains-inspection-api", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+        }
+    }
+
+    @Test
+    fun autoRoutingReportsNoDiscoveredIdeInstances() {
+        val resolver = AutoTargetResolver(
+            httpClientFactory = { HttpClient.newHttpClient() },
+            registryDir = tempDir,
+            scanPorts = emptyList(),
+        )
+
+        val result = runCatching { resolver.resolve(buildJsonObject { }) }
+
+        assertTrue(result.isFailure)
+        assertTrue(result.exceptionOrNull()?.message?.contains("No JetBrains IDE inspection plugin instances") == true)
+    }
+
+    @Test
+    fun autoRoutingReportsDiscoveredProjectsWhenNoProjectMatches() {
+        MockIdeServer().use { server ->
+            server.start()
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+            )
+
+            val result = runCatching {
+                resolver.resolve(buildJsonObject { put("project_path", JsonPrimitive("/tmp/not-open")) })
+            }
+
+            assertTrue(result.isFailure)
+            val message = result.exceptionOrNull()?.message ?: ""
+            assertTrue(message.contains("No open JetBrains project matched this request"))
+            assertTrue(message.contains("Mock IDEA / jetbrains-inspection-api / /tmp/jetbrains-inspection-api"))
+        }
+    }
+
+    @Test
+    fun autoRoutingCanSelectByIdeNameAndProjectKey() {
+        MockIdeServer().use { server ->
+            server.start()
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+            )
+
+            val target = resolver.resolve(
+                buildJsonObject {
+                    put("ide", JsonPrimitive("idea"))
+                    put("project_key", JsonPrimitive("path:/tmp/jetbrains-inspection-api"))
+                },
+            )
+
+            assertEquals(server.port.toString(), target.idePort)
+            assertEquals("path:/tmp/jetbrains-inspection-api", target.project?.get("project_key")?.jsonPrimitive?.contentOrNull)
+        }
+    }
+
+    @Test
+    fun autoRoutingMatchesProjectNameCaseInsensitively() {
+        MockIdeServer().use { server ->
+            server.start()
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+            )
+
+            val target = resolver.resolve(
+                buildJsonObject { put("project", JsonPrimitive("JETBRAINS-INSPECTION-API")) },
+            )
+
+            assertEquals(server.port.toString(), target.idePort)
+            assertEquals("jetbrains-inspection-api", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+        }
+    }
+
+    @Test
+    fun autoRoutingMatchesNestedProjectPath() {
+        MockIdeServer().use { server ->
+            server.start()
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+            )
+
+            val target = resolver.resolve(
+                buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api/src/main")) },
+            )
+
+            assertEquals(server.port.toString(), target.idePort)
+        }
+    }
+
+    @Test
+    fun defaultAutoRoutingSettingsUseRegistryDirAndInspectionPortRange() {
+        val registryDir = defaultRegistryDir().toString()
+        val ports = defaultScanPorts()
+
+        assertTrue(registryDir.endsWith("jetbrains-inspection-api/instances"))
+        assertEquals((63340..63349).toList(), ports)
+    }
+
+    @Test
+    fun targetResolverDefaultInvalidateIsNoOp() {
+        val resolver: InspectionTargetResolver = FixedTargetResolver("http://localhost:63343/api/inspection", "63343")
+        val target = resolver.resolve(buildJsonObject { })
+
+        resolver.invalidate(target)
+
+        assertEquals("63343", target.idePort)
+    }
+
+    private fun registryIdentityBody(
+        port: Int,
+        basePath: String,
+        heartbeatMs: Long = System.currentTimeMillis(),
+    ): String {
+        return """
+            {
+              "session_id":"registry-$port",
+              "started_at_ms":1,
+              "heartbeat_ms":$heartbeatMs,
+              "pid":${ProcessHandle.current().pid()},
+              "port":$port,
+              "ide_name":"Mock IDEA",
+              "ide_product_code":"IU",
+              "plugin_version":"test",
+              "open_projects":[{
+                "project_key":"path:$basePath",
+                "name":"${basePath.substringAfterLast('/')}",
+                "base_path":"$basePath",
+                "focused":true
+              }]
+            }
+        """.trimIndent()
     }
 }
 
