@@ -382,24 +382,6 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | java -jar /path/to/plugi
 IDE_PORT=63340 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
-## Agent Workflow Guidance
-
-Prefer repo-scoped skills or other on-demand agent guidance for inspection
-workflows instead of pasting long command lists into always-on instructions.
-
-For agentic code-quality checks:
-
-1. Make code changes.
-2. Trigger the narrowest useful inspection scope.
-3. Wait for completion or check status.
-4. Fetch filtered or paginated problems.
-5. Fix critical issues found.
-6. Run tests.
-7. Commit changes.
-
-When result sets are large, filter by severity, problem type, file pattern, or
-pagination before loading findings into an LLM context.
-
 ## Optional commit gate
 
 This repo ships a shared commit gate script in `scripts/commit-gate.sh`.
