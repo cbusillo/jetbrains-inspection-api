@@ -349,6 +349,61 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Current-file snapshots without a pinned file reconcile as whole-project results")
+    fun testCurrentFileSnapshotWithoutPinnedFileDoesNotUseLaterActiveTab() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns listOf(
+            mapOf(
+                "description" to "Whole-project warning",
+                "file" to "/tmp/TestProject/src/other.kt",
+                "line" to 8,
+                "column" to 2,
+                "severity" to "warning",
+                "inspectionType" to "DifferentFileInspection",
+            )
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        val mockFileEditorManager = mockk<FileEditorManager>()
+        val mockActiveFile = mockk<VirtualFile>()
+        val mockProjectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } returns mockFileEditorManager
+        every { mockFileEditorManager.selectedFiles } returns arrayOf(mockActiveFile)
+        every { mockFileEditorManager.openFiles } returns arrayOf(mockActiveFile)
+        every { mockActiveFile.isValid } returns true
+        every { mockActiveFile.isInLocalFileSystem } returns true
+        every { mockActiveFile.path } returns "/tmp/TestProject/src/active.kt"
+
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns mockProjectFileIndex
+        every { mockProjectFileIndex.isInContent(mockActiveFile) } returns true
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = null,
+                ),
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(false, status["clean_inspection"])
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals(1, status["total_problems"])
+        assertEquals("problems_found", status["snapshot_outcome"])
+        assertEquals("tool_window", status["results_source"])
+    }
+
+    @Test
     @DisplayName("Problems endpoint reports capture incomplete instead of fake empty results")
     fun testProblemsEndpointReportsCaptureIncomplete() {
         InspectionResultsStore.setSnapshot(
@@ -828,6 +883,17 @@ class InspectionSnapshotStateTest {
         )
 
         assertFalse(
+            isReadableEmptyInspectionView(
+                InspectionViewObservation(
+                    isUpdating = true,
+                    hasProblems = false,
+                    rootChildCount = 0,
+                    problemStateReadable = true,
+                )
+            )
+        )
+
+        assertFalse(
             isSettledCleanInspectionView(
                 InspectionViewObservation(
                     isUpdating = true,
@@ -1076,11 +1142,24 @@ class InspectionSnapshotStateTest {
             )
         )
 
-        assertTrue(
+        assertFalse(
             shouldStopCapturePolling(
                 viewReadyOk = true,
                 observedInspectionView = true,
                 inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = false,
                 observedStableReadableEmptyInspectionView = true,
                 bestResultsCount = 0,

@@ -244,6 +244,7 @@ internal fun isSettledCleanInspectionView(observation: InspectionViewObservation
 internal fun isReadableEmptyInspectionView(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
         observation.problemStateReadable &&
+        !observation.isUpdating &&
         observation.rootChildCount == 0 &&
         !observation.hasProblems
 }
@@ -366,6 +367,7 @@ internal fun shouldStopCapturePolling(
     if (
         viewReadyOk &&
             observedInspectionView &&
+            !inspectionViewUpdating &&
             observedStableReadableEmptyInspectionView &&
             stableForMs >= minStableMs &&
             pollingElapsedMs >= minReadableEmptyResultsWaitMs
@@ -1243,13 +1245,19 @@ class InspectionHandler : HttpRequestHandler() {
         profileName: String? = null,
     ) {
         val key = projectKey(project)
-        val resolvedCurrentFile = if (scopeParam?.lowercase()?.trim() == "current_file") {
+        val requestedCurrentFileScope = scopeParam?.lowercase()?.trim() == "current_file"
+        val resolvedCurrentFile = if (requestedCurrentFileScope) {
             resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
         } else {
             null
         }
+        val captureScopeParam = if (requestedCurrentFileScope && resolvedCurrentFile == null) {
+            null
+        } else {
+            scopeParam
+        }
         val captureScope = InspectionCaptureScope(
-            scopeParam = scopeParam,
+            scopeParam = captureScopeParam,
             directoryParam = directoryParam,
             files = files,
             resolvedCurrentFile = resolvedCurrentFile,
@@ -1937,7 +1945,7 @@ class InspectionHandler : HttpRequestHandler() {
 
             // 1) Explicit current file
             if (scopeLower == "current_file") {
-                val vf = resolvedCurrentFile?.let { LocalFileSystem.getInstance().findFileByPath(it) } ?: resolveActiveEditorFile(project)
+                val vf = resolvedCurrentFile?.let { LocalFileSystem.getInstance().findFileByPath(it) }
                 if (vf != null) {
                     val psiFile = PsiManager.getInstance(project).findFile(vf)
                     if (psiFile != null) return AnalysisScope(psiFile)
@@ -2066,8 +2074,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         if (scopeLower == "current_file") {
-            val activeFile = resolvedCurrentFile ?: resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
-            return activeFile?.let { exactFileMatcher(setOf(it)) }
+            return resolvedCurrentFile?.let { exactFileMatcher(setOf(it)) }
         }
 
         val dirPath = directoryParam?.trim()
