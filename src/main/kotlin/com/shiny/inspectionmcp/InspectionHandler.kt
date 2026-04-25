@@ -32,7 +32,6 @@ import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
 import java.awt.Container
 import java.io.File
-import java.lang.reflect.Method
 import java.nio.file.Files
 import java.nio.file.Paths
 import java.util.concurrent.TimeUnit
@@ -79,31 +78,12 @@ internal data class InspectionViewObservation(
     val problemStateReadable: Boolean = true,
 )
 
-private val noMethod = Any()
-private val zeroArgMethodCache = java.util.concurrent.ConcurrentHashMap<Class<*>, java.util.concurrent.ConcurrentHashMap<String, Any>>()
-
-private fun getZeroArgMethod(targetClass: Class<*>, name: String): Method? {
-    val perClassCache = zeroArgMethodCache.computeIfAbsent(targetClass) { java.util.concurrent.ConcurrentHashMap() }
-    val cached = perClassCache[name]
-    if (cached != null) {
-        return if (cached === noMethod) null else cached as Method
-    }
-
-    val resolved = try {
-        targetClass.getMethod(name)
-    } catch (_: Exception) {
-        null
-    }
-    perClassCache[name] = resolved ?: noMethod
-    return resolved
-}
-
 internal fun readInspectionRootChildCount(root: Any?): Int? {
     return when (root) {
         null -> null
         is TreeNode -> root.childCount
         else -> try {
-            val childCountMethod = getZeroArgMethod(root.javaClass, "getChildCount") ?: return null
+            val childCountMethod = root.javaClass.getMethod("getChildCount")
             (childCountMethod.invoke(root) as? Number)?.toInt()
         } catch (_: Exception) {
             null
@@ -223,13 +203,17 @@ internal fun classifyEmptyInspectionCapture(
     viewReadyOk: Boolean,
     observedInspectionView: Boolean,
     observedSettledEmptyInspectionView: Boolean,
+    observedStableReadableEmptyInspectionView: Boolean,
+    observedStableEmptyResultsWithoutInspectionView: Boolean,
     observedNonEmptyInspectionTree: Boolean,
 ): Pair<InspectionSnapshotOutcome, String?> {
     if (
         viewReadyOk &&
-            observedInspectionView &&
             !observedNonEmptyInspectionTree &&
-            observedSettledEmptyInspectionView
+            (
+                (observedInspectionView && (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)) ||
+                    observedStableEmptyResultsWithoutInspectionView
+                )
     ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
@@ -246,8 +230,36 @@ internal fun isSettledCleanInspectionView(observation: InspectionViewObservation
         !observation.hasProblems
 }
 
+internal fun isReadableEmptyInspectionView(observation: InspectionViewObservation): Boolean {
+    return observation.updateStateReadable &&
+        observation.rootChildCount == 0 &&
+        !observation.hasProblems
+}
+
 internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
     return observation.hasProblems
+}
+
+internal fun filterProblemsForScope(
+    problems: List<Map<String, Any>>,
+    scopeProblemMatcher: ((Map<String, Any>) -> Boolean)?,
+): List<Map<String, Any>> {
+    return scopeProblemMatcher?.let { matcher ->
+        problems.filter(matcher)
+    } ?: problems
+}
+
+internal fun hasUsableInspectionViewEvidence(
+    inspectionViewObservationCount: Int,
+    nullRootChildObservationCount: Int,
+    observedSettledEmptyInspectionView: Boolean,
+    observedStableReadableEmptyInspectionView: Boolean,
+    observedNonEmptyInspectionTree: Boolean,
+): Boolean {
+    return observedSettledEmptyInspectionView ||
+        observedStableReadableEmptyInspectionView ||
+        observedNonEmptyInspectionTree ||
+        (inspectionViewObservationCount > 0 && nullRootChildObservationCount < inspectionViewObservationCount)
 }
 
 internal fun cleanWaitHasSettled(
@@ -301,13 +313,15 @@ internal fun shouldStopCapturePolling(
     observedInspectionView: Boolean,
     inspectionViewUpdating: Boolean,
     observedSettledEmptyInspectionView: Boolean,
+    observedStableReadableEmptyInspectionView: Boolean,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
     minResultsWaitMs: Long = 15000L,
     minEmptyResultsWaitMs: Long = 15000L,
-    maxFallbackWaitMs: Long = 15000L,
+    minReadableEmptyResultsWaitMs: Long = 30000L,
+    maxFallbackWaitMs: Long = 60000L,
 ): Boolean {
     if (bestResultsCount > 0 && stableForMs >= minStableMs && pollingElapsedMs >= minResultsWaitMs) {
         return true
@@ -320,6 +334,16 @@ internal fun shouldStopCapturePolling(
             observedSettledEmptyInspectionView &&
             stableForMs >= minStableMs &&
             pollingElapsedMs >= minEmptyResultsWaitMs
+    ) {
+        return true
+    }
+
+    if (
+        viewReadyOk &&
+            observedInspectionView &&
+            observedStableReadableEmptyInspectionView &&
+            stableForMs >= minStableMs &&
+            pollingElapsedMs >= minReadableEmptyResultsWaitMs
     ) {
         return true
     }
@@ -1200,6 +1224,15 @@ class InspectionHandler : HttpRequestHandler() {
                 changedFilesMode = changedFilesMode,
                 maxFiles = maxFiles
             )
+            val scopeProblemMatcher = buildScopeProblemMatcher(
+                project = project,
+                scopeParam = scopeParam,
+                directoryParam = directoryParam,
+                files = files,
+                includeUnversioned = includeUnversioned,
+                changedFilesMode = changedFilesMode,
+                maxFiles = maxFiles,
+            )
             
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
@@ -1245,217 +1278,323 @@ class InspectionHandler : HttpRequestHandler() {
                             rethrowIfCanceled(e)
                             emptyList()
                         }
+                        val scopedContextResults = filterProblemsForScope(extractedFromContext, scopeProblemMatcher)
 
                         val captureStartMs = System.currentTimeMillis()
                         val deadlineMs = captureStartMs + 60000
-                    var bestResults: List<Map<String, Any>> = extractedFromContext
-                    var bestSource = if (extractedFromContext.isNotEmpty()) "global_context" else "inspection_view"
-                    var lastSize = bestResults.size
-                    var lastChangeMs = System.currentTimeMillis()
-                    var observedInspectionView = false
-                    var observedSettledEmptyInspectionView = false
-                    var observedNonEmptyInspectionTree = false
-                    var inspectionViewUpdating = false
-                    var lastViewObservation: InspectionViewObservation? = null
+                        var bestResults: List<Map<String, Any>> = scopedContextResults
+                        var bestSource = if (scopedContextResults.isNotEmpty()) "global_context" else "inspection_view"
+                        var lastSize = bestResults.size
+                        var lastChangeMs = System.currentTimeMillis()
+                        var observedInspectionView = false
+                        var observedSettledEmptyInspectionView = false
+                        var observedStableReadableEmptyInspectionView = false
+                        var observedStableEmptyResultsWithoutInspectionView = false
+                        var observedNonEmptyInspectionTree = false
+                        var inspectionViewUpdating = false
+                        var lastViewObservation: InspectionViewObservation? = null
+                        var readableEmptyInspectionViewStableSince: Long? = null
+                        var inspectionViewObservationCount = 0
+                        var readableEmptyInspectionViewObservationCount = 0
+                        var unreadableProblemStateObservationCount = 0
+                        var nullRootChildObservationCount = 0
+                        var toolWindowObservationCount = 0
+                        var compatibleToolWindowObservationCount = 0
 
-                    fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
-                        val app = ApplicationManager.getApplication()
-                        if (app.isDispatchThread) {
-                            return extractor.extractAllProblemsFromInspectionView(view, project)
+                        fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
+                            val app = ApplicationManager.getApplication()
+                            if (app.isDispatchThread) {
+                                return extractor.extractAllProblemsFromInspectionView(view, project)
+                            }
+                            val holder = AtomicReference<List<Map<String, Any>>>()
+                            app.invokeAndWait {
+                                holder.set(extractor.extractAllProblemsFromInspectionView(view, project))
+                            }
+                            return holder.get() ?: emptyList()
                         }
-                        val holder = AtomicReference<List<Map<String, Any>>>()
-                        app.invokeAndWait {
-                            holder.set(extractor.extractAllProblemsFromInspectionView(view, project))
-                        }
-                        return holder.get() ?: emptyList()
-                    }
 
-                    fun inspectViewStateSafe(view: InspectionResultsView): InspectionViewObservation {
-                        val app = ApplicationManager.getApplication()
+                        fun inspectViewStateSafe(view: InspectionResultsView): InspectionViewObservation {
+                            val app = ApplicationManager.getApplication()
 
-                        fun inspectViewState(): InspectionViewObservation {
-                            val rootChildCount = try {
-                                readInspectionRootChildCount(view.tree.model.root)
-                            } catch (e: Exception) {
-                                rethrowIfCanceled(e)
-                                null
+                            fun inspectViewState(): InspectionViewObservation {
+                                val rootChildCount = try {
+                                    readInspectionRootChildCount(view.tree.model.root)
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    null
+                                }
+                                val (hasProblems, problemStateReadable) = try {
+                                    view.hasProblems() to true
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    false to false
+                                }
+                                val (isUpdating, updateStateReadable) = try {
+                                    view.isUpdating to true
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    false to false
+                                }
+                                return InspectionViewObservation(
+                                    isUpdating = isUpdating,
+                                    hasProblems = hasProblems,
+                                    rootChildCount = rootChildCount,
+                                    updateStateReadable = updateStateReadable,
+                                    problemStateReadable = problemStateReadable,
+                                )
                             }
-                            val (hasProblems, problemStateReadable) = try {
-                                view.hasProblems() to true
-                            } catch (e: Exception) {
-                                rethrowIfCanceled(e)
-                                false to false
+
+                            if (app.isDispatchThread) {
+                                return inspectViewState()
                             }
-                            val (isUpdating, updateStateReadable) = try {
-                                view.isUpdating to true
-                            } catch (e: Exception) {
-                                rethrowIfCanceled(e)
-                                false to false
+
+                            val holder = AtomicReference<InspectionViewObservation>()
+                            app.invokeAndWait {
+                                holder.set(inspectViewState())
                             }
-                            return InspectionViewObservation(
-                                isUpdating = isUpdating,
-                                hasProblems = hasProblems,
-                                rootChildCount = rootChildCount,
-                                updateStateReadable = updateStateReadable,
-                                problemStateReadable = problemStateReadable,
+                            return holder.get() ?: InspectionViewObservation(
+                                isUpdating = false,
+                                hasProblems = false,
+                                rootChildCount = null,
+                                updateStateReadable = false,
+                                problemStateReadable = false,
                             )
                         }
 
-                        if (app.isDispatchThread) {
-                            return inspectViewState()
-                        }
+                        var viewReadyOk = false
 
-                        val holder = AtomicReference<InspectionViewObservation>()
-                        app.invokeAndWait {
-                            holder.set(inspectViewState())
-                        }
-                        return holder.get() ?: InspectionViewObservation(
-                            isUpdating = false,
-                            hasProblems = false,
-                            rootChildCount = null,
-                            updateStateReadable = false,
-                            problemStateReadable = false,
-                        )
-                    }
-
-                    val viewReadyOk = try {
-                        viewReady.waitFor(60000)
-                    } catch (e: Exception) {
-                        rethrowIfCanceled(e)
-                        false
-                    }
-
-                    while (System.currentTimeMillis() < deadlineMs) {
-                        val loopNow = System.currentTimeMillis()
-                        val view = try {
-                            @Suppress("UnstableApiUsage")
-                            globalContext.view
-                        } catch (e: Exception) {
-                            rethrowIfCanceled(e)
-                            null
-                        } ?: initialView
-
-                        if (viewReadyOk && view != null) {
-                            observedInspectionView = true
-                            val viewObservation = try {
-                                inspectViewStateSafe(view)
+                        while (System.currentTimeMillis() < deadlineMs) {
+                            val loopNow = System.currentTimeMillis()
+                            if (!viewReadyOk) {
+                                viewReadyOk = try {
+                                    viewReady.waitFor(1)
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    false
+                                }
+                            }
+                            val view = try {
+                                @Suppress("UnstableApiUsage")
+                                globalContext.view
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
-                                InspectionViewObservation(
-                                    isUpdating = false,
-                                    hasProblems = false,
-                                    rootChildCount = null,
-                                    updateStateReadable = false,
-                                    problemStateReadable = false,
-                                )
+                                null
+                            } ?: initialView
+                            if (!viewReadyOk && view != null) {
+                                viewReadyOk = true
                             }
-                            lastViewObservation = viewObservation
-                            inspectionViewUpdating = viewObservation.isUpdating
-                            when {
-                                hasInspectionViewProblems(viewObservation) -> {
-                                    observedNonEmptyInspectionTree = true
+
+                            if (viewReadyOk && view != null) {
+                                observedInspectionView = true
+                                val viewObservation = try {
+                                    inspectViewStateSafe(view)
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    InspectionViewObservation(
+                                        isUpdating = false,
+                                        hasProblems = false,
+                                        rootChildCount = null,
+                                        updateStateReadable = false,
+                                        problemStateReadable = false,
+                                    )
                                 }
-                                isSettledCleanInspectionView(viewObservation) -> {
-                                    observedSettledEmptyInspectionView = true
+                                inspectionViewObservationCount += 1
+                                if (!viewObservation.problemStateReadable) {
+                                    unreadableProblemStateObservationCount += 1
+                                }
+                                if (viewObservation.rootChildCount == null) {
+                                    nullRootChildObservationCount += 1
+                                }
+                                if (isReadableEmptyInspectionView(viewObservation)) {
+                                    readableEmptyInspectionViewObservationCount += 1
+                                }
+                                lastViewObservation = viewObservation
+                                inspectionViewUpdating = viewObservation.isUpdating
+                                when {
+                                    hasInspectionViewProblems(viewObservation) -> {
+                                        observedNonEmptyInspectionTree = true
+                                        readableEmptyInspectionViewStableSince = null
+                                    }
+                                    isSettledCleanInspectionView(viewObservation) -> {
+                                        observedSettledEmptyInspectionView = true
+                                        if (readableEmptyInspectionViewStableSince == null) {
+                                            readableEmptyInspectionViewStableSince = loopNow
+                                        }
+                                    }
+                                    isReadableEmptyInspectionView(viewObservation) -> {
+                                        if (readableEmptyInspectionViewStableSince == null) {
+                                            readableEmptyInspectionViewStableSince = loopNow
+                                        }
+                                    }
+                                    else -> {
+                                        readableEmptyInspectionViewStableSince = null
+                                    }
+                                }
+                                val attempt = try {
+                                    extractFromViewSafe(view)
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                    emptyList()
+                                }
+                                val scopedAttempt = filterProblemsForScope(attempt, scopeProblemMatcher)
+                                if (scopedAttempt.size > bestResults.size) {
+                                    bestResults = scopedAttempt
+                                    bestSource = "inspection_view"
                                 }
                             }
-                            val attempt = try {
-                                extractFromViewSafe(view)
+
+                            val toolResults = try {
+                                ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
+                                    extractor.extractAllProblems(project)
+                                }
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
                                 emptyList()
                             }
-                            if (attempt.size > bestResults.size) {
-                                bestResults = attempt
-                                bestSource = "inspection_view"
+                            toolWindowObservationCount += 1
+                            val compatibleToolResults = filterProblemsForScope(toolResults, scopeProblemMatcher)
+                            if (compatibleToolResults.isNotEmpty()) {
+                                compatibleToolWindowObservationCount += 1
                             }
-                        }
-
-                        val toolResults = try {
-                            ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
-                                extractor.extractAllProblems(project)
+                            val trustedToolResults = when {
+                                observedInspectionView -> compatibleToolResults
+                                scopeProblemMatcher != null -> compatibleToolResults
+                                else -> emptyList()
                             }
-                        } catch (e: Exception) {
-                            rethrowIfCanceled(e)
-                            emptyList()
-                        }
-                        if (toolResults.size > bestResults.size) {
-                            bestResults = toolResults
-                            bestSource = "tool_window"
-                        }
+                            if (trustedToolResults.size > bestResults.size) {
+                                bestResults = trustedToolResults
+                                bestSource = "tool_window"
+                            }
 
-                        if (bestResults.size != lastSize) {
-                            lastSize = bestResults.size
-                            lastChangeMs = loopNow
-                        }
+                            if (bestResults.size != lastSize) {
+                                lastSize = bestResults.size
+                                lastChangeMs = loopNow
+                            }
 
-                        val stableForMs = loopNow - lastChangeMs
-                        val pollingElapsedMs = loopNow - captureStartMs
-                        if (
-                            shouldStopCapturePolling(
-                                viewReadyOk = viewReadyOk,
-                                observedInspectionView = observedInspectionView,
-                                inspectionViewUpdating = inspectionViewUpdating,
+                            val stableForMs = loopNow - lastChangeMs
+                            val pollingElapsedMs = loopNow - captureStartMs
+                            val hasUsableViewEvidence = hasUsableInspectionViewEvidence(
+                                inspectionViewObservationCount = inspectionViewObservationCount,
+                                nullRootChildObservationCount = nullRootChildObservationCount,
                                 observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                                bestResultsCount = bestResults.size,
-                                stableForMs = stableForMs,
-                                pollingElapsedMs = pollingElapsedMs,
+                                observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                                observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
                             )
+                            if (
+                                !observedStableReadableEmptyInspectionView &&
+                                readableEmptyInspectionViewStableSince != null &&
+                                loopNow - readableEmptyInspectionViewStableSince >= 5000L &&
+                                pollingElapsedMs >= 30000L
+                            ) {
+                                observedStableReadableEmptyInspectionView = true
+                            }
+                            if (
+                                !observedStableEmptyResultsWithoutInspectionView &&
+                                viewReadyOk &&
+                                scopeProblemMatcher != null &&
+                                scopedContextResults.isEmpty() &&
+                                bestResults.isEmpty() &&
+                                !hasUsableViewEvidence &&
+                                stableForMs >= 5000L &&
+                                pollingElapsedMs >= 60000L
+                            ) {
+                                observedStableEmptyResultsWithoutInspectionView = true
+                            }
+                            if (
+                                shouldStopCapturePolling(
+                                    viewReadyOk = viewReadyOk,
+                                    observedInspectionView = observedInspectionView,
+                                    inspectionViewUpdating = inspectionViewUpdating,
+                                    observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
+                                    observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                                    bestResultsCount = bestResults.size,
+                                    stableForMs = stableForMs,
+                                    pollingElapsedMs = pollingElapsedMs,
+                                )
+                            ) {
+                                break
+                            }
+
+                            try {
+                                Thread.sleep(1000)
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                                break
+                            }
+                        }
+
+                        if (
+                            !observedStableEmptyResultsWithoutInspectionView &&
+                            viewReadyOk &&
+                            scopeProblemMatcher != null &&
+                            scopedContextResults.isEmpty() &&
+                            bestResults.isEmpty() &&
+                            !hasUsableInspectionViewEvidence(
+                                inspectionViewObservationCount = inspectionViewObservationCount,
+                                nullRootChildObservationCount = nullRootChildObservationCount,
+                                observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
+                                observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                                observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                            ) &&
+                            System.currentTimeMillis() >= deadlineMs
                         ) {
-                            break
+                            observedStableEmptyResultsWithoutInspectionView = true
                         }
 
-                        try {
-                            Thread.sleep(1000)
-                        } catch (e: Exception) {
-                            rethrowIfCanceled(e)
-                            break
+                        syncProjectState(project)
+                        val snapshotState = captureProjectState(project)
+                        val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
+                            viewReadyOk = viewReadyOk,
+                            observedInspectionView = observedInspectionView,
+                            observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
+                            observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                            observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
+                            observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                        )
+                        val snapshot = when {
+                            bestResults.isNotEmpty() -> InspectionResultsSnapshot(
+                                problems = bestResults,
+                                timestamp = System.currentTimeMillis(),
+                                projectState = snapshotState,
+                                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                                source = bestSource,
+                            )
+                            emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
+                                problems = emptyList(),
+                                timestamp = System.currentTimeMillis(),
+                                projectState = snapshotState,
+                                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                                source = "inspection_view",
+                            )
+                            else -> InspectionResultsSnapshot(
+                                problems = emptyList(),
+                                timestamp = System.currentTimeMillis(),
+                                projectState = snapshotState,
+                                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                                source = if (viewReadyOk) "inspection_view" else "tool_window",
+                                note = emptyNote,
+                            )
                         }
-                    }
-
-                    syncProjectState(project)
-                    val snapshotState = captureProjectState(project)
-                    val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
-                        viewReadyOk = viewReadyOk,
-                        observedInspectionView = observedInspectionView,
-                        observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                        observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                    )
-                    val snapshot = when {
-                        bestResults.isNotEmpty() -> InspectionResultsSnapshot(
-                            problems = bestResults,
-                            timestamp = System.currentTimeMillis(),
-                            projectState = snapshotState,
-                            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
-                            source = bestSource,
-                        )
-                        emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
-                            problems = emptyList(),
-                            timestamp = System.currentTimeMillis(),
-                            projectState = snapshotState,
-                            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
-                            source = "inspection_view",
-                        )
-                        else -> InspectionResultsSnapshot(
-                            problems = emptyList(),
-                            timestamp = System.currentTimeMillis(),
-                            projectState = snapshotState,
-                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                            source = if (viewReadyOk) "inspection_view" else "tool_window",
-                            note = emptyNote,
-                        )
-                    }
-                    if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
-                        logger.info(
-                            "Inspection capture incomplete for ${project.name}: " +
-                                "viewReadyOk=$viewReadyOk, " +
-                                "observedInspectionView=$observedInspectionView, " +
-                                "observedSettledEmptyInspectionView=$observedSettledEmptyInspectionView, " +
-                                "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree, " +
-                                "inspectionViewUpdating=$inspectionViewUpdating, " +
-                                "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
-                        )
-                    }
+                        if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
+                            logger.info(
+                                "Inspection capture incomplete for ${project.name}: " +
+                                    "viewReadyOk=$viewReadyOk, " +
+                                    "observedInspectionView=$observedInspectionView, " +
+                                    "observedSettledEmptyInspectionView=$observedSettledEmptyInspectionView, " +
+                                    "observedStableReadableEmptyInspectionView=$observedStableReadableEmptyInspectionView, " +
+                                    "observedStableEmptyResultsWithoutInspectionView=$observedStableEmptyResultsWithoutInspectionView, " +
+                                    "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree, " +
+                                    "inspectionViewUpdating=$inspectionViewUpdating, " +
+                                    "inspectionViewObservationCount=$inspectionViewObservationCount, " +
+                                    "readableEmptyInspectionViewObservationCount=$readableEmptyInspectionViewObservationCount, " +
+                                    "unreadableProblemStateObservationCount=$unreadableProblemStateObservationCount, " +
+                                    "nullRootChildObservationCount=$nullRootChildObservationCount, " +
+                                    "toolWindowObservationCount=$toolWindowObservationCount, " +
+                                    "compatibleToolWindowObservationCount=$compatibleToolWindowObservationCount, " +
+                                    "readableEmptyInspectionViewStableForMs=${readableEmptyInspectionViewStableSince?.let { snapshot.timestamp - it } ?: 0L}, " +
+                                    "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
+                            )
+                        }
                             if (isCurrentInspectionRun(key, runId)) {
                                 resultsStore.setSnapshot(key, snapshot)
                             }
@@ -1744,6 +1883,117 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: Exception) {
             AnalysisScope(project)
         }
+    }
+
+    private fun buildScopeProblemMatcher(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?,
+        files: List<String>?,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?,
+    ): ((Map<String, Any>) -> Boolean)? {
+        val scopeLower = scopeParam?.lowercase()?.trim()
+
+        fun normalizeProblemPath(problem: Map<String, Any>): String? {
+            return normalizeFileSystemPath(problem["file"] as? String)
+        }
+
+        fun exactFileMatcher(paths: Set<String>): (Map<String, Any>) -> Boolean {
+            return { problem ->
+                normalizeProblemPath(problem)?.let(paths::contains) == true
+            }
+        }
+
+        fun directoryMatcher(dirPath: String): (Map<String, Any>) -> Boolean {
+            val normalizedDir = normalizeFileSystemPath(dirPath) ?: return { false }
+            val dirPrefix = if (normalizedDir.endsWith('/')) normalizedDir else "$normalizedDir/"
+            return { problem ->
+                val problemPath = normalizeProblemPath(problem)
+                problemPath != null && (problemPath == normalizedDir || problemPath.startsWith(dirPrefix))
+            }
+        }
+
+        if (scopeLower == "files" && !files.isNullOrEmpty()) {
+            val base = project.basePath
+            val resolved = files.mapNotNull { rawPath ->
+                val absolute = try {
+                    val path = Paths.get(rawPath)
+                    if (path.isAbsolute) rawPath else if (!base.isNullOrBlank()) Paths.get(base, rawPath).normalize().toString() else rawPath
+                } catch (_: Exception) {
+                    rawPath
+                }
+                normalizeFileSystemPath(absolute)
+            }.toSet()
+            return resolved.takeIf { it.isNotEmpty() }?.let(::exactFileMatcher)
+        }
+
+        if (scopeLower == "changed_files") {
+            val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
+            val changeFiles = clm.allChanges.mapNotNull { change ->
+                change.virtualFile ?: change.afterRevision?.file?.virtualFile ?: change.beforeRevision?.file?.virtualFile
+            }.toMutableList()
+
+            val mode = changedFilesMode?.lowercase()?.trim()
+            if (!mode.isNullOrBlank() && mode != "all") {
+                val gitSets = computeGitStagingSets(project)
+                if (gitSets != null) {
+                    val (stagedSet, unstagedSet) = gitSets
+                    val basePath = project.basePath
+                    if (!basePath.isNullOrBlank()) {
+                        fun relativePath(path: String): String {
+                            val relative = try {
+                                Paths.get(basePath).relativize(Paths.get(path)).toString()
+                            } catch (_: Exception) {
+                                path
+                            }
+                            return relative.replace('\\', '/')
+                        }
+                        changeFiles.retainAll { vf ->
+                            when (mode) {
+                                "staged" -> stagedSet.contains(relativePath(vf.path))
+                                "unstaged" -> unstagedSet.contains(relativePath(vf.path))
+                                else -> true
+                            }
+                        }
+                    }
+                }
+            }
+            if (includeUnversioned) {
+                try {
+                    val method = clm.javaClass.getMethod("getUnversionedFiles")
+                    @Suppress("UNCHECKED_CAST")
+                    val unversioned = method.invoke(clm) as? Collection<VirtualFile>
+                    if (unversioned != null) changeFiles.addAll(unversioned)
+                } catch (_: Exception) {
+                }
+            }
+            val limited = changeFiles.distinct().let { unique ->
+                if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
+            }
+            val resolved = limited.mapNotNull { normalizeFileSystemPath(it.path) }.toSet()
+            return resolved.takeIf { it.isNotEmpty() }?.let(::exactFileMatcher)
+        }
+
+        if (scopeLower == "current_file") {
+            val activeFile = resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
+            return activeFile?.let { exactFileMatcher(setOf(it)) }
+        }
+
+        val dirPath = directoryParam?.trim()
+        if (scopeLower == "directory" || !dirPath.isNullOrBlank()) {
+            val base = project.basePath
+            val absolute = when {
+                dirPath.isNullOrBlank() -> null
+                Paths.get(dirPath).isAbsolute -> dirPath
+                !base.isNullOrBlank() -> Paths.get(base, dirPath).normalize().toString()
+                else -> dirPath
+            }
+            return absolute?.let(::directoryMatcher)
+        }
+
+        return null
     }
 
     private fun computeGitStagingSets(project: Project): Pair<Set<String>, Set<String>>? {

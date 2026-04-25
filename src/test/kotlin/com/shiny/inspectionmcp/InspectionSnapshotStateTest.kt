@@ -597,6 +597,8 @@ class InspectionSnapshotStateTest {
             viewReadyOk = false,
             observedInspectionView = false,
             observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -607,6 +609,8 @@ class InspectionSnapshotStateTest {
             viewReadyOk = true,
             observedInspectionView = true,
             observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -617,15 +621,55 @@ class InspectionSnapshotStateTest {
             viewReadyOk = true,
             observedInspectionView = true,
             observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = true,
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, nonEmptyTree.first)
 
+        val stableReadableEmptyView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = true,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableReadableEmptyView.first)
+        assertEquals(null, stableReadableEmptyView.second)
+
+        val stableEmptyWithoutInspectionView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = false,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableEmptyWithoutInspectionView.first)
+        assertEquals(null, stableEmptyWithoutInspectionView.second)
+
+        val stableEmptyWithOpaqueInspectionView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableEmptyWithOpaqueInspectionView.first)
+        assertEquals(null, stableEmptyWithOpaqueInspectionView.second)
+
         val unreadableView = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
             observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -635,6 +679,8 @@ class InspectionSnapshotStateTest {
             viewReadyOk = true,
             observedInspectionView = true,
             observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
 
@@ -658,6 +704,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Root child count falls back to reflective getChildCount access")
     fun testReadInspectionRootChildCountFallback() {
         class ReflectiveRoot(private val childCount: Int) {
+            @Suppress("unused")
             fun getChildCount(): Int = childCount
         }
 
@@ -671,6 +718,17 @@ class InspectionSnapshotStateTest {
     @Test
     @DisplayName("Settled clean inspection views require finished problem state")
     fun testSettledCleanInspectionViewRequiresFinishedProblemState() {
+        assertTrue(
+            isReadableEmptyInspectionView(
+                InspectionViewObservation(
+                    isUpdating = true,
+                    hasProblems = false,
+                    rootChildCount = 0,
+                    problemStateReadable = false,
+                )
+            )
+        )
+
         assertFalse(
             isSettledCleanInspectionView(
                 InspectionViewObservation(
@@ -734,6 +792,26 @@ class InspectionSnapshotStateTest {
                 )
             )
         )
+
+        assertFalse(
+            isReadableEmptyInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = false,
+                    rootChildCount = 1,
+                )
+            )
+        )
+
+        assertFalse(
+            isReadableEmptyInspectionView(
+                InspectionViewObservation(
+                    isUpdating = false,
+                    hasProblems = true,
+                    rootChildCount = 0,
+                )
+            )
+        )
     }
 
     @Test
@@ -785,6 +863,7 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = false,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 7000,
@@ -797,6 +876,7 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = false,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
@@ -809,8 +889,22 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = false,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 4000,
+                pollingElapsedMs = 16000,
+            )
+        )
+
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 6000,
                 pollingElapsedMs = 16000,
             )
         )
@@ -821,9 +915,10 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = false,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
-                pollingElapsedMs = 16000,
+                pollingElapsedMs = 60000,
             )
         )
     }
@@ -837,6 +932,7 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = true,
                 inspectionViewUpdating = true,
                 observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
@@ -849,6 +945,7 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = true,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = true,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 7000,
@@ -861,9 +958,98 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = true,
                 inspectionViewUpdating = false,
                 observedSettledEmptyInspectionView = true,
+                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
+            )
+        )
+
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 20000,
+            )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Scoped problem filtering removes unrelated results")
+    fun testFilterProblemsForScope() {
+        val scopedProblems = listOf(
+            mapOf("file" to "/tmp/TestProject/README.md", "description" to "in scope"),
+            mapOf("file" to "/tmp/TestProject/docs/guide.md", "description" to "also in scope"),
+            mapOf("file" to "/tmp/OtherProject/README.md", "description" to "out of scope"),
+        )
+
+        val filtered = filterProblemsForScope(scopedProblems) { problem ->
+            (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
+        }
+
+        assertEquals(2, filtered.size)
+        assertTrue(filtered.all { (it["file"] as String).startsWith("/tmp/TestProject/") })
+        assertEquals(scopedProblems, filterProblemsForScope(scopedProblems, null))
+    }
+
+    @Test
+    @DisplayName("Opaque inspection views do not count as usable empty-view evidence")
+    fun testHasUsableInspectionViewEvidence() {
+        assertFalse(
+            hasUsableInspectionViewEvidence(
+                inspectionViewObservationCount = 0,
+                nullRootChildObservationCount = 0,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                observedNonEmptyInspectionTree = false,
+            )
+        )
+
+        assertFalse(
+            hasUsableInspectionViewEvidence(
+                inspectionViewObservationCount = 1,
+                nullRootChildObservationCount = 1,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                observedNonEmptyInspectionTree = false,
+            )
+        )
+
+        assertTrue(
+            hasUsableInspectionViewEvidence(
+                inspectionViewObservationCount = 2,
+                nullRootChildObservationCount = 1,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                observedNonEmptyInspectionTree = false,
+            )
+        )
+
+        assertTrue(
+            hasUsableInspectionViewEvidence(
+                inspectionViewObservationCount = 1,
+                nullRootChildObservationCount = 1,
+                observedSettledEmptyInspectionView = true,
+                observedStableReadableEmptyInspectionView = false,
+                observedNonEmptyInspectionTree = false,
             )
         )
     }
@@ -894,8 +1080,8 @@ class InspectionSnapshotStateTest {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "waitForInspection",
             String::class.java,
-            java.lang.Long::class.java,
-            java.lang.Long::class.java,
+            Long::class.javaObjectType,
+            Long::class.javaObjectType,
         )
         method.isAccessible = true
         return method.invoke(handler, "TestProject", timeoutMs, pollMs) as String
