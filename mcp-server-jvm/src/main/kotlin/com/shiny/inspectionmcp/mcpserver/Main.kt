@@ -32,7 +32,6 @@ import java.nio.charset.StandardCharsets
 import java.time.Duration
 
 private const val SERVER_NAME = "jetbrains-inspection-mcp"
-private const val DEFAULT_PORT = "63341"
 private const val DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 private val json = Json {
@@ -49,9 +48,12 @@ private val prettyJson = Json {
 private object VersionAnchor
 
 fun main() {
-    val idePort = System.getenv("IDE_PORT")?.takeIf { it.isNotBlank() } ?: DEFAULT_PORT
-    val baseUrl = "http://localhost:$idePort/api/inspection"
-    val toolExecutor = ToolExecutor(baseUrl, buildHttpClient(), idePort)
+    val fixedIdePort = System.getenv("IDE_PORT")?.takeIf { it.isNotBlank() }
+    val toolExecutor = if (fixedIdePort != null) {
+        ToolExecutor("http://localhost:$fixedIdePort/api/inspection", buildHttpClient(), fixedIdePort)
+    } else {
+        ToolExecutor.auto()
+    }
 
     System.err.println("[DEBUG] Starting Inspection MCP Server...")
     System.err.println("[DEBUG] Inspection MCP Server started successfully")
@@ -175,17 +177,41 @@ internal class ToolExecutor(
     private val baseUrl: String,
     private var httpClient: HttpClient,
     private val idePort: String,
-    private val httpClientFactory: () -> HttpClient = ::buildHttpClient
+    private val targetResolver: InspectionTargetResolver = FixedTargetResolver(baseUrl, idePort),
+    private val httpClientFactory: () -> HttpClient = ::buildHttpClient,
 ) {
+    private val pinnedSessionsByProject = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private var latestTriggeredProjectKey: String? = null
+
+    companion object {
+        fun auto(httpClientFactory: () -> HttpClient = ::buildHttpClient): ToolExecutor {
+            return ToolExecutor(
+                baseUrl = "http://localhost:0/api/inspection",
+                httpClient = httpClientFactory(),
+                idePort = "auto",
+                targetResolver = AutoTargetResolver(httpClientFactory),
+                httpClientFactory = httpClientFactory,
+            )
+        }
+    }
+
     fun toolList(): JsonArray {
         return JsonArray(
             listOf(
+                buildJsonObject {
+                    put("name", JsonPrimitive("inspection_list_projects"))
+                    put(
+                        "description",
+                        JsonPrimitive("List live JetBrains IDE projects discovered by the MCP router, including project keys and paths for disambiguation.")
+                    )
+                    put("inputSchema", emptySchema())
+                },
                 buildJsonObject {
                     put("name", JsonPrimitive("inspection_get_problems"))
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Results mirror the IDE Problems/Inspection Results view; hidden or filtered views can hide warnings. May return no_results, capture_incomplete, or stale_results with guidance."
+                            "Fetch problems after inspection completes. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. Results mirror the IDE Problems/Inspection Results view and may return no_results, capture_incomplete, or stale_results."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -194,7 +220,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_trigger"))
                     put(
                         "description",
-                        JsonPrimitive("Start an inspection run (async). Blank or omitted project uses the focused or active open project.")
+                        JsonPrimitive("Start an inspection run (async). In auto mode, prefer project_path or project_key so the router can select the intended IDE project.")
                     )
                     put("inputSchema", triggerSchema())
                 },
@@ -203,7 +229,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Check inspection status. Blank or omitted project uses the focused or active open project. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
+                            "Check inspection status. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
                         )
                     )
                     put("inputSchema", statusSchema())
@@ -213,7 +239,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. Blank or omitted project uses the focused or active open project. Completion reasons include results, clean, no_results, capture_incomplete, stale_results, no_recent_inspection, and no_project."
+                            "Block until inspection completes or timeout. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. Completion reasons include results, clean, no_results, capture_incomplete, stale_results, no_recent_inspection, and no_project."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -234,14 +260,22 @@ internal class ToolExecutor(
             "inspection_trigger" -> handleTrigger(args)
             "inspection_get_status" -> handleGetStatus(args)
             "inspection_wait" -> handleWait(args)
+            "inspection_list_projects" -> handleListProjects()
             else -> toolError("Unknown tool: $name")
+        }
+    }
+
+    private fun handleListProjects(): JsonObject {
+        return try {
+            toolText(prettyJson.encodeToString(JsonElement.serializer(), targetResolver.listProjects()))
+        } catch (error: Exception) {
+            toolError("Error listing JetBrains projects: ${error.message}")
         }
     }
 
     private fun handleGetProblems(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.optionalProject()?.let { params += "project" to it }
             val scope = args.string("scope") ?: "whole_project"
             val severity = args.string("severity") ?: "all"
             params += "scope" to scope
@@ -253,11 +287,11 @@ internal class ToolExecutor(
             if (limit != 100) params += "limit" to limit.toString()
             if (offset != 0) params += "offset" to offset.toString()
 
-            val url = buildUrl("$baseUrl/problems", params)
-            val result = httpGet(url)
+            val (result, target) = routeAndGet(autoPinnedArgs(args), "problems", params)
+            ensurePinnedSessionStillValid("inspection_get_problems", target)
 
             val guidance = buildProblemsGuidance(result)
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + guidance
+            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + guidance + buildRouteGuidance(target)
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting problems: ${error.message}")
@@ -267,7 +301,6 @@ internal class ToolExecutor(
     private fun handleTrigger(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.optionalProject()?.let { params += "project" to it }
             args.string("scope")?.let { params += "scope" to it }
             val dir = args.string("dir") ?: args.string("directory") ?: args.string("path")
             dir?.let { params += "dir" to it }
@@ -289,11 +322,12 @@ internal class ToolExecutor(
             args.int("max_files")?.let { params += "max_files" to it.toString() }
             args.string("profile")?.let { params += "profile" to it }
 
-            val url = buildUrl("$baseUrl/trigger", params)
-            val result = httpGet(url)
+            val (result, target) = routeAndGet(args, "trigger", params)
+            pinTriggeredSession(target)
 
             val text = prettyJson.encodeToString(JsonElement.serializer(), result) +
-                "\n\nUse inspection_wait (preferred) or poll inspection_get_status before fetching problems."
+                "\n\nUse inspection_wait (preferred) or poll inspection_get_status before fetching problems." +
+                buildRouteGuidance(target)
             toolText(text)
         } catch (error: Exception) {
             toolError("Error triggering inspection: ${error.message}")
@@ -303,12 +337,10 @@ internal class ToolExecutor(
     private fun handleGetStatus(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.optionalProject()?.let { params += "project" to it }
 
-            val url = buildUrl("$baseUrl/status", params)
-            val result = httpGet(url)
+            val (result, target) = routeAndGet(autoPinnedArgs(args), "status", params)
 
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildStatusGuidance(result)
+            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildStatusGuidance(result) + buildRouteGuidance(target)
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting status: ${error.message}")
@@ -318,7 +350,6 @@ internal class ToolExecutor(
     private fun handleWait(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.optionalProject()?.let { params += "project" to it }
             val timeoutProvided = args["timeout_ms"] != null
             val pollProvided = args["poll_ms"] != null
             val timeoutMs = args.int("timeout_ms") ?: 180000
@@ -326,15 +357,101 @@ internal class ToolExecutor(
             if (timeoutProvided || timeoutMs != 180000) params += "timeout_ms" to timeoutMs.toString()
             if (pollProvided || pollMs != 1000) params += "poll_ms" to pollMs.toString()
 
-            val url = buildUrl("$baseUrl/wait", params)
             val requestTimeoutSeconds = ((timeoutMs + 5000) / 1000).toLong().coerceAtLeast(15L)
-            val result = httpGet(url, requestTimeoutSeconds)
+            val (result, target) = routeAndGet(autoPinnedArgs(args), "wait", params, requestTimeoutSeconds)
+            ensurePinnedSessionStillValid("inspection_wait", target)
 
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildWaitGuidance(result)
+            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildWaitGuidance(result) + buildRouteGuidance(target)
             toolText(text)
         } catch (error: Exception) {
             toolError("Error waiting for inspection: ${error.message}")
         }
+    }
+
+    private fun routeAndGet(
+        args: JsonObject,
+        endpoint: String,
+        params: MutableList<Pair<String, String>>,
+        timeoutSeconds: Long = 10,
+    ): Pair<JsonElement, InspectionTarget> {
+        var target = targetResolver.resolve(args)
+        val requestParams = params.withRoutingSelector(args, target)
+        try {
+            return httpGet(buildUrl("${target.baseUrl}/$endpoint", requestParams), timeoutSeconds, target.idePort) to target
+        } catch (error: RuntimeException) {
+            if (!targetResolver.autoRouting || !isRetryableRouteFailure(error)) {
+                throw error
+            }
+            val excludedSessionIds = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull?.let(::setOf)
+                ?: emptySet()
+            target = targetResolver.resolve(args, excludedSessionIds = excludedSessionIds)
+            val retryParams = params.withRoutingSelector(args, target)
+            return httpGet(buildUrl("${target.baseUrl}/$endpoint", retryParams), timeoutSeconds, target.idePort) to target
+        }
+    }
+
+    private fun List<Pair<String, String>>.withRoutingSelector(args: JsonObject, target: InspectionTarget): List<Pair<String, String>> {
+        val routedProjectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
+        if (!routedProjectKey.isNullOrBlank()) {
+            return this + ("project_key" to routedProjectKey)
+        }
+        args.routingSelector()?.let { (name, value) -> return this + (name to value) }
+        return this
+    }
+
+    private fun pinTriggeredSession(target: InspectionTarget) {
+        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull ?: return
+        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull ?: return
+        pinnedSessionsByProject[projectKey] = sessionId
+        latestTriggeredProjectKey = projectKey
+    }
+
+    private fun ensurePinnedSessionStillValid(toolName: String, target: InspectionTarget) {
+        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull ?: return
+        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull ?: return
+        val pinnedSessionId = pinnedSessionsByProject[projectKey] ?: return
+        if (pinnedSessionId != sessionId) {
+            pinnedSessionsByProject.remove(projectKey)
+            if (latestTriggeredProjectKey == projectKey) {
+                latestTriggeredProjectKey = null
+            }
+            throw RuntimeException(
+                "The JetBrains IDE session for project $projectKey restarted before $toolName completed. Re-trigger inspection for this project."
+            )
+        }
+    }
+
+    private fun autoPinnedArgs(args: JsonObject): JsonObject {
+        if (!targetResolver.autoRouting || args.routingSelector() != null) {
+            return args
+        }
+        val projectKey = latestTriggeredProjectKey ?: return args
+        return buildJsonObject {
+            args.forEach { (key, value) -> put(key, value) }
+            put("project_key", JsonPrimitive(projectKey))
+        }
+    }
+
+    private fun buildRouteGuidance(target: InspectionTarget): String {
+        if (!targetResolver.autoRouting) return ""
+        val project = target.project ?: return ""
+        val name = project["name"]?.jsonPrimitive?.contentOrNull ?: return ""
+        val projectKey = project["project_key"]?.jsonPrimitive?.contentOrNull
+        val ideName = target.identity?.get("ide_name")?.jsonPrimitive?.contentOrNull ?: "JetBrains IDE"
+        return "\n\nROUTE: $ideName on port ${target.idePort}, project=$name" +
+            if (projectKey.isNullOrBlank()) "" else ", project_key=$projectKey"
+    }
+
+    private fun isRetryableRouteFailure(error: Throwable): Boolean {
+        val message = error.message ?: return false
+        return listOf(
+            "connection refused",
+            "request timeout",
+            "timed out",
+            "connection reset",
+            "broken pipe",
+            "eof",
+        ).any { token -> message.contains(token, ignoreCase = true) }
     }
 
     private fun buildProblemsGuidance(result: JsonElement): String {
@@ -435,18 +552,19 @@ internal class ToolExecutor(
         return toolText(message, isError = true)
     }
 
-    private fun httpGet(url: String, timeoutSeconds: Long = 10): JsonElement {
+    private fun httpGet(url: String, timeoutSeconds: Long = 10, targetPort: String = idePort): JsonElement {
         val request = HttpRequest.newBuilder(URI(url))
             .GET()
             .timeout(Duration.ofSeconds(timeoutSeconds))
             .build()
 
-        return executeRequest(request, retryOnTransportFailure = true)
+        return executeRequest(request, retryOnTransportFailure = true, targetPort = targetPort)
     }
 
     private fun executeRequest(
         request: HttpRequest,
-        retryOnTransportFailure: Boolean
+        retryOnTransportFailure: Boolean,
+        targetPort: String,
     ): JsonElement {
         try {
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
@@ -469,19 +587,19 @@ internal class ToolExecutor(
         } catch (error: HttpTimeoutException) {
             if (retryOnTransportFailure) {
                 refreshHttpClient()
-                return executeRequest(request, retryOnTransportFailure = false)
+                return executeRequest(request, retryOnTransportFailure = false, targetPort = targetPort)
             }
-            throw RuntimeException("Request timeout | Ensure IDE on port $idePort is reachable")
+            throw RuntimeException("Request timeout | Ensure IDE on port $targetPort is reachable")
         } catch (error: Exception) {
             if (error is RuntimeException && error.message?.startsWith("Invalid JSON response") == true) {
                 throw error
             }
             if (retryOnTransportFailure && isRetryableTransportFailure(error)) {
                 refreshHttpClient()
-                return executeRequest(request, retryOnTransportFailure = false)
+                return executeRequest(request, retryOnTransportFailure = false, targetPort = targetPort)
             }
             val hint = if (isConnectionRefused(error)) {
-                "Ensure JetBrains IDE is running, plugin installed, and built-in server enabled on port $idePort (Allow unsigned requests)."
+                "Ensure JetBrains IDE is running, plugin installed, and built-in server enabled on port $targetPort (Allow unsigned requests)."
             } else {
                 ""
             }
@@ -540,9 +658,10 @@ internal class ToolExecutor(
         return buildJsonObject {
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
+                routingProperties()
                 put(
                     "project",
-                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
+                    stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted falls back to the last triggered project, cwd, or focused project when unambiguous.")
                 )
                 put(
                     "scope",
@@ -582,7 +701,8 @@ internal class ToolExecutor(
         return buildJsonObject {
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
-                put("project", stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)"))
+                routingProperties()
+                put("project", stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted falls back to cwd or focused project when unambiguous."))
                 put(
                     "scope",
                     enumProp(
@@ -618,9 +738,10 @@ internal class ToolExecutor(
         return buildJsonObject {
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
+                routingProperties()
                 put(
                     "project",
-                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
+                    stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted falls back to the last triggered project, cwd, or focused project when unambiguous.")
                 )
             })
         }
@@ -630,9 +751,10 @@ internal class ToolExecutor(
         return buildJsonObject {
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
+                routingProperties()
                 put(
                     "project",
-                    stringProp("Project name (optional; blank or omitted uses the focused or active open project; nonblank must match an open project)")
+                    stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted falls back to the last triggered project, cwd, or focused project when unambiguous.")
                 )
                 put(
                     "timeout_ms",
@@ -644,6 +766,19 @@ internal class ToolExecutor(
                 )
             })
         }
+    }
+
+    private fun emptySchema(): JsonObject {
+        return buildJsonObject {
+            put("type", JsonPrimitive("object"))
+            put("properties", buildJsonObject { })
+        }
+    }
+
+    private fun kotlinx.serialization.json.JsonObjectBuilder.routingProperties() {
+        put("project_key", stringProp("Exact project key from inspection_list_projects; preferred when disambiguating"))
+        put("project_path", stringProp("Project root/workspace path; preferred when available"))
+        put("ide", stringProp("Optional IDE name/product hint for rare ambiguity cases"))
     }
 
     private fun stringProp(description: String, defaultValue: String? = null): JsonObject {
@@ -693,6 +828,13 @@ private fun JsonObject.string(name: String): String? {
 
 private fun JsonObject.optionalProject(): String? {
     return string("project")?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+private fun JsonObject.routingSelector(): Pair<String, String>? {
+    string("project_key")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "project_key" to it }
+    string("project_path")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "project_path" to it }
+    optionalProject()?.let { return "project" to it }
+    return null
 }
 
 private fun summarizeErrorBody(body: String): String? {

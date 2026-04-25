@@ -17,6 +17,7 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.io.TempDir
 import java.io.IOException
 import java.net.Authenticator
 import java.net.ConnectException
@@ -30,6 +31,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
@@ -40,6 +42,9 @@ import javax.net.ssl.SSLParameters
 import javax.net.ssl.SSLSession
 
 class McpServerTest {
+    @TempDir
+    lateinit var tempDir: Path
+
     @Test
     fun initializeResponseIncludesServerInfo() {
         val executor = ToolExecutor("http://localhost:1/api/inspection", HttpClient.newHttpClient(), "63341")
@@ -66,7 +71,7 @@ class McpServerTest {
         val tools = response["result"]?.jsonObject?.get("tools")?.jsonArray
         val names = tools?.mapNotNull { it.jsonObject["name"]?.jsonPrimitive?.content }?.toSet()
         assertEquals(
-            setOf("inspection_get_problems", "inspection_trigger", "inspection_get_status", "inspection_wait"),
+            setOf("inspection_list_projects", "inspection_get_problems", "inspection_trigger", "inspection_get_status", "inspection_wait"),
             names
         )
     }
@@ -627,6 +632,124 @@ class McpServerTest {
         assertTrue(result.firstText().contains("codebase is clean"))
         assertEquals(1, replacementClientFactoryCalls.get())
     }
+
+    @Test
+    fun inspectionListProjectsReturnsAutoDiscoveredProjects() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = autoExecutor(server)
+
+            val result = executor.handleToolCall(buildToolCall("inspection_list_projects", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertFalse(result.isError())
+            assertTrue(text.contains("\"mode\": \"auto\""))
+            assertTrue(text.contains("jetbrains-inspection-api"))
+            assertTrue(text.contains("project_key"))
+        }
+    }
+
+    @Test
+    fun autoRoutingUsesProjectPathAndForwardsProjectKey() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = autoExecutor(server)
+
+            val result = executor.handleToolCall(
+                buildToolCall(
+                    "inspection_trigger",
+                    buildJsonObject {
+                        put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api"))
+                    },
+                )
+            )
+
+            assertFalse(result.isError())
+            assertTrue(result.firstText().contains("ROUTE:"))
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("project_key=path%3A%2Ftmp%2Fjetbrains-inspection-api"))
+        }
+    }
+
+    @Test
+    fun autoRoutingReportsAmbiguousProjectNames() {
+        MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/one", identitySessionId = "one").use { first ->
+            MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/two", identitySessionId = "two").use { second ->
+                first.start()
+                second.start()
+                val executor = autoExecutor(first, second)
+
+                val result = executor.handleToolCall(
+                    buildToolCall(
+                        "inspection_get_status",
+                        buildJsonObject { put("project", JsonPrimitive("shared")) },
+                    )
+                )
+
+                assertTrue(result.isError())
+                assertTrue(result.firstText().contains("Multiple JetBrains projects matched"))
+                assertTrue(result.firstText().contains("project_key=path:/tmp/one"))
+                assertTrue(result.firstText().contains("project_key=path:/tmp/two"))
+            }
+        }
+    }
+
+    @Test
+    fun autoRoutingKeepsSelectorlessFollowUpsOnLastTriggeredProject() {
+        MockIdeServer(identityProjectName = "first", identityBasePath = "/tmp/first", identitySessionId = "first").use { first ->
+            MockIdeServer(
+                identityProjectName = "cwd-project",
+                identityBasePath = "/Users/cbusillo/Developer/jetbrains-inspection-api",
+                identitySessionId = "cwd",
+            ).use { second ->
+                first.start()
+                second.start()
+                val executor = autoExecutor(first, second)
+
+                val trigger = executor.handleToolCall(
+                    buildToolCall(
+                        "inspection_trigger",
+                        buildJsonObject { put("project_path", JsonPrimitive("/tmp/first")) },
+                    )
+                )
+                val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+                val problems = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+
+                assertFalse(trigger.isError())
+                assertFalse(wait.isError())
+                assertFalse(problems.isError())
+                assertTrue(wait.firstText().contains("project_key=path:/tmp/first"))
+                assertTrue(problems.firstText().contains("project_key=path:/tmp/first"))
+                assertFalse(wait.firstText().contains("cwd-project"))
+                assertFalse(problems.firstText().contains("cwd-project"))
+            }
+        }
+    }
+
+    @Test
+    fun excludedSessionsDoNotPoisonLaterAutoDiscovery() {
+        MockIdeServer().use { server ->
+            server.start()
+            val resolver = AutoTargetResolver(
+                httpClientFactory = { HttpClient.newHttpClient() },
+                registryDir = tempDir,
+                scanPorts = listOf(server.port),
+            )
+            val args = buildJsonObject {
+                put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api"))
+            }
+
+            val first = resolver.resolve(args)
+            val sessionId = first.identity?.get("session_id")?.jsonPrimitive?.contentOrNull
+            assertNotNull(sessionId)
+
+            val excluded = runCatching { resolver.resolve(args, excludedSessionIds = setOf(sessionId ?: "")) }
+            assertTrue(excluded.isFailure)
+
+            val recovered = resolver.resolve(args)
+            assertEquals(sessionId, recovered.identity?.get("session_id")?.jsonPrimitive?.contentOrNull)
+        }
+    }
 }
 
 private data class MockResponse(val body: String, val status: Int = 200)
@@ -707,7 +830,12 @@ private data class StaticHttpResponse(
     override fun version(): HttpClient.Version = HttpClient.Version.HTTP_1_1
 }
 
-private class MockIdeServer(overrides: Map<String, MockResponse> = emptyMap()) : AutoCloseable {
+private class MockIdeServer(
+    overrides: Map<String, MockResponse> = emptyMap(),
+    private val identityProjectName: String = "jetbrains-inspection-api",
+    private val identityBasePath: String = "/tmp/jetbrains-inspection-api",
+    private val identitySessionId: String = "session",
+) : AutoCloseable {
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     val port: Int = server.address.port
     val baseUrl: String = "http://localhost:$port/api/inspection"
@@ -720,7 +848,8 @@ private class MockIdeServer(overrides: Map<String, MockResponse> = emptyMap()) :
                 """{"status":"results_available","total_problems":2,"problems_shown":2,"problems":[]}"""
             ),
             "/api/inspection/trigger" to MockResponse("""{"status":"triggered","message":"Inspection triggered"}"""),
-            "/api/inspection/wait" to MockResponse("""{"wait_completed":true,"completion_reason":"results"}""")
+            "/api/inspection/wait" to MockResponse("""{"wait_completed":true,"completion_reason":"results"}"""),
+            "/api/inspection/identity" to MockResponse(identityBody()),
         )
 
         val responses = defaults.toMutableMap()
@@ -747,6 +876,42 @@ private class MockIdeServer(overrides: Map<String, MockResponse> = emptyMap()) :
             exchange.responseBody.use { it.write(bytes) }
         }
     }
+
+    private fun identityBody(): String {
+        val projectKey = "path:$identityBasePath"
+        return """
+            {
+              "session_id":"$identitySessionId-${port}",
+              "started_at_ms":1,
+              "heartbeat_ms":9999999999999,
+              "pid":${ProcessHandle.current().pid()},
+              "port":$port,
+              "ide_name":"Mock IDEA",
+              "ide_product_code":"IU",
+              "plugin_version":"test",
+              "open_projects":[{
+                "project_key":"$projectKey",
+                "name":"$identityProjectName",
+                "base_path":"$identityBasePath",
+                "project_file_path":null,
+                "focused":true
+              }]
+            }
+        """.trimIndent()
+    }
+}
+
+private fun McpServerTest.autoExecutor(vararg servers: MockIdeServer): ToolExecutor {
+    return ToolExecutor(
+        baseUrl = "http://localhost:0/api/inspection",
+        httpClient = HttpClient.newHttpClient(),
+        idePort = "auto",
+        targetResolver = AutoTargetResolver(
+            httpClientFactory = { HttpClient.newHttpClient() },
+            registryDir = tempDir,
+            scanPorts = servers.map { it.port },
+        ),
+    )
 }
 
 private fun buildToolCall(name: String, args: JsonObject): JsonObject {

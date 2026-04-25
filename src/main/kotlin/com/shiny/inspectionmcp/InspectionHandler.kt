@@ -414,6 +414,12 @@ class InspectionHandler : HttpRequestHandler() {
             val path = urlDecoder.path()
             val parameters = urlDecoder.parameters() ?: emptyMap()
             when (path) {
+                "/api/inspection/identity" -> {
+                    val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
+                        formatJsonManually(buildInspectionIdentity())
+                    }
+                    sendJsonResponse(context, result)
+                }
                 "/api/inspection/problems" -> {
                     val severity = parameters["severity"]?.firstOrNull() ?: "all"
                     val scope = parameters["scope"]?.firstOrNull() ?: "whole_project"
@@ -2190,6 +2196,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun projectMatches(project: Project, projectName: String, pathHint: String?): Boolean {
         if (project.name == projectName) return true
+        if (projectKey(project) == projectName) return true
         if (pathHint == null) return false
 
         val basePath = normalizeProjectPath(project.basePath)
@@ -2218,9 +2225,11 @@ class InspectionHandler : HttpRequestHandler() {
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
     ): String? {
-        val parameterValues = urlDecoder.parameters()["project"]
-        if (parameterValues != null) {
-            return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
+        for (parameterName in listOf("project", "project_key", "project_path")) {
+            val parameterValues = urlDecoder.parameters()[parameterName]
+            if (parameterValues != null) {
+                return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
+            }
         }
 
         val rawQuery = request.uri().substringAfter('?', missingDelimiterValue = "")
@@ -2234,7 +2243,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val nameAndValue = segment.split('=', limit = 2)
             val decodedName = QueryStringDecoder.decodeComponent(nameAndValue[0])
-            if (decodedName != "project") {
+            if (decodedName !in setOf("project", "project_key", "project_path")) {
                 continue
             }
             val encodedValue = nameAndValue.getOrElse(1) { "" }

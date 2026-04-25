@@ -30,6 +30,25 @@ Expected behavior:
 - Without `project`, the plugin targets the currently focused project.
 - If the project name is wrong, you will get a "Project not found" style error.
 
+## MCP auto-routing smoke
+
+Use this when validating one MCP server against multiple JetBrains IDEs.
+
+1. Install the plugin in two IDE processes and open different projects.
+2. Configure one MCP server without `IDE_PORT`.
+3. Ask the client to call `inspection_list_projects`.
+4. Trigger each project by `project_path`, then wait and fetch problems.
+5. Restart one IDE and call `inspection_list_projects` again.
+
+Expected behavior:
+
+- `inspection_list_projects` shows live IDE sessions with project paths and keys.
+- Calls with `project_path` route to the IDE containing that project.
+- If an IDE restarts on a new port, the MCP router rediscovers it.
+- If an IDE restarts during a trigger/wait/problems flow, the MCP response asks
+  for a fresh trigger instead of silently using stale state.
+- Duplicate project names produce an ambiguity response with paths/project keys.
+
 ## Fast-path scopes (manual)
 
 Changed files only (fast inner loop):
