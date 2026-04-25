@@ -29,6 +29,9 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 # MCP server tests
 ./gradlew :mcp-server-jvm:test
 
+# Focused MCP auto-routing coverage lives in McpServerTest and covers
+# inspection_list_projects, project_path routing, and duplicate-name ambiguity.
+
 # MCP server jar
 ./gradlew :mcp-server-jvm:mcpServerJar
 

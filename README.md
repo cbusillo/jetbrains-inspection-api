@@ -55,22 +55,24 @@ Manual examples:
 
 ```bash
 # Code (Every)
-code mcp add --env IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+code mcp add inspection-jetbrains "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Codex CLI
-codex mcp add inspection-pycharm --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+codex mcp add inspection-jetbrains -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Claude Code
-claude mcp add --transport stdio inspection-pycharm --scope user --env IDE_PORT=63341 -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+claude mcp add --transport stdio inspection-jetbrains --scope user -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Gemini CLI
-gemini mcp add -s user -e IDE_PORT=63341 inspection-pycharm "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
+gemini mcp add -s user inspection-jetbrains "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 ```
 
 Notes:
 - Use the IDE's bundled Java (from `java.home`) or any Java 21 on your PATH.
 - The jar is installed with the plugin under the IDE's plugins directory.
 - For source builds, the jar is at `mcp-server-jvm/build/libs/jetbrains-inspection-mcp.jar`.
+- By default, the MCP server runs in auto mode and routes by project across discovered JetBrains IDEs.
+- To pin one MCP server to one IDE for debugging, add `IDE_PORT=<port>` to the MCP command.
 
 ## Usage
 
@@ -78,6 +80,9 @@ Notes:
 ```bash
 # Trigger a full project inspection
 inspection_trigger()
+
+# List discovered IDE projects and project keys
+inspection_list_projects()
 
 # Check inspection status
 inspection_get_status()
@@ -97,11 +102,15 @@ inspection_get_problems(scope="current_file")
 # Specify which project to inspect (v1.10.5+)
 inspection_get_problems(project="MyProject")
 
+# Prefer a project path/key when multiple IDEs or duplicate project names are open
+inspection_trigger(project_path="/Users/me/Developer/MyProject")
+inspection_get_problems(project_key="path:/Users/me/Developer/MyProject")
+
 # Combine project and severity filtering
 inspection_get_problems(project="odoo-ai", severity="error")
 ```
 
-Note: blank or omitted `project` uses the focused or active open project. Nonblank values must match an open project.
+Note: in MCP auto mode, the router prefers `project_key`, `project_path`, the MCP process working directory, then a unique `project` name. Blank or omitted selectors fall back to the focused/active open project only when unambiguous.
 
 ### Direct HTTP API
 ```bash
@@ -128,6 +137,9 @@ curl "http://localhost:63340/api/inspection/problems?project=MyProject"
 
 # Trigger inspection for specific project
 curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
+
+# Inspect IDE/plugin identity and open project metadata
+curl "http://localhost:63340/api/inspection/identity"
 ```
 
 Replace `63340` with your IDE's configured port.
@@ -362,6 +374,7 @@ Common completion reasons:
 The bundled JVM MCP (Model Context Protocol) server provides integration for any MCP-capable client.
 
 ### Tools Provided
+- **`inspection_list_projects()`** - Lists discovered JetBrains IDE sessions and open projects for routing/disambiguation
 - **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
   - Also supports `scope=files` with `file=...` (repeat) or `files=[...]`, and `scope=changed_files` with `include_unversioned` and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
@@ -378,8 +391,12 @@ The bundled JVM MCP (Model Context Protocol) server provides integration for any
 # Test the MCP server directly
 echo '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 
-# Set custom port
+# Pin to one IDE instead of auto-routing
 IDE_PORT=63340 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
+
+# Override auto-discovery registry/scan range when debugging
+JETBRAINS_INSPECTION_REGISTRY_DIR=/tmp/inspection-ides java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
+JETBRAINS_INSPECTION_PORTS=63340-63350 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
 ## Optional commit gate

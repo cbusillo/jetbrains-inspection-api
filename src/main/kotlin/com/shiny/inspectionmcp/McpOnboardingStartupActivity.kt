@@ -16,6 +16,8 @@ private const val PLUGIN_ID = "com.shiny.inspection.api"
 
 class McpOnboardingStartupActivity : ProjectActivity {
     override suspend fun execute(project: Project) {
+        InspectionIdeRegistry.start()
+
         val productName = InspectionApiBundle.message("notification.group.name")
         ApplicationManager.getApplication().invokeLater {
             val props = PropertiesComponent.getInstance()
