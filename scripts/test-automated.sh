@@ -139,7 +139,7 @@ is_ide_running() {
 wait_for_api() {
     echo "⏳ Waiting for API to be ready..."
     for i in {1..60}; do
-        if curl -s "http://localhost:$IDE_PORT/api/inspection/problems" > /dev/null 2>&1; then
+        if curl -s --max-time 2 "http://localhost:$IDE_PORT/api/inspection/problems" > /dev/null 2>&1; then
             echo "✅ API is responding"
             return 0
         fi
