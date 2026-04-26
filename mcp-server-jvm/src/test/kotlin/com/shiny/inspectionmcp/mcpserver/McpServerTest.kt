@@ -75,6 +75,8 @@ class McpServerTest {
             setOf("inspection_list_projects", "inspection_get_problems", "inspection_trigger", "inspection_get_status", "inspection_wait"),
             names
         )
+        val trigger = tools?.first { it.jsonObject["name"]?.jsonPrimitive?.content == "inspection_trigger" }?.jsonObject
+        assertTrue(trigger?.string("description")?.contains("inspection_wait") == true)
     }
 
     @Test
@@ -237,7 +239,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("capture was incomplete"))
+            assertTrue(text.contains("do not treat as clean"))
+            assertTrue(text.contains("Retry once"))
             assertFalse(text.contains("OK: No problems found matching filters"))
         }
     }
@@ -309,8 +312,45 @@ class McpServerTest {
             assertTrue(query.contains("file=src%2Fmain.py"))
             assertTrue(query.contains("include_unversioned=true"))
             assertTrue(query.contains("changed_files_mode=staged"))
-            assertTrue(query.contains("max_files=5"))
+            assertFalse(query.contains("max_files=5"))
             assertTrue(query.contains("profile=LLM+Fast+Checks"))
+        }
+    }
+
+    @Test
+    fun inspectionTriggerForwardsPositiveMaxFilesOnlyForChangedFiles() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+            val args = buildJsonObject {
+                put("scope", JsonPrimitive(" Changed_Files "))
+                put("max_files", JsonPrimitive(5))
+            }
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", args))
+
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("scope=+Changed_Files+"))
+            assertTrue(query.contains("max_files=5"))
+        }
+    }
+
+    @Test
+    fun inspectionTriggerIgnoresNonPositiveMaxFilesFromToolWrappers() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+            val args = buildJsonObject {
+                put("scope", JsonPrimitive("files"))
+                put("files", JsonArray(listOf(JsonPrimitive("src/a.py"))))
+                put("max_files", JsonPrimitive(0))
+            }
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", args))
+
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("scope=files"))
+            assertFalse(query.contains("max_files=0"))
         }
     }
 
@@ -392,7 +432,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("capture was incomplete"))
+            assertTrue(text.contains("do not treat as clean"))
+            assertTrue(text.contains("Retry once"))
             assertFalse(text.contains("codebase is clean"))
         }
     }
@@ -533,7 +574,7 @@ class McpServerTest {
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val text = result.firstText()
             assertTrue(text.contains("no captured results"))
-            assertTrue(text.contains("clean run"))
+            assertTrue(text.contains("retry once"))
         }
     }
 
@@ -572,7 +613,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("capture was incomplete"))
+            assertTrue(text.contains("do not treat as clean"))
+            assertTrue(text.contains("Retry once"))
             assertFalse(text.contains("codebase is clean"))
         }
     }

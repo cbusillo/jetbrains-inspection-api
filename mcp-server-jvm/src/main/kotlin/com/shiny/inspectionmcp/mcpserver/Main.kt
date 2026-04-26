@@ -211,7 +211,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. Results mirror the IDE Problems/Inspection Results view and may return no_results, capture_incomplete, or stale_results."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -220,7 +220,7 @@ internal class ToolExecutor(
                     put("name", JsonPrimitive("inspection_trigger"))
                     put(
                         "description",
-                        JsonPrimitive("Start an inspection run (async). In auto mode, prefer project_path or project_key so the router can select the intended IDE project.")
+                        JsonPrimitive("Start an inspection run (async). Typical flow: call inspection_wait next, then inspection_get_problems. In auto mode, prefer project_path or project_key so the router can select the intended IDE project. Use targeted scopes such as files, directory, changed_files, or current_file when possible.")
                     )
                     put("inputSchema", triggerSchema())
                 },
@@ -229,7 +229,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Check inspection status. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. If you expect warnings but see clean/no_results, re-run or open the Problems/Inspection Results view."
+                            "Check inspection status. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. If status says no recent inspection, trigger first. If you expected findings but see no_results, retry once with a narrower scope."
                         )
                     )
                     put("inputSchema", statusSchema())
@@ -239,7 +239,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. Completion reasons include results, clean, no_results, capture_incomplete, stale_results, no_recent_inspection, and no_project."
+                            "Block until inspection completes or timeout. Preferred after inspection_trigger; call inspection_get_problems after results or clean. In auto mode, pass project_path or project_key when available. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -301,7 +301,9 @@ internal class ToolExecutor(
     private fun handleTrigger(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            args.string("scope")?.let { params += "scope" to it }
+            val scope = args.string("scope")
+            val normalizedScope = scope?.trim()?.lowercase()
+            scope?.let { params += "scope" to it }
             val dir = args.string("dir") ?: args.string("directory") ?: args.string("path")
             dir?.let { params += "dir" to it }
 
@@ -319,7 +321,9 @@ internal class ToolExecutor(
             val includeUnversioned = (args["include_unversioned"] as? JsonPrimitive)?.booleanOrNull
             includeUnversioned?.let { params += "include_unversioned" to it.toString() }
             args.string("changed_files_mode")?.let { params += "changed_files_mode" to it }
-            args.int("max_files")?.let { params += "max_files" to it.toString() }
+            args.int("max_files")
+                ?.takeIf { normalizedScope == "changed_files" && it > 0 }
+                ?.let { params += "max_files" to it.toString() }
             args.string("profile")?.let { params += "profile" to it }
 
             val (result, target) = routeAndGet(args, "trigger", params)
@@ -467,7 +471,7 @@ internal class ToolExecutor(
             status == "stale_results" ->
                 "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
             status == "capture_incomplete" ->
-                "\n\nWARN: Inspection capture was incomplete. Findings may be missing; re-run inspection or open the IDE Problems/Inspection Results view before treating this as clean."
+                "\n\nWARN: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
             status == "no_results" ->
                 "\n\nWARN: No inspection results were captured. This can happen for clean runs or when the IDE results view was unavailable; re-run inspection if findings were expected."
             total == 0 ->
@@ -497,11 +501,11 @@ internal class ToolExecutor(
         return when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
             stale -> "\n\nSTATUS: Project changed after the last inspection - trigger inspection again before trusting cached results."
-            captureIncomplete -> "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
+            captureIncomplete -> "\n\nSTATUS: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
             clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
             timeSince != null && timeSince < 60000 ->
-                "\n\nSTATUS: Inspection finished but no results were captured yet. Re-run inspection or open the IDE Problems/Inspection Results view before treating this as clean."
+                "\n\nSTATUS: Inspection finished but no results were captured yet. Retry once, preferably with a narrower scope, before treating this as clean."
             else -> "\n\nSTATUS: No recent inspection - trigger inspection first."
         }
     }
@@ -516,11 +520,11 @@ internal class ToolExecutor(
             completed && reason == "clean" -> "\n\nSTATUS: Inspection complete - codebase is clean."
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
             completed && reason == "capture_incomplete" ->
-                "\n\nSTATUS: Inspection finished but capture was incomplete - findings may be missing. Re-run inspection or open the IDE Problems/Inspection Results view."
+                "\n\nSTATUS: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
             completed && reason == "stale_results" ->
                 "\n\nSTATUS: Cached inspection results are stale - trigger inspection again before trusting findings."
             completed && reason == "no_results" ->
-                "\n\nSTATUS: Inspection finished with no captured results. This can be a clean run; re-run inspection or open the IDE Problems/Inspection Results view if findings were expected."
+                "\n\nSTATUS: Inspection finished with no captured results. This can be clean; retry once with a narrower scope if findings were expected."
             reason == "no_recent_inspection" -> "\n\nSTATUS: No recent inspection - trigger inspection first."
             reason == "no_project" -> "\n\nSTATUS: No project found - ensure the IDE has an open project, or pass the exact project name."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
@@ -706,7 +710,7 @@ internal class ToolExecutor(
                 put(
                     "scope",
                     enumProp(
-                        "Scope (directory->dir, files->files)",
+                        "Scope. Prefer files, directory, changed_files, or current_file for fast targeted inspections; use whole_project when you need full coverage. After triggering, call inspection_wait before fetching problems.",
                         listOf("whole_project", "current_file", "directory", "changed_files", "files")
                     )
                 )
@@ -728,7 +732,7 @@ internal class ToolExecutor(
                     "changed_files_mode",
                     enumProp("changed_files only: all | staged | unstaged", listOf("all", "staged", "unstaged"))
                 )
-                put("max_files", intProp("Max files (changed_files only)", minimum = 1))
+                put("max_files", intProp("Positive cap for scope=changed_files only; ignored for other scopes", minimum = 1))
                 put("profile", stringProp("Inspection profile name"))
             })
         }

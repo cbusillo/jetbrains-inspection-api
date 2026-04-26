@@ -9,7 +9,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.net.HttpURLConnection
 import java.net.URI
@@ -42,7 +41,7 @@ internal interface InspectionTargetResolver {
     val autoRouting: Boolean
     fun resolve(args: JsonObject, excludedSessionIds: Set<String> = emptySet()): InspectionTarget
     fun listProjects(): JsonElement
-    fun invalidate(target: InspectionTarget) {}
+    fun invalidate(target: InspectionTarget) = Unit
 }
 
 internal class FixedTargetResolver(
@@ -62,6 +61,7 @@ internal class FixedTargetResolver(
             put("base_url", JsonPrimitive(baseUrl))
         }
     }
+
 }
 
 internal class AutoTargetResolver(
@@ -113,14 +113,14 @@ internal class AutoTargetResolver(
             put("projects", JsonArray(identities.flatMap { identity -> projectsForIdentity(identity).map { project ->
                 buildJsonObject {
                     put("session_id", identity.string("session_id")?.let(::JsonPrimitive) ?: JsonPrimitive(""))
-                    put("port", JsonPrimitive(identity.int("port") ?: 0))
+                    put("port", JsonPrimitive(identity.port() ?: 0))
                     put("ide_name", identity.string("ide_name")?.let(::JsonPrimitive) ?: JsonPrimitive(""))
                     identity.string("ide_product_code")?.let { put("ide_product_code", JsonPrimitive(it)) }
                     put("project_key", project.string("project_key")?.let(::JsonPrimitive) ?: JsonPrimitive(""))
                     put("name", project.string("name")?.let(::JsonPrimitive) ?: JsonPrimitive(""))
                     project.string("base_path")?.let { put("base_path", JsonPrimitive(it)) }
                     project.string("project_file_path")?.let { put("project_file_path", JsonPrimitive(it)) }
-                    put("focused", JsonPrimitive(project.booleanString("focused") == "true"))
+                    put("focused", JsonPrimitive(project.isFocusedProject()))
                 }
             }}))
         }
@@ -130,7 +130,7 @@ internal class AutoTargetResolver(
         val registryIdentities = readRegistryIdentities().mapNotNull(::verifyIdentity)
         val scannedIdentities = if (includePortScan || registryIdentities.isEmpty()) scanIdentities() else emptyList()
         return (registryIdentities + scannedIdentities)
-            .distinctBy { identity -> identity.string("session_id") ?: "port:${identity.int("port")}" }
+            .distinctBy { identity -> identity.string("session_id") ?: "port:${identity.port()}" }
     }
 
     private fun List<JsonObject>.filterNotExcluded(excludedSessionIds: Set<String>): List<JsonObject> {
@@ -172,7 +172,7 @@ internal class AutoTargetResolver(
     }
 
     private fun verifyIdentity(candidate: JsonObject): JsonObject? {
-        val port = candidate.int("port") ?: return null
+        val port = candidate.port() ?: return null
         return fetchIdentity(port)
     }
 
@@ -189,7 +189,7 @@ internal class AutoTargetResolver(
             val response = httpClientFactory().send(request, HttpResponse.BodyHandlers.ofString())
             if (response.statusCode() != HttpURLConnection.HTTP_OK) return null
             val identity = routeJson.parseToJsonElement(response.body()) as? JsonObject ?: return null
-            val reportedPort = identity.int("port")
+            val reportedPort = identity.port()
             if (reportedPort == null || reportedPort <= 0) {
                 buildJsonObject {
                     identity.forEach { (key, value) -> put(key, value) }
@@ -216,7 +216,7 @@ internal class AutoTargetResolver(
             if (ideSelector != null && !identityMatchesIde(identity, ideSelector)) {
                 continue
             }
-            val port = identity.int("port") ?: continue
+            val port = identity.port() ?: continue
             for (project in projectsForIdentity(identity)) {
                 val score = scoreProject(
                     project = project,
@@ -286,7 +286,7 @@ internal class AutoTargetResolver(
         if (cwd != null && basePath != null && isInside(cwd, basePath)) {
             return 700 + normalizedPathLength(basePath).coerceAtMost(100)
         }
-        if (project.booleanString("focused") == "true") {
+        if (project.isFocusedProject()) {
             return 200
         }
         return if (onlyProject) 100 else 0
@@ -300,7 +300,7 @@ internal class AutoTargetResolver(
     }
 
     private fun projectsForIdentity(identity: JsonObject): List<JsonObject> {
-        return identity["open_projects"]?.jsonArray?.mapNotNull { it as? JsonObject } ?: emptyList()
+        return identity["open_projects"]?.jsonArray?.filterIsInstance<JsonObject>() ?: emptyList()
     }
 
     private fun formatCandidates(identities: List<JsonObject>): String {
@@ -391,14 +391,14 @@ private fun JsonObject.string(name: String): String? {
     return this[name]?.jsonPrimitive?.contentOrNull
 }
 
-private fun JsonObject.int(name: String): Int? {
-    return this[name]?.jsonPrimitive?.intOrNull
+private fun JsonObject.port(): Int? {
+    return this["port"]?.jsonPrimitive?.intOrNull
 }
 
 private fun JsonObject.longString(name: String): String? {
     return this[name]?.jsonPrimitive?.contentOrNull
 }
 
-private fun JsonObject.booleanString(name: String): String? {
-    return this[name]?.jsonPrimitive?.contentOrNull
+private fun JsonObject.isFocusedProject(): Boolean {
+    return this["focused"]?.jsonPrimitive?.contentOrNull == "true"
 }

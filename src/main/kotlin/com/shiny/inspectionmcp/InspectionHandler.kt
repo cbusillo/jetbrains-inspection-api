@@ -1861,27 +1861,6 @@ class InspectionHandler : HttpRequestHandler() {
         scopeParam: String?,
         directoryParam: String?,
         files: List<String>?,
-        includeUnversioned: Boolean,
-        changedFilesMode: String?,
-        maxFiles: Int?
-    ): AnalysisScope {
-        return buildAnalysisScope(
-            project = project,
-            scopeParam = scopeParam,
-            directoryParam = directoryParam,
-            files = files,
-            resolvedCurrentFile = null,
-            includeUnversioned = includeUnversioned,
-            changedFilesMode = changedFilesMode,
-            maxFiles = maxFiles,
-        )
-    }
-
-    private fun buildAnalysisScope(
-        project: Project,
-        scopeParam: String?,
-        directoryParam: String?,
-        files: List<String>?,
         resolvedCurrentFile: String?,
         includeUnversioned: Boolean,
         changedFilesMode: String?,
@@ -2320,7 +2299,11 @@ class InspectionHandler : HttpRequestHandler() {
         wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
         project: Project,
     ): Map<String, Any>? {
-        val description = descriptor.descriptionTemplate.takeIf { it.isNotBlank() } ?: return null
+        val descriptionTemplate = descriptor.descriptionTemplate.takeIf { it.isNotBlank() } ?: return null
+        val description = normalizeProblemDescription(
+            descriptionTemplate,
+            (descriptor as? com.intellij.codeInspection.ProblemDescriptor)?.let(::problemDescriptorRefText),
+        )
         val inspectionType = wrapper.shortName
         val category = wrapper.groupDisplayName
 

@@ -296,10 +296,10 @@ class EnhancedTreeExtractor {
         }
 
         val candidate = tryCall(userObject, "getProblem") ?: userObject
-        val description = callString(
+        val description = normalizeProblemDescription(callString(
             candidate,
             listOf("getDescription", "getText", "getMessage", "getTitle")
-        ) ?: return
+        ) ?: return)
 
         val location = tryCall(candidate, "getLocation") ?: tryCall(candidate, "getProblemLocation")
         val fileObj = tryCall(location, "getVirtualFile")
@@ -481,7 +481,10 @@ class EnhancedTreeExtractor {
             val descriptor = node.descriptor
             
             if (descriptor != null) {
-                val description = descriptor.descriptionTemplate
+                val description = normalizeProblemDescription(
+                    descriptor.descriptionTemplate,
+                    (descriptor as? ProblemDescriptor)?.let(::problemDescriptorRefText),
+                )
                 
                 var file = "unknown"
                 var line = 0

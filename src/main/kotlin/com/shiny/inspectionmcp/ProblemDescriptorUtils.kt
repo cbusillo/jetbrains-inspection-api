@@ -84,3 +84,55 @@ fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
         else -> "info"
     }
 }
+
+internal fun normalizeProblemDescription(descriptionTemplate: String, refText: String? = null): String {
+    val replacement = refText?.trim()?.takeIf { it.isNotEmpty() }
+    val refPlaceholder = "__INSPECTION_REF_PLACEHOLDER__"
+    return descriptionTemplate
+        .replace("#ref", refPlaceholder)
+        .decodeHtmlEntities()
+        .replace(IDE_DESCRIPTION_TAG, " ")
+        .replace(refPlaceholder, replacement ?: "#ref")
+        .replace(Regex("\\s+"), " ")
+        .replace(Regex("\\s+([.,;:!?])"), "$1")
+        .trim()
+}
+
+internal fun problemDescriptorRefText(descriptor: ProblemDescriptor): String? {
+    val element = runCatching { descriptor.psiElement }.getOrNull()?.takeIf { it.isValid } ?: return null
+    val elementText = runCatching { element.text }.getOrNull() ?: return null
+    val rangeText = runCatching { descriptor.textRangeInElement }.getOrNull()?.let { range ->
+        if (range.startOffset >= 0 && range.endOffset <= elementText.length && !range.isEmpty) {
+            range.substring(elementText)
+        } else {
+            null
+        }
+    }
+    return (rangeText ?: elementText).trim().takeIf { text ->
+        text.isNotEmpty() && text.length <= MAX_REF_TEXT_LENGTH && !text.contains('\n')
+    }
+}
+
+private fun String.decodeHtmlEntities(): String {
+    return replace("&quot;", "\"")
+        .replace("&#34;", "\"")
+        .replace("&#x22;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'")
+        .replace("&apos;", "'")
+        .replace("&lt;", "<")
+        .replace("&#60;", "<")
+        .replace("&#x3c;", "<")
+        .replace("&#x3C;", "<")
+        .replace("&gt;", ">")
+        .replace("&#62;", ">")
+        .replace("&#x3e;", ">")
+        .replace("&#x3E;", ">")
+        .replace("&amp;", "&")
+}
+
+private const val MAX_REF_TEXT_LENGTH = 120
+
+private val IDE_DESCRIPTION_TAG = Regex(
+    "(?i)</?\\s*(html|body|p|div|span|code|pre|br|b|i|em|strong|ul|ol|li|a)(?:\\s+[^<>]*)?/?>"
+)
