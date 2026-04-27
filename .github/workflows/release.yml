@@ -87,29 +87,11 @@ jobs:
       id: get_version
       run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
     
-    - name: Generate changelog
-      id: changelog
+    - name: Generate release notes
       run: |
-        current_tag="${{ steps.get_version.outputs.VERSION }}"
-        
-        # Last published release tag (empty if the project has no releases yet)
-        last_release="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
-        
-        if [ -n "$last_release" ] && [ "$last_release" != "null" ] && git rev-parse -q "$last_release" >/dev/null; then
-          title="## Changes since $last_release"
-          range="${last_release}..HEAD"
-        else
-          title="## Changes in this release"
-          range="-30"         
-        fi
-        
-        changelog="$title\n\n$(git log --pretty=format:'- %s' --no-merges $range)"
-        
-        {
-          echo 'CHANGELOG<<__CHANGELOG__'
-          printf '%b\n' "$changelog"
-          echo '__CHANGELOG__'
-        } >>"$GITHUB_OUTPUT"
+        scripts/generate-release-notes.sh \
+          --version "${{ steps.get_version.outputs.VERSION }}" \
+          --output release-notes.md
       env:
         GH_TOKEN: ${{ github.token }}
     
@@ -119,14 +101,7 @@ jobs:
       with:
         tag_name: ${{ github.ref }}
         name: Release ${{ steps.get_version.outputs.VERSION }}
-        body: |
-          ${{ steps.changelog.outputs.CHANGELOG }}
-          
-          ## Installation & Setup
-          
-          Download the `jetbrains-inspection-api-${{ steps.get_version.outputs.VERSION }}.zip` file below.
-          
-          For installation and setup instructions, see the [README Quick Start Guide](https://github.com/cbusillo/jetbrains-inspection-api#quick-start).
+        body_path: release-notes.md
         draft: false
         prerelease: false
         files: ./build/distributions/*.zip
