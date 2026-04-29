@@ -1,13 +1,83 @@
 {
   "defaultBranch": "main",
+  "projectType": "jetbrains-plugin",
+  "docs": {
+    "overview": "README.md",
+    "testing": "TESTING.md",
+    "manualSmoke": "TESTING_INSTRUCTIONS.md",
+    "buildManifest": "build.gradle.kts",
+    "settings": "settings.gradle.kts",
+    "version": "gradle.properties"
+  },
+  "qualityGate": {
+    "test": {
+      "commitGate": "./scripts/commit-gate.sh --ci",
+      "all": "./scripts/test-all.sh",
+      "plugin": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test",
+      "core": "./gradlew :inspection-core:test",
+      "mcpServer": "./gradlew :mcp-server-jvm:test"
+    },
+    "build": {
+      "plugin": "./gradlew buildPlugin",
+      "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
+    },
+    "inspection": {
+      "tool": "jetbrains",
+      "ide": "IntelliJ IDEA",
+      "scopePreference": ["changed_files", "directory", "whole_project"]
+    },
+    "manualSmoke": {
+      "automatedIde": "./scripts/test-automated.sh"
+    },
+    "docsRequiredWhen": [
+      "behavior changes",
+      "api changes",
+      "config changes",
+      "plugin UI or endpoint changes",
+      "MCP tool contract changes",
+      "build or release workflow changes",
+      "manual smoke test flow changes"
+    ]
+  },
   "importantWorkflows": ["Release"],
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],
   "relatedRepos": [],
   "validatedThrough": [],
+  "githubSignals": {
+    "postMerge": {
+      "waitForActions": true,
+      "checkSecurityAndQuality": true
+    },
+    "capabilities": {
+      "codeScanning": "available",
+      "secretScanning": "not_enabled",
+      "dependabotAlerts": "available",
+      "securityAdvisories": "available"
+    },
+    "refreshWhen": [
+      "repo visibility changes",
+      "GitHub plan changes",
+      "security settings change",
+      "token permissions change"
+    ]
+  },
   "cleanup": {
     "deleteMergedLocalBranches": true,
     "removeMergedCleanWorktrees": true
+  },
+  "metadataFreshness": {
+    "updateWhen": [
+      "docs routing changes",
+      "validation gates change",
+      "primary commands change",
+      "important workflows change",
+      "repo relationship changes",
+      "cleanup policy changes",
+      "release workflow changes",
+      "plugin endpoint or MCP contract changes",
+      "Java or Gradle version requirements change"
+    ]
   }
 }

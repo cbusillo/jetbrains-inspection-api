@@ -72,5 +72,6 @@ out/
 mcp-server/coverage/
 .claude/
 .code/
+*.override.*
 /mcp-server-jvm/build/
 /inspection-core/build/
