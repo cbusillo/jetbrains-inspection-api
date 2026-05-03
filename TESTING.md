@@ -48,9 +48,13 @@ start it with a test project, and hit a few API endpoints.
 
 ## CI
 
-GitHub Actions runs on version tags (`v*`) via `.github/workflows/release.yml`:
+GitHub Actions runs the commit gate on pull requests and pushes to `main` via
+`.github/workflows/ci.yml`:
 
 - `./gradlew test`
 - `./gradlew :mcp-server-jvm:test`
-- `mcp-server-jvm` build
 - `./gradlew buildPlugin`
+
+Version tags (`v*`) run `.github/workflows/release.yml`, which repeats the
+commit gate before publishing to the JetBrains Marketplace and creating the
+GitHub Release.
