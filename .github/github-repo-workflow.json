@@ -39,7 +39,7 @@
       "manual smoke test flow changes"
     ]
   },
-  "importantWorkflows": ["Release"],
+  "importantWorkflows": ["CI", "Release"],
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],

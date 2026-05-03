@@ -117,6 +117,7 @@ JAVA_HOME=$(resolve_java_home) || {
 
 export JAVA_HOME
 
-./gradlew test
+./gradlew :test
+./gradlew :inspection-core:test
 ./gradlew :mcp-server-jvm:test
 ./gradlew buildPlugin
