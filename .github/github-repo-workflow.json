@@ -64,6 +64,7 @@
     ]
   },
   "cleanup": {
+    "localCommand": "./scripts/clean-local.sh",
     "deleteMergedLocalBranches": true,
     "removeMergedCleanWorktrees": true
   },
