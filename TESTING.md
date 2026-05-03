@@ -46,6 +46,12 @@ start it with a test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 
+## Local cleanup
+
+`./scripts/clean-local.sh` removes disposable local files such as `.DS_Store`
+files and old `tmp/*.log` test logs without deleting local configuration, agent
+state, Gradle caches, IDE sandboxes, or build output.
+
 ## CI
 
 GitHub Actions runs the commit gate on pull requests and pushes to `main` via

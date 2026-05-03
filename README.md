@@ -412,6 +412,13 @@ Notes:
 - Set `JAVA_HOME_21` if `/usr/libexec/java_home -v 21` is unavailable.
 - CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
 
+## Local cleanup
+
+Use `./scripts/clean-local.sh` to remove disposable local files such as
+`.DS_Store` files and old `tmp/*.log` test logs. The script intentionally leaves
+local configuration, agent state, Gradle caches, IDE sandboxes, and build output
+alone.
+
 ## Known Limitations
 
 ### Inspection Detection Coverage
