@@ -39,7 +39,8 @@ path and rerun the command.
 1. **Open IDE Settings**: `File` → `Settings` (or `IntelliJ IDEA` → `Preferences` on macOS)
 2. **Navigate to**: `Tools` → `Web Browsers and Preview`
 3. In the **Built-in Server** section:
-   - Set the **Port** (example: `63341`)
+   - Set the **Port** (example: `63340`)
+   - The HTTP examples below use this same port.
    - **✅ Check**: "Can accept external connections"
    - **✅ Check**: "Allow unsigned requests"
 4. **Apply** settings
@@ -113,6 +114,9 @@ inspection_get_problems(project="odoo-ai", severity="error")
 Note: in MCP auto mode, the router prefers `project_key`, `project_path`, the MCP process working directory, then a unique `project` name. Blank or omitted selectors fall back to the focused/active open project only when unambiguous.
 
 ### Direct HTTP API
+These examples use the `63340` port from the setup example above. If you
+configured a different IDE built-in server port, use that port in each URL.
+
 ```bash
 # Trigger inspection
 curl "http://localhost:63340/api/inspection/trigger"
@@ -141,8 +145,6 @@ curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
 # Inspect IDE/plugin identity and open project metadata
 curl "http://localhost:63340/api/inspection/identity"
 ```
-
-Replace `63340` with your IDE's configured port.
 
 ## Result Schema
 
