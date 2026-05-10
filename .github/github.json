@@ -44,7 +44,21 @@
   "deployLabels": [],
   "healthUrls": [],
   "relatedRepos": [],
-  "validatedThrough": [],
+  "validatedThrough": [
+    {
+      "date": "2026-05-10",
+      "source": "cbusillo/jetbrains-inspection-api#20",
+      "checks": [
+        "jq empty .github/github.json",
+        "rg github-repo-workflow\\.json",
+        "codex-skills github-repo-snapshot.sh --json",
+        "commit-gate Gradle validation"
+      ],
+      "caveats": [
+        "Metadata contents were not otherwise changed during the config-path migration."
+      ]
+    }
+  ],
   "githubSignals": {
     "postMerge": {
       "waitForActions": true,
