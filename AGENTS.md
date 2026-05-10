@@ -5,7 +5,7 @@ This repo is designed to be worked on with **Every Code** (the Codex CLI fork).
 User-facing setup, API usage, and release details live in [README.md](README.md).
 Testing details live in [TESTING.md](TESTING.md) and manual IDE smoke recipes
 live in [TESTING_INSTRUCTIONS.md](TESTING_INSTRUCTIONS.md).
-Use `.github/github-repo-workflow.json` for non-secret repo workflow facts,
+Use `.github/github.json` for non-secret repo workflow facts,
 validation commands, GitHub signal availability, docs routing, important
 workflows, and cleanup policy.
 
