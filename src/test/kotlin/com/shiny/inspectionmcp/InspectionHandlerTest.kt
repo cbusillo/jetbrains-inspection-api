@@ -790,6 +790,51 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test getCurrentProject prefers exact project file path over longer containing base path`() {
+        val exactProjectFileMatch = mockProject(
+            name = "ExactProjectFile",
+            basePath = "/repo/app",
+            projectFilePath = "/repo/app/.idea/misc.xml",
+        )
+        val longerContainingBasePath = mockProject(
+            name = "ContainingBasePath",
+            basePath = "/repo/app/.idea",
+            projectFilePath = "/repo/app/.idea/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(exactProjectFileMatch, longerContainingBasePath)
+
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
+        method.isAccessible = true
+
+        val result = method.invoke(handler, "/repo/app/.idea/misc.xml") as Project?
+
+        assertNotNull(result)
+        assertEquals("ExactProjectFile", result?.name)
+    }
+
+    @Test
+    fun `test route endpoint prefers exact project file path over longer containing base path`() {
+        val exactProjectFileMatch = mockProject(
+            name = "ExactProjectFile",
+            basePath = "/repo/app",
+            projectFilePath = "/repo/app/.idea/misc.xml",
+        )
+        val longerContainingBasePath = mockProject(
+            name = "ContainingBasePath",
+            basePath = "/repo/app/.idea",
+            projectFilePath = "/repo/app/.idea/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(exactProjectFileMatch, longerContainingBasePath)
+
+        val response = processGetRequest("/api/inspection/route?project_path=/repo/app/.idea/misc.xml")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_name\": \"ExactProjectFile\""))
+        assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()
