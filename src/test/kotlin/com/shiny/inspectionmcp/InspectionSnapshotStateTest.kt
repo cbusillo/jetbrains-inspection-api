@@ -841,6 +841,46 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Stable scoped empty results can confirm clean without readable view evidence")
+    fun testStableScopedEmptyResultsConfirmCleanBeforeDeadline() {
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 29999L,
+            )
+        )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = true,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Settled views without problems are clean even when the tree has grouping nodes")
     fun testSettledCleanInspectionViewAllowsGroupingNodes() {
         val groupedCleanView = InspectionViewObservation(

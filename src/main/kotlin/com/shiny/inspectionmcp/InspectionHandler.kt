@@ -386,6 +386,26 @@ internal fun shouldStopCapturePolling(
     return false
 }
 
+internal fun shouldTrustStableScopedEmptyResults(
+    viewReadyOk: Boolean,
+    hasScopedMatcher: Boolean,
+    scopedContextResultsEmpty: Boolean,
+    bestResultsEmpty: Boolean,
+    observedNonEmptyInspectionTree: Boolean,
+    stableForMs: Long,
+    pollingElapsedMs: Long,
+    minStableMs: Long = 5000L,
+    minPollingMs: Long = 30000L,
+): Boolean {
+    return viewReadyOk &&
+        hasScopedMatcher &&
+        scopedContextResultsEmpty &&
+        bestResultsEmpty &&
+        !observedNonEmptyInspectionTree &&
+        stableForMs >= minStableMs &&
+        pollingElapsedMs >= minPollingMs
+}
+
 class InspectionHandler : HttpRequestHandler() {
     private val logger = Logger.getInstance(InspectionHandler::class.java)
 
@@ -1776,13 +1796,15 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             if (
                                 !observedStableEmptyResultsWithoutInspectionView &&
-                                viewReadyOk &&
-                                scopeProblemMatcher != null &&
-                                scopedContextResults.isEmpty() &&
-                                bestResults.isEmpty() &&
-                                !hasUsableViewEvidence &&
-                                stableForMs >= 5000L &&
-                                pollingElapsedMs >= 60000L
+                                shouldTrustStableScopedEmptyResults(
+                                    viewReadyOk = viewReadyOk,
+                                    hasScopedMatcher = scopeProblemMatcher != null,
+                                    scopedContextResultsEmpty = scopedContextResults.isEmpty(),
+                                    bestResultsEmpty = bestResults.isEmpty(),
+                                    observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                                    stableForMs = stableForMs,
+                                    pollingElapsedMs = pollingElapsedMs,
+                                )
                             ) {
                                 observedStableEmptyResultsWithoutInspectionView = true
                             }
@@ -1811,18 +1833,15 @@ class InspectionHandler : HttpRequestHandler() {
 
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
-                            viewReadyOk &&
-                            scopeProblemMatcher != null &&
-                            scopedContextResults.isEmpty() &&
-                            bestResults.isEmpty() &&
-                            !hasUsableInspectionViewEvidence(
-                                inspectionViewObservationCount = inspectionViewObservationCount,
-                                nullRootChildObservationCount = nullRootChildObservationCount,
-                                observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                                observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                            shouldTrustStableScopedEmptyResults(
+                                viewReadyOk = viewReadyOk,
+                                hasScopedMatcher = scopeProblemMatcher != null,
+                                scopedContextResultsEmpty = scopedContextResults.isEmpty(),
+                                bestResultsEmpty = bestResults.isEmpty(),
                                 observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                            ) &&
-                            System.currentTimeMillis() >= deadlineMs
+                                stableForMs = System.currentTimeMillis() - lastChangeMs,
+                                pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
+                            )
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
                         }
