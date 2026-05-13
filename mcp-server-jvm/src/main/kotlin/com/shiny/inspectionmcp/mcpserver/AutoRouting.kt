@@ -10,6 +10,10 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonPrimitive
+import com.shiny.inspectionmcp.core.InspectionRouteIdentity
+import com.shiny.inspectionmcp.core.InspectionRouteProject
+import com.shiny.inspectionmcp.core.InspectionRouteSelector
+import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
 import java.net.HttpURLConnection
 import java.net.URI
 import java.net.http.HttpClient
@@ -204,99 +208,40 @@ internal class AutoTargetResolver(
     }
 
     private fun scoreCandidates(args: JsonObject, identities: List<JsonObject>): List<RouteCandidate> {
-        val explicitProjectKey = args.string("project_key")?.trim()?.takeIf { it.isNotEmpty() }
-        val explicitProjectPath = normalizePath(args.string("project_path"))
-        val projectSelector = args.string("project")?.trim()?.takeIf { it.isNotEmpty() }
-        val projectSelectorPath = normalizePath(projectSelector)
-        val cwd = normalizePath(System.getProperty("user.dir"))
-        val ideSelector = args.string("ide")?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-
-        val candidates = mutableListOf<RouteCandidate>()
-        for (identity in identities) {
-            if (ideSelector != null && !identityMatchesIde(identity, ideSelector)) {
-                continue
+        val identityBySession = identities.associateBy { identity -> identity.string("session_id") ?: "port:${identity.port()}" }
+        val projectsByRouteKey = identities.associate { identity ->
+            val sessionKey = identity.string("session_id") ?: "port:${identity.port()}"
+            sessionKey to projectsForIdentity(identity).associateBy { project ->
+                routeProjectKey(project.string("project_key"), project.string("name"), project.string("base_path"))
             }
-            val port = identity.port() ?: continue
-            for (project in projectsForIdentity(identity)) {
-                val score = scoreProject(
+        }
+
+        return scoreInspectionRouteCandidates(
+            identities = identities.map(::toRouteIdentity),
+            selector = InspectionRouteSelector(
+                projectKey = args.string("project_key"),
+                projectPath = args.string("project_path"),
+                worktreePath = args.string("worktree_path"),
+                cwd = args.string("cwd"),
+                project = args.string("project"),
+                ide = args.string("ide"),
+            ),
+        ).mapNotNull { candidate ->
+            val sessionKey = candidate.identity.sessionId ?: "port:${candidate.identity.port}"
+            val identity = identityBySession[sessionKey] ?: return@mapNotNull null
+            val port = identity.port() ?: return@mapNotNull null
+            val projectRouteKey = routeProjectKey(candidate.project.projectKey, candidate.project.name, candidate.project.basePath)
+            val project = projectsByRouteKey[sessionKey]?.get(projectRouteKey) ?: return@mapNotNull null
+            RouteCandidate(
+                InspectionTarget(
+                    baseUrl = "http://localhost:$port/api/inspection",
+                    idePort = port.toString(),
+                    identity = identity,
                     project = project,
-                    explicitProjectKey = explicitProjectKey,
-                    explicitProjectPath = explicitProjectPath,
-                    projectSelector = projectSelector,
-                    projectSelectorPath = projectSelectorPath,
-                    cwd = cwd,
-                    onlyProject = identities.sumOf { projectsForIdentity(it).size } == 1,
-                )
-                if (score > 0) {
-                    candidates += RouteCandidate(
-                        InspectionTarget(
-                            baseUrl = "http://localhost:$port/api/inspection",
-                            idePort = port.toString(),
-                            identity = identity,
-                            project = project,
-                        ),
-                        score,
-                    )
-                }
-            }
+                ),
+                candidate.score,
+            )
         }
-        return candidates.sortedWith(
-            compareByDescending<RouteCandidate> { it.score }
-                .thenByDescending { candidate -> normalizedPathLength(candidate.target.project?.string("base_path")) }
-                .thenBy { candidate -> candidate.target.project?.string("name") ?: "" }
-        )
-    }
-
-    private fun scoreProject(
-        project: JsonObject,
-        explicitProjectKey: String?,
-        explicitProjectPath: String?,
-        projectSelector: String?,
-        projectSelectorPath: String?,
-        cwd: String?,
-        onlyProject: Boolean,
-    ): Int {
-        val projectKey = project.string("project_key")
-        val projectName = project.string("name")
-        val basePath = normalizePath(project.string("base_path"))
-        val projectFilePath = normalizePath(project.string("project_file_path"))
-
-        if (explicitProjectKey != null) {
-            return if (projectKey == explicitProjectKey) 1000 else 0
-        }
-        if (explicitProjectPath != null) {
-            return when {
-                explicitProjectPath == basePath || explicitProjectPath == projectFilePath -> 950
-                basePath != null && isInside(explicitProjectPath, basePath) -> 930
-                else -> 0
-            }
-        }
-        if (projectSelectorPath != null) {
-            return when {
-                projectSelectorPath == basePath || projectSelectorPath == projectFilePath -> 900
-                basePath != null && isInside(projectSelectorPath, basePath) -> 880
-                else -> 0
-            }
-        }
-        if (!projectSelector.isNullOrBlank()) {
-            if (projectName == projectSelector) return 800
-            if (projectName.equals(projectSelector, ignoreCase = true)) return 790
-            return 0
-        }
-        if (cwd != null && basePath != null && isInside(cwd, basePath)) {
-            return 700 + normalizedPathLength(basePath).coerceAtMost(100)
-        }
-        if (project.isFocusedProject()) {
-            return 200
-        }
-        return if (onlyProject) 100 else 0
-    }
-
-    private fun identityMatchesIde(identity: JsonObject, selector: String): Boolean {
-        return listOfNotNull(
-            identity.string("ide_name"),
-            identity.string("ide_product_code"),
-        ).any { value -> value.lowercase().contains(selector) }
     }
 
     private fun projectsForIdentity(identity: JsonObject): List<JsonObject> {
@@ -320,6 +265,34 @@ internal class AutoTargetResolver(
             "- ${identity?.string("ide_name") ?: "JetBrains IDE"} / ${project?.string("name") ?: "<unnamed>"} / ${project?.string("base_path") ?: project?.string("project_key") ?: "<no path>"} / project_key=${project?.string("project_key") ?: ""}"
         }
     }
+}
+
+private fun toRouteIdentity(identity: JsonObject): InspectionRouteIdentity {
+    return InspectionRouteIdentity(
+        sessionId = identity.string("session_id"),
+        startedAtMs = identity.longString("started_at_ms")?.toLongOrNull(),
+        heartbeatMs = identity.longString("heartbeat_ms")?.toLongOrNull(),
+        port = identity.port(),
+        ideName = identity.string("ide_name"),
+        ideVersion = identity.string("ide_version"),
+        ideProductCode = identity.string("ide_product_code"),
+        pluginVersion = identity.string("plugin_version"),
+        projects = identity["open_projects"]?.jsonArray?.filterIsInstance<JsonObject>()?.map(::toRouteProject) ?: emptyList(),
+    )
+}
+
+private fun toRouteProject(project: JsonObject): InspectionRouteProject {
+    return InspectionRouteProject(
+        projectKey = project.string("project_key"),
+        name = project.string("name"),
+        basePath = project.string("base_path"),
+        projectFilePath = project.string("project_file_path"),
+        focused = project.isFocusedProject(),
+    )
+}
+
+private fun routeProjectKey(projectKey: String?, name: String?, basePath: String?): String {
+    return projectKey ?: "name:$name:base:$basePath"
 }
 
 private data class RouteCandidate(
@@ -357,34 +330,6 @@ internal fun defaultScanPorts(): List<Int> {
         }.distinct()
     }
     return (63340..63349).toList()
-}
-
-private fun normalizePath(raw: String?): String? {
-    val value = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    val withoutKeyPrefix = value.removePrefix("path:").removePrefix("file:")
-    if (!looksLikePath(withoutKeyPrefix)) return null
-    val expanded = if (withoutKeyPrefix.startsWith("~")) {
-        System.getProperty("user.home") + withoutKeyPrefix.removePrefix("~")
-    } else {
-        withoutKeyPrefix
-    }
-    return runCatching { Paths.get(expanded).normalize().toAbsolutePath().toString() }.getOrNull()
-}
-
-private fun looksLikePath(value: String): Boolean {
-    return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
-}
-
-private fun isInside(path: String, basePath: String): Boolean {
-    return runCatching {
-        val normalizedPath = Paths.get(path).normalize().toAbsolutePath()
-        val normalizedBase = Paths.get(basePath).normalize().toAbsolutePath()
-        normalizedPath == normalizedBase || normalizedPath.startsWith(normalizedBase)
-    }.getOrDefault(false)
-}
-
-private fun normalizedPathLength(path: String?): Int {
-    return normalizePath(path)?.length ?: 0
 }
 
 private fun JsonObject.string(name: String): String? {

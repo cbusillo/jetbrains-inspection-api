@@ -104,9 +104,7 @@ internal object InspectionIdeRegistry {
         for (className in listOf("com.intellij.ide.BuiltInServerManager", "org.jetbrains.ide.BuiltInServerManager")) {
             try {
                 val clazz = Class.forName(className)
-                val instance = clazz.methods.firstOrNull { it.name == "getInstance" && it.parameterCount == 0 }
-                    ?.invoke(null)
-                    ?: clazz.fields.firstOrNull { it.name == "INSTANCE" }?.get(null)
+                val instance = singletonInstance(clazz)
                 val waitForStart = clazz.methods.firstOrNull { it.name == "waitForStart" && it.parameterCount == 0 }
                 if (waitForStart != null) {
                     waitForStart.invoke(instance)
@@ -146,20 +144,22 @@ internal object InspectionIdeRegistry {
     }
 }
 
-private fun openProjectIdentities(): List<Map<String, Any?>> {
+internal fun openProjectIdentities(): List<Map<String, Any?>> {
     return ApplicationManager.getApplication().runReadAction<List<Map<String, Any?>>, Exception> {
         ProjectManager.getInstance().openProjects
             .filter { project -> !project.isDefault && !project.isDisposed && project.isInitialized }
-            .map { project ->
-                mapOf(
-                    "project_key" to projectKey(project),
-                    "name" to project.name,
-                    "base_path" to project.basePath,
-                    "project_file_path" to project.projectFilePath,
-                    "focused" to isFocusedProject(project),
-                )
-            }
+            .map(::openProjectIdentity)
     }
+}
+
+internal fun openProjectIdentity(project: Project): Map<String, Any?> {
+    return mapOf(
+        "project_key" to projectKey(project),
+        "name" to runCatching { project.name }.getOrDefault(""),
+        "base_path" to runCatching { project.basePath }.getOrNull(),
+        "project_file_path" to runCatching { project.projectFilePath }.getOrNull(),
+        "focused" to isFocusedProject(project),
+    )
 }
 
 private fun isFocusedProject(project: Project): Boolean {
@@ -192,9 +192,7 @@ private fun resolvePortFromClasses(classNames: List<String>, methodNames: List<S
 private fun resolvePortFromClass(className: String, methodNames: List<String>): Int? {
     return try {
         val clazz = Class.forName(className)
-        val instance = clazz.methods.firstOrNull { it.name == "getInstance" && it.parameterCount == 0 }
-            ?.invoke(null)
-            ?: clazz.fields.firstOrNull { it.name == "INSTANCE" }?.get(null)
+        val instance = singletonInstance(clazz)
         for (methodName in methodNames) {
             val getter = clazz.methods.firstOrNull { it.name == methodName && it.parameterCount == 0 } ?: continue
             val port = getter.invoke(instance) as? Int
@@ -204,4 +202,10 @@ private fun resolvePortFromClass(className: String, methodNames: List<String>): 
     } catch (_: Throwable) {
         null
     }
+}
+
+private fun singletonInstance(clazz: Class<*>): Any? {
+    return clazz.methods.firstOrNull { it.name == "getInstance" && it.parameterCount == 0 }
+        ?.invoke(null)
+        ?: clazz.fields.firstOrNull { it.name == "INSTANCE" }?.get(null)
 }

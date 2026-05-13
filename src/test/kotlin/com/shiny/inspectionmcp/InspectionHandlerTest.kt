@@ -633,6 +633,16 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route endpoint reports session drift as conflict`() {
+        val response = processGetRequest("/api/inspection/route?session_id=old-session")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("\"session_drift\": true"))
+        assertTrue(body.contains("\"expected_session_id\": \"old-session\""))
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()
@@ -726,6 +736,10 @@ class InspectionHandlerTest {
     }
 
     private fun processTriggerRequest(uri: String): FullHttpResponse {
+        return processGetRequest(uri)
+    }
+
+    private fun processGetRequest(uri: String): FullHttpResponse {
         val urlDecoder = QueryStringDecoder(uri)
         val mockRequest = mockk<FullHttpRequest>()
         val mockContext = mockk<ChannelHandlerContext>()
