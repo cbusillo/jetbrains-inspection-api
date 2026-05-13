@@ -144,7 +144,15 @@ curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
 
 # Inspect IDE/plugin identity and open project metadata
 curl "http://localhost:63340/api/inspection/identity"
+
+# Resolve a stateless client route before trigger/wait/problems
+curl "http://localhost:63340/api/inspection/route?cwd=/Users/me/Developer/MyProject"
 ```
+
+Stateless skill or script clients should resolve a route, then pass the returned
+`project_key` and `session_id` to trigger, wait, status, and problems calls. If
+the IDE restarts, those calls return HTTP 409 with `session_drift: true`; resolve
+again and re-trigger before trusting cached results.
 
 ## Result Schema
 
@@ -153,6 +161,8 @@ Typical response (truncated):
 {
   "status": "results_available",
   "project": "MyProject",
+  "project_key": "path:/abs/path/to/MyProject",
+  "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
   "timestamp": 1766165367310,
   "total_problems": 1320,
   "problems_shown": 100,
@@ -180,6 +190,20 @@ Typical response (truncated):
     "problem_type": "all",
     "file_pattern": "all"
   },
+  "route": {
+    "port": 63340,
+    "base_url": "http://localhost:63340/api/inspection",
+    "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
+    "project_key": "path:/abs/path/to/MyProject",
+    "project_name": "MyProject",
+    "base_path": "/abs/path/to/MyProject",
+    "focused": true,
+    "ide": {
+      "name": "IntelliJ IDEA Ultimate",
+      "product_code": "IU",
+      "plugin_version": "1.10.5"
+    }
+  },
   "method": "enhanced_tree"
 }
 ```
@@ -189,8 +213,71 @@ Notes:
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean.
 - `status: "stale_results"` means project files changed after the last inspection. Trigger a new inspection before trusting cached findings.
+- `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
 
 ## API Reference
+
+### Route Endpoint
+**URL**: `GET /api/inspection/route`
+
+Resolves selectors to the current IDE port, project, and session metadata. This
+is intended for stateless HTTP clients that cannot rely on MCP process-local
+routing state.
+
+**Parameters**:
+- `project_key` (optional): Stable project key from `/identity`, `/route`, or response metadata.
+- `project_path` (optional): Project root or nested path within the project.
+- `worktree_path` (optional): Alias for path-based project/worktree selection.
+- `cwd` (optional): Current working directory used by script/skill clients.
+- `project` (optional): Project name; use `project_key` or path selectors when names are duplicated.
+- `ide` (optional): IDE name or product-code substring, useful when multiple IDEs are open.
+- `session_id` (optional): Expected IDE session. A mismatch returns HTTP 409 with `session_drift: true`.
+
+**Response**:
+```json
+{
+  "status": "resolved",
+  "route": {
+    "port": 63340,
+    "base_url": "http://localhost:63340/api/inspection",
+    "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
+    "project_key": "path:/Users/me/Developer/MyProject",
+    "project_name": "MyProject",
+    "base_path": "/Users/me/Developer/MyProject",
+    "focused": true,
+    "ide": {
+      "name": "IntelliJ IDEA Ultimate",
+      "version": "2025.1.1",
+      "product_code": "IU",
+      "plugin_version": "1.10.5"
+    }
+  },
+  "registry": {
+    "instances_dir": "/Users/me/Library/Caches/jetbrains-inspection-api/instances",
+    "environment": {
+      "registry_dir": "JETBRAINS_INSPECTION_REGISTRY_DIR",
+      "ports": "JETBRAINS_INSPECTION_PORTS"
+    },
+    "ttl_ms": 60000
+  }
+}
+```
+
+### Identity And Registry Metadata
+**URL**: `GET /api/inspection/identity`
+
+Identity responses and registry instance files share the same schema:
+`session_id`, `started_at_ms`, `heartbeat_ms`, `pid`, `port`, `ide_name`,
+`ide_version`, `ide_product_code`, `plugin_version`, and `open_projects`.
+Each project includes `project_key`, `name`, `base_path`, `project_file_path`,
+and `focused` as a JSON boolean.
+
+Registry files live under the OS cache directory by default:
+`jetbrains-inspection-api/instances/<session_id>.json`. Override the directory
+with `JETBRAINS_INSPECTION_REGISTRY_DIR`. Clients that cannot reach a known IDE
+port can read fresh registry files, verify `heartbeat_ms` is within about 60
+seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
+`63340-63350` as a fallback.
 
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`
@@ -207,6 +294,8 @@ Notes:
 - `limit` (optional): Maximum problems to return, `1..1000` (default: 100)
 - `offset` (optional): Number of problems to skip for pagination, `>=0` (default: 0)
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
+- `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
+- `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
 
 Invalid `limit` or `offset` values return HTTP 400 with `error`, `parameter`, and `message` fields.
 
@@ -232,6 +321,8 @@ curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern
 **Parameters**:
 - `project` (optional): Project name to target when multiple projects are open
 - Blank or omitted `project` uses the focused or active open project. Nonblank values must match an open project.
+- `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
+- `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
 - `scope` (optional):
   - `whole_project` (default)
   - `current_file` (inspect the currently selected editor file)

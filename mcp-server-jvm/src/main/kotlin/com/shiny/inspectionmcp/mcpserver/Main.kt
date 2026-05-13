@@ -837,6 +837,8 @@ private fun JsonObject.optionalProject(): String? {
 private fun JsonObject.routingSelector(): Pair<String, String>? {
     string("project_key")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "project_key" to it }
     string("project_path")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "project_path" to it }
+    string("worktree_path")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "worktree_path" to it }
+    string("cwd")?.trim()?.takeIf { it.isNotEmpty() }?.let { return "cwd" to it }
     optionalProject()?.let { return "project" to it }
     return null
 }

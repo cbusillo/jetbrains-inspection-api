@@ -22,8 +22,12 @@ import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.shiny.inspectionmcp.core.filterProblems
 import com.shiny.inspectionmcp.core.formatJsonManually
+import com.shiny.inspectionmcp.core.InspectionRouteIdentity
+import com.shiny.inspectionmcp.core.InspectionRouteProject
+import com.shiny.inspectionmcp.core.InspectionRouteSelector
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
 import com.shiny.inspectionmcp.core.paginateProblems
+import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -340,6 +344,7 @@ internal fun shouldStopCapturePolling(
     inspectionViewUpdating: Boolean,
     observedSettledEmptyInspectionView: Boolean,
     observedStableReadableEmptyInspectionView: Boolean,
+    observedStableEmptyResultsWithoutInspectionView: Boolean = false,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
@@ -375,11 +380,35 @@ internal fun shouldStopCapturePolling(
         return true
     }
 
+    if (observedStableEmptyResultsWithoutInspectionView) {
+        return true
+    }
+
     if ((!viewReadyOk || !observedInspectionView) && stableForMs >= minStableMs && pollingElapsedMs >= maxFallbackWaitMs) {
         return true
     }
 
     return false
+}
+
+internal fun shouldTrustStableScopedEmptyResults(
+    viewReadyOk: Boolean,
+    hasScopedMatcher: Boolean,
+    scopedContextResultsEmpty: Boolean,
+    bestResultsEmpty: Boolean,
+    observedNonEmptyInspectionTree: Boolean,
+    stableForMs: Long,
+    pollingElapsedMs: Long,
+    minStableMs: Long = 5000L,
+    minPollingMs: Long = 30000L,
+): Boolean {
+    return viewReadyOk &&
+        hasScopedMatcher &&
+        scopedContextResultsEmpty &&
+        bestResultsEmpty &&
+        !observedNonEmptyInspectionTree &&
+        stableForMs >= minStableMs &&
+        pollingElapsedMs >= minPollingMs
 }
 
 class InspectionHandler : HttpRequestHandler() {
@@ -389,6 +418,13 @@ class InspectionHandler : HttpRequestHandler() {
         val name: String,
         val path: String,
         val score: Int,
+    )
+
+    private data class ResolvedInspectionRoute(
+        val project: Project,
+        val identity: Map<String, Any?>,
+        val projectIdentity: Map<String, Any?>,
+        val score: Int? = null,
     )
     
     private val runIdSequence = AtomicLong()
@@ -420,7 +456,21 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     sendJsonResponse(context, result)
                 }
+                "/api/inspection/route" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
+                        buildRouteResponse(parameters)
+                    }
+                    sendJsonResponse(context, result)
+                }
                 "/api/inspection/problems" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
                     val severity = parameters["severity"]?.firstOrNull() ?: "all"
                     val scope = parameters["scope"]?.firstOrNull() ?: "whole_project"
                     val problemTypeRaw = parameters["problem_type"]?.firstOrNull()
@@ -438,6 +488,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/trigger" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
                     val scope = parameters["scope"]?.firstOrNull()
                     // Accept either `dir`, `directory`, or `path` for directory scoping
                     val directory = parameters["dir"]?.firstOrNull()
@@ -480,6 +534,9 @@ class InspectionHandler : HttpRequestHandler() {
                             "message" to "Inspection triggered. Wait 10-15 seconds then check status"
                         )
                         details["run_id"] = runState.runId
+                        details["session_id"] = InspectionIdeSession.sessionId
+                        details["project_key"] = projectKey(project)
+                        details["route"] = routeMetadata(project)
                         if (!scope.isNullOrBlank()) details["scope"] = scope
                         if (!directory.isNullOrBlank()) details["directory"] = directory
                         if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
@@ -491,6 +548,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/status" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
                         val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
@@ -500,6 +561,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/wait" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
                     val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
@@ -557,6 +622,170 @@ class InspectionHandler : HttpRequestHandler() {
             )
         )
     }
+
+    private fun responseHasSessionDrift(parameters: Map<String, List<String>>): String? {
+        val expectedSessionId = firstParameter(parameters, "session_id") ?: return null
+        if (expectedSessionId == InspectionIdeSession.sessionId) {
+            return null
+        }
+        return formatJsonManually(
+            mapOf(
+                "error" to "IDE session changed",
+                "session_drift" to true,
+                "expected_session_id" to expectedSessionId,
+                "session_id" to InspectionIdeSession.sessionId,
+                "started_at_ms" to InspectionIdeSession.startedAtMs,
+                "message" to "The JetBrains IDE session changed. Resolve the route again and re-trigger inspection before trusting cached results.",
+            )
+        )
+    }
+
+    private fun buildRouteResponse(parameters: Map<String, List<String>>): String {
+        val resolved = resolveInspectionRoute(parameters)
+            ?: return formatJsonManually(buildMissingProjectResponse(routeProjectSelector(parameters)))
+        return formatJsonManually(
+            mapOf(
+                "status" to "resolved",
+                "route" to routeMetadata(resolved),
+                "selectors" to routeSelectorMetadata(parameters),
+                "registry" to registryMetadata(),
+            )
+        )
+    }
+
+    private fun resolveInspectionRoute(parameters: Map<String, List<String>>): ResolvedInspectionRoute? {
+        val selector = InspectionRouteSelector(
+            projectKey = firstParameter(parameters, "project_key"),
+            projectPath = firstParameter(parameters, "project_path"),
+            worktreePath = firstParameter(parameters, "worktree_path"),
+            cwd = firstParameter(parameters, "cwd"),
+            project = firstParameter(parameters, "project"),
+            ide = firstParameter(parameters, "ide"),
+        )
+        val identity = safeInspectionIdentity()
+        val routeIdentity = identity.toRouteIdentity()
+        val candidates = scoreInspectionRouteCandidates(listOf(routeIdentity), selector)
+        val bestScore = candidates.firstOrNull()?.score
+        val best = candidates.filter { candidate -> candidate.score == bestScore }
+        if (bestScore != null && best.size > 1) {
+            throw BadRequestException(
+                "project",
+                "Multiple open projects matched this request. Retry with project_path or project_key.",
+            )
+        }
+        val selected = best.firstOrNull() ?: return null
+        val projectKey = selected.project.projectKey ?: return null
+        val project = getCurrentProject(projectKey) ?: return null
+        val projectIdentity = openProjectIdentity(project)
+        return ResolvedInspectionRoute(project, identity, projectIdentity, selected.score)
+    }
+
+    private fun routeMetadata(project: Project): Map<String, Any?> {
+        val identity = safeInspectionIdentity()
+        val projectIdentity = openProjectIdentity(project)
+        return routeMetadata(ResolvedInspectionRoute(project, identity, projectIdentity))
+    }
+
+    private fun safeInspectionIdentity(): Map<String, Any?> {
+        return runCatching { buildInspectionIdentity() }.getOrElse {
+            mapOf(
+                "session_id" to InspectionIdeSession.sessionId,
+                "started_at_ms" to InspectionIdeSession.startedAtMs,
+                "heartbeat_ms" to System.currentTimeMillis(),
+                "pid" to ProcessHandle.current().pid(),
+                "port" to runCatching { resolveIdePort() }.getOrNull(),
+                "ide_name" to null,
+                "ide_version" to null,
+                "ide_product_code" to null,
+                "plugin_version" to null,
+                "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
+            )
+        }
+    }
+
+    private fun routeMetadata(resolved: ResolvedInspectionRoute): Map<String, Any?> {
+        return mapOf(
+            "port" to resolved.identity["port"],
+            "base_url" to resolved.identity["port"]?.let { port -> "http://localhost:$port/api/inspection" },
+            "session_id" to resolved.identity["session_id"],
+            "started_at_ms" to resolved.identity["started_at_ms"],
+            "heartbeat_ms" to resolved.identity["heartbeat_ms"],
+            "project_key" to resolved.projectIdentity["project_key"],
+            "project_name" to resolved.projectIdentity["name"],
+            "base_path" to resolved.projectIdentity["base_path"],
+            "project_file_path" to resolved.projectIdentity["project_file_path"],
+            "focused" to resolved.projectIdentity["focused"],
+            "ide" to ideRouteMetadata(resolved.identity),
+            "score" to resolved.score,
+        )
+    }
+
+    private fun ideRouteMetadata(identity: Map<String, Any?>): Map<String, Any?> {
+        return mapOf(
+            "name" to identity["ide_name"],
+            "version" to identity["ide_version"],
+            "product_code" to identity["ide_product_code"],
+            "pid" to identity["pid"],
+            "plugin_version" to identity["plugin_version"],
+        )
+    }
+
+    private fun routeSelectorMetadata(parameters: Map<String, List<String>>): Map<String, Any?> {
+        return mapOf(
+            "project_key" to firstParameter(parameters, "project_key"),
+            "project_path" to firstParameter(parameters, "project_path"),
+            "worktree_path" to firstParameter(parameters, "worktree_path"),
+            "cwd" to firstParameter(parameters, "cwd"),
+            "project" to firstParameter(parameters, "project"),
+            "ide" to firstParameter(parameters, "ide"),
+        ).filterValues { value -> value != null }
+    }
+
+    private fun registryMetadata(): Map<String, Any?> {
+        return mapOf(
+            "instances_dir" to inspectionRegistryInstancesDir().toString(),
+            "environment" to mapOf(
+                "registry_dir" to "JETBRAINS_INSPECTION_REGISTRY_DIR",
+                "ports" to "JETBRAINS_INSPECTION_PORTS",
+            ),
+            "ttl_ms" to 60000,
+        )
+    }
+
+    private fun firstParameter(parameters: Map<String, List<String>>, name: String): String? {
+        return parameters[name]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun routeProjectSelector(parameters: Map<String, List<String>>): String? {
+        return firstParameter(parameters, "project_key")
+            ?: firstParameter(parameters, "project_path")
+            ?: firstParameter(parameters, "worktree_path")
+            ?: firstParameter(parameters, "cwd")
+            ?: firstParameter(parameters, "project")
+    }
+
+    private fun Map<String, Any?>.toRouteIdentity(): InspectionRouteIdentity {
+        return InspectionRouteIdentity(
+            sessionId = this["session_id"] as? String,
+            startedAtMs = (this["started_at_ms"] as? Number)?.toLong(),
+            heartbeatMs = (this["heartbeat_ms"] as? Number)?.toLong(),
+            port = (this["port"] as? Number)?.toInt(),
+            ideName = this["ide_name"] as? String,
+            ideVersion = this["ide_version"] as? String,
+            ideProductCode = this["ide_product_code"] as? String,
+            pluginVersion = this["plugin_version"] as? String,
+            projects = ((this["open_projects"] as? List<*>)?.filterIsInstance<Map<String, Any?>>()
+                ?: openProjectIdentities()).map { identity ->
+                InspectionRouteProject(
+                    projectKey = identity["project_key"] as? String,
+                    name = identity["name"] as? String,
+                    basePath = identity["base_path"] as? String,
+                    projectFilePath = identity["project_file_path"] as? String,
+                    focused = identity["focused"] as? Boolean ?: false,
+                )
+            },
+        )
+    }
     
     private fun getInspectionProblems(
         project: Project,
@@ -578,6 +807,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "status" to "stale_results",
                     "project" to project.name,
                     "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(project),
                     "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
@@ -597,6 +828,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "status" to "capture_incomplete",
                     "project" to project.name,
                     "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(project),
                     "timestamp" to snapshot.timestamp,
                     "message" to (
                         snapshot.note
@@ -660,6 +893,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "status" to "results_available",
                     "project" to project.name,
                     "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(project),
                     "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "total_problems" to page.total,
                     "problems_shown" to page.shown,
@@ -685,6 +920,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "status" to "no_results",
                     "project" to project.name,
                     "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(project),
                     "timestamp" to System.currentTimeMillis(),
                     "message" to "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass).",
                     "total_problems" to 0,
@@ -756,6 +993,8 @@ class InspectionHandler : HttpRequestHandler() {
         status["project_name"] = project.name
         val key = projectKey(project)
         status["project_key"] = key
+        status["session_id"] = InspectionIdeSession.sessionId
+        status["route"] = routeMetadata(project)
 
         val currentTime = System.currentTimeMillis()
         val runState = inspectionRunStatesByProject[key]
@@ -1074,6 +1313,7 @@ class InspectionHandler : HttpRequestHandler() {
         val response = responseData.toMutableMap()
         response["wait_completed"] = false
         response["timed_out"] = reason == "timeout"
+        response["session_id"] = InspectionIdeSession.sessionId
         if (reason == "no_project" && response["wait_note"] == null) {
             response["wait_note"] = "No project found - ensure the IDE has an open project, or pass the exact project name."
         }
@@ -1086,6 +1326,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun buildMissingProjectResponse(projectName: String?): MutableMap<String, Any> {
         val response = mutableMapOf<String, Any>()
+        response["session_id"] = InspectionIdeSession.sessionId
         if (projectName == null) {
             response["error"] = "No project found"
             return response
@@ -1560,13 +1801,15 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             if (
                                 !observedStableEmptyResultsWithoutInspectionView &&
-                                viewReadyOk &&
-                                scopeProblemMatcher != null &&
-                                scopedContextResults.isEmpty() &&
-                                bestResults.isEmpty() &&
-                                !hasUsableViewEvidence &&
-                                stableForMs >= 5000L &&
-                                pollingElapsedMs >= 60000L
+                                shouldTrustStableScopedEmptyResults(
+                                    viewReadyOk = viewReadyOk,
+                                    hasScopedMatcher = scopeProblemMatcher != null,
+                                    scopedContextResultsEmpty = scopedContextResults.isEmpty(),
+                                    bestResultsEmpty = bestResults.isEmpty(),
+                                    observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+                                    stableForMs = stableForMs,
+                                    pollingElapsedMs = pollingElapsedMs,
+                                )
                             ) {
                                 observedStableEmptyResultsWithoutInspectionView = true
                             }
@@ -1577,6 +1820,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     inspectionViewUpdating = inspectionViewUpdating,
                                     observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                                     observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                                    observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                                     bestResultsCount = bestResults.size,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
@@ -1595,18 +1839,15 @@ class InspectionHandler : HttpRequestHandler() {
 
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
-                            viewReadyOk &&
-                            scopeProblemMatcher != null &&
-                            scopedContextResults.isEmpty() &&
-                            bestResults.isEmpty() &&
-                            !hasUsableInspectionViewEvidence(
-                                inspectionViewObservationCount = inspectionViewObservationCount,
-                                nullRootChildObservationCount = nullRootChildObservationCount,
-                                observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                                observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                            shouldTrustStableScopedEmptyResults(
+                                viewReadyOk = viewReadyOk,
+                                hasScopedMatcher = scopeProblemMatcher != null,
+                                scopedContextResultsEmpty = scopedContextResults.isEmpty(),
+                                bestResultsEmpty = bestResults.isEmpty(),
                                 observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                            ) &&
-                            System.currentTimeMillis() >= deadlineMs
+                                stableForMs = System.currentTimeMillis() - lastChangeMs,
+                                pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
+                            )
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
                         }
@@ -2204,7 +2445,7 @@ class InspectionHandler : HttpRequestHandler() {
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
     ): String? {
-        for (parameterName in listOf("project", "project_key", "project_path")) {
+        for (parameterName in listOf("project", "project_key", "project_path", "worktree_path", "cwd")) {
             val parameterValues = urlDecoder.parameters()[parameterName]
             if (parameterValues != null) {
                 return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
@@ -2222,7 +2463,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val nameAndValue = segment.split('=', limit = 2)
             val decodedName = QueryStringDecoder.decodeComponent(nameAndValue[0])
-            if (decodedName !in setOf("project", "project_key", "project_path")) {
+            if (decodedName !in setOf("project", "project_key", "project_path", "worktree_path", "cwd")) {
                 continue
             }
             val encodedValue = nameAndValue.getOrElse(1) { "" }

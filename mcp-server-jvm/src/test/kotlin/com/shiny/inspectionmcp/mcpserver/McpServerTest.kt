@@ -715,6 +715,27 @@ class McpServerTest {
     }
 
     @Test
+    fun autoRoutingUsesCwdSelectorAndForwardsProjectKey() {
+        MockIdeServer(identityProjectName = "cwd", identityBasePath = "/tmp/cwd-project").use { server ->
+            server.start()
+            val executor = autoExecutor(server)
+
+            val result = executor.handleToolCall(
+                buildToolCall(
+                    "inspection_get_status",
+                    buildJsonObject {
+                        put("cwd", JsonPrimitive("/tmp/cwd-project/src"))
+                    },
+                )
+            )
+
+            assertFalse(result.isError())
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("project_key=path%3A%2Ftmp%2Fcwd-project"))
+        }
+    }
+
+    @Test
     fun autoRoutingReportsAmbiguousProjectNames() {
         MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/one", identitySessionId = "one").use { first ->
             MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/two", identitySessionId = "two").use { second ->
@@ -738,7 +759,7 @@ class McpServerTest {
     }
 
     @Test
-    fun autoRoutingKeepsSelectorlessFollowUpsOnLastTriggeredProject() {
+    fun autoRoutingKeepsSelectorFreeFollowUpsOnLastTriggeredProject() {
         MockIdeServer(identityProjectName = "first", identityBasePath = "/tmp/first", identitySessionId = "first").use { first ->
             MockIdeServer(
                 identityProjectName = "cwd-project",
