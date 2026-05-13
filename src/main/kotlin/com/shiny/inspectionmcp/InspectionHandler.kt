@@ -667,7 +667,16 @@ class InspectionHandler : HttpRequestHandler() {
         val candidates = scoreInspectionRouteCandidates(listOf(routeIdentity), selector)
         val selected = candidates.firstOrNull() ?: return null
         val best = candidates.filter { candidate -> candidate.score == selected.score }
-        if (best.count { candidate -> routeSpecificity(candidate.project) == routeSpecificity(selected.project) } > 1) {
+        val pathSelector = firstParameter(parameters, "project_path")
+            ?: firstParameter(parameters, "worktree_path")
+            ?: firstParameter(parameters, "cwd")
+        val pathBasedSelection = normalizeProjectPath(pathSelector) != null
+        val duplicateBest = if (pathBasedSelection) {
+            best.count { candidate -> routeSpecificity(candidate.project) == routeSpecificity(selected.project) } > 1
+        } else {
+            best.size > 1
+        }
+        if (duplicateBest) {
             throw BadRequestException(
                 "project",
                 "Multiple open projects matched this request. Retry with project_path or project_key.",
@@ -2362,7 +2371,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun getCurrentProject(projectName: String? = null): Project? {
         val resolvedProjectName = normalizeProjectSelector(projectName)
         if (resolvedProjectName != null) {
-            return runCatching { resolveProjectSelector(resolvedProjectName) }.getOrNull()
+            return resolveProjectSelector(resolvedProjectName)
         }
 
         val projectFromFrame = runCatching {
