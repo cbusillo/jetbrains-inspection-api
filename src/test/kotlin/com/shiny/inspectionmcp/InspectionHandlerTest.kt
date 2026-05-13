@@ -724,6 +724,49 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route endpoint rejects duplicate project names even when paths differ in specificity`() {
+        val parentProject = mockProject(
+            name = "Shared",
+            basePath = "/repo",
+            projectFilePath = "/repo/.idea/misc.xml",
+        )
+        val childProject = mockProject(
+            name = "Shared",
+            basePath = "/repo/packages/app",
+            projectFilePath = "/repo/packages/app/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
+
+        val response = processGetRequest("/api/inspection/route?project=Shared")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
+    fun `test trigger endpoint reports ambiguous project names as bad request`() {
+        val firstProject = mockProject(
+            name = "Shared",
+            basePath = "/repo/one",
+            projectFilePath = "/repo/one/.idea/misc.xml",
+        )
+        val secondProject = mockProject(
+            name = "Shared",
+            basePath = "/repo/two",
+            projectFilePath = "/repo/two/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(firstProject, secondProject)
+
+        val response = processTriggerRequest("/api/inspection/trigger?project=Shared")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("Multiple open projects matched this request"))
+        assertFalse(body.contains("Requested project 'Shared' is not open in the IDE"))
+    }
+
+    @Test
     fun `test getCurrentProject uses nested path selector scoring`() {
         val parentProject = mockProject(
             name = "Parent",
