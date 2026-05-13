@@ -344,6 +344,7 @@ internal fun shouldStopCapturePolling(
     inspectionViewUpdating: Boolean,
     observedSettledEmptyInspectionView: Boolean,
     observedStableReadableEmptyInspectionView: Boolean,
+    observedStableEmptyResultsWithoutInspectionView: Boolean = false,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
@@ -376,6 +377,10 @@ internal fun shouldStopCapturePolling(
             stableForMs >= minStableMs &&
             pollingElapsedMs >= minReadableEmptyResultsWaitMs
     ) {
+        return true
+    }
+
+    if (observedStableEmptyResultsWithoutInspectionView) {
         return true
     }
 
@@ -1815,6 +1820,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     inspectionViewUpdating = inspectionViewUpdating,
                                     observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                                     observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
+                                    observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                                     bestResultsCount = bestResults.size,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,

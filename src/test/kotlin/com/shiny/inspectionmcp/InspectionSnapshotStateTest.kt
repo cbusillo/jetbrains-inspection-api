@@ -1210,6 +1210,24 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Capture polling stops once scoped empty results are trusted")
+    fun testShouldStopCapturePollingForTrustedScopedEmptyResults() {
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                observedStableEmptyResultsWithoutInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Scoped problem filtering removes unrelated results")
     fun testFilterProblemsForScope() {
         val scopedProblems = listOf(
