@@ -643,6 +643,110 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test extractProjectQueryParameter prefers stable selectors over project`() {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "extractProjectQueryParameter",
+            QueryStringDecoder::class.java,
+            FullHttpRequest::class.java,
+        )
+        method.isAccessible = true
+
+        val urlDecoder = QueryStringDecoder("/api/inspection/route?project=legacy-name&project_key=path:%2Ftmp%2Fproject")
+        val request = mockk<FullHttpRequest>()
+        every { request.uri() } returns "/api/inspection/route?project=legacy-name&project_key=path:%2Ftmp%2Fproject"
+
+        val result = method.invoke(handler, urlDecoder, request) as String?
+
+        assertEquals("path:/tmp/project", result)
+    }
+
+    @Test
+    fun `test project path selectors match nested directories but not siblings`() {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "projectMatches",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val nestedSelector = method.invoke(handler, mockProject, "ignored", "/repo/app/src/module") as Boolean
+        val siblingSelector = method.invoke(handler, mockProject, "ignored", "/repo/application/src") as Boolean
+
+        assertTrue(nestedSelector)
+        assertFalse(siblingSelector)
+    }
+
+    @Test
+    fun `test route endpoint selects the most specific nested project`() {
+        val parentProject = mockProject(
+            name = "Parent",
+            basePath = "/repo",
+            projectFilePath = "/repo/.idea/misc.xml",
+        )
+        val childProject = mockProject(
+            name = "Child",
+            basePath = "/repo/packages/app",
+            projectFilePath = "/repo/packages/app/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
+
+        val response = processGetRequest("/api/inspection/route?worktree_path=/repo/packages/app/src")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_name\": \"Child\""))
+        assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
+    fun `test route endpoint rejects ambiguous project names`() {
+        val firstProject = mockProject(
+            name = "Shared",
+            basePath = "/repo/one",
+            projectFilePath = "/repo/one/.idea/misc.xml",
+        )
+        val secondProject = mockProject(
+            name = "Shared",
+            basePath = "/repo/two",
+            projectFilePath = "/repo/two/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(firstProject, secondProject)
+
+        val response = processGetRequest("/api/inspection/route?project=Shared")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
+    fun `test getCurrentProject uses nested path selector scoring`() {
+        val parentProject = mockProject(
+            name = "Parent",
+            basePath = "/repo",
+            projectFilePath = "/repo/.idea/misc.xml",
+        )
+        val childProject = mockProject(
+            name = "Child",
+            basePath = "/repo/packages/app",
+            projectFilePath = "/repo/packages/app/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
+
+        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
+        method.isAccessible = true
+
+        val result = method.invoke(handler, "/repo/packages/app/src") as Project?
+
+        assertNotNull(result)
+        assertEquals("Child", result?.name)
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()
@@ -752,5 +856,16 @@ class InspectionHandlerTest {
 
         assertTrue(result)
         return responseSlot.captured as FullHttpResponse
+    }
+
+    private fun mockProject(name: String, basePath: String, projectFilePath: String): Project {
+        val project = mockk<Project>()
+        every { project.isDefault } returns false
+        every { project.isDisposed } returns false
+        every { project.isInitialized } returns true
+        every { project.name } returns name
+        every { project.basePath } returns basePath
+        every { project.projectFilePath } returns projectFilePath
+        return project
     }
 }

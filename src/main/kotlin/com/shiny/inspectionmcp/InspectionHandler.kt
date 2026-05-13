@@ -665,19 +665,24 @@ class InspectionHandler : HttpRequestHandler() {
         val identity = safeInspectionIdentity()
         val routeIdentity = identity.toRouteIdentity()
         val candidates = scoreInspectionRouteCandidates(listOf(routeIdentity), selector)
-        val bestScore = candidates.firstOrNull()?.score
-        val best = candidates.filter { candidate -> candidate.score == bestScore }
-        if (bestScore != null && best.size > 1) {
+        val selected = candidates.firstOrNull() ?: return null
+        val best = candidates.filter { candidate -> candidate.score == selected.score }
+        if (best.count { candidate -> routeSpecificity(candidate.project) == routeSpecificity(selected.project) } > 1) {
             throw BadRequestException(
                 "project",
                 "Multiple open projects matched this request. Retry with project_path or project_key.",
             )
         }
-        val selected = best.firstOrNull() ?: return null
         val projectKey = selected.project.projectKey ?: return null
         val project = getCurrentProject(projectKey) ?: return null
         val projectIdentity = openProjectIdentity(project)
         return ResolvedInspectionRoute(project, identity, projectIdentity, selected.score)
+    }
+
+    private fun routeSpecificity(project: InspectionRouteProject): Int {
+        return normalizeProjectPath(project.basePath)?.length
+            ?: normalizeProjectPath(project.projectFilePath)?.length
+            ?: 0
     }
 
     private fun routeMetadata(project: Project): Map<String, Any?> {
@@ -2357,7 +2362,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun getCurrentProject(projectName: String? = null): Project? {
         val resolvedProjectName = normalizeProjectSelector(projectName)
         if (resolvedProjectName != null) {
-            return runCatching { getProjectByName(resolvedProjectName) }.getOrNull()
+            return runCatching { resolveProjectSelector(resolvedProjectName) }.getOrNull()
         }
 
         val projectFromFrame = runCatching {
@@ -2400,18 +2405,34 @@ class InspectionHandler : HttpRequestHandler() {
         return project != null && !project.isDefault && !project.isDisposed && project.isInitialized
     }
     
-    private fun getProjectByName(projectName: String): Project? {
+    private fun resolveProjectSelector(projectName: String): Project? {
         val projectManager = ProjectManager.getInstance()
         val openProjects = projectManager.openProjects
         val trimmed = projectName.trim()
         val pathHint = normalizeProjectPath(trimmed)
 
-        return openProjects.firstOrNull { project ->
+        val matches = openProjects.filter { project ->
             !project.isDefault &&
             !project.isDisposed &&
             project.isInitialized &&
             projectMatches(project, trimmed, pathHint)
         }
+        if (matches.size <= 1) {
+            return matches.firstOrNull()
+        }
+
+        if (pathHint != null) {
+            return matches.maxWithOrNull(compareBy<Project> { normalizeProjectPath(it.basePath)?.length ?: 0 })
+        }
+
+        throw BadRequestException(
+            "project",
+            "Multiple open projects matched this request. Retry with project_path or project_key.",
+        )
+    }
+
+    private fun getProjectByName(projectName: String): Project? {
+        return resolveProjectSelector(projectName)
     }
 
     private fun projectMatches(project: Project, projectName: String, pathHint: String?): Boolean {
@@ -2420,10 +2441,18 @@ class InspectionHandler : HttpRequestHandler() {
         if (pathHint == null) return false
 
         val basePath = normalizeProjectPath(project.basePath)
-        if (basePath != null && basePath == pathHint) return true
+        if (basePath != null && pathMatchesProject(pathHint, basePath)) return true
 
         val projectFilePath = normalizeProjectPath(project.projectFilePath)
-        return projectFilePath == pathHint
+        return projectFilePath != null && pathMatchesProject(pathHint, projectFilePath)
+    }
+
+    private fun pathMatchesProject(selectorPath: String, projectPath: String): Boolean {
+        return runCatching {
+            val selector = Paths.get(selectorPath).normalize().toAbsolutePath()
+            val project = Paths.get(projectPath).normalize().toAbsolutePath()
+            selector == project || selector.startsWith(project)
+        }.getOrDefault(false)
     }
 
     private fun normalizeProjectPath(value: String?): String? {
@@ -2445,10 +2474,13 @@ class InspectionHandler : HttpRequestHandler() {
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
     ): String? {
-        for (parameterName in listOf("project", "project_key", "project_path", "worktree_path", "cwd")) {
+        for (parameterName in listOf("project_key", "project_path", "worktree_path", "cwd", "project")) {
             val parameterValues = urlDecoder.parameters()[parameterName]
             if (parameterValues != null) {
-                return if (parameterValues.isEmpty()) "" else parameterValues.firstOrNull()
+                val firstNonBlankValue = parameterValues.firstOrNull { value -> value.trim().isNotEmpty() }
+                if (firstNonBlankValue != null) {
+                    return firstNonBlankValue
+                }
             }
         }
 
@@ -2467,7 +2499,10 @@ class InspectionHandler : HttpRequestHandler() {
                 continue
             }
             val encodedValue = nameAndValue.getOrElse(1) { "" }
-            return QueryStringDecoder.decodeComponent(encodedValue)
+            val decodedValue = QueryStringDecoder.decodeComponent(encodedValue)
+            if (decodedValue.trim().isNotEmpty()) {
+                return decodedValue
+            }
         }
 
         return null

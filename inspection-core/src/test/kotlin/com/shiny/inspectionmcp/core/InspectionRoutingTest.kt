@@ -35,6 +35,19 @@ class InspectionRoutingTest {
     }
 
     @Test
+    fun pathSelectorsDoNotMatchSiblingPrefixes() {
+        val identity = identity(project("path:/tmp/repo/app", "app", "/tmp/repo/app"))
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/repo/application/src"),
+            defaultCwd = null,
+        )
+
+        assertTrue(candidates.isEmpty())
+    }
+
+    @Test
     fun duplicateProjectNamesRemainAmbiguous() {
         val first = identity(project("path:/tmp/one", "shared", "/tmp/one"))
         val second = identity(project("path:/tmp/two", "shared", "/tmp/two"))
