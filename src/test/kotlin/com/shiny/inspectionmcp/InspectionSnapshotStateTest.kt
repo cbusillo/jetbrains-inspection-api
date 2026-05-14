@@ -870,10 +870,93 @@ class InspectionSnapshotStateTest {
         assertFalse(
             shouldTrustStableScopedEmptyResults(
                 viewReadyOk = true,
+                extractionSucceeded = false,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,
                 bestResultsEmpty = true,
                 observedNonEmptyInspectionTree = true,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Scoped empty results do not hide extractor failures")
+    fun testStableScopedEmptyResultsRequireSuccessfulExtraction() {
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                hasSettledInspectionViewEvidence = true,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Scoped empty results wait for observed inspection views to settle")
+    fun testStableScopedEmptyResultsWaitForObservedInspectionViewToSettle() {
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasSettledInspectionViewEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                hasSettledInspectionViewEvidence = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                hasSettledInspectionViewEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
                 stableForMs = 5000L,
                 pollingElapsedMs = 30000L,
             )
