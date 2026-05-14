@@ -343,6 +343,7 @@ internal class ToolExecutor(
             val params = mutableListOf<Pair<String, String>>()
 
             val (result, target) = routeAndGet(autoPinnedArgs(args), "status", params)
+            ensurePinnedSessionStillValid("inspection_get_status", target)
 
             val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildStatusGuidance(result) + buildRouteGuidance(target)
             toolText(text)

@@ -912,6 +912,19 @@ class InspectionSnapshotStateTest {
                 pollingElapsedMs = 30000L,
             )
         )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                extractionSucceeded = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
     }
 
     @Test

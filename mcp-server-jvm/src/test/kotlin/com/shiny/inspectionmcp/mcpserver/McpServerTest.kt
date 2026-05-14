@@ -791,6 +791,31 @@ class McpServerTest {
     }
 
     @Test
+    fun autoRoutingRejectsStatusWhenPinnedSessionDrifts() {
+        MockIdeServer(identityProjectName = "project", identityBasePath = "/tmp/project", identitySessionId = "old").use { oldSession ->
+            MockIdeServer(identityProjectName = "project", identityBasePath = "/tmp/project", identitySessionId = "new").use { newSession ->
+                oldSession.start()
+                val executor = autoExecutor(oldSession, newSession)
+
+                val trigger = executor.handleToolCall(
+                    buildToolCall(
+                        "inspection_trigger",
+                        buildJsonObject { put("project_path", JsonPrimitive("/tmp/project")) },
+                    )
+                )
+                oldSession.close()
+                newSession.start()
+                val status = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+
+                assertFalse(trigger.isError())
+                assertTrue(status.isError())
+                assertTrue(status.firstText().contains("restarted before inspection_get_status completed"))
+                assertTrue(status.firstText().contains("Re-trigger inspection"))
+            }
+        }
+    }
+
+    @Test
     fun excludedSessionsDoNotPoisonLaterAutoDiscovery() {
         MockIdeServer().use { server ->
             server.start()

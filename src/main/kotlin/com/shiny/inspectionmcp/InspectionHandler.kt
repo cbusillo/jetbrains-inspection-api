@@ -1639,6 +1639,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var compatibleToolWindowObservationCount = 0
                         var extractionFailureCount = if (extractedFromContextSucceeded) 0 else 1
                         var successfulExtractionCount = if (extractedFromContextSucceeded) 1 else 0
+                        var lastExtractionCycleSucceeded = extractedFromContextSucceeded
 
                         fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                             val app = ApplicationManager.getApplication()
@@ -1723,6 +1724,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 viewReadyOk = true
                             }
 
+                            var viewExtractionSucceeded = false
                             if (viewReadyOk && view != null) {
                                 observedInspectionView = true
                                 val viewObservation = try {
@@ -1769,7 +1771,6 @@ class InspectionHandler : HttpRequestHandler() {
                                         readableEmptyInspectionViewStableSince = null
                                     }
                                 }
-                                var viewExtractionSucceeded = false
                                 val attempt = try {
                                     extractFromViewSafe(view)
                                         .also { viewExtractionSucceeded = true }
@@ -1803,6 +1804,7 @@ class InspectionHandler : HttpRequestHandler() {
                             if (toolExtractionSucceeded) {
                                 successfulExtractionCount += 1
                             }
+                            lastExtractionCycleSucceeded = (!observedInspectionView || viewExtractionSucceeded) && toolExtractionSucceeded
                             toolWindowObservationCount += 1
                             val compatibleToolResults = filterProblemsForScope(toolResults, scopeProblemMatcher)
                             if (compatibleToolResults.isNotEmpty()) {
@@ -1843,7 +1845,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     inspectionViewUpdating = inspectionViewUpdating,
                                     hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                         observedStableReadableEmptyInspectionView,
-                                    extractionSucceeded = successfulExtractionCount > 0 && extractionFailureCount == 0,
+                                    extractionSucceeded = lastExtractionCycleSucceeded,
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                     bestResultsEmpty = bestResults.isEmpty(),
                                     observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1886,7 +1888,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 inspectionViewUpdating = inspectionViewUpdating,
                                 hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                     observedStableReadableEmptyInspectionView,
-                                extractionSucceeded = successfulExtractionCount > 0 && extractionFailureCount == 0,
+                                extractionSucceeded = lastExtractionCycleSucceeded,
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                 bestResultsEmpty = bestResults.isEmpty(),
                                 observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1952,6 +1954,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     "compatibleToolWindowObservationCount=$compatibleToolWindowObservationCount, " +
                                     "successfulExtractionCount=$successfulExtractionCount, " +
                                     "extractionFailureCount=$extractionFailureCount, " +
+                                    "lastExtractionCycleSucceeded=$lastExtractionCycleSucceeded, " +
                                     "readableEmptyInspectionViewStableForMs=${readableEmptyInspectionViewStableSince?.let { snapshot.timestamp - it } ?: 0L}, " +
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
