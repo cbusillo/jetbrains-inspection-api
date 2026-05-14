@@ -393,6 +393,10 @@ internal fun shouldStopCapturePolling(
 
 internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
+    observedInspectionView: Boolean = false,
+    inspectionViewUpdating: Boolean = false,
+    hasSettledInspectionViewEvidence: Boolean = false,
+    extractionSucceeded: Boolean = true,
     hasScopedMatcher: Boolean,
     scopedContextResultsEmpty: Boolean,
     bestResultsEmpty: Boolean,
@@ -403,6 +407,8 @@ internal fun shouldTrustStableScopedEmptyResults(
     minPollingMs: Long = 30000L,
 ): Boolean {
     return viewReadyOk &&
+        (!observedInspectionView || (!inspectionViewUpdating && hasSettledInspectionViewEvidence)) &&
+        extractionSucceeded &&
         hasScopedMatcher &&
         scopedContextResultsEmpty &&
         bestResultsEmpty &&
@@ -1598,9 +1604,12 @@ class InspectionHandler : HttpRequestHandler() {
                 ApplicationManager.getApplication().executeOnPooledThread {
                     try {
                         val extractor = enhancedTreeExtractorFactory()
+                        var extractedFromContextSucceeded = false
                         val extractedFromContext = try {
                             ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
                                 extractProblemsFromContext(globalContext, project)
+                            }.also {
+                                extractedFromContextSucceeded = true
                             }
                         } catch (e: Exception) {
                             rethrowIfCanceled(e)
@@ -1628,6 +1637,8 @@ class InspectionHandler : HttpRequestHandler() {
                         var nullRootChildObservationCount = 0
                         var toolWindowObservationCount = 0
                         var compatibleToolWindowObservationCount = 0
+                        var extractionFailureCount = if (extractedFromContextSucceeded) 0 else 1
+                        var successfulExtractionCount = if (extractedFromContextSucceeded) 1 else 0
 
                         fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                             val app = ApplicationManager.getApplication()
@@ -1758,11 +1769,17 @@ class InspectionHandler : HttpRequestHandler() {
                                         readableEmptyInspectionViewStableSince = null
                                     }
                                 }
+                                var viewExtractionSucceeded = false
                                 val attempt = try {
                                     extractFromViewSafe(view)
+                                        .also { viewExtractionSucceeded = true }
                                 } catch (e: Exception) {
                                     rethrowIfCanceled(e)
+                                    extractionFailureCount += 1
                                     emptyList()
+                                }
+                                if (viewExtractionSucceeded) {
+                                    successfulExtractionCount += 1
                                 }
                                 val scopedAttempt = filterProblemsForScope(attempt, scopeProblemMatcher)
                                 if (scopedAttempt.size > bestResults.size) {
@@ -1771,13 +1788,20 @@ class InspectionHandler : HttpRequestHandler() {
                                 }
                             }
 
+                            var toolExtractionSucceeded = false
                             val toolResults = try {
                                 ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
                                     extractor.extractAllProblems(project)
+                                }.also {
+                                    toolExtractionSucceeded = true
                                 }
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
+                                extractionFailureCount += 1
                                 emptyList()
+                            }
+                            if (toolExtractionSucceeded) {
+                                successfulExtractionCount += 1
                             }
                             toolWindowObservationCount += 1
                             val compatibleToolResults = filterProblemsForScope(toolResults, scopeProblemMatcher)
@@ -1802,13 +1826,6 @@ class InspectionHandler : HttpRequestHandler() {
 
                             val stableForMs = loopNow - lastChangeMs
                             val pollingElapsedMs = loopNow - captureStartMs
-                            val hasUsableViewEvidence = hasUsableInspectionViewEvidence(
-                                inspectionViewObservationCount = inspectionViewObservationCount,
-                                nullRootChildObservationCount = nullRootChildObservationCount,
-                                observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                                observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
-                                observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                            )
                             if (
                                 !observedStableReadableEmptyInspectionView &&
                                 readableEmptyInspectionViewStableSince != null &&
@@ -1822,6 +1839,11 @@ class InspectionHandler : HttpRequestHandler() {
                                 shouldTrustStableScopedEmptyResults(
                                     viewReadyOk = viewReadyOk,
                                     hasScopedMatcher = scopeProblemMatcher != null,
+                                    observedInspectionView = observedInspectionView,
+                                    inspectionViewUpdating = inspectionViewUpdating,
+                                    hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
+                                        observedStableReadableEmptyInspectionView,
+                                    extractionSucceeded = successfulExtractionCount > 0 && extractionFailureCount == 0,
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                     bestResultsEmpty = bestResults.isEmpty(),
                                     observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1860,6 +1882,11 @@ class InspectionHandler : HttpRequestHandler() {
                             shouldTrustStableScopedEmptyResults(
                                 viewReadyOk = viewReadyOk,
                                 hasScopedMatcher = scopeProblemMatcher != null,
+                                observedInspectionView = observedInspectionView,
+                                inspectionViewUpdating = inspectionViewUpdating,
+                                hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
+                                    observedStableReadableEmptyInspectionView,
+                                extractionSucceeded = successfulExtractionCount > 0 && extractionFailureCount == 0,
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                 bestResultsEmpty = bestResults.isEmpty(),
                                 observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1923,6 +1950,8 @@ class InspectionHandler : HttpRequestHandler() {
                                     "nullRootChildObservationCount=$nullRootChildObservationCount, " +
                                     "toolWindowObservationCount=$toolWindowObservationCount, " +
                                     "compatibleToolWindowObservationCount=$compatibleToolWindowObservationCount, " +
+                                    "successfulExtractionCount=$successfulExtractionCount, " +
+                                    "extractionFailureCount=$extractionFailureCount, " +
                                     "readableEmptyInspectionViewStableForMs=${readableEmptyInspectionViewStableSince?.let { snapshot.timestamp - it } ?: 0L}, " +
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )

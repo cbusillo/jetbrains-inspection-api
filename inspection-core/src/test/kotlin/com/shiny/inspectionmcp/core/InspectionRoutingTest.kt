@@ -35,6 +35,32 @@ class InspectionRoutingTest {
     }
 
     @Test
+    fun legacyProjectPathSelectorMatchesProjectFilePathBeforeContainingBasePath() {
+        val exactProjectFile = project(
+            projectKey = "path:/tmp/repo/app",
+            name = "app",
+            basePath = "/tmp/repo/app",
+            projectFilePath = "/tmp/repo/app/.idea/misc.xml",
+        )
+        val containingBasePath = project(
+            projectKey = "path:/tmp/repo/app/.idea",
+            name = "idea-dir",
+            basePath = "/tmp/repo/app/.idea",
+            projectFilePath = "/tmp/repo/app/.idea/.idea/misc.xml",
+        )
+        val identity = identity(exactProjectFile, containingBasePath)
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(project = "/tmp/repo/app/.idea/misc.xml"),
+            defaultCwd = null,
+        )
+
+        assertEquals("path:/tmp/repo/app", candidates.first().project.projectKey)
+        assertEquals(900, candidates.first().score)
+    }
+
+    @Test
     fun pathSelectorsDoNotMatchSiblingPrefixes() {
         val identity = identity(project("path:/tmp/repo/app", "app", "/tmp/repo/app"))
 
@@ -94,13 +120,14 @@ class InspectionRoutingTest {
         projectKey: String,
         name: String,
         basePath: String,
+        projectFilePath: String? = null,
         focused: Boolean = false,
     ): InspectionRouteProject {
         return InspectionRouteProject(
             projectKey = projectKey,
             name = name,
             basePath = basePath,
-            projectFilePath = null,
+            projectFilePath = projectFilePath,
             focused = focused,
         )
     }
