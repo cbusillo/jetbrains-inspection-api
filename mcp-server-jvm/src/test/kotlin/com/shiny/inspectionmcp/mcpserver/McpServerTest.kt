@@ -160,6 +160,7 @@ class McpServerTest {
             val args = buildJsonObject {
                 put("file_pattern", JsonPrimitive("my file.js"))
                 put("limit", JsonPrimitive(10))
+                put("include_stale", JsonPrimitive(true))
             }
 
             val response = executor.handleToolCall(buildToolCall("inspection_get_problems", args))
@@ -169,6 +170,7 @@ class McpServerTest {
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("file_pattern=my+file.js"))
             assertTrue(query.contains("limit=10"))
+            assertTrue(query.contains("include_stale=true"))
         }
     }
 
@@ -253,7 +255,10 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            assertTrue(result.firstText().contains("results are stale"))
+            val text = result.firstText()
+            assertTrue(text.contains("results are stale"))
+            assertTrue(text.contains("include_stale=true"))
+            assertTrue(text.contains("explicit cached-result diagnostics"))
         }
     }
 

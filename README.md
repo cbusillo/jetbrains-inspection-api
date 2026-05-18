@@ -212,7 +212,7 @@ Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean.
-- `status: "stale_results"` means project files changed after the last inspection. Trigger a new inspection before trusting cached findings.
+- `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
 
 ## API Reference
@@ -293,6 +293,7 @@ seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
   Use `all` or leave blank to disable the filter.
 - `limit` (optional): Maximum problems to return, `1..1000` (default: 100)
 - `offset` (optional): Number of problems to skip for pagination, `>=0` (default: 0)
+- `include_stale` (optional): `true` returns cached stale findings for diagnostics when `status` is `stale_results`. Defaults to `false`; stale findings must not be treated as current.
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
 - `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
 - `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
@@ -313,6 +314,9 @@ curl "http://localhost:63340/api/inspection/problems?limit=50&offset=50"
 
 # Combine filters for precise results
 curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern=src/&problem_type=TypeScript"
+
+# Diagnose cached stale findings without treating them as current
+curl "http://localhost:63340/api/inspection/problems?include_stale=true"
 ```
 
 ### Trigger Endpoint
@@ -439,7 +443,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 
 **Status Indicators**:
 - `is_scanning: true` → Inspection running, wait
-- `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting cached results
+- `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
@@ -453,14 +457,14 @@ Common completion reasons:
 - `clean`: inspection completed and a clean empty result was confirmed.
 - `no_results`: inspection finished, but no results were captured. This can be a clean run or an unavailable/filtered IDE view.
 - `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view.
-- `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings.
+- `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings. Wait responses expose cached counts as `cached_total_problems`, not `total_problems`.
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.
 - `/api/inspection/status` and `/api/inspection/problems` refresh project state before evaluating cached snapshots.
-- If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"` instead of serving stale findings.
+- If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"`. By default, the response includes cached metadata such as `cached_total_problems` and withholds `problems`; `include_stale=true` returns cached findings for diagnostics while keeping `status: "stale_results"`.
 
 ## MCP Server Details
 
@@ -472,7 +476,7 @@ The bundled JVM MCP (Model Context Protocol) server provides integration for any
   - Also supports `scope=files` with `file=...` (repeat) or `files=[...]`, and `scope=changed_files` with `include_unversioned` and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_wait(timeout_ms?, poll_ms?)`** - Long-poll until results or timeout
-- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?)`** - Gets inspection problems with filtering and pagination
+- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. `include_stale` returns cached stale findings for diagnostics only.
 
 ### Requirements
 - **Java 21+** (or the IDE's bundled runtime)

@@ -211,7 +211,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -286,6 +286,9 @@ internal class ToolExecutor(
             val offset = args.int("offset") ?: 0
             if (limit != 100) params += "limit" to limit.toString()
             if (offset != 0) params += "offset" to offset.toString()
+            if (args["include_stale"]?.jsonPrimitive?.booleanOrNull == true) {
+                params += "include_stale" to "true"
+            }
 
             val (result, target) = routeAndGet(autoPinnedArgs(args), "problems", params)
             ensurePinnedSessionStillValid("inspection_get_problems", target)
@@ -470,7 +473,7 @@ internal class ToolExecutor(
 
         val guidance = when {
             status == "stale_results" ->
-                "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
+                "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings. Pass include_stale=true only for explicit cached-result diagnostics."
             status == "capture_incomplete" ->
                 "\n\nWARN: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
             status == "no_results" ->
@@ -698,6 +701,10 @@ internal class ToolExecutor(
                     "offset",
                     intProp("Pagination offset", defaultValue = 0, minimum = 0)
                 )
+                put("include_stale", buildJsonObject {
+                    put("type", JsonPrimitive("boolean"))
+                    put("description", JsonPrimitive("Return cached stale findings for diagnostics. Default false; stale findings must not be treated as current."))
+                })
             })
         }
     }

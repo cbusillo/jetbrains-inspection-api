@@ -565,7 +565,122 @@ class InspectionSnapshotStateTest {
 
         assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
         assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertFalse(response.contains("\"total_problems\":"))
         assertFalse(response.contains("\"completion_reason\": \"results\""))
+    }
+
+    @Test
+    @DisplayName("Status reports cached counts separately for stale snapshots")
+    fun testStatusUsesCachedCountsForStaleSnapshots() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem()),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals(1, status["cached_total_problems"])
+        assertFalse(status.containsKey("total_problems"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint withholds stale findings by default")
+    fun testProblemsEndpointWithholdsStaleFindingsByDefault() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem()),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = getInspectionProblems(includeStale = false)
+
+        assertTrue(response.contains("\"status\": \"stale_results\""))
+        assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertTrue(response.contains("\"stale_reasons\": [\"project_changed_since_inspection\"]"))
+        assertTrue(response.contains("\"snapshot_outcome\": \"problems_found\""))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertTrue(response.contains("\"cached_problems_shown\": 0"))
+        assertTrue(response.contains("\"include_stale\": false"))
+        assertFalse(response.contains("\"problems\":"))
+        assertFalse(response.contains("\"total_problems\":"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint returns cached stale findings when explicitly requested")
+    fun testProblemsEndpointCanIncludeStaleFindings() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem()),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = getInspectionProblems(includeStale = true)
+
+        assertTrue(response.contains("\"status\": \"stale_results\""))
+        assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertTrue(response.contains("\"include_stale\": true"))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertTrue(response.contains("\"cached_problems_shown\": 1"))
+        assertTrue(response.contains("\"problems\": ["))
+        assertTrue(response.contains("Old warning"))
+        assertTrue(response.contains("\"pagination\":"))
+        assertFalse(response.contains("\"total_problems\":"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint filters included stale findings by current file")
+    fun testProblemsEndpointFiltersIncludedStaleFindingsByCurrentFile() {
+        val mockFileEditorManager = mockk<FileEditorManager>()
+        val mockActiveFile = mockk<VirtualFile>()
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } returns mockFileEditorManager
+        every { mockFileEditorManager.selectedFiles } returns arrayOf(mockActiveFile)
+        every { mockActiveFile.path } returns "/tmp/TestProject/src/app.js"
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(),
+                    staleProblem(description = "Other warning", file = "/tmp/TestProject/src/other.js"),
+                ),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = getInspectionProblems(scope = "current_file", includeStale = true)
+
+        assertTrue(response.contains("\"status\": \"stale_results\""))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertTrue(response.contains("\"cached_problems_shown\": 1"))
+        assertTrue(response.contains("Old warning"))
+        assertFalse(response.contains("Other warning"))
+        assertFalse(response.contains("\"total_problems\":"))
     }
 
     @Test
@@ -861,6 +976,25 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Opaque settled empty views provide guarded clean evidence")
+    fun testOpaqueSettledEmptyViewEvidence() {
+        val opaqueSettledEmpty = InspectionViewObservation(
+            isUpdating = false,
+            hasProblems = false,
+            rootChildCount = null,
+            updateStateReadable = true,
+            problemStateReadable = true,
+        )
+
+        assertTrue(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty))
+        assertFalse(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty.copy(hasProblems = true)))
+        assertFalse(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty.copy(isUpdating = true)))
+        assertFalse(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty.copy(updateStateReadable = false)))
+        assertFalse(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty.copy(problemStateReadable = false)))
+        assertFalse(isOpaqueSettledEmptyInspectionViewCandidate(opaqueSettledEmpty.copy(rootChildCount = 0)))
+    }
+
+    @Test
     @DisplayName("Stable readable empty views require repeated positive evidence")
     fun testStableReadableEmptyViewRequiresRepeatedPositiveEvidence() {
         assertFalse(
@@ -960,6 +1094,23 @@ class InspectionSnapshotStateTest {
         assertTrue(
             shouldTrustStableScopedEmptyResults(
                 viewReadyOk = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = false,
+                hasSettledInspectionViewEvidence = false,
+                hasOpaqueSettledEmptyInspectionViewEvidence = true,
+                extractionSucceeded = true,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,
                 bestResultsEmpty = true,
@@ -1605,6 +1756,10 @@ class InspectionSnapshotStateTest {
     }
 
     private fun getInspectionProblems(): String {
+        return getInspectionProblems(includeStale = false)
+    }
+
+    private fun getInspectionProblems(scope: String = "whole_project", includeStale: Boolean): String {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems",
             Project::class.java,
@@ -1614,9 +1769,24 @@ class InspectionSnapshotStateTest {
             String::class.java,
             Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
         )
         method.isAccessible = true
-        return method.invoke(handler, mockProject, "all", "whole_project", null, null, 100, 0) as String
+        return method.invoke(handler, mockProject, "all", scope, null, null, 100, 0, includeStale) as String
+    }
+
+    private fun staleProblem(
+        description: String = "Old warning",
+        file: String = "/tmp/TestProject/src/app.js",
+    ): Map<String, Any> {
+        return mapOf(
+            "description" to description,
+            "file" to file,
+            "line" to 12,
+            "column" to 4,
+            "severity" to "weak_warning",
+            "inspectionType" to "JSUnresolvedReference",
+        )
     }
 
     private fun waitForInspection(timeoutMs: Long = 1000L, pollMs: Long = 200L): String {
