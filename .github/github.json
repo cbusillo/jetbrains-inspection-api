@@ -58,7 +58,7 @@
     },
     "capabilities": {
       "codeScanning": "available",
-      "secretScanning": "not_enabled",
+      "secretScanning": "available",
       "dependabotAlerts": "available",
       "securityAdvisories": "available"
     },
