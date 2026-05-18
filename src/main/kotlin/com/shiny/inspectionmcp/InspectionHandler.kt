@@ -253,6 +253,35 @@ internal fun isReadableEmptyInspectionView(observation: InspectionViewObservatio
         !observation.hasProblems
 }
 
+internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: InspectionViewObservation): Boolean {
+    return observation.updateStateReadable &&
+        observation.problemStateReadable &&
+        observation.isUpdating &&
+        !observation.hasProblems &&
+        observation.rootChildCount == 0
+}
+
+internal fun shouldPromoteStableReadableEmptyInspectionView(
+    readableEmptyInspectionViewStableSince: Long?,
+    readableEmptyInspectionViewObservationCount: Int,
+    transientUpdatingEmptyObservationCount: Int = 0,
+    inspectionViewUpdating: Boolean,
+    now: Long,
+    pollingElapsedMs: Long,
+    minStableMs: Long = 5000L,
+    minPollingMs: Long = 30000L,
+    minReadableEmptyObservations: Int = 2,
+    minTransientUpdatingEmptyObservations: Int = 5,
+): Boolean {
+    val stableSince = readableEmptyInspectionViewStableSince ?: return false
+    val hasEmptyEvidence = readableEmptyInspectionViewObservationCount >= minReadableEmptyObservations ||
+        transientUpdatingEmptyObservationCount >= minTransientUpdatingEmptyObservations
+    return hasEmptyEvidence &&
+        !inspectionViewUpdating &&
+        now - stableSince >= minStableMs &&
+        pollingElapsedMs >= minPollingMs
+}
+
 internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
     return observation.hasProblems
 }
@@ -396,6 +425,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     observedInspectionView: Boolean = false,
     inspectionViewUpdating: Boolean = false,
     hasSettledInspectionViewEvidence: Boolean = false,
+    hasTransientEmptyInspectionViewEvidence: Boolean = false,
     extractionSucceeded: Boolean = true,
     hasScopedMatcher: Boolean,
     scopedContextResultsEmpty: Boolean,
@@ -405,9 +435,18 @@ internal fun shouldTrustStableScopedEmptyResults(
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
     minPollingMs: Long = 30000L,
+    maxUpdatingInspectionViewWaitMs: Long = 60000L,
 ): Boolean {
+    val hasUsableInspectionViewEvidence = !observedInspectionView ||
+        (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
+        (
+            inspectionViewUpdating &&
+                hasTransientEmptyInspectionViewEvidence &&
+                pollingElapsedMs >= maxUpdatingInspectionViewWaitMs
+        )
+
     return viewReadyOk &&
-        (!observedInspectionView || (!inspectionViewUpdating && hasSettledInspectionViewEvidence)) &&
+        hasUsableInspectionViewEvidence &&
         extractionSucceeded &&
         hasScopedMatcher &&
         scopedContextResultsEmpty &&
@@ -415,6 +454,15 @@ internal fun shouldTrustStableScopedEmptyResults(
         !observedNonEmptyInspectionTree &&
         stableForMs >= minStableMs &&
         pollingElapsedMs >= minPollingMs
+}
+
+internal fun shouldTreatScopedEmptyExtractionAsSucceeded(
+    lastExtractionCycleSucceeded: Boolean,
+    observedTransientEmptyInspectionViewEvidence: Boolean,
+    lastToolExtractionSucceeded: Boolean,
+): Boolean {
+    return lastExtractionCycleSucceeded ||
+        (observedTransientEmptyInspectionViewEvidence && lastToolExtractionSucceeded)
 }
 
 class InspectionHandler : HttpRequestHandler() {
@@ -1628,11 +1676,13 @@ class InspectionHandler : HttpRequestHandler() {
                         var observedStableReadableEmptyInspectionView = false
                         var observedStableEmptyResultsWithoutInspectionView = false
                         var observedNonEmptyInspectionTree = false
+                        var observedTransientEmptyInspectionViewEvidence = false
                         var inspectionViewUpdating = false
                         var lastViewObservation: InspectionViewObservation? = null
                         var readableEmptyInspectionViewStableSince: Long? = null
                         var inspectionViewObservationCount = 0
                         var readableEmptyInspectionViewObservationCount = 0
+                        var transientUpdatingEmptyObservationCount = 0
                         var unreadableProblemStateObservationCount = 0
                         var nullRootChildObservationCount = 0
                         var toolWindowObservationCount = 0
@@ -1640,6 +1690,12 @@ class InspectionHandler : HttpRequestHandler() {
                         var extractionFailureCount = if (extractedFromContextSucceeded) 0 else 1
                         var successfulExtractionCount = if (extractedFromContextSucceeded) 1 else 0
                         var lastExtractionCycleSucceeded = extractedFromContextSucceeded
+                        var lastToolExtractionSucceeded = false
+
+                        fun resetReadableEmptyInspectionViewEvidence() {
+                            readableEmptyInspectionViewStableSince = null
+                            readableEmptyInspectionViewObservationCount = 0
+                        }
 
                         fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
                             val app = ApplicationManager.getApplication()
@@ -1754,7 +1810,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 when {
                                     hasInspectionViewProblems(viewObservation) -> {
                                         observedNonEmptyInspectionTree = true
-                                        readableEmptyInspectionViewStableSince = null
+                                        resetReadableEmptyInspectionViewEvidence()
+                                        transientUpdatingEmptyObservationCount = 0
                                     }
                                     isSettledCleanInspectionView(viewObservation) -> {
                                         observedSettledEmptyInspectionView = true
@@ -1767,8 +1824,17 @@ class InspectionHandler : HttpRequestHandler() {
                                             readableEmptyInspectionViewStableSince = loopNow
                                         }
                                     }
+                                    isTransientUpdatingUnreadableEmptyCandidate(viewObservation) &&
+                                        !observedNonEmptyInspectionTree -> {
+                                        observedTransientEmptyInspectionViewEvidence = true
+                                        transientUpdatingEmptyObservationCount += 1
+                                        if (readableEmptyInspectionViewStableSince == null) {
+                                            readableEmptyInspectionViewStableSince = loopNow
+                                        }
+                                    }
                                     else -> {
-                                        readableEmptyInspectionViewStableSince = null
+                                        resetReadableEmptyInspectionViewEvidence()
+                                        transientUpdatingEmptyObservationCount = 0
                                     }
                                 }
                                 val attempt = try {
@@ -1804,6 +1870,7 @@ class InspectionHandler : HttpRequestHandler() {
                             if (toolExtractionSucceeded) {
                                 successfulExtractionCount += 1
                             }
+                            lastToolExtractionSucceeded = toolExtractionSucceeded
                             lastExtractionCycleSucceeded = (!observedInspectionView || viewExtractionSucceeded) && toolExtractionSucceeded
                             toolWindowObservationCount += 1
                             val compatibleToolResults = filterProblemsForScope(toolResults, scopeProblemMatcher)
@@ -1830,9 +1897,14 @@ class InspectionHandler : HttpRequestHandler() {
                             val pollingElapsedMs = loopNow - captureStartMs
                             if (
                                 !observedStableReadableEmptyInspectionView &&
-                                readableEmptyInspectionViewStableSince != null &&
-                                loopNow - readableEmptyInspectionViewStableSince >= 5000L &&
-                                pollingElapsedMs >= 30000L
+                                shouldPromoteStableReadableEmptyInspectionView(
+                                    readableEmptyInspectionViewStableSince = readableEmptyInspectionViewStableSince,
+                                    readableEmptyInspectionViewObservationCount = readableEmptyInspectionViewObservationCount,
+                                    transientUpdatingEmptyObservationCount = transientUpdatingEmptyObservationCount,
+                                    inspectionViewUpdating = inspectionViewUpdating,
+                                    now = loopNow,
+                                    pollingElapsedMs = pollingElapsedMs,
+                                )
                             ) {
                                 observedStableReadableEmptyInspectionView = true
                             }
@@ -1845,7 +1917,12 @@ class InspectionHandler : HttpRequestHandler() {
                                     inspectionViewUpdating = inspectionViewUpdating,
                                     hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                         observedStableReadableEmptyInspectionView,
-                                    extractionSucceeded = lastExtractionCycleSucceeded,
+                                    hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                    extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
+                                        lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
+                                        observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                        lastToolExtractionSucceeded = lastToolExtractionSucceeded,
+                                    ),
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                     bestResultsEmpty = bestResults.isEmpty(),
                                     observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1888,7 +1965,12 @@ class InspectionHandler : HttpRequestHandler() {
                                 inspectionViewUpdating = inspectionViewUpdating,
                                 hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                     observedStableReadableEmptyInspectionView,
-                                extractionSucceeded = lastExtractionCycleSucceeded,
+                                hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
+                                    lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
+                                    observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                    lastToolExtractionSucceeded = lastToolExtractionSucceeded,
+                                ),
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                 bestResultsEmpty = bestResults.isEmpty(),
                                 observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
@@ -1945,9 +2027,11 @@ class InspectionHandler : HttpRequestHandler() {
                                     "observedStableReadableEmptyInspectionView=$observedStableReadableEmptyInspectionView, " +
                                     "observedStableEmptyResultsWithoutInspectionView=$observedStableEmptyResultsWithoutInspectionView, " +
                                     "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree, " +
+                                    "observedTransientEmptyInspectionViewEvidence=$observedTransientEmptyInspectionViewEvidence, " +
                                     "inspectionViewUpdating=$inspectionViewUpdating, " +
                                     "inspectionViewObservationCount=$inspectionViewObservationCount, " +
                                     "readableEmptyInspectionViewObservationCount=$readableEmptyInspectionViewObservationCount, " +
+                                    "transientUpdatingEmptyObservationCount=$transientUpdatingEmptyObservationCount, " +
                                     "unreadableProblemStateObservationCount=$unreadableProblemStateObservationCount, " +
                                     "nullRootChildObservationCount=$nullRootChildObservationCount, " +
                                     "toolWindowObservationCount=$toolWindowObservationCount, " +
@@ -1955,6 +2039,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     "successfulExtractionCount=$successfulExtractionCount, " +
                                     "extractionFailureCount=$extractionFailureCount, " +
                                     "lastExtractionCycleSucceeded=$lastExtractionCycleSucceeded, " +
+                                    "lastToolExtractionSucceeded=$lastToolExtractionSucceeded, " +
                                     "readableEmptyInspectionViewStableForMs=${readableEmptyInspectionViewStableSince?.let { snapshot.timestamp - it } ?: 0L}, " +
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
@@ -2485,10 +2570,6 @@ class InspectionHandler : HttpRequestHandler() {
             "project",
             "Multiple open projects matched this request. Retry with project_path or project_key.",
         )
-    }
-
-    private fun getProjectByName(projectName: String): Project? {
-        return resolveProjectSelector(projectName)
     }
 
     private fun projectMatches(project: Project, projectName: String, pathHint: String?): Boolean {

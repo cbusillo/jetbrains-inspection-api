@@ -46,6 +46,25 @@ start it with a test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 
+## Agent inspection helper
+
+The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as an
+agent-facing wrapper around this plugin's HTTP API. Run it from the installed or
+checked-out skill when validating behavior the agents rely on:
+
+```bash
+HELPER="${CODEX_HOME:-$HOME/.code}/skills/jetbrains-inspection/scripts/jb-inspect.py"
+uv run "$HELPER" run \
+  --repo "$PWD" \
+  --scope changed_files
+```
+
+The helper treats `capture_incomplete`, stale results, timeouts, indexing,
+session drift, and route ambiguity as non-clean outcomes. When this repo changes
+inspection status semantics, route metadata, clean/capture classification, or
+MCP tool response contracts, update the skill docs/tests/scripts in
+the `jetbrains-inspection` skill as part of the same workstream.
+
 ## Local cleanup
 
 `./scripts/clean-local.sh` removes disposable local files such as `.DS_Store`
