@@ -841,6 +841,108 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Transient updating unreadable empty views provide guarded clean evidence")
+    fun testTransientUpdatingUnreadableEmptyViewEvidence() {
+        val transientUpdatingUnreadableEmpty = InspectionViewObservation(
+            isUpdating = true,
+            hasProblems = false,
+            rootChildCount = 0,
+            updateStateReadable = true,
+            problemStateReadable = true,
+        )
+
+        assertTrue(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(hasProblems = true)))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(updateStateReadable = false)))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(problemStateReadable = false)))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(isUpdating = false)))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(rootChildCount = null)))
+        assertFalse(isTransientUpdatingUnreadableEmptyCandidate(transientUpdatingUnreadableEmpty.copy(rootChildCount = 1)))
+    }
+
+    @Test
+    @DisplayName("Stable readable empty views require repeated positive evidence")
+    fun testStableReadableEmptyViewRequiresRepeatedPositiveEvidence() {
+        assertFalse(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 1,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertTrue(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 2,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 2,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 29999L,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Stable transient empty views require repeated guarded evidence")
+    fun testStableTransientEmptyViewRequiresRepeatedGuardedEvidence() {
+        assertFalse(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 0,
+                transientUpdatingEmptyObservationCount = 4,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertTrue(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 0,
+                transientUpdatingEmptyObservationCount = 5,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 0,
+                transientUpdatingEmptyObservationCount = 5,
+                inspectionViewUpdating = false,
+                now = 7000L,
+                pollingElapsedMs = 29999L,
+            )
+        )
+
+        assertFalse(
+            shouldPromoteStableReadableEmptyInspectionView(
+                readableEmptyInspectionViewStableSince = 1000L,
+                readableEmptyInspectionViewObservationCount = 0,
+                transientUpdatingEmptyObservationCount = 5,
+                inspectionViewUpdating = true,
+                now = 7000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Stable scoped empty results can confirm clean without readable view evidence")
     fun testStableScopedEmptyResultsConfirmCleanBeforeDeadline() {
         assertFalse(
@@ -949,6 +1051,51 @@ class InspectionSnapshotStateTest {
             shouldTrustStableScopedEmptyResults(
                 viewReadyOk = true,
                 observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasTransientEmptyInspectionViewEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 59999L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasTransientEmptyInspectionViewEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = true,
+                stableForMs = 5000L,
+                pollingElapsedMs = 60000L,
+            )
+        )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasTransientEmptyInspectionViewEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 60000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
                 inspectionViewUpdating = false,
                 hasSettledInspectionViewEvidence = false,
                 hasScopedMatcher = true,
@@ -972,6 +1119,42 @@ class InspectionSnapshotStateTest {
                 observedNonEmptyInspectionTree = false,
                 stableForMs = 5000L,
                 pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Safe transient empty view evidence latches for scoped empty extraction")
+    fun testTransientEmptyEvidenceCanUseSuccessfulToolExtraction() {
+        assertFalse(
+            shouldTreatScopedEmptyExtractionAsSucceeded(
+                lastExtractionCycleSucceeded = false,
+                observedTransientEmptyInspectionViewEvidence = false,
+                lastToolExtractionSucceeded = true,
+            )
+        )
+
+        assertFalse(
+            shouldTreatScopedEmptyExtractionAsSucceeded(
+                lastExtractionCycleSucceeded = false,
+                observedTransientEmptyInspectionViewEvidence = true,
+                lastToolExtractionSucceeded = false,
+            )
+        )
+
+        assertTrue(
+            shouldTreatScopedEmptyExtractionAsSucceeded(
+                lastExtractionCycleSucceeded = false,
+                observedTransientEmptyInspectionViewEvidence = true,
+                lastToolExtractionSucceeded = true,
+            )
+        )
+
+        assertTrue(
+            shouldTreatScopedEmptyExtractionAsSucceeded(
+                lastExtractionCycleSucceeded = true,
+                observedTransientEmptyInspectionViewEvidence = false,
+                lastToolExtractionSucceeded = false,
             )
         )
     }

@@ -902,7 +902,7 @@ class InspectionHandlerTest {
     }
     
     @Test
-    fun `test getProjectByName returns correct project`() {
+    fun `test resolveProjectSelector returns correct project`() {
         val mockProject1 = mockk<Project>()
         val mockProject2 = mockk<Project>()
         
@@ -919,7 +919,7 @@ class InspectionHandlerTest {
         every { mockProjectManager.openProjects } returns arrayOf(mockProject2, mockProject1)
         
         val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getProjectByName", String::class.java)
+        val method = InspectionHandler::class.java.getDeclaredMethod("resolveProjectSelector", String::class.java)
         method.isAccessible = true
         
         val result = method.invoke(handler, "TargetProject") as Project?
