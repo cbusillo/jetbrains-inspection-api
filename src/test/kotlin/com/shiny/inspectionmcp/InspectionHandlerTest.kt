@@ -366,12 +366,13 @@ class InspectionHandlerTest {
             String::class.java,  // problemType (nullable)
             String::class.java,  // filePattern (nullable)
             Int::class.java,     // limit
-            Int::class.java      // offset
+            Int::class.java,     // offset
+            Boolean::class.java, // includeStale
         )
         
         assertNotNull(method)
         assertEquals("getInspectionProblems", method.name)
-        assertEquals(7, method.parameterCount)
+        assertEquals(8, method.parameterCount)
     }
     
     @Test

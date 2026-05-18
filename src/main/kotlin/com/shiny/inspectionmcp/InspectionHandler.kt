@@ -261,6 +261,14 @@ internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: Inspection
         observation.rootChildCount == 0
 }
 
+internal fun isOpaqueSettledEmptyInspectionViewCandidate(observation: InspectionViewObservation): Boolean {
+    return observation.updateStateReadable &&
+        observation.problemStateReadable &&
+        !observation.isUpdating &&
+        !observation.hasProblems &&
+        observation.rootChildCount == null
+}
+
 internal fun shouldPromoteStableReadableEmptyInspectionView(
     readableEmptyInspectionViewStableSince: Long?,
     readableEmptyInspectionViewObservationCount: Int,
@@ -425,6 +433,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     observedInspectionView: Boolean = false,
     inspectionViewUpdating: Boolean = false,
     hasSettledInspectionViewEvidence: Boolean = false,
+    hasOpaqueSettledEmptyInspectionViewEvidence: Boolean = false,
     hasTransientEmptyInspectionViewEvidence: Boolean = false,
     extractionSucceeded: Boolean = true,
     hasScopedMatcher: Boolean,
@@ -439,6 +448,7 @@ internal fun shouldTrustStableScopedEmptyResults(
 ): Boolean {
     val hasUsableInspectionViewEvidence = !observedInspectionView ||
         (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
+        (!inspectionViewUpdating && hasOpaqueSettledEmptyInspectionViewEvidence && extractionSucceeded) ||
         (
             inspectionViewUpdating &&
                 hasTransientEmptyInspectionViewEvidence &&
@@ -533,10 +543,11 @@ class InspectionHandler : HttpRequestHandler() {
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
                     val limit = parseIntParameter(parameters, "limit", defaultValue = 100, min = 1, max = 1000)
                     val offset = parseIntParameter(parameters, "offset", defaultValue = 0, min = 0)
+                    val includeStale = parameters["include_stale"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: false
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName, refreshProjectState = true) { project ->
                         val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
-                            getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset)
+                            getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset, includeStale)
                         }
                         sendJsonResponse(context, result)
                     }
@@ -866,7 +877,8 @@ class InspectionHandler : HttpRequestHandler() {
         problemType: String? = null,
         filePattern: String? = null,
         limit: Int = 100,
-        offset: Int = 0
+        offset: Int = 0,
+        includeStale: Boolean = false,
     ): String {
         return try {
             val normalizedScope = normalizeProblemsScope(scope)
@@ -875,7 +887,18 @@ class InspectionHandler : HttpRequestHandler() {
             val hasSnapshot = snapshot != null
             val staleness = getSnapshotStaleness(project)
             if (hasSnapshot && staleness.stale) {
-                val response = mapOf(
+                val cachedProblems = snapshot.problems
+                val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
+                val filteredCachedProblems = filterProblems(
+                    problems = cachedProblems,
+                    severity = severity,
+                    scope = normalizedScope,
+                    currentFilePath = currentFilePath,
+                    problemType = problemType,
+                    filePattern = filePattern,
+                )
+                val page = paginateProblems(filteredCachedProblems, limit, offset)
+                val staleBase = mutableMapOf<String, Any?>(
                     "status" to "stale_results",
                     "project" to project.name,
                     "project_key" to key,
@@ -885,6 +908,11 @@ class InspectionHandler : HttpRequestHandler() {
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
                     "stale_reasons" to staleness.reasons,
+                    "snapshot_outcome" to snapshot.outcome.apiValue,
+                    "results_source" to snapshot.source,
+                    "results_timestamp_ms" to snapshot.timestamp,
+                    "cached_total_problems" to filteredCachedProblems.size,
+                    "cached_problems_shown" to if (includeStale) page.shown else 0,
                     "filters" to mapOf(
                         "severity" to severity,
                         "scope" to normalizedScope,
@@ -892,7 +920,20 @@ class InspectionHandler : HttpRequestHandler() {
                         "file_pattern" to (filePattern ?: "all")
                     )
                 )
-                return formatJsonManually(response)
+                if (includeStale) {
+                    staleBase["message"] = "Project files changed since the last inspection. Returning cached findings because include_stale=true; trigger a new inspection before acting on them."
+                    staleBase["include_stale"] = true
+                    staleBase["problems"] = page.problems
+                    staleBase["pagination"] = mapOf(
+                        "limit" to limit,
+                        "offset" to offset,
+                        "has_more" to page.hasMore,
+                        "next_offset" to page.nextOffset,
+                    )
+                } else {
+                    staleBase["include_stale"] = false
+                }
+                return formatJsonManually(staleBase.filterValues { it != null })
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
@@ -936,19 +977,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             
             if (problems.isNotEmpty() || hasSnapshot) {
-                val currentFilePath = if (normalizedScope == "current_file") {
-                    try {
-                        FileEditorManager
-                            .getInstance(project)
-                            .selectedFiles
-                            .firstOrNull()
-                            ?.path
-                    } catch (_: Exception) {
-                        null
-                    }
-                } else {
-                    null
-                }
+                val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
 
                 val filteredProblems = filterProblems(
                     problems = problems,
@@ -1098,7 +1127,11 @@ class InspectionHandler : HttpRequestHandler() {
         } else {
             problemsSnapshot.isNotEmpty()
         }
-        status["total_problems"] = problemsSnapshot.size
+        if (hasInspectionSnapshot && staleness.stale) {
+            status["cached_total_problems"] = problemsSnapshot.size
+        } else {
+            status["total_problems"] = problemsSnapshot.size
+        }
         status["results_source"] = snapshot?.source ?: "tool_window"
         status["results_may_be_stale"] = hasInspectionSnapshot && staleness.stale
         if (snapshot != null) {
@@ -1195,6 +1228,21 @@ class InspectionHandler : HttpRequestHandler() {
         )
         resultsStore.setSnapshot(projectKey(project), reconciledSnapshot)
         return reconciledSnapshot
+    }
+
+    private fun resolveCurrentFilePath(project: Project, normalizedScope: String): String? {
+        if (normalizedScope != "current_file") {
+            return null
+        }
+        return try {
+            FileEditorManager
+                .getInstance(project)
+                .selectedFiles
+                .firstOrNull()
+                ?.path
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
@@ -1365,6 +1413,12 @@ class InspectionHandler : HttpRequestHandler() {
         reason: String
     ): String {
         val response = status.toMutableMap()
+        if (reason == "stale_results") {
+            (response["total_problems"] as? Number)?.let { total ->
+                response.putIfAbsent("cached_total_problems", total.toInt())
+            }
+            response.remove("total_problems")
+        }
         val elapsed = System.currentTimeMillis() - startMs
         response["wait_completed"] = completed
         response["timed_out"] = !completed && reason == "timeout"
@@ -1675,6 +1729,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var observedSettledEmptyInspectionView = false
                         var observedStableReadableEmptyInspectionView = false
                         var observedStableEmptyResultsWithoutInspectionView = false
+                        var observedOpaqueSettledEmptyInspectionView = false
                         var observedNonEmptyInspectionTree = false
                         var observedTransientEmptyInspectionViewEvidence = false
                         var inspectionViewUpdating = false
@@ -1832,6 +1887,9 @@ class InspectionHandler : HttpRequestHandler() {
                                             readableEmptyInspectionViewStableSince = loopNow
                                         }
                                     }
+                                    isOpaqueSettledEmptyInspectionViewCandidate(viewObservation) -> {
+                                        observedOpaqueSettledEmptyInspectionView = true
+                                    }
                                     else -> {
                                         resetReadableEmptyInspectionViewEvidence()
                                         transientUpdatingEmptyObservationCount = 0
@@ -1917,6 +1975,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     inspectionViewUpdating = inspectionViewUpdating,
                                     hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                         observedStableReadableEmptyInspectionView,
+                                    hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
                                     hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
                                     extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                         lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
@@ -1965,6 +2024,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 inspectionViewUpdating = inspectionViewUpdating,
                                 hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
                                     observedStableReadableEmptyInspectionView,
+                                hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
                                 hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
                                 extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                     lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,

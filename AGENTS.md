@@ -13,9 +13,10 @@ workflows, and cleanup policy.
 
 - Plugin: Kotlin/Gradle (JetBrains 2025.x), requires Java 21.
 - MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
-- Agent inspection helper: the external `jetbrains-inspection` skill wraps this
-  plugin through `scripts/jb-inspect.py`; keep its status/clean/capture
-  contracts in mind when changing HTTP inspection behavior.
+- Agent inspection helper: the external `jetbrains-inspection` skill's
+  `scripts/jb-inspect.py` is the primary LLM-facing path for this plugin; keep
+  its status/clean/capture contracts in mind when changing HTTP inspection
+  behavior.
 
 ## Always-on rules
 
