@@ -67,6 +67,14 @@ clean/capture classification, or MCP tool response contracts, update the skill
 docs/tests/scripts in the `jetbrains-inspection` skill as part of the same
 workstream.
 
+Before shipping changes to clean/capture classification, run the focused
+`InspectionSnapshotStateTest` coverage, then build the plugin with
+`./gradlew buildPlugin`. Smoke the installed plugin from the agent helper in the
+JetBrains IDEs that matter for the change, such as PyCharm, WebStorm, and
+IntelliJ IDEA. If plugin installation prompts about replacing an existing jar,
+handle that explicitly and rerun the smoke instead of treating the prompt as a
+validated install.
+
 ## Local cleanup
 
 `./scripts/clean-local.sh` removes disposable local files such as `.DS_Store`
