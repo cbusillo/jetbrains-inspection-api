@@ -83,6 +83,8 @@ internal data class InspectionResultsSnapshot(
     val source: String,
     val note: String? = null,
     val captureScope: InspectionCaptureScope? = null,
+    val runId: Long? = null,
+    val triggerTimeMs: Long? = null,
 )
 
 internal data class InspectionViewObservation(
@@ -194,6 +196,10 @@ internal object InspectionResultsStore {
 
     fun getProjectState(projectName: String): InspectionProjectStateSnapshot? {
         return snapshotsByProject[projectName]?.projectState
+    }
+
+    fun getRunId(projectName: String): Long? {
+        return snapshotsByProject[projectName]?.runId
     }
 
     fun setSnapshot(projectName: String, snapshot: InspectionResultsSnapshot) {
@@ -499,6 +505,7 @@ class InspectionHandler : HttpRequestHandler() {
     private data class SnapshotStaleness(
         val stale: Boolean,
         val reasons: List<String>,
+        val changeKind: String = "fresh",
     )
     
     override fun isSupported(request: FullHttpRequest): Boolean {
@@ -885,7 +892,7 @@ class InspectionHandler : HttpRequestHandler() {
             val key = projectKey(project)
             var snapshot = resultsStore.getSnapshot(key)
             val hasSnapshot = snapshot != null
-            val staleness = getSnapshotStaleness(project)
+            val staleness = resolveSnapshotStaleness(project, snapshot)
             if (hasSnapshot && staleness.stale) {
                 val cachedProblems = snapshot.problems
                 val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
@@ -908,6 +915,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
                     "stale_reasons" to staleness.reasons,
+                    "snapshot_change_kind" to staleness.changeKind,
                     "snapshot_outcome" to snapshot.outcome.apiValue,
                     "results_source" to snapshot.source,
                     "results_timestamp_ms" to snapshot.timestamp,
@@ -934,6 +942,9 @@ class InspectionHandler : HttpRequestHandler() {
                     staleBase["include_stale"] = false
                 }
                 return formatJsonManually(staleBase.filterValues { it != null })
+            }
+            if (staleness.changeKind == "current_run_psi_churn") {
+                snapshot = reconcileCurrentRunPsiChurn(project, snapshot)
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
@@ -990,7 +1001,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                 val page = paginateProblems(filteredProblems, limit, offset)
                 
-                val response = mapOf(
+                val response = mutableMapOf<String, Any?>(
                     "status" to "results_available",
                     "project" to project.name,
                     "project_key" to key,
@@ -1014,8 +1025,11 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "method" to (snapshot?.source ?: "enhanced_tree")
                 )
+                snapshot?.runId?.let { response["snapshot_run_id"] = it }
+                snapshot?.triggerTimeMs?.let { response["snapshot_trigger_time_ms"] = it }
+                response["snapshot_change_kind"] = resolveSnapshotStaleness(project, snapshot).changeKind
                 
-                formatJsonManually(response)
+                formatJsonManually(response.filterValues { it != null })
             } else {
                 val response = mapOf(
                     "status" to "no_results",
@@ -1109,7 +1123,11 @@ class InspectionHandler : HttpRequestHandler() {
         // Use the same extractor as the /problems endpoint so status matches real availability
         var snapshot = resultsStore.getSnapshot(key)
         val hasInspectionSnapshot = snapshot != null
-        val staleness = getSnapshotStaleness(project)
+        var staleness = resolveSnapshotStaleness(project, snapshot)
+        if (staleness.changeKind == "current_run_psi_churn") {
+            snapshot = reconcileCurrentRunPsiChurn(project, snapshot)
+            staleness = resolveSnapshotStaleness(project, snapshot)
+        }
         if (!staleness.stale) {
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
         }
@@ -1144,6 +1162,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (staleness.reasons.isNotEmpty()) {
             status["stale_reasons"] = staleness.reasons
         }
+        status["snapshot_change_kind"] = staleness.changeKind
 
         // Window visibility hints (best-effort)
         val problemsVisible = problemsWindow?.isVisible ?: false
@@ -1169,6 +1188,8 @@ class InspectionHandler : HttpRequestHandler() {
         }
         if (snapshot != null) {
             status["results_age_ms"] = (currentTime - snapshot.timestamp).coerceAtLeast(0L)
+            snapshot.runId?.let { status["snapshot_run_id"] = it }
+            snapshot.triggerTimeMs?.let { status["snapshot_trigger_time_ms"] = it }
         }
         status["indexing"] = isIndexing
 
@@ -1225,6 +1246,44 @@ class InspectionHandler : HttpRequestHandler() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "tool_window",
             note = null,
+        )
+        resultsStore.setSnapshot(projectKey(project), reconciledSnapshot)
+        return reconciledSnapshot
+    }
+
+    private fun reconcileCurrentRunPsiChurn(
+        project: Project,
+        snapshot: InspectionResultsSnapshot?,
+    ): InspectionResultsSnapshot? {
+        if (snapshot == null) {
+            return null
+        }
+
+        val liveProblems = try {
+            enhancedTreeExtractorFactory().extractAllProblems(project)
+        } catch (_: Exception) {
+            return snapshot
+        }
+        val captureScopeMatcher = snapshot.captureScope?.let { captureScope ->
+            buildScopeProblemMatcher(
+                project = project,
+                scopeParam = captureScope.scopeParam,
+                directoryParam = captureScope.directoryParam,
+                files = captureScope.files,
+                resolvedCurrentFile = captureScope.resolvedCurrentFile,
+                includeUnversioned = captureScope.includeUnversioned,
+                changedFilesMode = captureScope.changedFilesMode,
+                maxFiles = captureScope.maxFiles,
+            )
+        }
+        val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
+        if (compatibleLiveProblems != snapshot.problems) {
+            return snapshot
+        }
+
+        val reconciledSnapshot = snapshot.copy(
+            timestamp = System.currentTimeMillis(),
+            projectState = captureProjectState(project),
         )
         resultsStore.setSnapshot(projectKey(project), reconciledSnapshot)
         return reconciledSnapshot
@@ -2059,6 +2118,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
                                 source = bestSource,
                                 captureScope = captureScope,
+                                runId = runId,
+                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )
                             emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
                                 problems = emptyList(),
@@ -2067,6 +2128,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
                                 source = "inspection_view",
                                 captureScope = captureScope,
+                                runId = runId,
+                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )
                             else -> InspectionResultsSnapshot(
                                 problems = emptyList(),
@@ -2076,6 +2139,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 source = if (viewReadyOk) "inspection_view" else "tool_window",
                                 note = emptyNote,
                                 captureScope = captureScope,
+                                runId = runId,
+                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )
                         }
                         if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
@@ -2121,6 +2186,8 @@ class InspectionHandler : HttpRequestHandler() {
                                         source = "inspection_view",
                                         note = "Inspection failed before results could be captured.",
                                         captureScope = captureScope,
+                                        runId = runId,
+                                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                                     )
                                 )
                             }
@@ -2198,6 +2265,8 @@ class InspectionHandler : HttpRequestHandler() {
                 source = "inspection_view",
                 note = "Inspection failed before results could be captured.",
                 captureScope = captureScope,
+                runId = runId,
+                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
             )
         )
     }
@@ -2262,8 +2331,8 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    private fun getSnapshotStaleness(project: Project): SnapshotStaleness {
-        val snapshotState = resultsStore.getProjectState(projectKey(project)) ?: return SnapshotStaleness(false, emptyList())
+    private fun resolveSnapshotStaleness(project: Project, snapshot: InspectionResultsSnapshot?): SnapshotStaleness {
+        val snapshotState = snapshot?.projectState ?: return SnapshotStaleness(false, emptyList())
         val currentState = captureProjectState(project)
         val reasons = mutableListOf<String>()
         if (currentState.unsavedProjectDocuments > 0) {
@@ -2272,7 +2341,25 @@ class InspectionHandler : HttpRequestHandler() {
         if (currentState.psiModificationCount != snapshotState.psiModificationCount) {
             reasons += "project_changed_since_inspection"
         }
-        return SnapshotStaleness(reasons.isNotEmpty(), reasons)
+        if (reasons.isEmpty()) {
+            return SnapshotStaleness(false, emptyList())
+        }
+
+        val currentRunState = inspectionRunStatesByProject[projectKey(project)]
+        val currentRunId = currentRunState?.runId
+        val sameRunSnapshot = snapshot.runId != null && snapshot.runId == currentRunId
+        val psiOnlyChange = reasons == listOf("project_changed_since_inspection")
+        if (sameRunSnapshot && psiOnlyChange) {
+            return SnapshotStaleness(false, reasons, "current_run_psi_churn")
+        }
+
+        val changeKind = when {
+            reasons.contains("unsaved_documents") -> "unsaved_documents"
+            snapshot.runId != null && currentRunId != null && snapshot.runId != currentRunId -> "snapshot_predates_current_trigger"
+            snapshot.runId == null -> "unknown_snapshot_run"
+            else -> "project_changed_since_inspection"
+        }
+        return SnapshotStaleness(true, reasons, changeKind)
     }
 
     private fun countProjectUnsavedDocuments(project: Project): Int {

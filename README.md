@@ -213,6 +213,7 @@ Notes:
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
+- `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale; `current_run_psi_churn` is a fresh-run PSI tick that the plugin attempts to reconcile before returning results.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
 
 ## API Reference
@@ -444,6 +445,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 **Status Indicators**:
 - `is_scanning: true` → Inspection running, wait
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
+- `snapshot_change_kind: "current_run_psi_churn"` → The latest run's snapshot saw a PSI modification-count tick after capture; the plugin keeps waiting instead of treating the snapshot as stale cached data.
 - `clean_inspection: true` → Inspection complete. No problems found
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
@@ -465,6 +467,7 @@ Common completion reasons:
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.
 - `/api/inspection/status` and `/api/inspection/problems` refresh project state before evaluating cached snapshots.
 - If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"`. By default, the response includes cached metadata such as `cached_total_problems` and withholds `problems`; `include_stale=true` returns cached findings for diagnostics while keeping `status: "stale_results"`.
+- Fresh snapshots are tied to inspection run metadata. A PSI modification-count change immediately after the same run's capture is classified as `current_run_psi_churn` and reconciled against the live IDE problem tree instead of being reported as stale cached data.
 
 ## MCP Server Details
 
