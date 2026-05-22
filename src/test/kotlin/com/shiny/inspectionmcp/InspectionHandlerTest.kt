@@ -9,8 +9,11 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
@@ -23,6 +26,8 @@ import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentManager
 import io.netty.handler.codec.http.QueryStringDecoder
@@ -114,6 +119,61 @@ class InspectionHandlerTest {
         every { InspectionProjectProfileManager.getInstance(mockProject) } returns mockProfileManager
         every { mockProfileManager.currentProfile } returns mockProfile
         every { mockProfile.name } returns "TestProfile"
+    }
+
+    @Test
+    fun `test changed files trigger with no targets publishes clean snapshot without IDE inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+
+        val fileDocumentManager = mockk<FileDocumentManager>(relaxed = true)
+        mockkStatic(FileDocumentManager::class)
+        every { FileDocumentManager.getInstance() } returns fileDocumentManager
+        every { fileDocumentManager.unsavedDocuments } returns emptyArray()
+
+        val psiDocumentManager = mockk<PsiDocumentManager>(relaxed = true)
+        mockkStatic(PsiDocumentManager::class)
+        every { PsiDocumentManager.getInstance(mockProject) } returns psiDocumentManager
+
+        mockkStatic(ChangeListManager::class)
+        val changeListManager = mockk<ChangeListManager>(relaxed = true)
+        every { ChangeListManager.getInstance(mockProject) } returns changeListManager
+        every { changeListManager.allChanges } returns emptyList()
+
+        mockkStatic(PsiModificationTracker::class)
+        val modificationTracker = mockk<PsiModificationTracker>()
+        every { PsiModificationTracker.getInstance(mockProject) } returns modificationTracker
+        every { modificationTracker.modificationCount } returns 11L
+
+        mockkStatic(ToolWindowManager::class)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        every { ToolWindowManager.getInstance(mockProject) } returns toolWindowManager
+        every { toolWindowManager.getToolWindow(any()) } returns null
+
+        mockkStatic(DumbService::class)
+        val dumbService = mockk<DumbService>()
+        every { DumbService.getInstance(mockProject) } returns dumbService
+        every { dumbService.isDumb } returns false
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=changed_files&include_unversioned=false")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"scope\": \"changed_files\""))
+        verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        val status = buildInspectionStatus()
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals("empty_changed_files", status["results_source"])
+        assertEquals(false, status["capture_incomplete"])
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals(0, status["total_problems"])
     }
     
     @Test
@@ -945,6 +1005,13 @@ class InspectionHandlerTest {
 
         assertTrue(result)
         return responseSlot.captured as FullHttpResponse
+    }
+
+    private fun buildInspectionStatus(): MutableMap<String, Any> {
+        val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        return method.invoke(handler, mockProject) as MutableMap<String, Any>
     }
 
     private fun mockProject(name: String, basePath: String, projectFilePath: String): Project {

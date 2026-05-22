@@ -34,6 +34,7 @@ class InspectionScopeFallbackTest {
             Boolean::class.javaPrimitiveType,
             String::class.java,
             Int::class.javaObjectType,
+            List::class.java,
         )
         method.isAccessible = true
 
@@ -45,6 +46,7 @@ class InspectionScopeFallbackTest {
             listOf("/does/not/exist.txt"),
             null,
             true,
+            null,
             null,
             null,
         )
@@ -71,6 +73,7 @@ class InspectionScopeFallbackTest {
             Boolean::class.javaPrimitiveType,
             String::class.java,
             Int::class.javaObjectType,
+            List::class.java,
         )
         method.isAccessible = true
 
@@ -84,6 +87,7 @@ class InspectionScopeFallbackTest {
             /* includeUnversioned = */ false,
             null,
             10,
+            null,
         )
         assertNotNull(scope)
     }
@@ -108,6 +112,7 @@ class InspectionScopeFallbackTest {
             Boolean::class.javaPrimitiveType,
             String::class.java,
             Int::class.javaObjectType,
+            List::class.java,
         )
         method.isAccessible = true
 
@@ -119,6 +124,7 @@ class InspectionScopeFallbackTest {
             null,
             null,
             true,
+            null,
             null,
             null,
         )
