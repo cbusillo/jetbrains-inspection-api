@@ -1708,6 +1708,34 @@ class InspectionHandler : HttpRequestHandler() {
             
             syncProjectState(project)
 
+            val changedFilesScopeFiles = if (scopeParam?.lowercase()?.trim() == "changed_files") {
+                resolveChangedFilesScopeFiles(
+                    project = project,
+                    includeUnversioned = includeUnversioned,
+                    changedFilesMode = changedFilesMode,
+                    maxFiles = maxFiles,
+                )
+            } else {
+                null
+            }
+            if (changedFilesScopeFiles != null && changedFilesScopeFiles.isEmpty()) {
+                resultsStore.setSnapshot(
+                    key,
+                    InspectionResultsSnapshot(
+                        problems = emptyList(),
+                        timestamp = System.currentTimeMillis(),
+                        projectState = captureProjectState(project),
+                        outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                        source = "empty_changed_files",
+                        note = "No changed files matched the requested inspection scope.",
+                        captureScope = captureScope,
+                        runId = runId,
+                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                    )
+                )
+                return
+            }
+
             val scope: AnalysisScope = buildAnalysisScope(
                 project = project,
                 scopeParam = scopeParam,
@@ -1716,7 +1744,8 @@ class InspectionHandler : HttpRequestHandler() {
                 resolvedCurrentFile = resolvedCurrentFile,
                 includeUnversioned = includeUnversioned,
                 changedFilesMode = changedFilesMode,
-                maxFiles = maxFiles
+                maxFiles = maxFiles,
+                resolvedChangedFiles = changedFilesScopeFiles,
             )
             val scopeProblemMatcher = buildScopeProblemMatcher(
                 project = project,
@@ -1727,6 +1756,7 @@ class InspectionHandler : HttpRequestHandler() {
                 includeUnversioned = includeUnversioned,
                 changedFilesMode = changedFilesMode,
                 maxFiles = maxFiles,
+                resolvedChangedFiles = changedFilesScopeFiles,
             )
             
             @Suppress("USELESS_CAST")
@@ -2387,7 +2417,8 @@ class InspectionHandler : HttpRequestHandler() {
         resolvedCurrentFile: String?,
         includeUnversioned: Boolean,
         changedFilesMode: String?,
-        maxFiles: Int?
+        maxFiles: Int?,
+        resolvedChangedFiles: List<VirtualFile>? = null,
     ): AnalysisScope {
         return try {
             val scopeLower = scopeParam?.lowercase()?.trim()
@@ -2405,49 +2436,12 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             if (scopeLower == "changed_files") {
-                val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
-                val baseChanges = clm.allChanges
-
-                val changeFiles = baseChanges.mapNotNull { ch ->
-                    ch.virtualFile ?: ch.afterRevision?.file?.virtualFile ?: ch.beforeRevision?.file?.virtualFile
-                }.toMutableList()
-
-                // Best-effort Git staging filter when requested
-                val mode = changedFilesMode?.lowercase()?.trim()
-                if (!mode.isNullOrBlank() && mode != "all") {
-                    val gitSets = computeGitStagingSets(project)
-                    if (gitSets != null) {
-                        val (stagedSet, unstagedSet) = gitSets
-                        val basePath = project.basePath
-                        if (!basePath.isNullOrBlank()) {
-                            fun rel(p: String): String {
-                                val rel = try {
-                                    Paths.get(basePath).relativize(Paths.get(p)).toString()
-                                } catch (_: Exception) { p }
-                                return rel.replace('\\', '/')
-                            }
-                            changeFiles.retainAll { vf ->
-                                val rp = rel(vf.path)
-                                when (mode) {
-                                    "staged" -> stagedSet.contains(rp)
-                                    "unstaged" -> unstagedSet.contains(rp)
-                                    else -> true
-                                }
-                            }
-                        }
-                    }
-                }
-                if (includeUnversioned) {
-                    try {
-                        val method = clm.javaClass.getMethod("getUnversionedFiles")
-                        @Suppress("UNCHECKED_CAST")
-                        val unversioned = method.invoke(clm) as? Collection<VirtualFile>
-                        if (unversioned != null) changeFiles.addAll(unversioned)
-                    } catch (_: Exception) {
-                    }
-                }
-                val unique = changeFiles.distinct()
-                val limited = if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
+                val limited = resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
+                    project = project,
+                    includeUnversioned = includeUnversioned,
+                    changedFilesMode = changedFilesMode,
+                    maxFiles = maxFiles,
+                )
                 return if (limited.isEmpty()) AnalysisScope(project) else AnalysisScope(project, limited.toSet())
             }
 
@@ -2489,6 +2483,57 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun resolveChangedFilesScopeFiles(
+        project: Project,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?,
+    ): List<VirtualFile> {
+        val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
+        val changeFiles = clm.allChanges.mapNotNull { change ->
+            change.virtualFile ?: change.afterRevision?.file?.virtualFile ?: change.beforeRevision?.file?.virtualFile
+        }.toMutableList()
+
+        val mode = changedFilesMode?.lowercase()?.trim()
+        if (!mode.isNullOrBlank() && mode != "all") {
+            val gitSets = computeGitStagingSets(project)
+            if (gitSets != null) {
+                val (stagedSet, unstagedSet) = gitSets
+                val basePath = project.basePath
+                if (!basePath.isNullOrBlank()) {
+                    fun relativePath(path: String): String {
+                        val relative = try {
+                            Paths.get(basePath).relativize(Paths.get(path)).toString()
+                        } catch (_: Exception) {
+                            path
+                        }
+                        return relative.replace('\\', '/')
+                    }
+                    changeFiles.retainAll { vf ->
+                        when (mode) {
+                            "staged" -> stagedSet.contains(relativePath(vf.path))
+                            "unstaged" -> unstagedSet.contains(relativePath(vf.path))
+                            else -> true
+                        }
+                    }
+                }
+            }
+        }
+        if (includeUnversioned) {
+            try {
+                val method = clm.javaClass.getMethod("getUnversionedFiles")
+                @Suppress("UNCHECKED_CAST")
+                val unversioned = method.invoke(clm) as? Collection<VirtualFile>
+                if (unversioned != null) {
+                    changeFiles.addAll(unversioned)
+                }
+            } catch (_: Exception) {
+            }
+        }
+        val unique = changeFiles.distinct()
+        return if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
+    }
+
     private fun buildScopeProblemMatcher(
         project: Project,
         scopeParam: String?,
@@ -2498,6 +2543,7 @@ class InspectionHandler : HttpRequestHandler() {
         includeUnversioned: Boolean,
         changedFilesMode: String?,
         maxFiles: Int?,
+        resolvedChangedFiles: List<VirtualFile>? = null,
     ): ((Map<String, Any>) -> Boolean)? {
         val scopeLower = scopeParam?.lowercase()?.trim()
 
@@ -2535,48 +2581,12 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         if (scopeLower == "changed_files") {
-            val clm = com.intellij.openapi.vcs.changes.ChangeListManager.getInstance(project)
-            val changeFiles = clm.allChanges.mapNotNull { change ->
-                change.virtualFile ?: change.afterRevision?.file?.virtualFile ?: change.beforeRevision?.file?.virtualFile
-            }.toMutableList()
-
-            val mode = changedFilesMode?.lowercase()?.trim()
-            if (!mode.isNullOrBlank() && mode != "all") {
-                val gitSets = computeGitStagingSets(project)
-                if (gitSets != null) {
-                    val (stagedSet, unstagedSet) = gitSets
-                    val basePath = project.basePath
-                    if (!basePath.isNullOrBlank()) {
-                        fun relativePath(path: String): String {
-                            val relative = try {
-                                Paths.get(basePath).relativize(Paths.get(path)).toString()
-                            } catch (_: Exception) {
-                                path
-                            }
-                            return relative.replace('\\', '/')
-                        }
-                        changeFiles.retainAll { vf ->
-                            when (mode) {
-                                "staged" -> stagedSet.contains(relativePath(vf.path))
-                                "unstaged" -> unstagedSet.contains(relativePath(vf.path))
-                                else -> true
-                            }
-                        }
-                    }
-                }
-            }
-            if (includeUnversioned) {
-                try {
-                    val method = clm.javaClass.getMethod("getUnversionedFiles")
-                    @Suppress("UNCHECKED_CAST")
-                    val unversioned = method.invoke(clm) as? Collection<VirtualFile>
-                    if (unversioned != null) changeFiles.addAll(unversioned)
-                } catch (_: Exception) {
-                }
-            }
-            val limited = changeFiles.distinct().let { unique ->
-                if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
-            }
+            val limited = resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
+                project = project,
+                includeUnversioned = includeUnversioned,
+                changedFilesMode = changedFilesMode,
+                maxFiles = maxFiles,
+            )
             val resolved = limited.mapNotNull { normalizeFileSystemPath(it.path) }.toSet()
             return resolved.takeIf { it.isNotEmpty() }?.let(::exactFileMatcher)
         }

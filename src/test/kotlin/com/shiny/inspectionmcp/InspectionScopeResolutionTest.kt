@@ -83,6 +83,7 @@ class InspectionScopeResolutionTest {
             Boolean::class.javaPrimitiveType,
             String::class.java,
             Int::class.javaObjectType,
+            List::class.java,
         )
         method.isAccessible = true
         val scope = method.invoke(
@@ -93,6 +94,7 @@ class InspectionScopeResolutionTest {
             null,
             null,
             true,
+            null,
             null,
             null,
         )
