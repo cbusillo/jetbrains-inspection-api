@@ -97,6 +97,11 @@ class InspectionSnapshotStateTest {
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
                 note = "capture note",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                    "successful_extraction_count" to 1,
+                ),
             ),
         )
 
@@ -104,6 +109,14 @@ class InspectionSnapshotStateTest {
 
         assertEquals("capture_incomplete", status["snapshot_outcome"])
         assertEquals("capture note", status["snapshot_note"])
+        assertEquals(
+            mapOf(
+                "exit_reason" to "timeout",
+                "view_ready_ok" to false,
+                "successful_extraction_count" to 1,
+            ),
+            status["capture_diagnostic"],
+        )
         assertEquals(true, status["capture_incomplete"])
         assertFalse(status["clean_inspection"] as Boolean)
         assertFalse(status["has_inspection_results"] as Boolean)
@@ -415,6 +428,10 @@ class InspectionSnapshotStateTest {
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
                 note = "capture note",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                ),
             ),
         )
 
@@ -423,6 +440,9 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"status\": \"capture_incomplete\""))
         assertTrue(response.contains("\"results_may_be_incomplete\": true"))
         assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_diagnostic\""))
+        assertTrue(response.contains("\"exit_reason\": \"timeout\""))
+        assertTrue(response.contains("\"view_ready_ok\": false"))
         assertFalse(response.contains("\"status\": \"results_available\""))
     }
 
@@ -503,6 +523,10 @@ class InspectionSnapshotStateTest {
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
                 note = "capture note",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                ),
             ),
         )
 
@@ -526,12 +550,19 @@ class InspectionSnapshotStateTest {
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
                 note = "capture note",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                ),
             ),
         )
 
         val response = waitForInspection()
 
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_diagnostic\""))
+        assertTrue(response.contains("\"exit_reason\": \"timeout\""))
+        assertTrue(response.contains("\"view_ready_ok\": false"))
         assertTrue(response.contains("\"wait_completed\": true"))
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
     }
