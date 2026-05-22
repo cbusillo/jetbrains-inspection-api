@@ -83,6 +83,7 @@ internal data class InspectionResultsSnapshot(
     val source: String,
     val note: String? = null,
     val captureScope: InspectionCaptureScope? = null,
+    val captureDiagnostic: Map<String, Any?>? = null,
     val runId: Long? = null,
     val triggerTimeMs: Long? = null,
 )
@@ -941,6 +942,7 @@ class InspectionHandler : HttpRequestHandler() {
                 } else {
                     staleBase["include_stale"] = false
                 }
+                snapshot.captureDiagnostic?.let { staleBase["capture_diagnostic"] = it }
                 return formatJsonManually(staleBase.filterValues { it != null })
             }
             if (staleness.changeKind == "current_run_psi_churn") {
@@ -978,6 +980,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "method" to snapshot.source,
                     "snapshot_outcome" to snapshot.outcome.apiValue,
                 )
+                snapshot.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 return formatJsonManually(response)
             }
             val problems = if (snapshot?.problems != null) {
@@ -1027,6 +1030,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 snapshot?.runId?.let { response["snapshot_run_id"] = it }
                 snapshot?.triggerTimeMs?.let { response["snapshot_trigger_time_ms"] = it }
+                snapshot?.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 response["snapshot_change_kind"] = resolveSnapshotStaleness(project, snapshot).changeKind
                 
                 formatJsonManually(response.filterValues { it != null })
@@ -1158,6 +1162,7 @@ class InspectionHandler : HttpRequestHandler() {
             if (!snapshot.note.isNullOrBlank()) {
                 status["snapshot_note"] = snapshot.note
             }
+            snapshot.captureDiagnostic?.let { status["capture_diagnostic"] = it }
         }
         if (staleness.reasons.isNotEmpty()) {
             status["stale_reasons"] = staleness.reasons
@@ -1835,6 +1840,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var successfulExtractionCount = if (extractedFromContextSucceeded) 1 else 0
                         var lastExtractionCycleSucceeded = extractedFromContextSucceeded
                         var lastToolExtractionSucceeded = false
+                        var captureExitReason = "deadline"
 
                         fun resetReadableEmptyInspectionViewEvidence() {
                             readableEmptyInspectionViewStableSince = null
@@ -2093,6 +2099,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     pollingElapsedMs = pollingElapsedMs,
                                 )
                             ) {
+                                captureExitReason = "settled"
                                 break
                             }
 
@@ -2100,6 +2107,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 Thread.sleep(1000)
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
+                                captureExitReason = "sleep_interrupted"
                                 break
                             }
                         }
@@ -2140,6 +2148,50 @@ class InspectionHandler : HttpRequestHandler() {
                             observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                             observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
                         )
+                        val captureEndMs = System.currentTimeMillis()
+                        val captureDiagnostic = if (bestResults.isEmpty()) {
+                            val lastObservation = lastViewObservation
+                            val stableForMs = captureEndMs - lastChangeMs
+                            val readableStableForMs = readableEmptyInspectionViewStableSince?.let { captureEndMs - it } ?: 0L
+                            mapOf(
+                                "exit_reason" to captureExitReason,
+                                "polling_elapsed_ms" to (captureEndMs - captureStartMs),
+                                "stable_for_ms" to stableForMs,
+                                "has_scoped_matcher" to (scopeProblemMatcher != null),
+                                "view_ready_ok" to viewReadyOk,
+                                "observed_inspection_view" to observedInspectionView,
+                                "observed_settled_empty_inspection_view" to observedSettledEmptyInspectionView,
+                                "observed_stable_readable_empty_inspection_view" to observedStableReadableEmptyInspectionView,
+                                "observed_stable_empty_results_without_inspection_view" to observedStableEmptyResultsWithoutInspectionView,
+                                "observed_opaque_settled_empty_inspection_view" to observedOpaqueSettledEmptyInspectionView,
+                                "observed_transient_empty_inspection_view_evidence" to observedTransientEmptyInspectionViewEvidence,
+                                "observed_non_empty_inspection_tree" to observedNonEmptyInspectionTree,
+                                "inspection_view_updating" to inspectionViewUpdating,
+                                "inspection_view_observation_count" to inspectionViewObservationCount,
+                                "readable_empty_inspection_view_observation_count" to readableEmptyInspectionViewObservationCount,
+                                "transient_updating_empty_observation_count" to transientUpdatingEmptyObservationCount,
+                                "unreadable_problem_state_observation_count" to unreadableProblemStateObservationCount,
+                                "null_root_child_observation_count" to nullRootChildObservationCount,
+                                "tool_window_observation_count" to toolWindowObservationCount,
+                                "compatible_tool_window_observation_count" to compatibleToolWindowObservationCount,
+                                "successful_extraction_count" to successfulExtractionCount,
+                                "extraction_failure_count" to extractionFailureCount,
+                                "last_extraction_cycle_succeeded" to lastExtractionCycleSucceeded,
+                                "last_tool_extraction_succeeded" to lastToolExtractionSucceeded,
+                                "scoped_context_results_empty" to scopedContextResults.isEmpty(),
+                                "best_results_empty" to bestResults.isEmpty(),
+                                "readable_empty_inspection_view_stable_for_ms" to readableStableForMs,
+                                "last_view_observation" to mapOf(
+                                    "is_updating" to lastObservation?.isUpdating,
+                                    "has_problems" to lastObservation?.hasProblems,
+                                    "root_child_count" to lastObservation?.rootChildCount,
+                                    "update_state_readable" to lastObservation?.updateStateReadable,
+                                    "problem_state_readable" to lastObservation?.problemStateReadable,
+                                ).filterValues { it != null },
+                            )
+                        } else {
+                            null
+                        }
                         val snapshot = when {
                             bestResults.isNotEmpty() -> InspectionResultsSnapshot(
                                 problems = bestResults,
@@ -2158,6 +2210,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
                                 source = "inspection_view",
                                 captureScope = captureScope,
+                                captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )
@@ -2169,6 +2222,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 source = if (viewReadyOk) "inspection_view" else "tool_window",
                                 note = emptyNote,
                                 captureScope = captureScope,
+                                captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )
