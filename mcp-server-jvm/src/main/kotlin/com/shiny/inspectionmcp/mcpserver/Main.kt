@@ -211,7 +211,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
                         )
                     )
                     put("inputSchema", getProblemsSchema())

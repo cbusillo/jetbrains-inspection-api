@@ -571,6 +571,136 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Wait reconciles current-run PSI churn without stale_results")
+    fun testWaitReconcilesCurrentRunPsiChurn() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        val problems = listOf(staleProblem(description = "Fresh warning"))
+        every { extractor.extractAllProblems(mockProject) } returns problems
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = problems,
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
+        val status = buildInspectionStatus()
+
+        assertTrue(response.contains("\"completion_reason\": \"results\""))
+        assertFalse(response.contains("\"completion_reason\": \"stale_results\""))
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals("fresh", status["snapshot_change_kind"])
+        assertEquals(8L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
+        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
+    }
+
+    @Test
+    @DisplayName("Status distinguishes unreconciled current-run PSI churn")
+    fun testStatusReportsCurrentRunPsiChurnWhenReconcileCannotConfirm() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem(description = "Fresh warning")),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val status = buildInspectionStatus()
+
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals("current_run_psi_churn", status["snapshot_change_kind"])
+        assertEquals(listOf("project_changed_since_inspection"), status["stale_reasons"])
+        assertEquals(currentRun.runId, status["snapshot_run_id"])
+    }
+
+    @Test
+    @DisplayName("Current-run snapshots with unsaved documents remain stale")
+    fun testCurrentRunSnapshotWithUnsavedDocumentsRemainsStale() {
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem()),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        val unsavedDocument = mockk<Document>()
+        val unsavedFile = mockk<VirtualFile>()
+        val mockProjectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns mockProjectFileIndex
+        every { FileDocumentManager.getInstance().unsavedDocuments } returns arrayOf(unsavedDocument)
+        every { FileDocumentManager.getInstance().getFile(unsavedDocument) } returns unsavedFile
+        every { unsavedFile.path } returns "/tmp/TestProject/src/app.js"
+        every { mockProjectFileIndex.isInContent(unsavedFile) } returns true
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertTrue(response.contains("\"snapshot_change_kind\": \"unsaved_documents\""))
+    }
+
+    @Test
+    @DisplayName("Older run snapshot remains stale after a newer trigger")
+    fun testOlderRunSnapshotRemainsStaleAfterNewerTrigger() {
+        val oldRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), oldRun.runId)
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem()),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = oldRun.runId,
+                triggerTimeMs = oldRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertTrue(response.contains("\"snapshot_change_kind\": \"snapshot_predates_current_trigger\""))
+        assertTrue(response.contains("\"snapshot_run_id\": ${oldRun.runId}"))
+        assertTrue(response.contains("\"inspection_run_id\": ${currentRun.runId}"))
+    }
+
+    @Test
     @DisplayName("Status reports cached counts separately for stale snapshots")
     fun testStatusUsesCachedCountsForStaleSnapshots() {
         InspectionResultsStore.setSnapshot(
