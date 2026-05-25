@@ -40,6 +40,8 @@ import org.jetbrains.concurrency.Promise
 import org.jetbrains.concurrency.resolvedPromise
 import org.jetbrains.concurrency.rejectedPromise
 import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 import javax.swing.JFrame
 import javax.swing.JPanel
 
@@ -764,6 +766,331 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route endpoint includes project instance id`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val response = processGetRequest("/api/inspection/route?worktree_path=/repo/app")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_instance_id\""))
+    }
+
+    @Test
+    fun `test lifecycle claim returns close token for exact project instance`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"claimed\""))
+        assertTrue(body.contains("\"close_token\""))
+        assertTrue(body.contains("\"lease_id\": \"test-lease\""))
+    }
+
+    @Test
+    fun `test lifecycle claim rejects stale project instance id`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=old-instance"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("does not match the resolved route"))
+    }
+
+    @Test
+    fun `test lifecycle open opens project path in running IDE`() {
+        val tempDir = Files.createTempDirectory("inspection-open-test")
+        val openedProject = mockProject(
+            name = "Opened",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opened\": false"))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertTrue(body.contains(tempDir.toString()))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open reports already open exact project`() {
+        val tempDir = Files.createTempDirectory("inspection-open-existing")
+        every { mockProject.basePath } returns tempDir.toString()
+        every { mockProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+    }
+
+    @Test
+    fun `test lifecycle open reports already open project file path`() {
+        val tempDir = Files.createTempDirectory("inspection-open-file-existing")
+        val projectFilePath = tempDir.resolve(".idea/misc.xml").toString()
+        every { mockProject.basePath } returns null
+        every { mockProject.projectFilePath } returns projectFilePath
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(projectFilePath, "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+    }
+
+    @Test
+    fun `test lifecycle open coalesces duplicate concurrent opens`() {
+        val tempDir = Files.createTempDirectory("inspection-open-duplicate")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.openProjectPath = { mockProject }
+
+        val encodedPath = java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")
+        val first = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
+        val second = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+        scheduled.single().run()
+        val third = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
+        assertEquals(2, scheduled.size)
+        assertEquals(HttpResponseStatus.OK, third.status())
+    }
+
+    @Test
+    fun `test lifecycle open normalizes home-relative path for already open project`() {
+        val home = System.getProperty("user.home")
+        val projectPath = Paths.get(home, "repo-open-existing").toString()
+        every { mockProject.basePath } returns projectPath
+        every { mockProject.projectFilePath } returns Paths.get(projectPath, ".idea/misc.xml").toString()
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode("~/repo-open-existing", "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+    }
+
+    @Test
+    fun `test route endpoint rejects missing project instance id without fallback`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val response = processGetRequest(
+            "/api/inspection/route?worktree_path=/repo/app&project_instance_id=old-instance"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("does not match the resolved route"))
+        assertFalse(body.contains("\"status\": \"resolved\""))
+    }
+
+    @Test
+    fun `test route endpoint rejects project instance id that conflicts with path selector`() {
+        val mainProject = mockProject(
+            name = "Main",
+            basePath = "/repo/main",
+            projectFilePath = "/repo/main/.idea/misc.xml",
+        )
+        val worktreeProject = mockProject(
+            name = "Worktree",
+            basePath = "/repo/worktree",
+            projectFilePath = "/repo/worktree/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(mainProject, worktreeProject)
+
+        val response = processGetRequest(
+            "/api/inspection/route?worktree_path=/repo/main&project_instance_id=${projectInstanceId(worktreeProject)}"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("does not match the resolved route"))
+        assertFalse(body.contains("\"project_key\": \"path:/repo/worktree\""))
+    }
+
+    @Test
+    fun `test lifecycle close rejects mismatched close token`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=wrong"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.FORBIDDEN, response.status())
+        assertTrue(body.contains("\"status\": \"skipped\""))
+        assertTrue(body.contains("\"reason\": \"token_mismatch\""))
+    }
+
+    @Test
+    fun `test lifecycle close uses claimed project instance even when route selectors drift`() {
+        val mainProject = mockProject(
+            name = "Main",
+            basePath = "/repo/main",
+            projectFilePath = "/repo/main/.idea/misc.xml",
+        )
+        val worktreeProject = mockProject(
+            name = "Worktree",
+            basePath = "/repo/worktree",
+            projectFilePath = "/repo/worktree/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(mainProject, worktreeProject)
+        val instanceId = projectInstanceId(worktreeProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/worktree&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns true
+        var closedProject: Project? = null
+        handler.forceCloseProject = { project ->
+            closedProject = project
+            true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_key=${projectKey(mainProject)}&project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"closed\""))
+        assertSame(worktreeProject, closedProject)
+    }
+
+    @Test
+    fun `test lifecycle close evicts lease when claimed project is missing`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockProjectManager.openProjects } returns emptyArray()
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"route_missing\""))
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+    }
+
+    @Test
+    fun `test lifecycle close keeps lease when close fails`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns true
+        handler.forceCloseProject = { false }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, first.status())
+        assertEquals(HttpResponseStatus.CONFLICT, second.status())
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
+    }
+
+    @Test
+    fun `test trigger endpoint honors project instance id over duplicate path keys`() {
+        val mainProject = mockProject(
+            name = "Main",
+            basePath = "/repo/main",
+            projectFilePath = "/repo/main/.idea/misc.xml",
+        )
+        val worktreeProject = mockProject(
+            name = "Worktree",
+            basePath = "/repo/worktree",
+            projectFilePath = "/repo/worktree/.idea/misc.xml",
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(mainProject, worktreeProject)
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(worktreeProject)
+
+        val response = processTriggerRequest(
+            "/api/inspection/trigger?project_instance_id=${projectInstanceId(worktreeProject)}&scope=changed_files&include_unversioned=false"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_key\": \"path:/repo/worktree\""))
+        assertFalse(body.contains("\"project_key\": \"path:/repo/main\""))
+    }
+
+    @Test
     fun `test route endpoint rejects ambiguous project names`() {
         val firstProject = mockProject(
             name = "Shared",
@@ -1023,5 +1350,36 @@ class InspectionHandlerTest {
         every { project.basePath } returns basePath
         every { project.projectFilePath } returns projectFilePath
         return project
+    }
+
+    private fun mockInspectionPrerequisites(project: Project) {
+        val fileDocumentManager = mockk<FileDocumentManager>(relaxed = true)
+        mockkStatic(FileDocumentManager::class)
+        every { FileDocumentManager.getInstance() } returns fileDocumentManager
+        every { fileDocumentManager.unsavedDocuments } returns emptyArray()
+
+        val psiDocumentManager = mockk<PsiDocumentManager>(relaxed = true)
+        mockkStatic(PsiDocumentManager::class)
+        every { PsiDocumentManager.getInstance(project) } returns psiDocumentManager
+
+        mockkStatic(ChangeListManager::class)
+        val changeListManager = mockk<ChangeListManager>(relaxed = true)
+        every { ChangeListManager.getInstance(project) } returns changeListManager
+        every { changeListManager.allChanges } returns emptyList()
+
+        mockkStatic(PsiModificationTracker::class)
+        val modificationTracker = mockk<PsiModificationTracker>()
+        every { PsiModificationTracker.getInstance(project) } returns modificationTracker
+        every { modificationTracker.modificationCount } returns 11L
+
+        mockkStatic(ToolWindowManager::class)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.getToolWindow(any()) } returns null
+
+        mockkStatic(DumbService::class)
+        val dumbService = mockk<DumbService>()
+        every { DumbService.getInstance(project) } returns dumbService
+        every { dumbService.isDumb } returns false
     }
 }

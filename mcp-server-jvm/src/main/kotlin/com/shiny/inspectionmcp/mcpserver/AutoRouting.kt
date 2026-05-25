@@ -284,6 +284,7 @@ private fun toRouteIdentity(identity: JsonObject): InspectionRouteIdentity {
 private fun toRouteProject(project: JsonObject): InspectionRouteProject {
     return InspectionRouteProject(
         projectKey = project.string("project_key"),
+        projectInstanceId = project.string("project_instance_id"),
         name = project.string("name"),
         basePath = project.string("base_path"),
         projectFilePath = project.string("project_file_path"),

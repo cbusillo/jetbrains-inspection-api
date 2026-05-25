@@ -8,6 +8,7 @@ data class InspectionRouteProject(
     val basePath: String?,
     val projectFilePath: String?,
     val focused: Boolean,
+    val projectInstanceId: String? = null,
 )
 
 data class InspectionRouteIdentity(

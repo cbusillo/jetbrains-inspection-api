@@ -5,6 +5,7 @@ import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
+import com.intellij.ide.impl.OpenProjectTask
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -12,6 +13,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -37,7 +39,9 @@ import java.awt.Component
 import java.awt.Container
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -113,6 +117,16 @@ internal data class InspectionRunState(
     val runId: Long,
     val triggerTimeMs: Long,
     val inProgress: Boolean,
+)
+
+internal data class InspectionProjectLease(
+    val closeToken: String,
+    val leaseId: String?,
+    val projectKey: String,
+    val projectInstanceId: String,
+    val basePath: String?,
+    val sessionId: String,
+    val claimedAtMs: Long,
 )
 
 internal fun parseGitStatusPorcelainZ(output: String): Pair<Set<String>, Set<String>> {
@@ -500,6 +514,19 @@ class InspectionHandler : HttpRequestHandler() {
     
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
+    private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
+    private val openingProjectPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    internal var forceCloseProject: (Project) -> Boolean = { project ->
+        ProjectManagerEx.getInstanceEx().forceCloseProject(project, true)
+    }
+    internal var openProjectPath: (Path) -> Project? = { path ->
+        ProjectManagerEx.getInstanceEx().openProject(
+            path,
+            OpenProjectTask.build()
+                .withForceOpenInNewFrame(true)
+                .withProjectName(path.fileName?.toString() ?: path.toString()),
+        )
+    }
 
     private val resultsStore = InspectionResultsStore
 
@@ -537,6 +564,32 @@ class InspectionHandler : HttpRequestHandler() {
                         buildRouteResponse(parameters)
                     }
                     sendJsonResponse(context, result)
+                }
+                "/api/inspection/lifecycle/claim" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
+                        buildLifecycleClaimResponse(parameters)
+                    }
+                    sendJsonResponse(context, result)
+                }
+                "/api/inspection/lifecycle/open" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val result = openLifecycleProject(parameters)
+                    sendJsonResponse(context, formatJsonManually(result.first), result.second)
+                }
+                "/api/inspection/lifecycle/close" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val result = closeLifecycleProject(parameters)
+                    sendJsonResponse(context, formatJsonManually(result.first), result.second)
                 }
                 "/api/inspection/problems" -> {
                     responseHasSessionDrift(parameters)?.let {
@@ -726,7 +779,193 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
+    private fun buildLifecycleClaimResponse(parameters: Map<String, List<String>>): String {
+        val resolved = resolveInspectionRoute(parameters)
+            ?: return formatJsonManually(buildMissingProjectResponse(routeProjectSelector(parameters)))
+        val expectedProjectInstanceId = firstParameter(parameters, "project_instance_id")
+        val actualProjectInstanceId = resolved.projectIdentity["project_instance_id"] as? String
+            ?: projectInstanceId(resolved.project)
+        if (expectedProjectInstanceId != null && expectedProjectInstanceId != actualProjectInstanceId) {
+            throw BadRequestException(
+                "project_instance_id",
+                "Project instance changed. Resolve the route again before claiming lifecycle ownership.",
+            )
+        }
+
+        val closeToken = UUID.randomUUID().toString()
+        val lease = InspectionProjectLease(
+            closeToken = closeToken,
+            leaseId = firstParameter(parameters, "lease_id"),
+            projectKey = resolved.projectIdentity["project_key"] as? String ?: projectKey(resolved.project),
+            projectInstanceId = actualProjectInstanceId,
+            basePath = resolved.projectIdentity["base_path"] as? String,
+            sessionId = InspectionIdeSession.sessionId,
+            claimedAtMs = System.currentTimeMillis(),
+        )
+        leasesByProjectInstance[actualProjectInstanceId] = lease
+
+        return formatJsonManually(
+            mapOf(
+                "status" to "claimed",
+                "close_token" to closeToken,
+                "lease_id" to lease.leaseId,
+                "project_instance_id" to actualProjectInstanceId,
+                "project_key" to lease.projectKey,
+                "session_id" to InspectionIdeSession.sessionId,
+                "route" to routeMetadata(resolved),
+                "claimed_at_ms" to lease.claimedAtMs,
+            ).filterValues { value -> value != null }
+        )
+    }
+
+    private fun openLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {
+        val rawPath = firstParameter(parameters, "worktree_path")
+            ?: firstParameter(parameters, "project_path")
+            ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' is required.")
+        val normalizedPath = normalizeFileSystemPath(rawPath)
+            ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' must be a valid local path.")
+        val path = Paths.get(normalizedPath)
+        findOpenProjectByPath(path.toString())?.let { project ->
+            return mapOf(
+                "status" to "already_open",
+                "opened" to false,
+                "session_id" to InspectionIdeSession.sessionId,
+                "route" to routeMetadata(ResolvedInspectionRoute(project, safeInspectionIdentity(), openProjectIdentity(project))),
+            ) to HttpResponseStatus.OK
+        }
+        if (!Files.isDirectory(path)) {
+            throw BadRequestException("worktree_path", "Parameter 'worktree_path' must point to an existing directory.")
+        }
+        if (!openingProjectPaths.add(normalizedPath)) {
+            return mapOf(
+                "status" to "opening",
+                "opened" to false,
+                "opening_scheduled" to false,
+                "reason" to "already_opening",
+                "worktree_path" to path.toString(),
+                "session_id" to InspectionIdeSession.sessionId,
+            ) to HttpResponseStatus.OK
+        }
+
+        val scheduled = runCatching {
+            ApplicationManager.getApplication().invokeLater {
+                try {
+                    openProjectPath(path)
+                } finally {
+                    openingProjectPaths.remove(normalizedPath)
+                }
+            }
+        }.isSuccess
+        if (!scheduled) {
+            openingProjectPaths.remove(normalizedPath)
+            return mapOf(
+                "status" to "failed",
+                "opened" to false,
+                "reason" to "open_schedule_failed",
+                "message" to "JetBrains IDE declined or failed to schedule opening the requested project path.",
+                "worktree_path" to path.toString(),
+                "session_id" to InspectionIdeSession.sessionId,
+            ) to HttpResponseStatus.CONFLICT
+        }
+
+        return mapOf(
+            "status" to "opening",
+            "opened" to false,
+            "opening_scheduled" to true,
+            "worktree_path" to path.toString(),
+            "session_id" to InspectionIdeSession.sessionId,
+        ) to HttpResponseStatus.OK
+    }
+
+    private fun closeLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {
+        val closeToken = firstParameter(parameters, "close_token")
+            ?: throw BadRequestException("close_token", "Parameter 'close_token' is required.")
+        val expectedProjectInstanceId = firstParameter(parameters, "project_instance_id")
+            ?: throw BadRequestException("project_instance_id", "Parameter 'project_instance_id' is required.")
+        val lease = leasesByProjectInstance[expectedProjectInstanceId]
+            ?: return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
+        if (lease.closeToken != closeToken) {
+            return lifecycleCloseSkipped("token_mismatch", "Close token did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
+        }
+        if (lease.sessionId != InspectionIdeSession.sessionId) {
+            leasesByProjectInstance.remove(expectedProjectInstanceId)
+            return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
+        }
+
+        val project = findOpenProjectByInstanceId(expectedProjectInstanceId)
+            ?: run {
+                leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
+                return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
+            }
+        if (projectKey(project) != lease.projectKey) {
+            leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
+            return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
+        }
+
+        val closed = runCatching {
+            val application = ApplicationManager.getApplication()
+            if (application.isDispatchThread) {
+                forceCloseProject(project)
+            } else {
+                val closeResult = AtomicReference<Boolean>()
+                application.invokeAndWait {
+                    closeResult.set(forceCloseProject(project))
+                }
+                closeResult.get() == true
+            }
+        }.getOrDefault(false)
+
+        if (!closed) {
+            return lifecycleCloseSkipped("close_failed", "JetBrains IDE declined or failed to close the claimed project.", HttpResponseStatus.CONFLICT)
+        }
+        leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
+        return mapOf(
+            "status" to "closed",
+            "project_instance_id" to expectedProjectInstanceId,
+            "project_key" to lease.projectKey,
+            "lease_id" to lease.leaseId,
+            "session_id" to InspectionIdeSession.sessionId,
+            "closed_at_ms" to System.currentTimeMillis(),
+        ).filterValues { value -> value != null } to HttpResponseStatus.OK
+    }
+
+    private fun lifecycleCloseSkipped(
+        reason: String,
+        message: String,
+        status: HttpResponseStatus = HttpResponseStatus.OK,
+    ): Pair<Map<String, Any?>, HttpResponseStatus> {
+        return mapOf(
+            "status" to "skipped",
+            "cleanup_skipped" to true,
+            "reason" to reason,
+            "message" to message,
+            "session_id" to InspectionIdeSession.sessionId,
+        ) to status
+    }
+
+    private fun findOpenProjectByInstanceId(projectInstanceId: String): Project? {
+        return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
+            ProjectManager.getInstance().openProjects.firstOrNull { project ->
+                isUsableProject(project) && projectInstanceId(project) == projectInstanceId
+            }
+        }
+    }
+
+    private fun findOpenProjectByPath(path: String): Project? {
+        val normalized = normalizeFileSystemPath(path) ?: return null
+        return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
+            ProjectManager.getInstance().openProjects.firstOrNull { project ->
+                isUsableProject(project) &&
+                    (normalizeFileSystemPath(project.basePath) == normalized ||
+                        normalizeFileSystemPath(project.projectFilePath) == normalized ||
+                        projectKey(project) == "path:$normalized" ||
+                        projectKey(project) == "file:$normalized")
+            }
+        }
+    }
+
     private fun resolveInspectionRoute(parameters: Map<String, List<String>>): ResolvedInspectionRoute? {
+        val expectedProjectInstanceId = firstParameter(parameters, "project_instance_id")?.trim()?.takeIf { it.isNotEmpty() }
         val selector = InspectionRouteSelector(
             projectKey = firstParameter(parameters, "project_key"),
             projectPath = firstParameter(parameters, "project_path"),
@@ -758,10 +997,26 @@ class InspectionHandler : HttpRequestHandler() {
                 "Multiple open projects matched this request. Retry with project_path or project_key.",
             )
         }
-        val projectKey = selected.project.projectKey ?: return null
-        val project = getCurrentProject(projectKey) ?: return null
+        val project = resolveProjectFromRouteProject(selected.project) ?: return null
         val projectIdentity = openProjectIdentity(project)
+        val actualProjectInstanceId = projectIdentity["project_instance_id"] as? String
+            ?: projectInstanceId(project)
+        if (expectedProjectInstanceId != null && expectedProjectInstanceId != actualProjectInstanceId) {
+            throw BadRequestException(
+                "project_instance_id",
+                "Requested project instance does not match the resolved route. Resolve the route again before continuing.",
+            )
+        }
         return ResolvedInspectionRoute(project, identity, projectIdentity, selected.score)
+    }
+
+    private fun resolveProjectFromRouteProject(routeProject: InspectionRouteProject): Project? {
+        routeProject.projectInstanceId?.let { selectedInstanceId ->
+            ProjectManager.getInstance().openProjects.firstOrNull { project ->
+                isUsableProject(project) && projectInstanceId(project) == selectedInstanceId
+            }?.let { return it }
+        }
+        return routeProject.projectKey?.let(::getCurrentProject)
     }
 
     private fun routePathMatchScore(project: InspectionRouteProject, selectorPath: String?): Int? {
@@ -802,6 +1057,7 @@ class InspectionHandler : HttpRequestHandler() {
             "started_at_ms" to resolved.identity["started_at_ms"],
             "heartbeat_ms" to resolved.identity["heartbeat_ms"],
             "project_key" to resolved.projectIdentity["project_key"],
+            "project_instance_id" to resolved.projectIdentity["project_instance_id"],
             "project_name" to resolved.projectIdentity["name"],
             "base_path" to resolved.projectIdentity["base_path"],
             "project_file_path" to resolved.projectIdentity["project_file_path"],
@@ -869,6 +1125,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ?: openProjectIdentities()).map { identity ->
                 InspectionRouteProject(
                     projectKey = identity["project_key"] as? String,
+                    projectInstanceId = identity["project_instance_id"] as? String,
                     name = identity["name"] as? String,
                     basePath = identity["base_path"] as? String,
                     projectFilePath = identity["project_file_path"] as? String,
@@ -2179,7 +2436,6 @@ class InspectionHandler : HttpRequestHandler() {
                                 "last_extraction_cycle_succeeded" to lastExtractionCycleSucceeded,
                                 "last_tool_extraction_succeeded" to lastToolExtractionSucceeded,
                                 "scoped_context_results_empty" to scopedContextResults.isEmpty(),
-                                "best_results_empty" to bestResults.isEmpty(),
                                 "readable_empty_inspection_view_stable_for_ms" to readableStableForMs,
                                 "last_view_observation" to mapOf(
                                     "is_updating" to lastObservation?.isUpdating,
@@ -2750,6 +3006,11 @@ class InspectionHandler : HttpRequestHandler() {
         val projectManager = ProjectManager.getInstance()
         val openProjects = projectManager.openProjects
         val trimmed = projectName.trim()
+        if (trimmed.contains(':') && !looksLikePath(trimmed)) {
+            openProjects.firstOrNull { project ->
+                isUsableProject(project) && projectInstanceId(project) == trimmed
+            }?.let { return it }
+        }
         val pathHint = normalizeProjectPath(trimmed)
 
         val matches = openProjects.filter { project ->
@@ -2849,7 +3110,7 @@ class InspectionHandler : HttpRequestHandler() {
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
     ): String? {
-        for (parameterName in listOf("project_key", "project_path", "worktree_path", "cwd", "project")) {
+        for (parameterName in listOf("project_instance_id", "project_key", "project_path", "worktree_path", "cwd", "project")) {
             val parameterValues = urlDecoder.parameters()[parameterName]
             if (parameterValues != null) {
                 val firstNonBlankValue = parameterValues.firstOrNull { value -> value.trim().isNotEmpty() }
@@ -2870,7 +3131,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val nameAndValue = segment.split('=', limit = 2)
             val decodedName = QueryStringDecoder.decodeComponent(nameAndValue[0])
-            if (decodedName !in setOf("project", "project_key", "project_path", "worktree_path", "cwd")) {
+            if (decodedName !in setOf("project", "project_instance_id", "project_key", "project_path", "worktree_path", "cwd")) {
                 continue
             }
             val encodedValue = nameAndValue.getOrElse(1) { "" }

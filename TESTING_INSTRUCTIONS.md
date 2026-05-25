@@ -49,9 +49,33 @@ Expected behavior:
   for a fresh trigger instead of silently using stale state.
 - Duplicate project names produce an ambiguity response with paths/project keys.
 
+## Helper lifecycle smoke
+
+Use this when validating worktree closeout behavior from the external helper.
+
+1. Pick a repo worktree that is not currently open in the target IDE.
+2. Run `jb-inspect.py closeout --repo <worktree> --scope changed_files`.
+3. Confirm the helper reports an exact route with `opened_by_helper=true` and a
+   cleanup status of `closed` after inspection.
+4. Confirm no Trust Project, Safe Mode, or Open Project mode prompt appears; the
+   external helper should seed JetBrains Trusted Locations and project-opening
+   policy before lifecycle auto-open.
+5. If the helper times out waiting for auto-open, treat it as a blocker. Inspect
+   the helper diagnostics for unsupported IDE config layout, settings sync
+   overwriting the config, or a missing inspection plugin.
+6. If debugging a product-specific failure, call `/api/inspection/lifecycle/open`
+   directly and confirm the endpoint returns `status=opening` quickly; the
+   helper polling loop must then prove the project appears in `/list`.
+7. Open the same worktree manually in the IDE and rerun closeout.
+8. Confirm cleanup reports `not_needed` and the manually opened project remains
+   open.
+9. For linked worktrees, confirm the route `base_path` exactly equals the linked
+   worktree, not the main checkout.
+
 ## Fast-path scopes (manual)
 
 Changed files only (fast inner loop):
+
 ```bash
 IDE_PORT=63341
 curl "http://localhost:$IDE_PORT/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=25"
@@ -59,6 +83,7 @@ curl "http://localhost:$IDE_PORT/api/inspection/status"
 ```
 
 Explicit files list:
+
 ```bash
 IDE_PORT=63341
 curl "http://localhost:$IDE_PORT/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
@@ -66,6 +91,7 @@ curl "http://localhost:$IDE_PORT/api/inspection/status"
 ```
 
 Light inspection profile:
+
 ```bash
 IDE_PORT=63341
 curl "http://localhost:$IDE_PORT/api/inspection/trigger?profile=LLM%20Fast%20Checks"
