@@ -74,6 +74,46 @@ class InspectionRoutingTest {
     }
 
     @Test
+    fun worktreePathMatchesProjectFileRootWhenBasePathIsMissing() {
+        val project = project(
+            projectKey = "file:/tmp/worktree/.idea/modules.xml",
+            name = "repo",
+            basePath = null,
+            projectFilePath = "/tmp/worktree/.idea/modules.xml",
+        )
+        val identity = identity(project)
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree"),
+            defaultCwd = null,
+        )
+
+        assertEquals("file:/tmp/worktree/.idea/modules.xml", candidates.first().project.projectKey)
+        assertEquals(950, candidates.first().score)
+    }
+
+    @Test
+    fun nestedPathMatchesProjectFileRootWhenBasePathIsMissing() {
+        val project = project(
+            projectKey = "file:/tmp/worktree/.idea/misc.xml",
+            name = "repo",
+            basePath = null,
+            projectFilePath = "/tmp/worktree/.idea/misc.xml",
+        )
+        val identity = identity(project)
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree/src/main"),
+            defaultCwd = null,
+        )
+
+        assertEquals("file:/tmp/worktree/.idea/misc.xml", candidates.first().project.projectKey)
+        assertEquals(930, candidates.first().score)
+    }
+
+    @Test
     fun duplicateProjectNamesRemainAmbiguous() {
         val first = identity(project("path:/tmp/one", "shared", "/tmp/one"))
         val second = identity(project("path:/tmp/two", "shared", "/tmp/two"))
@@ -119,7 +159,7 @@ class InspectionRoutingTest {
     private fun project(
         projectKey: String,
         name: String,
-        basePath: String,
+        basePath: String?,
         projectFilePath: String? = null,
         focused: Boolean = false,
     ): InspectionRouteProject {

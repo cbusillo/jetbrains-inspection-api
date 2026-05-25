@@ -1295,6 +1295,22 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route endpoint exposes effective base path from project file when base path is missing`() {
+        val tempDir = Files.createTempDirectory("inspection-route-file-root")
+        every { mockProject.basePath } returns null
+        every { mockProject.projectFilePath } returns tempDir.resolve(".idea/modules.xml").toString()
+
+        val response = processGetRequest(
+            "/api/inspection/route?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"base_path\": \"$tempDir\""))
+        assertTrue(body.contains("\"project_file_path\": \"${tempDir.resolve(".idea/modules.xml")}\""))
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()

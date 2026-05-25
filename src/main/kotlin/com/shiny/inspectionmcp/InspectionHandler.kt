@@ -29,6 +29,7 @@ import com.shiny.inspectionmcp.core.InspectionRouteProject
 import com.shiny.inspectionmcp.core.InspectionRouteSelector
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
 import com.shiny.inspectionmcp.core.paginateProblems
+import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
 import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
@@ -969,18 +970,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun projectRootFromProjectFilePath(projectFilePath: String?): String? {
-        val normalizedProjectFilePath = normalizeFileSystemPath(projectFilePath) ?: return null
-        val path = runCatching { Paths.get(normalizedProjectFilePath) }.getOrNull() ?: return null
-        return when {
-            path.fileName?.toString() == "misc.xml" && path.parent?.fileName?.toString() == ".idea" ->
-                path.parent?.parent?.toString()
-            path.fileName?.toString()?.endsWith(".ipr") == true ->
-                path.parent?.toString()
-            else -> null
-        }
-    }
-
     private fun resolveInspectionRoute(parameters: Map<String, List<String>>): ResolvedInspectionRoute? {
         val expectedProjectInstanceId = firstParameter(parameters, "project_instance_id")?.trim()?.takeIf { it.isNotEmpty() }
         val selector = InspectionRouteSelector(
@@ -1076,12 +1065,17 @@ class InspectionHandler : HttpRequestHandler() {
             "project_key" to resolved.projectIdentity["project_key"],
             "project_instance_id" to resolved.projectIdentity["project_instance_id"],
             "project_name" to resolved.projectIdentity["name"],
-            "base_path" to resolved.projectIdentity["base_path"],
+            "base_path" to routeBasePath(resolved.projectIdentity),
             "project_file_path" to resolved.projectIdentity["project_file_path"],
             "focused" to resolved.projectIdentity["focused"],
             "ide" to ideRouteMetadata(resolved.identity),
             "score" to resolved.score,
         )
+    }
+
+    private fun routeBasePath(projectIdentity: Map<String, Any?>): String? {
+        return (projectIdentity["base_path"] as? String)
+            ?: projectRootFromProjectFilePath(projectIdentity["project_file_path"] as? String)
     }
 
     private fun ideRouteMetadata(identity: Map<String, Any?>): Map<String, Any?> {
