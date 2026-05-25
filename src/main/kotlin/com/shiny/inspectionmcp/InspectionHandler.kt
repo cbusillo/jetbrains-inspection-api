@@ -513,6 +513,13 @@ class InspectionHandler : HttpRequestHandler() {
         val projectIdentity: Map<String, Any?>,
         val score: Int? = null,
     )
+
+    private data class LifecycleOpenTarget(
+        val path: Path,
+        val openPath: Path,
+        val projectRoot: Path,
+        val key: String,
+    )
     
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
@@ -828,23 +835,24 @@ class InspectionHandler : HttpRequestHandler() {
             ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' must be a valid local path.")
         val path = Paths.get(normalizedPath)
         findOpenProjectForLifecycleOpen(path.toString())?.let { project ->
-            return mapOf(
-                "status" to "already_open",
-                "opened" to false,
-                "session_id" to InspectionIdeSession.sessionId,
-                "route" to routeMetadata(ResolvedInspectionRoute(project, safeInspectionIdentity(), openProjectIdentity(project))),
-            ) to HttpResponseStatus.OK
+            return lifecycleOpenAlreadyOpen(project)
         }
-        if (!Files.isDirectory(path)) {
-            throw BadRequestException("worktree_path", "Parameter 'worktree_path' must point to an existing directory.")
+        val target = resolveLifecycleOpenTarget(path)
+        if (target.projectRoot != target.path) {
+            findOpenProjectForLifecycleOpen(target.projectRoot.toString())?.let { project ->
+                return lifecycleOpenAlreadyOpen(project)
+            }
         }
-        if (!openingProjectPaths.add(normalizedPath)) {
+        findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
+            return lifecycleOpenAlreadyOpen(project)
+        }
+        if (!openingProjectPaths.add(target.key)) {
             return mapOf(
                 "status" to "opening",
                 "opened" to false,
                 "opening_scheduled" to false,
                 "reason" to "already_opening",
-                "worktree_path" to path.toString(),
+                "worktree_path" to target.path.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
             ) to HttpResponseStatus.OK
         }
@@ -852,20 +860,20 @@ class InspectionHandler : HttpRequestHandler() {
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
                 try {
-                    openProjectPath(path)
+                    openProjectPath(target.openPath)
                 } finally {
-                    openingProjectPaths.remove(normalizedPath)
+                    openingProjectPaths.remove(target.key)
                 }
             }
         }.isSuccess
         if (!scheduled) {
-            openingProjectPaths.remove(normalizedPath)
+            openingProjectPaths.remove(target.key)
             return mapOf(
                 "status" to "failed",
                 "opened" to false,
                 "reason" to "open_schedule_failed",
                 "message" to "JetBrains IDE declined or failed to schedule opening the requested project path.",
-                "worktree_path" to path.toString(),
+                "worktree_path" to target.path.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
             ) to HttpResponseStatus.CONFLICT
         }
@@ -874,13 +882,65 @@ class InspectionHandler : HttpRequestHandler() {
             "status" to "opening",
             "opened" to false,
             "opening_scheduled" to true,
-            "worktree_path" to path.toString(),
+            "worktree_path" to target.path.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
     }
 
+    private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
+        return mapOf(
+            "status" to "already_open",
+            "opened" to false,
+            "session_id" to InspectionIdeSession.sessionId,
+            "route" to routeMetadata(ResolvedInspectionRoute(project, safeInspectionIdentity(), openProjectIdentity(project))),
+        ) to HttpResponseStatus.OK
+    }
+
+    private fun resolveLifecycleOpenTarget(path: Path): LifecycleOpenTarget {
+        val projectRoot = lifecycleOpenProjectRoot(path)
+            ?: throw BadRequestException(
+                "worktree_path",
+                "Parameter 'worktree_path' must point to an existing directory, .ipr project file, or file inside .idea.",
+            )
+        return LifecycleOpenTarget(
+            path = path,
+            openPath = projectRoot,
+            projectRoot = projectRoot,
+            key = canonicalLifecycleOpenKey(projectRoot),
+        )
+    }
+
+    private fun lifecycleOpenProjectRoot(path: Path): Path? {
+        if (Files.isDirectory(path)) return path
+        if (!Files.isRegularFile(path)) return null
+        val fileName = path.fileName?.toString() ?: return null
+        if (fileName.endsWith(".ipr")) return path.parent
+        return path.parent
+            ?.takeIf { it.fileName?.toString() == ".idea" }
+            ?.parent
+    }
+
+    private fun canonicalLifecycleOpenKey(path: Path): String {
+        return runCatching { path.toRealPath().toString() }
+            .getOrElse { path.normalize().toAbsolutePath().toString() }
+    }
+
     private fun findOpenProjectForLifecycleOpen(path: String): Project? {
         return findOpenProjectByPath(path)
+    }
+
+    private fun findOpenProjectForLifecycleOpenKey(key: String): Project? {
+        return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
+            ProjectManager.getInstance().openProjects.firstOrNull { project ->
+                isUsableProject(project) && lifecycleOpenKeys(project).contains(key)
+            }
+        }
+    }
+
+    private fun lifecycleOpenKeys(project: Project): Set<String> {
+        return projectCandidatePaths(project)
+            .mapNotNull { path -> runCatching { canonicalLifecycleOpenKey(Paths.get(path)) }.getOrNull() }
+            .toSet()
     }
 
     private fun closeLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {

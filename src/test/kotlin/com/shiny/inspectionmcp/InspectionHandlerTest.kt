@@ -840,6 +840,69 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open opens ipr project file path in running IDE`() {
+        val tempDir = Files.createTempDirectory("inspection-open-ipr-file")
+        val projectFilePath = tempDir.resolve("project.ipr")
+        Files.writeString(projectFilePath, "<project />")
+        val openedProject = mockProject(
+            name = "OpenedIpr",
+            basePath = null,
+            projectFilePath = projectFilePath.toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(projectFilePath.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open opens idea project file path in running IDE`() {
+        val tempDir = Files.createTempDirectory("inspection-open-idea-file")
+        val projectFilePath = tempDir.resolve(".idea/misc.xml")
+        Files.createDirectories(projectFilePath.parent)
+        Files.writeString(projectFilePath, "<project />")
+        val openedProject = mockProject(
+            name = "OpenedIdeaFile",
+            basePath = tempDir.toString(),
+            projectFilePath = projectFilePath.toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(projectFilePath.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
     fun `test lifecycle open reports already open exact project`() {
         val tempDir = Files.createTempDirectory("inspection-open-existing")
         every { mockProject.basePath } returns tempDir.toString()
@@ -968,6 +1031,67 @@ class InspectionHandlerTest {
         val third = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
         assertEquals(2, scheduled.size)
         assertEquals(HttpResponseStatus.OK, third.status())
+    }
+
+    @Test
+    fun `test lifecycle open coalesces symlink aliases`() {
+        val tempDir = Files.createTempDirectory("inspection-open-real")
+        val symlink = tempDir.parent.resolve("inspection-open-link-${System.nanoTime()}")
+        try {
+            Files.createSymbolicLink(symlink, tempDir)
+        } catch (_: UnsupportedOperationException) {
+            return
+        }
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.openProjectPath = { mockProject }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(symlink.toString(), "UTF-8") }"
+        )
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+
+        Files.deleteIfExists(symlink)
+    }
+
+    @Test
+    fun `test lifecycle open detects already open symlink alias`() {
+        val realPath = Files.createTempDirectory("inspection-open-real-existing")
+        val symlink = realPath.parent.resolve("inspection-open-existing-link-${System.nanoTime()}")
+        try {
+            Files.createSymbolicLink(symlink, realPath)
+        } catch (_: UnsupportedOperationException) {
+            return
+        }
+        every { mockProject.basePath } returns realPath.toString()
+        every { mockProject.projectFilePath } returns realPath.resolve(".idea/misc.xml").toString()
+        var scheduled = false
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled = true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(symlink.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+        assertFalse(scheduled)
+
+        Files.deleteIfExists(symlink)
     }
 
     @Test
