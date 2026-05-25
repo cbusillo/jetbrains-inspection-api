@@ -961,10 +961,23 @@ class InspectionHandler : HttpRequestHandler() {
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 isUsableProject(project) &&
                     (normalizeFileSystemPath(project.basePath) == normalized ||
+                        projectRootFromProjectFilePath(project.projectFilePath) == normalized ||
                         normalizeFileSystemPath(project.projectFilePath) == normalized ||
                         projectKey(project) == "path:$normalized" ||
                         projectKey(project) == "file:$normalized")
             }
+        }
+    }
+
+    private fun projectRootFromProjectFilePath(projectFilePath: String?): String? {
+        val normalizedProjectFilePath = normalizeFileSystemPath(projectFilePath) ?: return null
+        val path = runCatching { Paths.get(normalizedProjectFilePath) }.getOrNull() ?: return null
+        return when {
+            path.fileName?.toString() == "misc.xml" && path.parent?.fileName?.toString() == ".idea" ->
+                path.parent?.parent?.toString()
+            path.fileName?.toString()?.endsWith(".ipr") == true ->
+                path.parent?.toString()
+            else -> null
         }
     }
 

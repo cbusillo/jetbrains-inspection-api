@@ -901,6 +901,50 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open detects already open project root from project file path`() {
+        val tempDir = Files.createTempDirectory("inspection-open-file-root-existing")
+        val projectFilePath = tempDir.resolve(".idea/misc.xml").toString()
+        every { mockProject.basePath } returns null
+        every { mockProject.projectFilePath } returns projectFilePath
+        var scheduled = false
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled = true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+        assertFalse(scheduled)
+    }
+
+    @Test
+    fun `test lifecycle open detects already open ipr project root`() {
+        val tempDir = Files.createTempDirectory("inspection-open-ipr-root-existing")
+        val projectFilePath = tempDir.resolve("project.ipr").toString()
+        every { mockProject.basePath } returns null
+        every { mockProject.projectFilePath } returns projectFilePath
+        var scheduled = false
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled = true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"opened\": false"))
+        assertFalse(scheduled)
+    }
+
+    @Test
     fun `test lifecycle open coalesces duplicate concurrent opens`() {
         val tempDir = Files.createTempDirectory("inspection-open-duplicate")
         every { mockProjectManager.openProjects } returns emptyArray()
