@@ -825,7 +825,7 @@ class InspectionHandler : HttpRequestHandler() {
         val normalizedPath = normalizeFileSystemPath(rawPath)
             ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' must be a valid local path.")
         val path = Paths.get(normalizedPath)
-        findOpenProjectByPath(path.toString())?.let { project ->
+        findOpenProjectForLifecycleOpen(path.toString())?.let { project ->
             return mapOf(
                 "status" to "already_open",
                 "opened" to false,
@@ -875,6 +875,11 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to path.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
+    }
+
+    private fun findOpenProjectForLifecycleOpen(path: String): Project? {
+        return findOpenProjectByPath(path)
+            ?: resolveInspectionRoute(mapOf("worktree_path" to listOf(path)))?.project
     }
 
     private fun closeLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {
