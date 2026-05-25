@@ -59,11 +59,39 @@ uv run "$HELPER" run \
   --scope changed_files
 ```
 
+For agent closeout/readiness, prefer `closeout` instead of plain `run`:
+
+```bash
+uv run "$HELPER" closeout \
+  --repo "$PWD" \
+  --scope changed_files
+```
+
+`closeout` serializes helper-owned IDE opens, requires an exact current-worktree
+route, runs inspection, and calls the plugin lifecycle close endpoint only for
+projects opened by the helper. Projects that were open before the helper started
+are left open. On macOS, lifecycle opens use `open -g` by default so the IDE should
+not take focus while a closeout is preparing a worktree. Auto-open requires a
+global trusted-root policy in
+`${CODEX_HOME:-$HOME/.code}/jetbrains-inspection.json`; test worktrees should be
+created under those roots, not random temp directories.
+
+Before it starts lifecycle auto-open, the helper adds the matching trusted root
+to the selected JetBrains product's Trusted Locations and sets project opening
+to the separate-window mode. If auto-open stalls, treat it as a blocker: check
+for an unsupported IDE config layout, settings sync overwriting the config, or a
+missing inspection plugin. The
+plugin-side lifecycle open endpoint schedules project opening asynchronously and
+uses the worktree directory name as the frame project name so cloned worktrees
+with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
+PyCharm, and WebStorm.
+
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
-session drift, and route ambiguity as non-clean outcomes. Cached stale findings
-are returned only when the helper is run with `--include-stale` for explicit
-diagnostics. When this repo changes inspection status semantics, route metadata,
-clean/capture classification, or MCP tool response contracts, update the skill
+session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
+non-clean outcomes. Cached stale findings are returned only when the helper is
+run with `--include-stale` for explicit diagnostics. When this repo changes
+inspection status semantics, route metadata, clean/capture classification,
+lifecycle cleanup contracts, or MCP tool response contracts, update the skill
 docs/tests/scripts in the `jetbrains-inspection` skill as part of the same
 workstream.
 
@@ -72,8 +100,8 @@ Before shipping changes to clean/capture classification, run the focused
 `./gradlew buildPlugin`. Smoke the installed plugin from the agent helper in the
 JetBrains IDEs that matter for the change, such as PyCharm, WebStorm, and
 IntelliJ IDEA. If plugin installation prompts about replacing an existing jar,
-handle that explicitly and rerun the smoke instead of treating the prompt as a
-validated install.
+handle that explicitly and rerun the smoke; the prompt alone is not install
+validation.
 
 ## Local cleanup
 

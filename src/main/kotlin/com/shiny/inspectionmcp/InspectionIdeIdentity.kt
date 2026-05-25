@@ -155,11 +155,16 @@ internal fun openProjectIdentities(): List<Map<String, Any?>> {
 internal fun openProjectIdentity(project: Project): Map<String, Any?> {
     return mapOf(
         "project_key" to projectKey(project),
+        "project_instance_id" to projectInstanceId(project),
         "name" to runCatching { project.name }.getOrDefault(""),
         "base_path" to runCatching { project.basePath }.getOrNull(),
         "project_file_path" to runCatching { project.projectFilePath }.getOrNull(),
         "focused" to isFocusedProject(project),
     )
+}
+
+internal fun projectInstanceId(project: Project): String {
+    return "${InspectionIdeSession.sessionId}:${System.identityHashCode(project)}"
 }
 
 private fun isFocusedProject(project: Project): Boolean {

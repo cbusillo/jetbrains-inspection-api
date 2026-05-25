@@ -129,6 +129,7 @@ class InspectionRoutingTest {
             basePath = basePath,
             projectFilePath = projectFilePath,
             focused = focused,
+            projectInstanceId = "instance:$projectKey",
         )
     }
 }

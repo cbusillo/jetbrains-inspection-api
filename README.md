@@ -243,6 +243,7 @@ routing state.
     "base_url": "http://localhost:63340/api/inspection",
     "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
     "project_key": "path:/Users/me/Developer/MyProject",
+    "project_instance_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8:123456789",
     "project_name": "MyProject",
     "base_path": "/Users/me/Developer/MyProject",
     "focused": true,
@@ -271,7 +272,9 @@ Identity responses and registry instance files share the same schema:
 `session_id`, `started_at_ms`, `heartbeat_ms`, `pid`, `port`, `ide_name`,
 `ide_version`, `ide_product_code`, `plugin_version`, and `open_projects`.
 Each project includes `project_key`, `name`, `base_path`, `project_file_path`,
-and `focused` as a JSON boolean.
+`project_instance_id`, and `focused` as a JSON boolean. `project_instance_id` is
+opaque and only stable for the lifetime of that IDE process; clients should use
+it only to guard route/session ownership.
 
 Registry files live under the OS cache directory by default:
 `jetbrains-inspection-api/instances/<session_id>.json`. Override the directory
@@ -279,6 +282,31 @@ with `JETBRAINS_INSPECTION_REGISTRY_DIR`. Clients that cannot reach a known IDE
 port can read fresh registry files, verify `heartbeat_ms` is within about 60
 seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
 `63340-63350` as a fallback.
+
+### Helper Lifecycle Endpoints
+
+The helper lifecycle endpoints are for automation that needs to open an exact
+worktree, run inspection, and clean up only the IDE project it opened. Ordinary
+clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
+`/problems`; those endpoints never open projects by themselves.
+
+- `GET /api/inspection/lifecycle/open`: accepts `project_path` or
+  `worktree_path`, returns immediately after scheduling an IDE open when the
+  exact path is not already open, and uses the worktree directory name as the
+  project frame name. Helpers must poll `/route` or `/list` until the exact
+  path appears before inspecting.
+- `GET /api/inspection/lifecycle/claim`: resolves the same selectors as
+  `/route`, verifies optional `project_instance_id`, and returns a one-use
+  `close_token` tied to the current `session_id` and project instance.
+- `GET /api/inspection/lifecycle/close`: requires `project_key`,
+  `project_instance_id`, `session_id`, and `close_token`. It closes the project
+  only when all values still match the plugin-side claim. Token mismatch,
+  session drift, or route ambiguity returns a skipped/error response and leaves
+  the project open.
+
+This contract lets script helpers preserve projects that were already open
+before automation started while cleaning up helper-opened worktrees after
+closeout.
 
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`
