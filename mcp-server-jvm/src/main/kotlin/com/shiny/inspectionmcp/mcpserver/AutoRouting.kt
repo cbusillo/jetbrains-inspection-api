@@ -13,6 +13,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import com.shiny.inspectionmcp.core.InspectionRouteIdentity
 import com.shiny.inspectionmcp.core.InspectionRouteProject
 import com.shiny.inspectionmcp.core.InspectionRouteSelector
+import com.shiny.inspectionmcp.core.effectiveProjectRoot
+import com.shiny.inspectionmcp.core.normalizeRoutePath
 import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
 import java.net.HttpURLConnection
 import java.net.URI
@@ -99,7 +101,8 @@ internal class AutoTargetResolver(
         }
 
         val bestScore = candidates.first().score
-        val best = candidates.filter { it.score == bestScore }
+        val sameScore = candidates.filter { candidate -> candidate.score == bestScore }
+        val best = if (hasPathSelector(args)) deepestUniqueCandidates(sameScore) else sameScore
         if (best.size > 1) {
             throw RuntimeException(
                 "Multiple JetBrains projects matched this request. Retry with project_path or project_key.\n\n${formatCandidateProjects(best)}"
@@ -107,6 +110,17 @@ internal class AutoTargetResolver(
         }
 
         return best.first().target
+    }
+
+    private fun deepestUniqueCandidates(candidates: List<RouteCandidate>): List<RouteCandidate> {
+        val deepest = candidates.maxOfOrNull { candidate -> candidate.rootDepth } ?: return candidates
+        return candidates.filter { candidate -> candidate.rootDepth == deepest }
+    }
+
+    private fun hasPathSelector(args: JsonObject): Boolean {
+        return listOf("project_path", "worktree_path", "cwd", "project").any { key ->
+            normalizeRoutePath(args.string(key)) != null
+        }
     }
 
     override fun listProjects(): JsonElement {
@@ -240,6 +254,7 @@ internal class AutoTargetResolver(
                     project = project,
                 ),
                 candidate.score,
+                routeRootDepth(candidate.project),
             )
         }
     }
@@ -296,9 +311,15 @@ private fun routeProjectKey(projectKey: String?, name: String?, basePath: String
     return projectKey ?: "name:$name:base:$basePath"
 }
 
+private fun routeRootDepth(project: InspectionRouteProject): Int {
+    val root = effectiveProjectRoot(project) ?: return 0
+    return runCatching { Paths.get(root).normalize().toAbsolutePath().nameCount }.getOrDefault(0)
+}
+
 private data class RouteCandidate(
     val target: InspectionTarget,
     val score: Int,
+    val rootDepth: Int,
 )
 
 internal fun defaultRegistryDir(): Path {

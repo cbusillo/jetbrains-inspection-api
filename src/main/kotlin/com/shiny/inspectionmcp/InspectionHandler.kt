@@ -3061,17 +3061,23 @@ class InspectionHandler : HttpRequestHandler() {
         if (projectKey(project) == projectName) return true
         if (pathHint == null) return false
 
-        val basePath = normalizeProjectPath(project.basePath)
-        if (basePath != null && pathMatchesProject(pathHint, basePath)) return true
-
-        val projectFilePath = normalizeProjectPath(project.projectFilePath)
-        return projectFilePath != null && pathMatchesProject(pathHint, projectFilePath)
+        return projectCandidatePaths(project).any { candidatePath ->
+            pathMatchesProject(pathHint, candidatePath)
+        }
     }
 
     private fun projectPathMatchScore(project: Project, selectorPath: String?): Int? {
         return bestPathMatchScore(
             selectorPath,
-            listOfNotNull(project.basePath, project.projectFilePath),
+            projectCandidatePaths(project),
+        )
+    }
+
+    private fun projectCandidatePaths(project: Project): List<String> {
+        return listOfNotNull(
+            normalizeProjectPath(project.basePath)
+                ?: projectRootFromProjectFilePath(project.projectFilePath),
+            normalizeProjectPath(project.projectFilePath),
         )
     }
 

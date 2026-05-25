@@ -997,6 +997,33 @@ class McpServerTest {
     }
 
     @Test
+    fun autoRoutingPrefersNestedProjectFileRootOverContainingParent() {
+        MockIdeServer(identityProjectName = "Parent", identityBasePath = "/tmp/repo", identitySessionId = "parent").use { parent ->
+            MockIdeServer(
+                identityProjectName = "Child",
+                identityBasePath = null,
+                identityProjectFilePath = "/tmp/repo/packages/app/.idea/misc.xml",
+                identitySessionId = "child",
+            ).use { child ->
+                parent.start()
+                child.start()
+                val resolver = AutoTargetResolver(
+                    httpClientFactory = { HttpClient.newHttpClient() },
+                    registryDir = tempDir,
+                    scanPorts = listOf(parent.port, child.port),
+                )
+
+                val target = resolver.resolve(
+                    buildJsonObject { put("worktree_path", JsonPrimitive("/tmp/repo/packages/app/src/main")) },
+                )
+
+                assertEquals(child.port.toString(), target.idePort)
+                assertEquals("Child", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+            }
+        }
+    }
+
+    @Test
     fun defaultAutoRoutingSettingsUseRegistryDirAndInspectionPortRange() {
         val registryDir = defaultRegistryDir().toString()
         val ports = defaultScanPorts()
@@ -1122,7 +1149,8 @@ private data class StaticHttpResponse(
 private class MockIdeServer(
     overrides: Map<String, MockResponse> = emptyMap(),
     private val identityProjectName: String = "jetbrains-inspection-api",
-    private val identityBasePath: String = "/tmp/jetbrains-inspection-api",
+    private val identityBasePath: String? = "/tmp/jetbrains-inspection-api",
+    private val identityProjectFilePath: String? = null,
     private val identitySessionId: String = "session",
 ) : AutoCloseable {
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -1167,7 +1195,9 @@ private class MockIdeServer(
     }
 
     private fun identityBody(): String {
-        val projectKey = "path:$identityBasePath"
+        val projectKey = identityBasePath?.let { "path:$it" } ?: "file:$identityProjectFilePath"
+        val basePathJson = identityBasePath?.let { "\"$it\"" } ?: "null"
+        val projectFilePathJson = identityProjectFilePath?.let { "\"$it\"" } ?: "null"
         return """
             {
               "session_id":"$identitySessionId-${port}",
@@ -1181,8 +1211,8 @@ private class MockIdeServer(
               "open_projects":[{
                 "project_key":"$projectKey",
                 "name":"$identityProjectName",
-                "base_path":"$identityBasePath",
-                "project_file_path":null,
+                "base_path":$basePathJson,
+                "project_file_path":$projectFilePathJson,
                 "focused":true
               }]
             }

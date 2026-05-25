@@ -1338,6 +1338,40 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test trigger endpoint prefers nested project file root over containing parent`() {
+        val tempDir = Files.createTempDirectory("inspection-trigger-file-root-nested")
+        val nestedPath = tempDir.resolve("packages/app")
+        val parentProject = mockProject(
+            name = "Parent",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        val childProject = mockProject(
+            name = "Child",
+            basePath = null,
+            projectFilePath = nestedPath.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
+        every { mockApplication.executeOnPooledThread(any()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        mockInspectionPrerequisites(childProject)
+
+        val response = processTriggerRequest(
+            "/api/inspection/trigger?worktree_path=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_name\": \"Child\""))
+        assertTrue(body.contains("\"base_path\": \"$nestedPath\""))
+        assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()
