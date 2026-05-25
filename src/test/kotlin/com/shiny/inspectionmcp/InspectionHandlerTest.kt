@@ -1311,6 +1311,33 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route endpoint prefers nested project file root over containing parent`() {
+        val tempDir = Files.createTempDirectory("inspection-route-file-root-nested")
+        val nestedPath = tempDir.resolve("packages/app")
+        val parentProject = mockProject(
+            name = "Parent",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        val childProject = mockProject(
+            name = "Child",
+            basePath = null,
+            projectFilePath = nestedPath.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
+
+        val response = processGetRequest(
+            "/api/inspection/route?worktree_path=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_name\": \"Child\""))
+        assertTrue(body.contains("\"base_path\": \"$nestedPath\""))
+        assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
     fun `test clearPriorInspectionResults removes all stale inspection tabs`() {
         val toolWindowManager = mockk<ToolWindowManager>()
         val toolWindow = mockk<ToolWindow>()
@@ -1429,7 +1456,7 @@ class InspectionHandlerTest {
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
     }
 
-    private fun mockProject(name: String, basePath: String, projectFilePath: String): Project {
+    private fun mockProject(name: String, basePath: String?, projectFilePath: String): Project {
         val project = mockk<Project>()
         every { project.isDefault } returns false
         every { project.isDisposed } returns false

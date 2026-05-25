@@ -114,6 +114,32 @@ class InspectionRoutingTest {
     }
 
     @Test
+    fun nestedPathPrefersDerivedProjectFileRootOverContainingBasePath() {
+        val parent = project(
+            projectKey = "path:/tmp/repo",
+            name = "repo",
+            basePath = "/tmp/repo",
+            projectFilePath = "/tmp/repo/.idea/misc.xml",
+        )
+        val child = project(
+            projectKey = "file:/tmp/repo/packages/app/.idea/misc.xml",
+            name = "app",
+            basePath = null,
+            projectFilePath = "/tmp/repo/packages/app/.idea/misc.xml",
+        )
+        val identity = identity(parent, child)
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/repo/packages/app/src/main"),
+            defaultCwd = null,
+        )
+
+        assertEquals("file:/tmp/repo/packages/app/.idea/misc.xml", candidates.first().project.projectKey)
+        assertEquals(930, candidates.first().score)
+    }
+
+    @Test
     fun duplicateProjectNamesRemainAmbiguous() {
         val first = identity(project("path:/tmp/one", "shared", "/tmp/one"))
         val second = identity(project("path:/tmp/two", "shared", "/tmp/two"))

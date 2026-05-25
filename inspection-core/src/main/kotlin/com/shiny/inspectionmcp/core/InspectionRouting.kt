@@ -75,7 +75,7 @@ fun scoreInspectionRouteCandidates(
 
     return candidates.sortedWith(
         compareByDescending<InspectionRouteCandidate> { it.score }
-            .thenByDescending { normalizedRoutePathLength(it.project.basePath) }
+            .thenByDescending { normalizedRoutePathLength(effectiveProjectRoot(it.project)) }
             .thenBy { it.project.name ?: "" }
     )
 }
@@ -111,8 +111,7 @@ private fun scoreProject(
 ): Int {
     val projectKey = project.projectKey
     val projectName = project.name
-    val basePath = normalizeRoutePath(project.basePath)
-        ?: projectRootFromProjectFilePath(project.projectFilePath)
+    val basePath = effectiveProjectRoot(project)
     val projectFilePath = normalizeRoutePath(project.projectFilePath)
 
     if (explicitProjectKey != null) {
@@ -159,6 +158,11 @@ private fun looksLikeRoutePath(value: String): Boolean {
 
 private fun normalizedRoutePathLength(path: String?): Int {
     return normalizeRoutePath(path)?.length ?: 0
+}
+
+fun effectiveProjectRoot(project: InspectionRouteProject): String? {
+    return normalizeRoutePath(project.basePath)
+        ?: projectRootFromProjectFilePath(project.projectFilePath)
 }
 
 fun projectRootFromProjectFilePath(projectFilePath: String?): String? {

@@ -27,6 +27,7 @@ import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.InspectionRouteIdentity
 import com.shiny.inspectionmcp.core.InspectionRouteProject
 import com.shiny.inspectionmcp.core.InspectionRouteSelector
+import com.shiny.inspectionmcp.core.effectiveProjectRoot
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
 import com.shiny.inspectionmcp.core.paginateProblems
 import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
@@ -1028,7 +1029,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun routePathMatchScore(project: InspectionRouteProject, selectorPath: String?): Int? {
         return bestPathMatchScore(
             selectorPath,
-            listOfNotNull(project.basePath, project.projectFilePath),
+            listOfNotNull(effectiveProjectRoot(project), project.projectFilePath),
         )
     }
 
