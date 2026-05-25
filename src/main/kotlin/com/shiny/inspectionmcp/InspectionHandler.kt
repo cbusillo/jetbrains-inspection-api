@@ -879,7 +879,6 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun findOpenProjectForLifecycleOpen(path: String): Project? {
         return findOpenProjectByPath(path)
-            ?: resolveInspectionRoute(mapOf("worktree_path" to listOf(path)))?.project
     }
 
     private fun closeLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {
