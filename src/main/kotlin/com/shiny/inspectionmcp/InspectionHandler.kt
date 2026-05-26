@@ -102,6 +102,11 @@ internal data class InspectionViewObservation(
     val problemStateReadable: Boolean = true,
 )
 
+private data class CurrentRunPsiChurnReconciliation(
+    val snapshot: InspectionResultsSnapshot?,
+    val reconciled: Boolean,
+)
+
 internal fun readInspectionRootChildCount(root: Any?): Int? {
     return when (root) {
         null -> null
@@ -1224,9 +1229,19 @@ class InspectionHandler : HttpRequestHandler() {
             val key = projectKey(project)
             var snapshot = resultsStore.getSnapshot(key)
             val hasSnapshot = snapshot != null
-            val staleness = resolveSnapshotStaleness(project, snapshot)
+            var staleness = resolveSnapshotStaleness(project, snapshot)
+            if (staleness.changeKind == "current_run_psi_churn") {
+                val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
+                snapshot = reconciliation.snapshot
+                staleness = if (reconciliation.reconciled) {
+                    resolveSnapshotStaleness(project, snapshot)
+                } else {
+                    staleness.asUnverifiedCurrentRunPsiChurn()
+                }
+            }
             if (hasSnapshot && staleness.stale) {
-                val cachedProblems = snapshot.problems
+                val staleSnapshot = snapshot ?: resultsStore.getSnapshot(key)
+                val cachedProblems = staleSnapshot?.problems ?: emptyList()
                 val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
                 val filteredCachedProblems = filterProblems(
                     problems = cachedProblems,
@@ -1237,7 +1252,7 @@ class InspectionHandler : HttpRequestHandler() {
                     filePattern = filePattern,
                 )
                 val page = paginateProblems(filteredCachedProblems, limit, offset)
-                val staleBase = mutableMapOf<String, Any?>(
+                val staleBase = mutableMapOf(
                     "status" to "stale_results",
                     "project" to project.name,
                     "project_key" to key,
@@ -1248,9 +1263,9 @@ class InspectionHandler : HttpRequestHandler() {
                     "results_may_be_stale" to true,
                     "stale_reasons" to staleness.reasons,
                     "snapshot_change_kind" to staleness.changeKind,
-                    "snapshot_outcome" to snapshot.outcome.apiValue,
-                    "results_source" to snapshot.source,
-                    "results_timestamp_ms" to snapshot.timestamp,
+                    "snapshot_outcome" to staleSnapshot?.outcome?.apiValue,
+                    "results_source" to staleSnapshot?.source,
+                    "results_timestamp_ms" to staleSnapshot?.timestamp,
                     "cached_total_problems" to filteredCachedProblems.size,
                     "cached_problems_shown" to if (includeStale) page.shown else 0,
                     "filters" to mapOf(
@@ -1273,11 +1288,8 @@ class InspectionHandler : HttpRequestHandler() {
                 } else {
                     staleBase["include_stale"] = false
                 }
-                snapshot.captureDiagnostic?.let { staleBase["capture_diagnostic"] = it }
+                staleSnapshot?.captureDiagnostic?.let { staleBase["capture_diagnostic"] = it }
                 return formatJsonManually(staleBase.filterValues { it != null })
-            }
-            if (staleness.changeKind == "current_run_psi_churn") {
-                snapshot = reconcileCurrentRunPsiChurn(project, snapshot)
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
@@ -1460,8 +1472,13 @@ class InspectionHandler : HttpRequestHandler() {
         val hasInspectionSnapshot = snapshot != null
         var staleness = resolveSnapshotStaleness(project, snapshot)
         if (staleness.changeKind == "current_run_psi_churn") {
-            snapshot = reconcileCurrentRunPsiChurn(project, snapshot)
-            staleness = resolveSnapshotStaleness(project, snapshot)
+            val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
+            snapshot = reconciliation.snapshot
+            staleness = if (reconciliation.reconciled) {
+                resolveSnapshotStaleness(project, snapshot)
+            } else {
+                staleness.asUnverifiedCurrentRunPsiChurn()
+            }
         }
         if (!staleness.stale) {
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
@@ -1590,15 +1607,15 @@ class InspectionHandler : HttpRequestHandler() {
     private fun reconcileCurrentRunPsiChurn(
         project: Project,
         snapshot: InspectionResultsSnapshot?,
-    ): InspectionResultsSnapshot? {
+    ): CurrentRunPsiChurnReconciliation {
         if (snapshot == null) {
-            return null
+            return CurrentRunPsiChurnReconciliation(null, false)
         }
 
         val liveProblems = try {
             enhancedTreeExtractorFactory().extractAllProblems(project)
         } catch (_: Exception) {
-            return snapshot
+            return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
         val captureScopeMatcher = snapshot.captureScope?.let { captureScope ->
             buildScopeProblemMatcher(
@@ -1614,7 +1631,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
         val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
         if (compatibleLiveProblems != snapshot.problems) {
-            return snapshot
+            return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
 
         val reconciledSnapshot = snapshot.copy(
@@ -1622,7 +1639,16 @@ class InspectionHandler : HttpRequestHandler() {
             projectState = captureProjectState(project),
         )
         resultsStore.setSnapshot(projectKey(project), reconciledSnapshot)
-        return reconciledSnapshot
+        return CurrentRunPsiChurnReconciliation(reconciledSnapshot, true)
+    }
+
+    private fun SnapshotStaleness.asUnverifiedCurrentRunPsiChurn(): SnapshotStaleness {
+        val changeKind = when {
+            reasons.contains("unsaved_documents") -> "unsaved_documents"
+            reasons.contains("project_changed_since_inspection") -> "project_changed_since_inspection"
+            else -> changeKind
+        }
+        return SnapshotStaleness(true, reasons, changeKind)
     }
 
     private fun resolveCurrentFilePath(project: Project, normalizedScope: String): String? {
