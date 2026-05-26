@@ -903,6 +903,37 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open resolves idea directory to project root`() {
+        val tempDir = Files.createTempDirectory("inspection-open-idea-dir")
+        val ideaDir = tempDir.resolve(".idea")
+        Files.createDirectories(ideaDir)
+        val openedProject = mockProject(
+            name = "OpenedIdeaDir",
+            basePath = tempDir.toString(),
+            projectFilePath = ideaDir.resolve("misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(ideaDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
     fun `test lifecycle open reports already open exact project`() {
         val tempDir = Files.createTempDirectory("inspection-open-existing")
         every { mockProject.basePath } returns tempDir.toString()

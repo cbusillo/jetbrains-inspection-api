@@ -911,7 +911,9 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun lifecycleOpenProjectRoot(path: Path): Path? {
-        if (Files.isDirectory(path)) return path
+        if (Files.isDirectory(path)) {
+            return if (path.fileName?.toString() == ".idea") path.parent else path
+        }
         if (!Files.isRegularFile(path)) return null
         val fileName = path.fileName?.toString() ?: return null
         if (fileName.endsWith(".ipr")) return path.parent
