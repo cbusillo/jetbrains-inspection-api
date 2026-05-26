@@ -660,10 +660,42 @@ class InspectionSnapshotStateTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals(false, status["results_may_be_stale"])
-        assertEquals("current_run_psi_churn", status["snapshot_change_kind"])
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
         assertEquals(listOf("project_changed_since_inspection"), status["stale_reasons"])
         assertEquals(currentRun.runId, status["snapshot_run_id"])
+    }
+
+    @Test
+    @DisplayName("Problems endpoint withholds unreconciled current-run PSI churn")
+    fun testProblemsEndpointWithholdsUnreconciledCurrentRunPsiChurn() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem(description = "Fresh warning")),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"status\": \"stale_results\""))
+        assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertTrue(response.contains("\"snapshot_change_kind\": \"project_changed_since_inspection\""))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertTrue(response.contains("\"cached_problems_shown\": 0"))
+        assertFalse(response.contains("Fresh warning"))
     }
 
     @Test
