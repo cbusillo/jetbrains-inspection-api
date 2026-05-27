@@ -290,6 +290,13 @@ internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: Inspection
         observation.rootChildCount == 0
 }
 
+internal fun isTransientUpdatingProblemFreeCandidate(observation: InspectionViewObservation): Boolean {
+    return observation.updateStateReadable &&
+        observation.problemStateReadable &&
+        observation.isUpdating &&
+        !observation.hasProblems
+}
+
 internal fun isOpaqueSettledEmptyInspectionViewCandidate(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
         observation.problemStateReadable &&
@@ -2329,7 +2336,7 @@ class InspectionHandler : HttpRequestHandler() {
                                             readableEmptyInspectionViewStableSince = loopNow
                                         }
                                     }
-                                    isTransientUpdatingUnreadableEmptyCandidate(viewObservation) &&
+                                    isTransientUpdatingProblemFreeCandidate(viewObservation) &&
                                         !observedNonEmptyInspectionTree -> {
                                         observedTransientEmptyInspectionViewEvidence = true
                                         transientUpdatingEmptyObservationCount += 1
