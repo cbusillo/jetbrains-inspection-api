@@ -117,6 +117,7 @@ class InspectionSnapshotStateTest {
             ),
             status["capture_diagnostic"],
         )
+        assertEquals("view_not_ready", status["capture_incomplete_reason"])
         assertEquals(true, status["capture_incomplete"])
         assertFalse(status["clean_inspection"] as Boolean)
         assertFalse(status["has_inspection_results"] as Boolean)
@@ -440,6 +441,7 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"status\": \"capture_incomplete\""))
         assertTrue(response.contains("\"results_may_be_incomplete\": true"))
         assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -560,6 +562,7 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection()
 
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -1146,6 +1149,85 @@ class InspectionSnapshotStateTest {
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, stillUnreadableView.first)
+    }
+
+    @Test
+    @DisplayName("Capture incomplete diagnostics map to stable reason taxonomy")
+    fun testCaptureIncompleteReasonTaxonomy() {
+        assertEquals(
+            CaptureIncompleteReason.VIEW_NOT_READY,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to false,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "inspection_view_updating" to true,
+                    "null_root_child_observation_count" to 2,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.UNREADABLE_TREE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "inspection_view_observation_count" to 2,
+                    "null_root_child_observation_count" to 2,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.EXTRACTOR_FAILURE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "extraction_failure_count" to 3,
+                    "successful_extraction_count" to 0,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "observed_non_empty_inspection_tree" to true,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN,
+            classifyCaptureIncompleteReason(emptyMap(), snapshotChangeKind = "current_run_psi_churn"),
+        )
+        assertEquals(
+            CaptureIncompleteReason.TIMEOUT,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
+            classifyCaptureIncompleteReason(mapOf("exit_reason" to "helper_plugin_error")),
+        )
     }
 
     @Test
