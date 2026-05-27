@@ -670,10 +670,13 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Stored capture incomplete reason survives later PSI churn")
-    fun testStoredCaptureIncompleteReasonSurvivesPsiChurn() {
+    @DisplayName("Status preserves stored capture reason during unreconciled PSI churn")
+    fun testStatusPreservesStoredCaptureReasonDuringUnreconciledPsiChurn() {
+        val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
+        every { extractor.extractAllProblems(mockProject) } returns listOf(staleProblem(description = "Unexpected live warning"))
+        enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
             InspectionResultsSnapshot(
@@ -682,12 +685,14 @@ class InspectionSnapshotStateTest {
                 projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
-                note = "capture note",
                 captureDiagnostic = mapOf(
-                    "exit_reason" to "timeout",
-                    "view_ready_ok" to false,
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "extraction_failure_count" to 2,
+                    "successful_extraction_count" to 0,
                 ),
-                captureIncompleteReason = CaptureIncompleteReason.TIMEOUT,
+                captureIncompleteReason = CaptureIncompleteReason.EXTRACTOR_FAILURE,
                 runId = currentRun.runId,
                 triggerTimeMs = currentRun.triggerTimeMs,
             ),
@@ -696,9 +701,9 @@ class InspectionSnapshotStateTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals(true, status["capture_incomplete"])
-        assertEquals("timeout", status["capture_incomplete_reason"])
-        assertEquals("fresh", status["snapshot_change_kind"])
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
+        assertEquals("extractor_failure", status["capture_incomplete_reason"])
     }
 
     @Test
@@ -1196,6 +1201,15 @@ class InspectionSnapshotStateTest {
             ),
         )
         assertEquals(
+            CaptureIncompleteReason.VIEW_NOT_READY,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "settled",
+                    "view_ready_ok" to false,
+                ),
+            ),
+        )
+        assertEquals(
             CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE,
             classifyCaptureIncompleteReason(
                 mapOf(
@@ -1253,6 +1267,16 @@ class InspectionSnapshotStateTest {
                     "exit_reason" to "deadline",
                     "view_ready_ok" to true,
                     "observed_inspection_view" to true,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.TIMEOUT,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                    "observed_inspection_view" to false,
                 ),
             ),
         )
