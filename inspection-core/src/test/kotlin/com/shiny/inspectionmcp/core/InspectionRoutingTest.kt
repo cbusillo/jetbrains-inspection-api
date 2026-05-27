@@ -94,6 +94,26 @@ class InspectionRoutingTest {
     }
 
     @Test
+    fun worktreePathMatchesNestedIdeaProjectFileRootWhenBasePathIsMissing() {
+        val project = project(
+            projectKey = "file:/tmp/worktree/.idea/runConfigurations/app.xml",
+            name = "repo",
+            basePath = null,
+            projectFilePath = "/tmp/worktree/.idea/runConfigurations/app.xml",
+        )
+        val identity = identity(project)
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree"),
+            defaultCwd = null,
+        )
+
+        assertEquals("file:/tmp/worktree/.idea/runConfigurations/app.xml", candidates.first().project.projectKey)
+        assertEquals(950, candidates.first().score)
+    }
+
+    @Test
     fun nestedPathMatchesProjectFileRootWhenBasePathIsMissing() {
         val project = project(
             projectKey = "file:/tmp/worktree/.idea/misc.xml",

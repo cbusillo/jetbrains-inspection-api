@@ -934,6 +934,69 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open resolves nested idea directory to project root`() {
+        val tempDir = Files.createTempDirectory("inspection-open-nested-idea-dir")
+        val nestedIdeaDir = tempDir.resolve(".idea/runConfigurations")
+        Files.createDirectories(nestedIdeaDir)
+        val openedProject = mockProject(
+            name = "OpenedNestedIdeaDir",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(nestedIdeaDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open resolves nested idea file to project root`() {
+        val tempDir = Files.createTempDirectory("inspection-open-nested-idea-file")
+        val nestedIdeaFile = tempDir.resolve(".idea/runConfigurations/app.xml")
+        Files.createDirectories(nestedIdeaFile.parent)
+        Files.writeString(nestedIdeaFile, "<component />")
+        val openedProject = mockProject(
+            name = "OpenedNestedIdeaFile",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(nestedIdeaFile.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
     fun `test lifecycle open reports already open exact project`() {
         val tempDir = Files.createTempDirectory("inspection-open-existing")
         every { mockProject.basePath } returns tempDir.toString()
