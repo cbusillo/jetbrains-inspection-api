@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp.core
 
+import java.nio.file.Path
 import java.nio.file.Paths
 
 data class InspectionRouteProject(
@@ -168,9 +169,20 @@ fun effectiveProjectRoot(project: InspectionRouteProject): String? {
 fun projectRootFromProjectFilePath(projectFilePath: String?): String? {
     val normalizedProjectFilePath = normalizeRoutePath(projectFilePath) ?: return null
     val path = runCatching { Paths.get(normalizedProjectFilePath) }.getOrNull() ?: return null
+    projectRootFromIdeaMetadataPath(path)?.let { return it.toString() }
     return when {
-        path.parent?.fileName?.toString() == ".idea" -> path.parent?.parent?.toString()
         path.fileName?.toString()?.endsWith(".ipr") == true -> path.parent?.toString()
         else -> null
     }
+}
+
+fun projectRootFromIdeaMetadataPath(path: Path): Path? {
+    var cursor: Path? = path
+    while (cursor != null) {
+        if (cursor.fileName?.toString() == ".idea") {
+            return cursor.parent
+        }
+        cursor = cursor.parent
+    }
+    return null
 }

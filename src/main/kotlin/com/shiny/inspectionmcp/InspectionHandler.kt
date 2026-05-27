@@ -30,6 +30,7 @@ import com.shiny.inspectionmcp.core.InspectionRouteSelector
 import com.shiny.inspectionmcp.core.effectiveProjectRoot
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
 import com.shiny.inspectionmcp.core.paginateProblems
+import com.shiny.inspectionmcp.core.projectRootFromIdeaMetadataPath
 import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
 import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
 import io.netty.buffer.Unpooled
@@ -916,15 +917,12 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun lifecycleOpenProjectRoot(path: Path): Path? {
-        if (Files.isDirectory(path)) {
-            return if (path.fileName?.toString() == ".idea") path.parent else path
-        }
+        projectRootFromIdeaMetadataPath(path)?.let { return it }
+        if (Files.isDirectory(path)) return path
         if (!Files.isRegularFile(path)) return null
         val fileName = path.fileName?.toString() ?: return null
         if (fileName.endsWith(".ipr")) return path.parent
-        return path.parent
-            ?.takeIf { it.fileName?.toString() == ".idea" }
-            ?.parent
+        return null
     }
 
     private fun canonicalLifecycleOpenKey(path: Path): String {
