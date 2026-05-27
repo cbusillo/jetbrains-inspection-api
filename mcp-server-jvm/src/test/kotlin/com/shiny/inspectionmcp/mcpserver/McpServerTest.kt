@@ -234,7 +234,7 @@ class McpServerTest {
 
     @Test
     fun inspectionGetProblemsWarnsWhenCaptureIncomplete() {
-        val response = """{"status":"capture_incomplete","total_problems":0,"problems_shown":0,"problems":[]}"""
+        val response = """{"status":"capture_incomplete","capture_incomplete_reason":"extractor_failure","capture_diagnostic":{"exit_reason":"deadline"},"total_problems":0,"problems_shown":0,"problems":[]}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -243,6 +243,8 @@ class McpServerTest {
             val text = result.firstText()
             assertTrue(text.contains("do not treat as clean"))
             assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("reason=extractor_failure"))
+            assertTrue(text.contains("capture_diagnostic"))
             assertFalse(text.contains("OK: No problems found matching filters"))
         }
     }
@@ -430,7 +432,7 @@ class McpServerTest {
 
     @Test
     fun inspectionGetStatusHandlesCaptureIncomplete() {
-        val response = """{"capture_incomplete":true,"has_inspection_results":false,"clean_inspection":false}"""
+        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"view_not_ready","has_inspection_results":false,"clean_inspection":false}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -439,6 +441,7 @@ class McpServerTest {
             val text = result.firstText()
             assertTrue(text.contains("do not treat as clean"))
             assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("reason=view_not_ready"))
             assertFalse(text.contains("codebase is clean"))
         }
     }
@@ -611,7 +614,7 @@ class McpServerTest {
 
     @Test
     fun inspectionWaitHandlesCaptureIncomplete() {
-        val response = """{"wait_completed":true,"completion_reason":"capture_incomplete"}"""
+        val response = """{"wait_completed":true,"completion_reason":"capture_incomplete","capture_incomplete_reason":"timeout"}"""
         MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -620,6 +623,7 @@ class McpServerTest {
             val text = result.firstText()
             assertTrue(text.contains("do not treat as clean"))
             assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("reason=timeout"))
             assertFalse(text.contains("codebase is clean"))
         }
     }

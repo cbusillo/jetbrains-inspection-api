@@ -67,6 +67,18 @@ internal enum class InspectionSnapshotOutcome(val apiValue: String) {
     CAPTURE_INCOMPLETE("capture_incomplete"),
 }
 
+internal enum class CaptureIncompleteReason(val apiValue: String) {
+    VIEW_NOT_READY("view_not_ready"),
+    VIEW_UPDATING_UNREADABLE("view_updating_unreadable"),
+    UNREADABLE_TREE("unreadable_tree"),
+    EXTRACTOR_FAILURE("extractor_failure"),
+    NON_EMPTY_UNMAPPED_TREE("non_empty_unmapped_tree"),
+    CURRENT_RUN_PSI_CHURN("current_run_psi_churn"),
+    TIMEOUT("timeout"),
+    HELPER_PLUGIN_ERROR("helper_plugin_error"),
+    UNKNOWN("unknown"),
+}
+
 internal data class InspectionProjectStateSnapshot(
     val psiModificationCount: Long,
     val unsavedProjectDocuments: Int,
@@ -91,6 +103,7 @@ internal data class InspectionResultsSnapshot(
     val note: String? = null,
     val captureScope: InspectionCaptureScope? = null,
     val captureDiagnostic: Map<String, Any?>? = null,
+    val captureIncompleteReason: CaptureIncompleteReason? = null,
     val runId: Long? = null,
     val triggerTimeMs: Long? = null,
 )
@@ -511,6 +524,47 @@ internal fun shouldTreatScopedEmptyExtractionAsSucceeded(
         (observedTransientEmptyInspectionViewEvidence && lastToolExtractionSucceeded)
 }
 
+internal fun classifyCaptureIncompleteReason(
+    captureDiagnostic: Map<String, Any?>?,
+    snapshotChangeKind: String? = null,
+    fallbackReason: CaptureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+): CaptureIncompleteReason {
+    if (snapshotChangeKind == CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue) {
+        return CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN
+    }
+
+    val diagnostic = captureDiagnostic ?: return fallbackReason
+    val exitReason = diagnostic["exit_reason"] as? String
+    val viewReadyOk = diagnostic["view_ready_ok"] as? Boolean
+    val observedInspectionView = diagnostic["observed_inspection_view"] as? Boolean
+    val inspectionViewUpdating = diagnostic["inspection_view_updating"] as? Boolean
+    val observedNonEmptyInspectionTree = diagnostic["observed_non_empty_inspection_tree"] as? Boolean
+    val extractionFailureCount = (diagnostic["extraction_failure_count"] as? Number)?.toInt() ?: 0
+    val successfulExtractionCount = (diagnostic["successful_extraction_count"] as? Number)?.toInt() ?: 0
+    val lastExtractionCycleSucceeded = diagnostic["last_extraction_cycle_succeeded"] as? Boolean
+    val unreadableProblemStateObservationCount =
+        (diagnostic["unreadable_problem_state_observation_count"] as? Number)?.toInt() ?: 0
+    val nullRootChildObservationCount = (diagnostic["null_root_child_observation_count"] as? Number)?.toInt() ?: 0
+    val inspectionViewObservationCount = (diagnostic["inspection_view_observation_count"] as? Number)?.toInt() ?: 0
+
+    return when {
+        exitReason == "helper_plugin_error" -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
+        viewReadyOk == false || observedInspectionView == false -> CaptureIncompleteReason.VIEW_NOT_READY
+        observedNonEmptyInspectionTree == true -> CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE
+        inspectionViewUpdating == true &&
+            (unreadableProblemStateObservationCount > 0 || nullRootChildObservationCount > 0) ->
+            CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE
+        unreadableProblemStateObservationCount > 0 ||
+            (inspectionViewObservationCount > 0 && nullRootChildObservationCount >= inspectionViewObservationCount) ->
+            CaptureIncompleteReason.UNREADABLE_TREE
+        extractionFailureCount > 0 &&
+            (successfulExtractionCount == 0 || lastExtractionCycleSucceeded == false) ->
+            CaptureIncompleteReason.EXTRACTOR_FAILURE
+        exitReason == "deadline" || exitReason == "timeout" -> CaptureIncompleteReason.TIMEOUT
+        else -> fallbackReason
+    }
+}
+
 class InspectionHandler : HttpRequestHandler() {
     private val logger = Logger.getInstance(InspectionHandler::class.java)
 
@@ -557,7 +611,33 @@ class InspectionHandler : HttpRequestHandler() {
         val reasons: List<String>,
         val changeKind: String = "fresh",
     )
-    
+
+    private fun captureIncompleteReason(
+        snapshot: InspectionResultsSnapshot?,
+        staleness: SnapshotStaleness = SnapshotStaleness(false, emptyList()),
+    ): CaptureIncompleteReason? {
+        if (snapshot?.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
+            return null
+        }
+        if (staleness.changeKind == CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue) {
+            return CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN
+        }
+        return snapshot.captureIncompleteReason ?: classifyCaptureIncompleteReason(
+            captureDiagnostic = snapshot.captureDiagnostic,
+            snapshotChangeKind = staleness.changeKind,
+        )
+    }
+
+    private fun addCaptureIncompleteReason(
+        target: MutableMap<String, Any?>,
+        snapshot: InspectionResultsSnapshot?,
+        staleness: SnapshotStaleness = SnapshotStaleness(false, emptyList()),
+    ) {
+        captureIncompleteReason(snapshot, staleness)?.let { reason ->
+            target["capture_incomplete_reason"] = reason.apiValue
+        }
+    }
+
     override fun isSupported(request: FullHttpRequest): Boolean {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
     }
@@ -1257,7 +1337,7 @@ class InspectionHandler : HttpRequestHandler() {
                     filePattern = filePattern,
                 )
                 val page = paginateProblems(filteredCachedProblems, limit, offset)
-                val staleBase = mutableMapOf(
+                val staleBase = mutableMapOf<String, Any?>(
                     "status" to "stale_results",
                     "project" to project.name,
                     "project_key" to key,
@@ -1280,6 +1360,7 @@ class InspectionHandler : HttpRequestHandler() {
                         "file_pattern" to (filePattern ?: "all")
                     )
                 )
+                addCaptureIncompleteReason(staleBase, staleSnapshot, staleness)
                 if (includeStale) {
                     staleBase["message"] = "Project files changed since the last inspection. Returning cached findings because include_stale=true; trigger a new inspection before acting on them."
                     staleBase["include_stale"] = true
@@ -1298,7 +1379,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
-                val response = mutableMapOf(
+                val response = mutableMapOf<String, Any?>(
                     "status" to "capture_incomplete",
                     "project" to project.name,
                     "project_key" to key,
@@ -1328,6 +1409,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "method" to snapshot.source,
                     "snapshot_outcome" to snapshot.outcome.apiValue,
                 )
+                addCaptureIncompleteReason(response, snapshot, staleness)
                 snapshot.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 return formatJsonManually(response)
             }
@@ -1516,6 +1598,9 @@ class InspectionHandler : HttpRequestHandler() {
                 status["snapshot_note"] = snapshot.note
             }
             snapshot.captureDiagnostic?.let { status["capture_diagnostic"] = it }
+        }
+        captureIncompleteReason(snapshot, staleness)?.let { reason ->
+            status["capture_incomplete_reason"] = reason.apiValue
         }
         if (staleness.reasons.isNotEmpty()) {
             status["stale_reasons"] = staleness.reasons
@@ -2553,6 +2638,7 @@ class InspectionHandler : HttpRequestHandler() {
                         } else {
                             null
                         }
+                        val captureIncompleteReason = classifyCaptureIncompleteReason(captureDiagnostic)
                         val snapshot = when {
                             bestResults.isNotEmpty() -> InspectionResultsSnapshot(
                                 problems = bestResults,
@@ -2631,6 +2717,8 @@ class InspectionHandler : HttpRequestHandler() {
                                         source = "inspection_view",
                                         note = "Inspection failed before results could be captured.",
                                         captureScope = captureScope,
+                                        captureDiagnostic = mapOf("exit_reason" to "helper_plugin_error"),
+                                        captureIncompleteReason = CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
                                         runId = runId,
                                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                                     )
@@ -2710,6 +2798,8 @@ class InspectionHandler : HttpRequestHandler() {
                 source = "inspection_view",
                 note = "Inspection failed before results could be captured.",
                 captureScope = captureScope,
+                captureDiagnostic = mapOf("exit_reason" to "helper_plugin_error"),
+                captureIncompleteReason = CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
                 runId = runId,
                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
             )
