@@ -67,6 +67,18 @@ internal enum class InspectionSnapshotOutcome(val apiValue: String) {
     CAPTURE_INCOMPLETE("capture_incomplete"),
 }
 
+internal enum class CaptureIncompleteReason(val apiValue: String) {
+    VIEW_NOT_READY("view_not_ready"),
+    VIEW_UNREADABLE("view_unreadable"),
+    VIEW_UPDATING_UNREADABLE("view_updating_unreadable"),
+    EXTRACTOR_FAILURE("extractor_failure"),
+    NON_EMPTY_UNMAPPED_TREE("non_empty_unmapped_tree"),
+    CAPTURE_TIMEOUT("capture_timeout"),
+    CAPTURE_INTERRUPTED("capture_interrupted"),
+    PLUGIN_ERROR("plugin_error"),
+    INCONCLUSIVE_EMPTY_RESULTS("inconclusive_empty_results"),
+}
+
 internal data class InspectionProjectStateSnapshot(
     val psiModificationCount: Long,
     val unsavedProjectDocuments: Int,
@@ -264,6 +276,47 @@ internal fun classifyEmptyInspectionCapture(
 
     return InspectionSnapshotOutcome.CAPTURE_INCOMPLETE to
         "Inspection finished, but the plugin could not conclusively confirm that the IDE results were empty. Re-run the inspection or open the Inspection Results/Problems tool window."
+}
+
+internal fun classifyCaptureIncompleteReason(captureDiagnostic: Map<String, Any?>?): CaptureIncompleteReason {
+    val diagnostic = captureDiagnostic ?: return CaptureIncompleteReason.PLUGIN_ERROR
+    val exitReason = diagnostic["exit_reason"] as? String
+    val observedInspectionView = diagnostic["observed_inspection_view"] as? Boolean ?: false
+    val observedNonEmptyInspectionTree = diagnostic["observed_non_empty_inspection_tree"] as? Boolean ?: false
+    val inspectionViewUpdating = diagnostic["inspection_view_updating"] as? Boolean ?: false
+    val inspectionViewObservationCount = (diagnostic["inspection_view_observation_count"] as? Number)?.toInt() ?: 0
+    val unreadableProblemStateObservationCount =
+        (diagnostic["unreadable_problem_state_observation_count"] as? Number)?.toInt() ?: 0
+    val nullRootChildObservationCount = (diagnostic["null_root_child_observation_count"] as? Number)?.toInt() ?: 0
+    val compatibleToolWindowObservationCount =
+        (diagnostic["compatible_tool_window_observation_count"] as? Number)?.toInt() ?: 0
+    val successfulExtractionCount = (diagnostic["successful_extraction_count"] as? Number)?.toInt() ?: 0
+    val extractionFailureCount = (diagnostic["extraction_failure_count"] as? Number)?.toInt() ?: 0
+    val viewReadyOk = diagnostic["view_ready_ok"] as? Boolean ?: false
+
+    return when {
+        exitReason == "plugin_error" -> CaptureIncompleteReason.PLUGIN_ERROR
+        exitReason == "sleep_interrupted" -> CaptureIncompleteReason.CAPTURE_INTERRUPTED
+        observedNonEmptyInspectionTree && compatibleToolWindowObservationCount == 0 ->
+            CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE
+        successfulExtractionCount == 0 && extractionFailureCount > 0 -> CaptureIncompleteReason.EXTRACTOR_FAILURE
+        observedInspectionView &&
+            inspectionViewUpdating &&
+            (unreadableProblemStateObservationCount > 0 || nullRootChildObservationCount > 0) ->
+            CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE
+        observedInspectionView &&
+            inspectionViewObservationCount > 0 &&
+            (unreadableProblemStateObservationCount >= inspectionViewObservationCount ||
+                nullRootChildObservationCount >= inspectionViewObservationCount) ->
+            CaptureIncompleteReason.VIEW_UNREADABLE
+        !viewReadyOk || !observedInspectionView -> CaptureIncompleteReason.VIEW_NOT_READY
+        exitReason == "deadline" -> CaptureIncompleteReason.CAPTURE_TIMEOUT
+        else -> CaptureIncompleteReason.INCONCLUSIVE_EMPTY_RESULTS
+    }
+}
+
+internal fun captureIncompleteReasonValue(captureDiagnostic: Map<String, Any?>?): String {
+    return classifyCaptureIncompleteReason(captureDiagnostic).apiValue
 }
 
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
@@ -1328,6 +1381,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "method" to snapshot.source,
                     "snapshot_outcome" to snapshot.outcome.apiValue,
                 )
+                response["capture_incomplete_reason"] = captureIncompleteReasonValue(snapshot.captureDiagnostic)
                 snapshot.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 return formatJsonManually(response)
             }
@@ -1514,6 +1568,9 @@ class InspectionHandler : HttpRequestHandler() {
             status["snapshot_outcome"] = snapshot.outcome.apiValue
             if (!snapshot.note.isNullOrBlank()) {
                 status["snapshot_note"] = snapshot.note
+            }
+            if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale) {
+                status["capture_incomplete_reason"] = captureIncompleteReasonValue(snapshot.captureDiagnostic)
             }
             snapshot.captureDiagnostic?.let { status["capture_diagnostic"] = it }
         }
@@ -2631,6 +2688,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         source = "inspection_view",
                                         note = "Inspection failed before results could be captured.",
                                         captureScope = captureScope,
+                                        captureDiagnostic = mapOf("exit_reason" to "plugin_error"),
                                         runId = runId,
                                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                                     )
@@ -2710,6 +2768,7 @@ class InspectionHandler : HttpRequestHandler() {
                 source = "inspection_view",
                 note = "Inspection failed before results could be captured.",
                 captureScope = captureScope,
+                captureDiagnostic = mapOf("exit_reason" to "plugin_error"),
                 runId = runId,
                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
             )

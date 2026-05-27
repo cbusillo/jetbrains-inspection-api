@@ -108,6 +108,7 @@ class InspectionSnapshotStateTest {
         val status = buildInspectionStatus()
 
         assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("view_not_ready", status["capture_incomplete_reason"])
         assertEquals("capture note", status["snapshot_note"])
         assertEquals(
             mapOf(
@@ -438,6 +439,7 @@ class InspectionSnapshotStateTest {
         val response = getInspectionProblems()
 
         assertTrue(response.contains("\"status\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
         assertTrue(response.contains("\"results_may_be_incomplete\": true"))
         assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
@@ -560,6 +562,7 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection()
 
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -1146,6 +1149,79 @@ class InspectionSnapshotStateTest {
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, stillUnreadableView.first)
+    }
+
+    @Test
+    @DisplayName("Capture incomplete diagnostics produce stable reason codes")
+    fun testClassifyCaptureIncompleteReason() {
+        assertEquals(
+            CaptureIncompleteReason.VIEW_NOT_READY,
+            classifyCaptureIncompleteReason(mapOf("exit_reason" to "deadline", "view_ready_ok" to false)),
+        )
+        assertEquals(
+            CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "observed_non_empty_inspection_tree" to true,
+                    "compatible_tool_window_observation_count" to 0,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.EXTRACTOR_FAILURE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "successful_extraction_count" to 0,
+                    "extraction_failure_count" to 2,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "inspection_view_updating" to true,
+                    "unreadable_problem_state_observation_count" to 1,
+                    "inspection_view_observation_count" to 3,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.VIEW_UNREADABLE,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "inspection_view_observation_count" to 3,
+                    "null_root_child_observation_count" to 3,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.CAPTURE_INTERRUPTED,
+            classifyCaptureIncompleteReason(mapOf("exit_reason" to "sleep_interrupted")),
+        )
+        assertEquals(
+            CaptureIncompleteReason.PLUGIN_ERROR,
+            classifyCaptureIncompleteReason(mapOf("exit_reason" to "plugin_error")),
+        )
+        assertEquals(
+            CaptureIncompleteReason.CAPTURE_TIMEOUT,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "inspection_view_observation_count" to 3,
+                ),
+            ),
+        )
     }
 
     @Test

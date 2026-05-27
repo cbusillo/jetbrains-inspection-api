@@ -465,6 +465,7 @@ internal class ToolExecutor(
     private fun buildProblemsGuidance(result: JsonElement): String {
         val obj = result as? JsonObject ?: return ""
         val status = obj["status"]?.jsonPrimitive?.contentOrNull
+        val captureIncompleteReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
         val total = obj["total_problems"]?.jsonPrimitive?.intOrNull
         val shown = obj["problems_shown"]?.jsonPrimitive?.intOrNull
         val pagination = obj["pagination"] as? JsonObject
@@ -475,7 +476,7 @@ internal class ToolExecutor(
             status == "stale_results" ->
                 "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings. Pass include_stale=true only for explicit cached-result diagnostics."
             status == "capture_incomplete" ->
-                "\n\nWARN: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
+                "\n\nWARN: capture_incomplete${formatCaptureIncompleteReason(captureIncompleteReason)} - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report the reason."
             status == "no_results" ->
                 "\n\nWARN: No inspection results were captured. This can happen for clean runs or when the IDE results view was unavailable; re-run inspection if findings were expected."
             total == 0 ->
@@ -499,13 +500,14 @@ internal class ToolExecutor(
         val hasResults = obj["has_inspection_results"]?.jsonPrimitive?.booleanOrNull == true
         val stale = obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull == true
         val captureIncomplete = obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull == true
+        val captureIncompleteReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
 
         val timeSince = obj["time_since_last_trigger_ms"]?.jsonPrimitive?.longOrNull
 
         return when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
             stale -> "\n\nSTATUS: Project changed after the last inspection - trigger inspection again before trusting cached results."
-            captureIncomplete -> "\n\nSTATUS: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
+            captureIncomplete -> "\n\nSTATUS: capture_incomplete${formatCaptureIncompleteReason(captureIncompleteReason)} - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report the reason."
             clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
             timeSince != null && timeSince < 60000 ->
@@ -519,12 +521,13 @@ internal class ToolExecutor(
         val completed = obj["wait_completed"]?.jsonPrimitive?.booleanOrNull == true
         val timedOut = obj["timed_out"]?.jsonPrimitive?.booleanOrNull == true
         val reason = obj["completion_reason"]?.jsonPrimitive?.contentOrNull
+        val captureIncompleteReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
 
         return when {
             completed && reason == "clean" -> "\n\nSTATUS: Inspection complete - codebase is clean."
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
             completed && reason == "capture_incomplete" ->
-                "\n\nSTATUS: capture_incomplete - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report it."
+                "\n\nSTATUS: capture_incomplete${formatCaptureIncompleteReason(captureIncompleteReason)} - do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report the reason."
             completed && reason == "stale_results" ->
                 "\n\nSTATUS: Cached inspection results are stale - trigger inspection again before trusting findings."
             completed && reason == "no_results" ->
@@ -535,6 +538,10 @@ internal class ToolExecutor(
             timedOut -> "\n\nSTATUS: Wait timed out - try inspection_get_status or increase timeout_ms."
             else -> ""
         }
+    }
+
+    private fun formatCaptureIncompleteReason(reason: String?): String {
+        return if (reason.isNullOrBlank()) "" else " ($reason)"
     }
 
     private fun toolText(text: String, isError: Boolean = false): JsonObject {

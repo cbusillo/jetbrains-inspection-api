@@ -88,12 +88,14 @@ PyCharm, and WebStorm.
 
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
 session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
-non-clean outcomes. Cached stale findings are returned only when the helper is
-run with `--include-stale` for explicit diagnostics. When this repo changes
-inspection status semantics, route metadata, clean/capture classification,
-lifecycle cleanup contracts, or MCP tool response contracts, update the skill
-docs/tests/scripts in the `jetbrains-inspection` skill as part of the same
-workstream.
+non-clean outcomes. `capture_incomplete` responses expose
+`capture_incomplete_reason` for rollout bucketing, with detailed counters in
+`capture_diagnostic` when available. Cached stale findings are returned only
+when the helper is run with `--include-stale` for explicit diagnostics. When
+this repo changes inspection status semantics, route metadata, clean/capture
+classification, lifecycle cleanup contracts, or MCP tool response contracts,
+update the skill docs/tests/scripts in the `jetbrains-inspection` skill as part
+of the same workstream.
 
 Before shipping changes to clean/capture classification, run the focused
 `InspectionSnapshotStateTest` coverage, then build the plugin with
