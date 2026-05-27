@@ -117,7 +117,7 @@ class InspectionSnapshotStateTest {
             ),
             status["capture_diagnostic"],
         )
-        assertEquals("view_not_ready", status["capture_incomplete_reason"])
+        assertEquals("timeout", status["capture_incomplete_reason"])
         assertEquals(true, status["capture_incomplete"])
         assertFalse(status["clean_inspection"] as Boolean)
         assertFalse(status["has_inspection_results"] as Boolean)
@@ -441,7 +441,7 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"status\": \"capture_incomplete\""))
         assertTrue(response.contains("\"results_may_be_incomplete\": true"))
         assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
-        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"timeout\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -562,7 +562,7 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection()
 
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
-        assertTrue(response.contains("\"capture_incomplete_reason\": \"view_not_ready\""))
+        assertTrue(response.contains("\"capture_incomplete_reason\": \"timeout\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -667,6 +667,43 @@ class InspectionSnapshotStateTest {
         assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
         assertEquals(listOf("project_changed_since_inspection"), status["stale_reasons"])
         assertEquals(currentRun.runId, status["snapshot_run_id"])
+    }
+
+    @Test
+    @DisplayName("Status preserves stored capture reason during current-run PSI churn")
+    fun testStatusPreservesStoredCaptureReasonDuringCurrentRunPsiChurn() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        every { extractor.extractAllProblems(mockProject) } returns listOf(staleProblem(description = "Unexpected live warning"))
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "deadline",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "extraction_failure_count" to 2,
+                    "successful_extraction_count" to 0,
+                ),
+                captureIncompleteReason = CaptureIncompleteReason.EXTRACTOR_FAILURE,
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
+        assertEquals("extractor_failure", status["capture_incomplete_reason"])
     }
 
     @Test
@@ -1158,7 +1195,7 @@ class InspectionSnapshotStateTest {
             CaptureIncompleteReason.VIEW_NOT_READY,
             classifyCaptureIncompleteReason(
                 mapOf(
-                    "exit_reason" to "deadline",
+                    "exit_reason" to "settled",
                     "view_ready_ok" to false,
                 ),
             ),
@@ -1221,6 +1258,16 @@ class InspectionSnapshotStateTest {
                     "exit_reason" to "deadline",
                     "view_ready_ok" to true,
                     "observed_inspection_view" to true,
+                ),
+            ),
+        )
+        assertEquals(
+            CaptureIncompleteReason.TIMEOUT,
+            classifyCaptureIncompleteReason(
+                mapOf(
+                    "exit_reason" to "timeout",
+                    "view_ready_ok" to false,
+                    "observed_inspection_view" to false,
                 ),
             ),
         )
@@ -1586,8 +1633,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Updating problem-free views can prove scoped empty results after deadline")
-    fun testUpdatingProblemFreeViewsCanProveScopedEmptyResults() {
+    @DisplayName("Updating problem-free views need zero-child evidence before proving scoped empty results")
+    fun testUpdatingProblemFreeViewsNeedZeroChildEvidence() {
         val updatingProblemFreeView = InspectionViewObservation(
             isUpdating = true,
             hasProblems = false,
@@ -1595,9 +1642,10 @@ class InspectionSnapshotStateTest {
             updateStateReadable = true,
             problemStateReadable = true,
         )
+        val updatingZeroChildView = updatingProblemFreeView.copy(rootChildCount = 0)
 
         assertFalse(isTransientUpdatingUnreadableEmptyCandidate(updatingProblemFreeView))
-        assertTrue(isTransientUpdatingProblemFreeCandidate(updatingProblemFreeView))
+        assertTrue(isTransientUpdatingUnreadableEmptyCandidate(updatingZeroChildView))
         assertTrue(
             shouldTreatScopedEmptyExtractionAsSucceeded(
                 lastExtractionCycleSucceeded = false,
@@ -1611,6 +1659,21 @@ class InspectionSnapshotStateTest {
                 observedInspectionView = true,
                 inspectionViewUpdating = true,
                 hasTransientEmptyInspectionViewEvidence = true,
+                extractionSucceeded = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 60000L,
+                pollingElapsedMs = 60000L,
+            )
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasTransientEmptyInspectionViewEvidence = false,
                 extractionSucceeded = true,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,

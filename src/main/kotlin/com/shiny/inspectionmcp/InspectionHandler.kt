@@ -303,13 +303,6 @@ internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: Inspection
         observation.rootChildCount == 0
 }
 
-internal fun isTransientUpdatingProblemFreeCandidate(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        observation.isUpdating &&
-        !observation.hasProblems
-}
-
 internal fun isOpaqueSettledEmptyInspectionViewCandidate(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
         observation.problemStateReadable &&
@@ -549,7 +542,6 @@ internal fun classifyCaptureIncompleteReason(
 
     return when {
         exitReason == "helper_plugin_error" -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
-        viewReadyOk == false || observedInspectionView == false -> CaptureIncompleteReason.VIEW_NOT_READY
         observedNonEmptyInspectionTree == true -> CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE
         inspectionViewUpdating == true &&
             (unreadableProblemStateObservationCount > 0 || nullRootChildObservationCount > 0) ->
@@ -561,6 +553,7 @@ internal fun classifyCaptureIncompleteReason(
             (successfulExtractionCount == 0 || lastExtractionCycleSucceeded == false) ->
             CaptureIncompleteReason.EXTRACTOR_FAILURE
         exitReason == "deadline" || exitReason == "timeout" -> CaptureIncompleteReason.TIMEOUT
+        viewReadyOk == false || observedInspectionView == false -> CaptureIncompleteReason.VIEW_NOT_READY
         else -> fallbackReason
     }
 }
@@ -619,7 +612,10 @@ class InspectionHandler : HttpRequestHandler() {
         if (snapshot?.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
             return null
         }
-        if (staleness.changeKind == CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue) {
+        if (
+            snapshot.captureIncompleteReason == null &&
+            staleness.changeKind == CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue
+        ) {
             return CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN
         }
         return snapshot.captureIncompleteReason ?: classifyCaptureIncompleteReason(
@@ -2421,7 +2417,7 @@ class InspectionHandler : HttpRequestHandler() {
                                             readableEmptyInspectionViewStableSince = loopNow
                                         }
                                     }
-                                    isTransientUpdatingProblemFreeCandidate(viewObservation) &&
+                                    isTransientUpdatingUnreadableEmptyCandidate(viewObservation) &&
                                         !observedNonEmptyInspectionTree -> {
                                         observedTransientEmptyInspectionViewEvidence = true
                                         transientUpdatingEmptyObservationCount += 1
@@ -2672,6 +2668,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                                captureIncompleteReason = captureIncompleteReason,
                             )
                         }
                         if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
