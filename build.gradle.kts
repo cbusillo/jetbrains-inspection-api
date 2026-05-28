@@ -18,6 +18,57 @@ jacoco {
 group = "com.jetbrains.inspection"
 version = project.property("pluginVersion").toString()
 
+val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
+val generateInspectionBuildInfo = tasks.register<Exec>("generateInspectionBuildInfo") {
+    val outputFile = generatedBuildInfoDir.map {
+        it.file("com/shiny/inspectionmcp/inspection-build.properties")
+    }
+    outputs.file(outputFile)
+    outputs.upToDateWhen { false }
+    outputs.cacheIf { false }
+    commandLine(
+        "sh",
+        "-c",
+        """
+        set -eu
+        out="${'$'}1"
+        mkdir -p "$(dirname "${'$'}out")"
+        commit="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+        if [ -n "${'$'}commit" ]; then
+          short_commit="$(printf '%s' "${'$'}commit" | cut -c1-12)"
+          if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
+            dirty="true"
+            state="dirty"
+          else
+            dirty="false"
+            state="clean"
+          fi
+        else
+          commit="unknown"
+          short_commit="unknown"
+          dirty="unknown"
+          state="unknown"
+        fi
+        build_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+        {
+          printf 'plugin.build.commit=%s\n' "${'$'}commit"
+          printf 'plugin.build.short_commit=%s\n' "${'$'}short_commit"
+          printf 'plugin.build.dirty=%s\n' "${'$'}dirty"
+          printf 'plugin.build.time=%s\n' "${'$'}build_time"
+          printf 'plugin.build.fingerprint=%s-%s\n' "${'$'}short_commit" "${'$'}state"
+        } > "${'$'}out"
+        """.trimIndent(),
+        "generateInspectionBuildInfo",
+        outputFile.get().asFile.absolutePath,
+    )
+}
+
+sourceSets {
+    main {
+        resources.srcDir(generatedBuildInfoDir)
+    }
+}
+
 repositories {
     mavenCentral()
     
@@ -52,6 +103,10 @@ kotlin {
 }
 
 tasks {
+    processResources {
+        dependsOn(generateInspectionBuildInfo)
+    }
+
     withType<JavaCompile> {
         sourceCompatibility = "21"
         targetCompatibility = "21"

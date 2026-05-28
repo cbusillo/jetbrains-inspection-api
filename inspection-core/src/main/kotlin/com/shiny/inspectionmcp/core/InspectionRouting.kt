@@ -22,6 +22,7 @@ data class InspectionRouteIdentity(
     val ideProductCode: String?,
     val pluginVersion: String?,
     val projects: List<InspectionRouteProject>,
+    val pluginBuildFingerprint: String? = null,
 )
 
 data class InspectionRouteSelector(

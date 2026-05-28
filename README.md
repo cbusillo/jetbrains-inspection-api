@@ -201,7 +201,8 @@ Typical response (truncated):
     "ide": {
       "name": "IntelliJ IDEA Ultimate",
       "product_code": "IU",
-      "plugin_version": "1.10.5"
+      "plugin_version": "1.10.5",
+      "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
   "method": "enhanced_tree"
@@ -251,7 +252,8 @@ routing state.
       "name": "IntelliJ IDEA Ultimate",
       "version": "2025.1.1",
       "product_code": "IU",
-      "plugin_version": "1.10.5"
+      "plugin_version": "1.10.5",
+      "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
   "registry": {
@@ -270,7 +272,13 @@ routing state.
 
 Identity responses and registry instance files share the same schema:
 `session_id`, `started_at_ms`, `heartbeat_ms`, `pid`, `port`, `ide_name`,
-`ide_version`, `ide_product_code`, `plugin_version`, and `open_projects`.
+`ide_version`, `ide_product_code`, `plugin_version`, `plugin_build_fingerprint`,
+`plugin_build_commit`, `plugin_build_short_commit`, `plugin_build_dirty`,
+`plugin_build_time`, and `open_projects`. Use `plugin_build_fingerprint` to
+distinguish same-version local or unreleased plugin builds when diagnosing stale
+running IDE processes. Repeated route summaries include only
+`plugin_build_fingerprint`; clients that need full build provenance should call
+`/identity` or read the registry instance file.
 Each project includes `project_key`, `name`, `base_path`, `project_file_path`,
 `project_instance_id`, and `focused` as a JSON boolean. `project_instance_id` is
 opaque and only stable for the lifetime of that IDE process; clients should use

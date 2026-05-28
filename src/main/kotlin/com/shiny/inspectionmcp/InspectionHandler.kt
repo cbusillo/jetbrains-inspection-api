@@ -1238,6 +1238,11 @@ class InspectionHandler : HttpRequestHandler() {
                 "ide_version" to null,
                 "ide_product_code" to null,
                 "plugin_version" to null,
+                "plugin_build_fingerprint" to null,
+                "plugin_build_commit" to null,
+                "plugin_build_short_commit" to null,
+                "plugin_build_dirty" to null,
+                "plugin_build_time" to null,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
@@ -1273,7 +1278,8 @@ class InspectionHandler : HttpRequestHandler() {
             "product_code" to identity["ide_product_code"],
             "pid" to identity["pid"],
             "plugin_version" to identity["plugin_version"],
-        )
+            "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
+        ).filterValues { value -> value != null }
     }
 
     private fun routeSelectorMetadata(parameters: Map<String, List<String>>): Map<String, Any?> {
@@ -1320,6 +1326,7 @@ class InspectionHandler : HttpRequestHandler() {
             ideVersion = this["ide_version"] as? String,
             ideProductCode = this["ide_product_code"] as? String,
             pluginVersion = this["plugin_version"] as? String,
+            pluginBuildFingerprint = this["plugin_build_fingerprint"] as? String,
             projects = ((this["open_projects"] as? List<*>)?.filterIsInstance<Map<String, Any?>>()
                 ?: openProjectIdentities()).map { identity ->
                 InspectionRouteProject(

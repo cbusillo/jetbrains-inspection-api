@@ -15,12 +15,14 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
+import java.util.Properties
 import java.util.UUID
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val PLUGIN_ID = "com.shiny.inspection.api"
+private const val BUILD_INFO_RESOURCE = "/com/shiny/inspectionmcp/inspection-build.properties"
 private const val REGISTRY_DIR_ENV = "JETBRAINS_INSPECTION_REGISTRY_DIR"
 private const val REGISTRY_HEARTBEAT_SECONDS = 10L
 
@@ -29,8 +31,34 @@ internal object InspectionIdeSession {
     val startedAtMs: Long = System.currentTimeMillis()
 }
 
+internal data class InspectionPluginBuildInfo(
+    val commit: String?,
+    val shortCommit: String?,
+    val dirty: Boolean?,
+    val time: String?,
+    val fingerprint: String?,
+)
+
+internal fun loadInspectionPluginBuildInfo(): InspectionPluginBuildInfo {
+    val properties = Properties()
+    InspectionIdeSession::class.java.getResourceAsStream(BUILD_INFO_RESOURCE)?.use { stream ->
+        properties.load(stream)
+    }
+    fun value(key: String): String? = properties.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+    return InspectionPluginBuildInfo(
+        commit = value("plugin.build.commit"),
+        shortCommit = value("plugin.build.short_commit"),
+        dirty = value("plugin.build.dirty")?.toBooleanStrictOrNull(),
+        time = value("plugin.build.time"),
+        fingerprint = value("plugin.build.fingerprint"),
+    )
+}
+
+private val pluginBuildInfo: InspectionPluginBuildInfo by lazy { loadInspectionPluginBuildInfo() }
+
 internal fun buildInspectionIdentity(): Map<String, Any?> {
     val appInfo = ApplicationInfo.getInstance()
+    val buildInfo = pluginBuildInfo
     return mapOf(
         "session_id" to InspectionIdeSession.sessionId,
         "started_at_ms" to InspectionIdeSession.startedAtMs,
@@ -41,6 +69,11 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "ide_version" to appInfo.fullVersion,
         "ide_product_code" to resolveIdeProductCode(appInfo),
         "plugin_version" to PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.version,
+        "plugin_build_fingerprint" to buildInfo.fingerprint,
+        "plugin_build_commit" to buildInfo.commit,
+        "plugin_build_short_commit" to buildInfo.shortCommit,
+        "plugin_build_dirty" to buildInfo.dirty,
+        "plugin_build_time" to buildInfo.time,
         "open_projects" to openProjectIdentities(),
     )
 }
