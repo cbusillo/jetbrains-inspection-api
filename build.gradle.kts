@@ -69,8 +69,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
     private fun gitHeadCommit(): String? {
         return runCatching {
-            val process = ProcessBuilder("git", "rev-parse", "--verify", "HEAD")
-                .directory(gitDirectory.get().asFile)
+            val process = gitProcess("rev-parse", "--verify", "HEAD")
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
             val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
@@ -80,13 +79,23 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
     private fun gitDiffIndexExitCode(): Int? {
         return runCatching {
-            ProcessBuilder("git", "diff-index", "--quiet", "HEAD", "--")
-                .directory(gitDirectory.get().asFile)
+            gitProcess("diff-index", "--quiet", "HEAD", "--")
                 .redirectOutput(ProcessBuilder.Redirect.DISCARD)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
                 .waitFor()
         }.getOrNull()
+    }
+
+    private fun gitProcess(vararg args: String): ProcessBuilder {
+        return ProcessBuilder("git", *args)
+            .directory(gitDirectory.get().asFile)
+            .apply {
+                environment().remove("GIT_DIR")
+                environment().remove("GIT_WORK_TREE")
+                environment().remove("GIT_INDEX_FILE")
+                environment().remove("GIT_PREFIX")
+            }
     }
 }
 
