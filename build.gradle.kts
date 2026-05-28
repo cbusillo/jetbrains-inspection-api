@@ -41,14 +41,12 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
     @TaskAction
     fun generate() {
-        val commit = gitOutput("rev-parse", "--verify", "HEAD") ?: "unknown"
+        val commit = gitHeadCommit() ?: "unknown"
         val shortCommit = commit.takeIf { it != "unknown" }?.take(12) ?: "unknown"
-        val dirty = if (commit == "unknown") {
-            "unknown"
-        } else if (gitOutput("status", "--porcelain")?.isNotEmpty() == true) {
-            "true"
-        } else {
-            "false"
+        val dirty = when {
+            commit == "unknown" -> "unknown"
+            gitDiffIndexExitCode() == 0 -> "false"
+            else -> "true"
         }
         val state = when (dirty) {
             "true" -> "dirty"
@@ -69,14 +67,25 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
         target.outputStream().use { stream -> properties.store(stream, null) }
     }
 
-    private fun gitOutput(vararg args: String): String? {
+    private fun gitHeadCommit(): String? {
         return runCatching {
-            val process = ProcessBuilder("git", *args)
+            val process = ProcessBuilder("git", "rev-parse", "--verify", "HEAD")
                 .directory(gitDirectory.get().asFile)
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
                 .start()
             val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
             output.takeIf { process.waitFor() == 0 && it.isNotEmpty() }
+        }.getOrNull()
+    }
+
+    private fun gitDiffIndexExitCode(): Int? {
+        return runCatching {
+            ProcessBuilder("git", "diff-index", "--quiet", "HEAD", "--")
+                .directory(gitDirectory.get().asFile)
+                .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+                .waitFor()
         }.getOrNull()
     }
 }
