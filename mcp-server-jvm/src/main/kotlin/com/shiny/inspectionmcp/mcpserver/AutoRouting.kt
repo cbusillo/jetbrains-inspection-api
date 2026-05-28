@@ -292,6 +292,7 @@ private fun toRouteIdentity(identity: JsonObject): InspectionRouteIdentity {
         ideVersion = identity.string("ide_version"),
         ideProductCode = identity.string("ide_product_code"),
         pluginVersion = identity.string("plugin_version"),
+        pluginBuildFingerprint = identity.string("plugin_build_fingerprint"),
         projects = identity["open_projects"]?.jsonArray?.filterIsInstance<JsonObject>()?.map(::toRouteProject) ?: emptyList(),
     )
 }
