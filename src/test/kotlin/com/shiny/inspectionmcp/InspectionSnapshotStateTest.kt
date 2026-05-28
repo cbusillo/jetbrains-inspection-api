@@ -1124,6 +1124,7 @@ class InspectionSnapshotStateTest {
             observedSettledEmptyInspectionView = true,
             observedStableReadableEmptyInspectionView = false,
             observedStableEmptyResultsWithoutInspectionView = false,
+            observedModelCleanInspection = true,
             observedNonEmptyInspectionTree = true,
         )
 
@@ -1164,6 +1165,19 @@ class InspectionSnapshotStateTest {
 
         assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableEmptyWithOpaqueInspectionView.first)
         assertEquals(null, stableEmptyWithOpaqueInspectionView.second)
+
+        val modelCleanWithUpdatingView = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedModelCleanInspection = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, modelCleanWithUpdatingView.first)
+        assertEquals(null, modelCleanWithUpdatingView.second)
 
         val unreadableView = classifyEmptyInspectionCapture(
             viewReadyOk = true,
@@ -1606,6 +1620,74 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Model-clean evidence can prove scoped empty results while the view is updating")
+    fun testModelCleanEvidenceCanProveScopedEmptyResults() {
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasModelCleanEvidence = true,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasModelCleanEvidence = true,
+                extractionSucceeded = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = true,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasModelCleanEvidence = true,
+                extractionSucceeded = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 4999L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                hasModelCleanEvidence = true,
+                extractionSucceeded = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
     @DisplayName("Safe transient empty view evidence latches for scoped empty extraction")
     fun testTransientEmptyEvidenceCanUseSuccessfulToolExtraction() {
         assertFalse(
@@ -2017,6 +2099,84 @@ class InspectionSnapshotStateTest {
                 stableForMs = 6000,
                 pollingElapsedMs = 30000,
             )
+        )
+
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = true,
+                observedInspectionView = true,
+                inspectionViewUpdating = true,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                observedModelCleanInspection = true,
+                bestResultsCount = 0,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Model extraction verdict distinguishes clean from unreadable empty results")
+    fun testInspectionModelExtractionVerdict() {
+        assertEquals(
+            InspectionModelVerdict.CLEAN,
+            InspectionModelExtraction(
+                problems = emptyList(),
+                problemDescriptorCount = 0,
+                enabledToolCount = 3,
+                readableToolCount = 3,
+                unreadableToolCount = 0,
+                unreadableReasons = emptyList(),
+            ).verdict,
+        )
+
+        assertEquals(
+            InspectionModelVerdict.HAS_PROBLEMS,
+            InspectionModelExtraction(
+                problems = listOf(mapOf("description" to "warning")),
+                problemDescriptorCount = 1,
+                enabledToolCount = 3,
+                readableToolCount = 3,
+                unreadableToolCount = 0,
+                unreadableReasons = emptyList(),
+            ).verdict,
+        )
+
+        assertEquals(
+            InspectionModelVerdict.UNREADABLE,
+            InspectionModelExtraction(
+                problems = emptyList(),
+                problemDescriptorCount = 0,
+                enabledToolCount = 3,
+                readableToolCount = 2,
+                unreadableToolCount = 1,
+                unreadableReasons = listOf("descriptors:IllegalStateException"),
+            ).verdict,
+        )
+
+        assertEquals(
+            InspectionModelVerdict.HAS_PROBLEMS,
+            InspectionModelExtraction(
+                problems = emptyList(),
+                problemDescriptorCount = 1,
+                enabledToolCount = 3,
+                readableToolCount = 3,
+                unreadableToolCount = 0,
+                unreadableReasons = emptyList(),
+            ).verdict,
+        )
+
+        assertEquals(
+            InspectionModelVerdict.UNKNOWN,
+            InspectionModelExtraction(
+                problems = emptyList(),
+                problemDescriptorCount = 0,
+                enabledToolCount = 0,
+                readableToolCount = 0,
+                unreadableToolCount = 0,
+                unreadableReasons = emptyList(),
+            ).verdict,
         )
     }
 

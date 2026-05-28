@@ -67,6 +67,13 @@ internal enum class InspectionSnapshotOutcome(val apiValue: String) {
     CAPTURE_INCOMPLETE("capture_incomplete"),
 }
 
+internal enum class InspectionModelVerdict(val apiValue: String) {
+    CLEAN("clean"),
+    HAS_PROBLEMS("has_problems"),
+    UNREADABLE("unreadable"),
+    UNKNOWN("unknown"),
+}
+
 internal enum class CaptureIncompleteReason(val apiValue: String) {
     VIEW_NOT_READY("view_not_ready"),
     VIEW_UPDATING_UNREADABLE("view_updating_unreadable"),
@@ -115,6 +122,23 @@ internal data class InspectionViewObservation(
     val updateStateReadable: Boolean = true,
     val problemStateReadable: Boolean = true,
 )
+
+internal data class InspectionModelExtraction(
+    val problems: List<Map<String, Any>>,
+    val problemDescriptorCount: Int,
+    val enabledToolCount: Int,
+    val readableToolCount: Int,
+    val unreadableToolCount: Int,
+    val unreadableReasons: List<String> = emptyList(),
+) {
+    val verdict: InspectionModelVerdict
+        get() = when {
+            problems.isNotEmpty() || problemDescriptorCount > 0 -> InspectionModelVerdict.HAS_PROBLEMS
+            unreadableToolCount > 0 -> InspectionModelVerdict.UNREADABLE
+            enabledToolCount > 0 && readableToolCount == enabledToolCount -> InspectionModelVerdict.CLEAN
+            else -> InspectionModelVerdict.UNKNOWN
+        }
+}
 
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
@@ -262,6 +286,7 @@ internal fun classifyEmptyInspectionCapture(
     observedSettledEmptyInspectionView: Boolean,
     observedStableReadableEmptyInspectionView: Boolean,
     observedStableEmptyResultsWithoutInspectionView: Boolean,
+    observedModelCleanInspection: Boolean = false,
     observedNonEmptyInspectionTree: Boolean,
 ): Pair<InspectionSnapshotOutcome, String?> {
     if (
@@ -269,7 +294,8 @@ internal fun classifyEmptyInspectionCapture(
             !observedNonEmptyInspectionTree &&
             (
                 (observedInspectionView && (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)) ||
-                    observedStableEmptyResultsWithoutInspectionView
+                    observedStableEmptyResultsWithoutInspectionView ||
+                    observedModelCleanInspection
                 )
     ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
@@ -424,6 +450,7 @@ internal fun shouldStopCapturePolling(
     observedSettledEmptyInspectionView: Boolean,
     observedStableReadableEmptyInspectionView: Boolean,
     observedStableEmptyResultsWithoutInspectionView: Boolean = false,
+    observedModelCleanInspection: Boolean = false,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
@@ -463,6 +490,15 @@ internal fun shouldStopCapturePolling(
         return true
     }
 
+    if (
+        viewReadyOk &&
+            observedModelCleanInspection &&
+            stableForMs >= minStableMs &&
+            pollingElapsedMs >= minReadableEmptyResultsWaitMs
+    ) {
+        return true
+    }
+
     if ((!viewReadyOk || !observedInspectionView) && stableForMs >= minStableMs && pollingElapsedMs >= maxFallbackWaitMs) {
         return true
     }
@@ -477,6 +513,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     hasSettledInspectionViewEvidence: Boolean = false,
     hasOpaqueSettledEmptyInspectionViewEvidence: Boolean = false,
     hasTransientEmptyInspectionViewEvidence: Boolean = false,
+    hasModelCleanEvidence: Boolean = false,
     extractionSucceeded: Boolean = true,
     hasScopedMatcher: Boolean,
     scopedContextResultsEmpty: Boolean,
@@ -491,6 +528,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     val hasUsableInspectionViewEvidence = !observedInspectionView ||
         (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
         (!inspectionViewUpdating && hasOpaqueSettledEmptyInspectionViewEvidence && extractionSucceeded) ||
+        hasModelCleanEvidence ||
         (
             inspectionViewUpdating &&
                 hasTransientEmptyInspectionViewEvidence &&
@@ -1334,7 +1372,7 @@ class InspectionHandler : HttpRequestHandler() {
                     filePattern = filePattern,
                 )
                 val page = paginateProblems(filteredCachedProblems, limit, offset)
-                val staleBase = mutableMapOf<String, Any?>(
+                val staleBase = mutableMapOf(
                     "status" to "stale_results",
                     "project" to project.name,
                     "project_key" to key,
@@ -2225,7 +2263,7 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(
                 {
                     @Suppress("UnstableApiUsage")
-                    globalContext.doInspections(scope)
+                    globalContext.performInspectionsWithProgress(scope, false, false)
                 },
                 "Running Code Inspection",
                 true,
@@ -2245,17 +2283,27 @@ class InspectionHandler : HttpRequestHandler() {
                     try {
                         val extractor = enhancedTreeExtractorFactory()
                         var extractedFromContextSucceeded = false
-                        val extractedFromContext = try {
-                            ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
-                                extractProblemsFromContext(globalContext, project)
-                            }.also {
+                        val contextExtraction = try {
+                            extractProblemsFromContextSafe(globalContext, project).also {
                                 extractedFromContextSucceeded = true
                             }
                         } catch (e: Exception) {
                             rethrowIfCanceled(e)
-                            emptyList()
+                            InspectionModelExtraction(
+                                problems = emptyList(),
+                                problemDescriptorCount = 0,
+                                enabledToolCount = 0,
+                                readableToolCount = 0,
+                                unreadableToolCount = 1,
+                                unreadableReasons = listOf(e.javaClass.simpleName.ifBlank { "context_extraction_exception" }),
+                            )
                         }
+                        val extractedFromContext = contextExtraction.problems
                         val scopedContextResults = filterProblemsForScope(extractedFromContext, scopeProblemMatcher)
+                        val modelVerdict = contextExtraction.verdict
+                        val modelExtractionClean = extractedFromContextSucceeded &&
+                            modelVerdict == InspectionModelVerdict.CLEAN &&
+                            scopedContextResults.isEmpty()
 
                         val captureStartMs = System.currentTimeMillis()
                         val deadlineMs = captureStartMs + 60000
@@ -2268,6 +2316,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var observedStableReadableEmptyInspectionView = false
                         var observedStableEmptyResultsWithoutInspectionView = false
                         var observedOpaqueSettledEmptyInspectionView = false
+                        var observedModelCleanInspection = false
                         var observedNonEmptyInspectionTree = false
                         var observedTransientEmptyInspectionViewEvidence = false
                         var inspectionViewUpdating = false
@@ -2285,6 +2334,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var lastExtractionCycleSucceeded = extractedFromContextSucceeded
                         var lastToolExtractionSucceeded = false
                         var captureExitReason = "deadline"
+                        var inspectionViewMarkedFinished = false
 
                         fun resetReadableEmptyInspectionViewEvidence() {
                             readableEmptyInspectionViewStableSince = null
@@ -2351,6 +2401,17 @@ class InspectionHandler : HttpRequestHandler() {
                             )
                         }
 
+                        fun markInspectionViewFinishedSafe(view: InspectionResultsView) {
+                            val app = ApplicationManager.getApplication()
+                            if (app.isDispatchThread) {
+                                view.setUpdating(false)
+                                return
+                            }
+                            app.invokeAndWait {
+                                view.setUpdating(false)
+                            }
+                        }
+
                         var viewReadyOk = false
 
                         while (System.currentTimeMillis() < deadlineMs) {
@@ -2372,6 +2433,20 @@ class InspectionHandler : HttpRequestHandler() {
                             } ?: initialView
                             if (!viewReadyOk && view != null) {
                                 viewReadyOk = true
+                            }
+
+                            if (
+                                viewReadyOk &&
+                                view != null &&
+                                !inspectionViewMarkedFinished &&
+                                (modelVerdict == InspectionModelVerdict.CLEAN || modelVerdict == InspectionModelVerdict.HAS_PROBLEMS)
+                            ) {
+                                try {
+                                    markInspectionViewFinishedSafe(view)
+                                } catch (e: Exception) {
+                                    rethrowIfCanceled(e)
+                                }
+                                inspectionViewMarkedFinished = true
                             }
 
                             var viewExtractionSucceeded = false
@@ -2516,6 +2591,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         observedStableReadableEmptyInspectionView,
                                     hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
                                     hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                    hasModelCleanEvidence = modelExtractionClean,
                                     extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                         lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
                                         observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
@@ -2531,6 +2607,18 @@ class InspectionHandler : HttpRequestHandler() {
                                 observedStableEmptyResultsWithoutInspectionView = true
                             }
                             if (
+                                !observedModelCleanInspection &&
+                                modelExtractionClean &&
+                                viewReadyOk &&
+                                lastViewObservation?.hasProblems != true &&
+                                bestResults.isEmpty() &&
+                                !observedNonEmptyInspectionTree &&
+                                stableForMs >= 5000L &&
+                                pollingElapsedMs >= 30000L
+                            ) {
+                                observedModelCleanInspection = true
+                            }
+                            if (
                                 shouldStopCapturePolling(
                                     viewReadyOk = viewReadyOk,
                                     observedInspectionView = observedInspectionView,
@@ -2538,6 +2626,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                                     observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                                     observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
+                                    observedModelCleanInspection = observedModelCleanInspection,
                                     bestResultsCount = bestResults.size,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
@@ -2567,6 +2656,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     observedStableReadableEmptyInspectionView,
                                 hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
                                 hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
+                                hasModelCleanEvidence = modelExtractionClean,
                                 extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                     lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
                                     observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
@@ -2581,6 +2671,20 @@ class InspectionHandler : HttpRequestHandler() {
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
                         }
+                        val finalStableForMs = System.currentTimeMillis() - lastChangeMs
+                        val finalPollingElapsedMs = System.currentTimeMillis() - captureStartMs
+                        if (
+                            !observedModelCleanInspection &&
+                            modelExtractionClean &&
+                            viewReadyOk &&
+                            lastViewObservation?.hasProblems != true &&
+                            bestResults.isEmpty() &&
+                            !observedNonEmptyInspectionTree &&
+                            finalStableForMs >= 5000L &&
+                            finalPollingElapsedMs >= 30000L
+                        ) {
+                            observedModelCleanInspection = true
+                        }
 
                         syncProjectState(project)
                         val snapshotState = captureProjectState(project)
@@ -2590,6 +2694,7 @@ class InspectionHandler : HttpRequestHandler() {
                             observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
                             observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                             observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
+                            observedModelCleanInspection = observedModelCleanInspection,
                             observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
                         )
                         val captureEndMs = System.currentTimeMillis()
@@ -2609,6 +2714,13 @@ class InspectionHandler : HttpRequestHandler() {
                                 "observed_stable_empty_results_without_inspection_view" to observedStableEmptyResultsWithoutInspectionView,
                                 "observed_opaque_settled_empty_inspection_view" to observedOpaqueSettledEmptyInspectionView,
                                 "observed_transient_empty_inspection_view_evidence" to observedTransientEmptyInspectionViewEvidence,
+                                "observed_model_clean_inspection" to observedModelCleanInspection,
+                                "model_verdict" to modelVerdict.apiValue,
+                                "model_problem_descriptor_count" to contextExtraction.problemDescriptorCount,
+                                "model_enabled_tool_count" to contextExtraction.enabledToolCount,
+                                "model_readable_tool_count" to contextExtraction.readableToolCount,
+                                "model_unreadable_tool_count" to contextExtraction.unreadableToolCount,
+                                "model_unreadable_reasons" to contextExtraction.unreadableReasons,
                                 "observed_non_empty_inspection_tree" to observedNonEmptyInspectionTree,
                                 "inspection_view_updating" to inspectionViewUpdating,
                                 "inspection_view_observation_count" to inspectionViewObservationCount,
@@ -2680,8 +2792,15 @@ class InspectionHandler : HttpRequestHandler() {
                                     "observedSettledEmptyInspectionView=$observedSettledEmptyInspectionView, " +
                                     "observedStableReadableEmptyInspectionView=$observedStableReadableEmptyInspectionView, " +
                                     "observedStableEmptyResultsWithoutInspectionView=$observedStableEmptyResultsWithoutInspectionView, " +
+                                    "observedModelCleanInspection=$observedModelCleanInspection, " +
                                     "observedNonEmptyInspectionTree=$observedNonEmptyInspectionTree, " +
                                     "observedTransientEmptyInspectionViewEvidence=$observedTransientEmptyInspectionViewEvidence, " +
+                                    "modelVerdict=${modelVerdict.apiValue}, " +
+                                    "modelProblemDescriptorCount=${contextExtraction.problemDescriptorCount}, " +
+                                    "modelEnabledToolCount=${contextExtraction.enabledToolCount}, " +
+                                    "modelReadableToolCount=${contextExtraction.readableToolCount}, " +
+                                    "modelUnreadableToolCount=${contextExtraction.unreadableToolCount}, " +
+                                    "modelUnreadableReasons=${contextExtraction.unreadableReasons}, " +
                                     "inspectionViewUpdating=$inspectionViewUpdating, " +
                                     "inspectionViewObservationCount=$inspectionViewObservationCount, " +
                                     "readableEmptyInspectionViewObservationCount=$readableEmptyInspectionViewObservationCount, " +
@@ -3344,13 +3463,59 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     @Suppress("UnstableApiUsage")
+    private fun extractProblemsFromContextSafe(
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        project: Project,
+    ): InspectionModelExtraction {
+        val app = ApplicationManager.getApplication()
+        if (app.isDispatchThread) {
+            return app.runReadAction<InspectionModelExtraction, Exception> {
+                extractProblemsFromContext(globalContext, project)
+            }
+        }
+
+        val holder = AtomicReference<InspectionModelExtraction>()
+        app.invokeAndWait {
+            holder.set(
+                app.runReadAction<InspectionModelExtraction, Exception> {
+                    extractProblemsFromContext(globalContext, project)
+                }
+            )
+        }
+        return holder.get() ?: InspectionModelExtraction(
+            problems = emptyList(),
+            problemDescriptorCount = 0,
+            enabledToolCount = 0,
+            readableToolCount = 0,
+            unreadableToolCount = 1,
+            unreadableReasons = listOf("empty_edtholder"),
+        )
+    }
+
+    @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
-    ): List<Map<String, Any>> {
+    ): InspectionModelExtraction {
         val problems = mutableListOf<Map<String, Any>>()
         val seen = LinkedHashSet<String>()
-        val tools = globalContext.tools.values
+        var problemDescriptorCount = 0
+        var enabledToolCount = 0
+        var readableToolCount = 0
+        var unreadableToolCount = 0
+        val unreadableReasons = linkedSetOf<String>()
+        val tools = try {
+            globalContext.tools.values
+        } catch (e: Exception) {
+            return InspectionModelExtraction(
+                problems = emptyList(),
+                problemDescriptorCount = 0,
+                enabledToolCount = 0,
+                readableToolCount = 0,
+                unreadableToolCount = 1,
+                unreadableReasons = listOf(formatModelUnreadableReason("tools", e)),
+            )
+        }
 
         for (toolGroup in tools) {
             val scopeStates = try {
@@ -3360,30 +3525,48 @@ class InspectionHandler : HttpRequestHandler() {
             }
             for (state in scopeStates) {
                 if (!state.isEnabled) continue
+                enabledToolCount += 1
                 val wrapper = try {
                     state.tool
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    unreadableReasons.add(formatModelUnreadableReason("tool", e))
                     null
-                } ?: continue
+                }
+                if (wrapper == null) {
+                    unreadableToolCount += 1
+                    continue
+                }
 
                 val presentation = try {
                     globalContext.getPresentation(wrapper)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    unreadableReasons.add(formatModelUnreadableReason("presentation", e))
                     null
-                } ?: continue
+                }
+                if (presentation == null) {
+                    unreadableToolCount += 1
+                    continue
+                }
 
                 try {
                     presentation.updateContent()
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    unreadableReasons.add(formatModelUnreadableReason("update_content", e))
+                    unreadableToolCount += 1
+                    continue
                 }
 
                 val descriptors = try {
                     val elements = presentation.problemElements
                     val values = elements.getValues()
                     if (!values.isNullOrEmpty()) values else presentation.problemDescriptors
-                } catch (_: Exception) {
-                    emptyList()
+                } catch (e: Exception) {
+                    unreadableReasons.add(formatModelUnreadableReason("descriptors", e))
+                    unreadableToolCount += 1
+                    continue
                 }
+                readableToolCount += 1
+                problemDescriptorCount += descriptors.size
 
                 for (descriptor in descriptors) {
                     val map = buildProblemMap(descriptor, wrapper, project) ?: continue
@@ -3402,7 +3585,23 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
-        return problems
+        return InspectionModelExtraction(
+            problems = problems,
+            problemDescriptorCount = problemDescriptorCount,
+            enabledToolCount = enabledToolCount,
+            readableToolCount = readableToolCount,
+            unreadableToolCount = unreadableToolCount,
+            unreadableReasons = unreadableReasons.toList(),
+        )
+    }
+
+    private fun formatModelUnreadableReason(stage: String, exception: Exception): String {
+        val message = exception.message
+            ?.lineSequence()
+            ?.firstOrNull()
+            ?.take(160)
+        return listOfNotNull(stage, exception.javaClass.simpleName, message)
+            .joinToString(":")
     }
 
     private fun buildProblemMap(
