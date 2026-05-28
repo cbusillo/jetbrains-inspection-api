@@ -52,6 +52,15 @@ Expected behavior:
 ## Helper lifecycle smoke
 
 Use this when validating worktree closeout behavior from the external helper.
+For release, merge-readiness, or dogfood-exit validation, prefer the repeatable
+matrix runner first:
+
+```bash
+./scripts/dogfood-smoke-matrix.sh --json-out tmp/dogfood-smoke-matrix.json
+```
+
+Use the manual sequence below when debugging one matrix row or a
+product-specific IDE failure.
 
 1. Pick a repo worktree that is not currently open in the target IDE.
 2. Run `jb-inspect.py closeout --repo <worktree> --scope changed_files`.

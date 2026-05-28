@@ -31,7 +31,8 @@
       ]
     },
     "manualSmoke": {
-      "automatedIde": "./scripts/test-automated.sh"
+      "automatedIde": "./scripts/test-automated.sh",
+      "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh"
     },
     "docsRequiredWhen": [
       "behavior changes",
