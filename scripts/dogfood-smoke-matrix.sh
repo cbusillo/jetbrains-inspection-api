@@ -251,11 +251,6 @@ classify_payload() {
 		esac
 	fi
 
-	if [ "$scenario" = "helper-opened" ] && [ "$cleanup_status" != "closed" ]; then
-		echo "cleanup_expected_closed"
-		return
-	fi
-
 	if [ "$scenario" = "preexisting" ] && [ -n "$cleanup_status" ] && [ "$cleanup_status" != "not_needed" ]; then
 		echo "cleanup_expected_not_needed"
 		return
@@ -283,6 +278,11 @@ classify_payload() {
       ' "$payload"
 		)
 		echo "capture_incomplete:$reason"
+		return
+	fi
+
+	if [ "$scenario" = "helper-opened" ] && [ "$cleanup_status" != "closed" ]; then
+		echo "cleanup_expected_closed"
 		return
 	fi
 
