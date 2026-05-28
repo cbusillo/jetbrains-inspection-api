@@ -49,7 +49,11 @@ Keep exact command matrices, environment setup, and troubleshooting in
    that README examples still match request/response behavior.
 4. For behavior that depends on a live JetBrains IDE, use the IDE smoke path
    below and open `TESTING_INSTRUCTIONS.md` for the exact manual sequence.
-5. For release readiness, run `./scripts/test-all.sh` or the commit gate before
+5. For lifecycle, capture, or dogfood-exit readiness, run the dogfood smoke
+   matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are available;
+   it exercises preexisting and helper-opened closeout paths and records cleanup
+   evidence.
+6. For release readiness, run `./scripts/test-all.sh` or the commit gate before
    build/release commands, and confirm CI status when GitHub state matters.
 
 ## When Changing Behavior
@@ -79,6 +83,10 @@ unit tests.
    scope.
 5. Prefer targeted scopes such as `current_file`, `files`, `directory`, or
    `changed_files` when full-project inspection is unnecessary.
+6. When validating agent closeout behavior across IDEs or repos, run
+   `./scripts/dogfood-smoke-matrix.sh` and inspect its JSON artifact for
+   cleanup `closed`/`not_needed`, IDE identity, plugin version, and failure
+   buckets.
 
 ## Release Work
 

@@ -106,6 +106,37 @@ IntelliJ IDEA. If plugin installation prompts about replacing an existing jar,
 handle that explicitly and rerun the smoke; the prompt alone is not install
 validation.
 
+## Dogfood smoke matrix
+
+Use `./scripts/dogfood-smoke-matrix.sh` before release, after lifecycle or
+capture behavior changes, and when closing a dogfood session that should prove
+agent closeout behavior. The matrix wraps `jb-inspect.py closeout`, includes
+this repo by default, includes `~/Developer/mediaforce` when present, and runs
+both preexisting-project and helper-opened worktree cases.
+
+```bash
+./scripts/dogfood-smoke-matrix.sh \
+  --json-out tmp/dogfood-smoke-matrix.json
+```
+
+The preexisting case uses `--no-open` and expects cleanup `not_needed`; if the
+project is not already open it is reported as a skipped preexisting row. The
+helper-opened case creates a disposable linked worktree under
+`~/.code/working/jetbrains-inspection-api/dogfood-smoke`, expects
+`opened_by_helper=true`, and expects cleanup `closed`. Each row records the IDE
+identity, plugin version, cleanup status, result bucket, and the issue bucket to
+check for failures such as `capture_incomplete`, opaque helper errors, or
+lifecycle cleanup regressions.
+
+For a smaller targeted pass, restrict the matrix explicitly:
+
+```bash
+./scripts/dogfood-smoke-matrix.sh \
+  --ide "IntelliJ IDEA" \
+  --case helper-opened \
+  --repo plugin="$PWD"
+```
+
 ## Local cleanup
 
 `./scripts/clean-local.sh` removes disposable local files such as `.DS_Store`
