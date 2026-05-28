@@ -33,7 +33,11 @@ val generateInspectionBuildInfo = tasks.register<Exec>("generateInspectionBuildI
         set -eu
         out="${'$'}1"
         mkdir -p "$(dirname "${'$'}out")"
-        commit="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+        if command -v git >/dev/null 2>&1; then
+          commit="$(git rev-parse --verify HEAD 2>/dev/null || true)"
+        else
+          commit=""
+        fi
         if [ -n "${'$'}commit" ]; then
           short_commit="$(printf '%s' "${'$'}commit" | cut -c1-12)"
           if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
