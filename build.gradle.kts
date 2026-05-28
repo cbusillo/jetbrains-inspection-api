@@ -1,6 +1,15 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.api.DefaultTask
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.TaskAction
+import java.io.ByteArrayOutputStream
+import java.time.Instant
+import java.util.Properties
 
 plugins {
     id("java")
@@ -18,53 +27,66 @@ jacoco {
 group = "com.jetbrains.inspection"
 version = project.property("pluginVersion").toString()
 
-val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
-val generateInspectionBuildInfo = tasks.register<Exec>("generateInspectionBuildInfo") {
-    val outputFile = generatedBuildInfoDir.map {
-        it.file("com/shiny/inspectionmcp/inspection-build.properties")
+abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
+    @get:Internal
+    abstract val gitDirectory: DirectoryProperty
+
+    @get:OutputFile
+    abstract val outputFile: RegularFileProperty
+
+    init {
+        outputs.upToDateWhen { false }
+        outputs.cacheIf { false }
     }
-    outputs.file(outputFile)
-    outputs.upToDateWhen { false }
-    outputs.cacheIf { false }
-    commandLine(
-        "sh",
-        "-c",
-        """
-        set -eu
-        out="${'$'}1"
-        mkdir -p "$(dirname "${'$'}out")"
-        if command -v git >/dev/null 2>&1; then
-          commit="$(git rev-parse --verify HEAD 2>/dev/null || true)"
-        else
-          commit=""
-        fi
-        if [ -n "${'$'}commit" ]; then
-          short_commit="$(printf '%s' "${'$'}commit" | cut -c1-12)"
-          if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
-            dirty="true"
-            state="dirty"
-          else
-            dirty="false"
-            state="clean"
-          fi
-        else
-          commit="unknown"
-          short_commit="unknown"
-          dirty="unknown"
-          state="unknown"
-        fi
-        build_time="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-        {
-          printf 'plugin.build.commit=%s\n' "${'$'}commit"
-          printf 'plugin.build.short_commit=%s\n' "${'$'}short_commit"
-          printf 'plugin.build.dirty=%s\n' "${'$'}dirty"
-          printf 'plugin.build.time=%s\n' "${'$'}build_time"
-          printf 'plugin.build.fingerprint=%s-%s\n' "${'$'}short_commit" "${'$'}state"
-        } > "${'$'}out"
-        """.trimIndent(),
-        "generateInspectionBuildInfo",
-        outputFile.get().asFile.absolutePath,
-    )
+
+    @TaskAction
+    fun generate() {
+        val commit = gitOutput("rev-parse", "--verify", "HEAD") ?: "unknown"
+        val shortCommit = commit.takeIf { it != "unknown" }?.take(12) ?: "unknown"
+        val dirty = if (commit == "unknown") {
+            "unknown"
+        } else if (gitOutput("status", "--porcelain")?.isNotEmpty() == true) {
+            "true"
+        } else {
+            "false"
+        }
+        val state = when (dirty) {
+            "true" -> "dirty"
+            "false" -> "clean"
+            else -> "unknown"
+        }
+
+        val properties = Properties().apply {
+            setProperty("plugin.build.commit", commit)
+            setProperty("plugin.build.short_commit", shortCommit)
+            setProperty("plugin.build.dirty", dirty)
+            setProperty("plugin.build.time", Instant.now().toString())
+            setProperty("plugin.build.fingerprint", "$shortCommit-$state")
+        }
+
+        val target = outputFile.get().asFile
+        target.parentFile.mkdirs()
+        target.outputStream().use { stream -> properties.store(stream, null) }
+    }
+
+    private fun gitOutput(vararg args: String): String? {
+        return runCatching {
+            val process = ProcessBuilder("git", *args)
+                .directory(gitDirectory.get().asFile)
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            output.takeIf { process.waitFor() == 0 && it.isNotEmpty() }
+        }.getOrNull()
+    }
+}
+
+val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
+val generateInspectionBuildInfo = tasks.register<GenerateInspectionBuildInfoTask>("generateInspectionBuildInfo") {
+    gitDirectory.set(layout.projectDirectory)
+    outputFile.set(generatedBuildInfoDir.map {
+        it.file("com/shiny/inspectionmcp/inspection-build.properties")
+    })
 }
 
 sourceSets {
