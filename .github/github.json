@@ -24,11 +24,7 @@
     "inspection": {
       "tool": "jetbrains",
       "ide": "IntelliJ IDEA",
-      "scopePreference": [
-        "changed_files",
-        "directory",
-        "whole_project"
-      ]
+      "scopePreference": ["changed_files", "directory", "whole_project"]
     },
     "manualSmoke": {
       "automatedIde": "./scripts/test-automated.sh",
@@ -44,10 +40,7 @@
       "manual smoke test flow changes"
     ]
   },
-  "importantWorkflows": [
-    "CI",
-    "Release"
-  ],
+  "importantWorkflows": ["CI", "Release"],
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],
@@ -71,7 +64,14 @@
     ]
   },
   "cleanup": {
-    "localCommand": "./scripts/clean-local.sh",
+    "commands": [
+      {
+        "name": "clean local disposable files",
+        "command": "./scripts/clean-local.sh",
+        "when": "routine",
+        "description": "Remove disposable local OS and test-log files while preserving configuration, caches, IDE state, and build output."
+      }
+    ],
     "deleteMergedLocalBranches": true,
     "removeMergedCleanWorktrees": true
   },
