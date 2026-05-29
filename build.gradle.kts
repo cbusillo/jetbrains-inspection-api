@@ -45,7 +45,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
         val shortCommit = commit.takeIf { it != "unknown" }?.take(12) ?: "unknown"
         val dirty = when {
             commit == "unknown" -> "unknown"
-            gitDiffIndexExitCode() == 0 -> "false"
+            gitDiffIndexExitCode() == 0 && !hasUntrackedFiles() -> "false"
             else -> "true"
         }
         val state = when (dirty) {
@@ -85,6 +85,16 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
                 .start()
                 .waitFor()
         }.getOrNull()
+    }
+
+    private fun hasUntrackedFiles(): Boolean {
+        return runCatching {
+            val process = gitProcess("ls-files", "--others", "--exclude-standard")
+                .redirectError(ProcessBuilder.Redirect.DISCARD)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            process.waitFor() == 0 && output.isNotEmpty()
+        }.getOrDefault(true)
     }
 
     private fun gitProcess(vararg args: String): ProcessBuilder {
