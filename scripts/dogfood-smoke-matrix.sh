@@ -6,7 +6,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 1
 
 DEFAULT_HELPER_DEV="$HOME/Developer/codex-skills/jetbrains-inspection/scripts/jb-inspect.py"
-DEFAULT_HELPER_HOME="${CODEX_HOME:-$HOME/.code}/skills/jetbrains-inspection/scripts/jb-inspect.py"
+DEFAULT_HELPER_HOME="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
 
 if [ -x "$DEFAULT_HELPER_DEV" ]; then
 	HELPER="$DEFAULT_HELPER_DEV"

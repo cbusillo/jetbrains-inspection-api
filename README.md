@@ -55,7 +55,7 @@ You can also run `Tools` → `Copy MCP Setup`, pick your MCP client, then paste 
 Manual examples:
 
 ```bash
-# Code (Every)
+# Every Code
 code mcp add inspection-jetbrains "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
 # Codex CLI
