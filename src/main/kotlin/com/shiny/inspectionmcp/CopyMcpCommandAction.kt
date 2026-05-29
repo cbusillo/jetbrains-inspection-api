@@ -84,7 +84,7 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
     val geminiCommand = "gemini mcp add -s user $name ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val fixedPortNote = port?.let { "\n\nFixed-port fallback: add --env IDE_PORT=$it to target only this IDE." } ?: ""
     val allCommands = buildString {
-        appendLine("Code (Every)")
+        appendLine("Every Code")
         appendLine(codeCommand)
         appendLine()
         appendLine("Codex CLI")
@@ -99,7 +99,7 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
     }.trim()
 
     return listOf(
-        McpSetupOption("Code (Every)", codeCommand),
+        McpSetupOption("Every Code", codeCommand),
         McpSetupOption("Codex CLI", codexCommand),
         McpSetupOption("Claude Code", claudeCommand),
         McpSetupOption("Gemini CLI", geminiCommand),

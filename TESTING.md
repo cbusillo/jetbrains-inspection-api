@@ -53,7 +53,7 @@ primary agent-facing wrapper around this plugin's HTTP API. Run it from the
 installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash
-HELPER="${CODEX_HOME:-$HOME/.code}/skills/jetbrains-inspection/scripts/jb-inspect.py"
+HELPER="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
 uv run "$HELPER" run \
   --repo "$PWD" \
   --scope changed_files
@@ -73,7 +73,7 @@ projects opened by the helper. Projects that were open before the helper started
 are left open. On macOS, lifecycle opens use `open -g` by default so the IDE should
 not take focus while a closeout is preparing a worktree. Auto-open requires a
 global trusted-root policy in
-`${CODEX_HOME:-$HOME/.code}/jetbrains-inspection.json`; test worktrees should be
+`${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`; test worktrees should be
 created under those roots, not random temp directories.
 
 Before it starts lifecycle auto-open, the helper adds the matching trusted root

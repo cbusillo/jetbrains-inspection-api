@@ -17,7 +17,7 @@
             <li>Scope-based filtering (whole project, current file, directory)</li>
             <li>Trigger inspections programmatically and poll status</li>
             <li>Works with JetBrains IDEs (2025.x compatible)</li>
-            <li>Bundled MCP server + setup command for Code, Codex CLI, Claude Code, and Gemini CLI</li>
+            <li>Bundled MCP server + setup command for Every Code, Codex CLI, Claude Code, and Gemini CLI</li>
             <li>IDE-only inspections (e.g., PyCharm’s Odoo plugin checks) are made available to automation</li>
         </ul>
         <br/>
