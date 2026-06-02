@@ -125,8 +125,6 @@ if [ -f "$TEST_PROJECT_PATH/.idea/.name" ]; then
 else
     PROJECT_NAME=$(basename "$TEST_PROJECT_PATH")
 fi
-PROJECT_HINT="$PROJECT_NAME"
-PROJECT_PARAM="project=$(urlencode "$PROJECT_HINT")"
 echo "  Project Name: $PROJECT_NAME"
 echo ""
 
@@ -135,16 +133,154 @@ is_ide_running() {
     pgrep -f "$IDE_TYPE" > /dev/null 2>&1
 }
 
-# Function to wait for API to be ready
-wait_for_api() {
-    echo "⏳ Waiting for API to be ready..."
-    for i in {1..60}; do
-        if curl -s --max-time 2 "http://localhost:$IDE_PORT/api/inspection/problems" > /dev/null 2>&1; then
-            echo "✅ API is responding"
+# Route discovery overrides the static IDE_PORT from local config. JetBrains can
+# choose a different built-in server port after restart, especially when other
+# JetBrains products are already running.
+IDE_PORT_RANGE="${JETBRAINS_INSPECTION_PORTS:-63340 63341 63342 63343 63344 63345 63346 63347 63348 63349}"
+INSPECTION_API_PATH="/api/inspection"
+PROJECT_PATH_ENCODED=$(urlencode "$TEST_PROJECT_PATH")
+PROJECT_PARAM="project_path=$PROJECT_PATH_ENCODED&worktree_path=$PROJECT_PATH_ENCODED"
+
+port_candidates() {
+    printf '%s\n%s\n' "$IDE_PORT" "$IDE_PORT_RANGE" | tr ' ' '\n' | awk 'NF && !seen[$0]++'
+}
+
+inspection_url() {
+    local port="$1"
+    local endpoint="$2"
+    local params="${3:-}"
+    if [ -n "$params" ]; then
+        printf 'http://localhost:%s%s/%s?%s' "$port" "$INSPECTION_API_PATH" "$endpoint" "$params"
+    else
+        printf 'http://localhost:%s%s/%s' "$port" "$INSPECTION_API_PATH" "$endpoint"
+    fi
+}
+
+api_get() {
+    local port="$1"
+    local endpoint="$2"
+    local params="${3:-}"
+    local timeout="${4:-5}"
+    curl -s --max-time "$timeout" "$(inspection_url "$port" "$endpoint" "$params")"
+}
+
+api_get_current() {
+    local endpoint="$1"
+    local params="${2:-}"
+    api_get "$IDE_PORT" "$endpoint" "$params"
+}
+
+normalize_ide_text() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' _-'
+}
+
+identity_matches_ide() {
+    local identity="$1"
+    local requested
+    local ide_name
+    local product_code
+
+    requested=$(normalize_ide_text "$IDE_TYPE")
+    ide_name=$(echo "$identity" | jq -r '.ide_name // .name // ""')
+    product_code=$(echo "$identity" | jq -r '.ide_product_code // .product_code // ""')
+    ide_name=$(normalize_ide_text "$ide_name")
+    product_code=$(normalize_ide_text "$product_code")
+
+    case "$requested" in
+        pycharm|pycharmce)
+            [ "${ide_name#*pycharm}" != "$ide_name" ] || [ "$product_code" = "py" ] || [ "$product_code" = "pc" ]
+            ;;
+        intellijidea|intellij|idea)
+            [ "${ide_name#*intellij}" != "$ide_name" ] || [ "$product_code" = "iu" ] || [ "$product_code" = "ic" ]
+            ;;
+        webstorm)
+            [ "${ide_name#*webstorm}" != "$ide_name" ] || [ "$product_code" = "ws" ]
+            ;;
+        *)
+            case "$ide_name" in
+                *"$requested"*) return 0 ;;
+                *) return 1 ;;
+            esac
+            ;;
+    esac
+}
+
+route_matches_project() {
+    local route="$1"
+    local base_path
+    local project_file_path
+
+    base_path=$(echo "$route" | jq -r '.base_path // ""')
+    project_file_path=$(echo "$route" | jq -r '.project_file_path // ""')
+
+    if [ "$base_path" = "$TEST_PROJECT_PATH" ]; then
+        return 0
+    fi
+    case "$project_file_path" in
+        "$TEST_PROJECT_PATH"/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+discover_project_route() {
+    local identity
+    local route_response
+    local route
+    local route_error
+    local matched_ide_count=0
+    local best_status=""
+
+    for port in $(port_candidates); do
+        identity=$(api_get "$port" identity || true)
+        if ! echo "$identity" | jq -e '.port // .ide_name // .name' > /dev/null 2>&1; then
+            continue
+        fi
+        if ! identity_matches_ide "$identity"; then
+            continue
+        fi
+        matched_ide_count=$((matched_ide_count + 1))
+        route_response=$(api_get "$port" route "$PROJECT_PARAM" || true)
+        route_error=$(echo "$route_response" | jq -r '.error // empty' 2>/dev/null || true)
+        route=$(echo "$route_response" | jq -c '.route // empty' 2>/dev/null || true)
+        if [ -n "$route" ] && route_matches_project "$route"; then
+            IDE_PORT=$(echo "$route" | jq -r '.port // empty')
+            if [ -z "$IDE_PORT" ]; then
+                IDE_PORT="$port"
+            fi
+            PROJECT_NAME=$(echo "$route" | jq -r '.project_name // empty')
+            if [ -z "$PROJECT_NAME" ]; then
+                PROJECT_NAME=$(basename "$TEST_PROJECT_PATH")
+            fi
+            echo "✅ Project route found: $PROJECT_NAME on port $IDE_PORT"
             return 0
         fi
-        if [ "$i" -eq 60 ]; then
-            echo "❌ API not responding after 60 seconds"
+        if [ -n "$route_error" ]; then
+            best_status="port $port: $route_error"
+        else
+            best_status="port $port: route not found for $TEST_PROJECT_PATH"
+        fi
+    done
+
+    if [ "$matched_ide_count" -eq 0 ]; then
+        echo "❌ No $IDE_TYPE inspection plugin identity found on scanned ports"
+    else
+        echo "❌ $IDE_TYPE is responding, but no route matched the test project"
+        if [ -n "$best_status" ]; then
+            echo "   Last route status: $best_status"
+        fi
+    fi
+    return 1
+}
+
+wait_for_api() {
+    echo "⏳ Waiting for API to be ready..."
+    for i in {1..90}; do
+        if discover_project_route; then
+            echo "✅ API route is responding on port $IDE_PORT"
+            return 0
+        fi
+        if [ "$i" -eq 90 ]; then
+            echo "❌ API route not responding after 90 seconds"
             return 1
         fi
         echo -n "."
@@ -154,18 +290,37 @@ wait_for_api() {
 
 wait_for_project_ready() {
     echo "⏳ Waiting for project to be ready..."
-    for i in {1..120}; do
-        STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status?$PROJECT_PARAM")
+    INDEXING=""
+    IS_SCANNING=""
+    for i in {1..240}; do
+        if [ "$i" -eq 1 ] || [ $((i % 15)) -eq 0 ]; then
+            if ! discover_project_route; then
+                INDEXING=""
+                IS_SCANNING=""
+                sleep 1
+                continue
+            fi
+        fi
+        STATUS=$(api_get_current status "$PROJECT_PARAM")
         STATUS_ERROR=$(echo "$STATUS" | jq -r '.error // empty')
         PROJECT_READY=$(echo "$STATUS" | jq -r '.project_name // empty')
+        INDEXING=$(echo "$STATUS" | jq -r '.indexing // false')
+        IS_SCANNING=$(echo "$STATUS" | jq -r '.is_scanning // false')
         if [ -n "$PROJECT_READY" ] && [ -z "$STATUS_ERROR" ]; then
             echo "✅ Project ready: $PROJECT_READY"
+            if [ "$INDEXING" = "true" ] || [ "$IS_SCANNING" = "true" ]; then
+                echo "   Project is still indexing/scanning; inspection wait will handle completion."
+            fi
             return 0
         fi
-        if [ "$i" -eq 120 ]; then
-            echo "❌ Project not ready after 120 seconds"
+        if [ "$i" -eq 240 ]; then
+            echo "❌ Project not ready after 240 seconds"
+            echo "   Last checked port: $IDE_PORT"
             if [ -n "$STATUS_ERROR" ]; then
                 echo "   Last error: $STATUS_ERROR"
+            fi
+            if [ "$INDEXING" = "true" ] || [ "$IS_SCANNING" = "true" ]; then
+                echo "   Last status: project route present but indexing=$INDEXING is_scanning=$IS_SCANNING"
             fi
             return 1
         fi
@@ -173,16 +328,14 @@ wait_for_project_ready() {
     done
 }
 
-# Function to run API tests
 run_api_tests() {
     echo ""
     echo "🧪 Running API Tests"
     echo "==================="
-    
-    # First trigger an inspection
+
     echo ""
     echo "📍 Triggering Inspection..."
-    TRIGGER_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/trigger?$PROJECT_PARAM")
+    TRIGGER_RESPONSE=$(api_get_current trigger "$PROJECT_PARAM")
     TRIGGER_ERROR=$(echo "$TRIGGER_RESPONSE" | jq -r '.error // empty')
     if [ -n "$TRIGGER_ERROR" ]; then
         echo "❌ Trigger failed: $TRIGGER_ERROR"
@@ -190,10 +343,9 @@ run_api_tests() {
     fi
     echo "   Response: $(echo "$TRIGGER_RESPONSE" | jq -r '.message // "triggered"')"
 
-    # Wait for inspection to complete (long-poll)
     echo "⏳ Waiting for inspection to complete..."
     WAIT_TIMEOUT_MS=180000
-    WAIT_RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/wait?$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000")
+    WAIT_RESPONSE=$(api_get_current wait "$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000")
     WAIT_COMPLETED=$(echo "$WAIT_RESPONSE" | jq -r '.wait_completed // false')
     WAIT_REASON=$(echo "$WAIT_RESPONSE" | jq -r '.completion_reason // "unknown"')
     WAIT_TIMED_OUT=$(echo "$WAIT_RESPONSE" | jq -r '.timed_out // false')
@@ -212,24 +364,21 @@ run_api_tests() {
     if [ -n "$WAIT_NOTE" ]; then
         echo "   Note: $WAIT_NOTE"
     fi
-    echo ""
-    
-    # Test 1: Get inspection results
+
     echo ""
     echo "📍 Test 1: Inspection Results"
-    RESPONSE=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?$PROJECT_PARAM&severity=all")
+    RESPONSE=$(api_get_current problems "$PROJECT_PARAM&severity=all")
     PROBLEMS_STATUS=$(echo "$RESPONSE" | jq -r '.status // "unknown"')
     METHOD=$(echo "$RESPONSE" | jq -r '.method // "unknown"')
     TOTAL_PROBLEMS=$(echo "$RESPONSE" | jq -r '.total_problems // 0')
-    
+
     echo "   Status: $PROBLEMS_STATUS"
     echo "   Method: $METHOD"
     echo "   Total Problems: $TOTAL_PROBLEMS"
-    
-    # Test 2: Check inspection status
+
     echo ""
     echo "📍 Test 2: Inspection Status"
-    STATUS=$(curl -s "http://localhost:$IDE_PORT/api/inspection/status?$PROJECT_PARAM")
+    STATUS=$(api_get_current status "$PROJECT_PARAM")
     HAS_RESULTS=$(echo "$STATUS" | jq -r '.has_inspection_results // false')
     IS_SCANNING=$(echo "$STATUS" | jq -r '.is_scanning // false')
     CLEAN_INSPECTION=$(echo "$STATUS" | jq -r '.clean_inspection // false')
@@ -241,20 +390,18 @@ run_api_tests() {
     echo "   Has results: $HAS_RESULTS"
     echo "   Is scanning: $IS_SCANNING"
     echo "   Clean inspection: $CLEAN_INSPECTION"
-    
-    # Test 3: Severity filtering
+
     echo ""
     echo "📍 Test 3: Severity Filtering"
     for severity in "error" "warning" "weak_warning" "info"; do
-        count=$(curl -s "http://localhost:$IDE_PORT/api/inspection/problems?$PROJECT_PARAM&severity=$severity" | jq -r '.total_problems // 0')
+        count=$(api_get_current problems "$PROJECT_PARAM&severity=$severity" | jq -r '.total_problems // 0')
         echo "   $severity: $count problems"
     done
-    
-    # Analysis
+
     echo ""
     echo "🔍 Results Analysis"
     echo "=================="
-    
+
     if [ "$TOTAL_PROBLEMS" -gt 0 ]; then
         echo "✅ Found $TOTAL_PROBLEMS problems (method: $METHOD)"
         if [ "$HAS_RESULTS" = "true" ]; then
@@ -278,7 +425,7 @@ run_api_tests() {
     echo "⚠️  No problems found"
     if [ "$HAS_RESULTS" = "false" ]; then
         echo "   No inspection results available yet"
-        echo "   Try triggering inspection with: curl http://localhost:$IDE_PORT/api/inspection/trigger"
+        echo "   Try triggering inspection through port $IDE_PORT after the IDE finishes indexing."
     fi
     return 1
 }
