@@ -142,7 +142,26 @@ PROJECT_PATH_ENCODED=$(urlencode "$TEST_PROJECT_PATH")
 PROJECT_PARAM="project_path=$PROJECT_PATH_ENCODED&worktree_path=$PROJECT_PATH_ENCODED"
 
 port_candidates() {
-    printf '%s\n%s\n' "$IDE_PORT" "$IDE_PORT_RANGE" | tr ' ' '\n' | awk 'NF && !seen[$0]++'
+    printf '%s\n%s\n' "$IDE_PORT" "$IDE_PORT_RANGE" | awk '
+        BEGIN { FS = "[,[:space:]]+" }
+        {
+            for (idx = 1; idx <= NF; idx++) {
+                token = $idx
+                if (token ~ /^[0-9]+$/) {
+                    if (!seen[token]++) print token
+                    continue
+                }
+                if (token !~ /^[0-9]+-[0-9]+$/) continue
+                split(token, range, "-")
+                start = range[1] + 0
+                end = range[2] + 0
+                if (start > end) continue
+                for (port = start; port <= end; port++) {
+                    if (!seen[port]++) print port
+                }
+            }
+        }
+    '
 }
 
 inspection_url() {
