@@ -3,6 +3,10 @@ name: jetbrains-inspection-workflow
 description: >-
   Use for JetBrains Inspection API plugin, MCP server, HTTP API, test, smoke,
   release, or docs work.
+metadata:
+  short-description: Develop and validate inspection API work
+policy:
+  allow_implicit_invocation: true
 ---
 
 # JetBrains Inspection Workflow
@@ -23,6 +27,8 @@ workflow router.
 4. If Gradle reports NativeServices or sandbox permission errors in Every Code,
    retry the same command with the required permission path rather than changing
    project files.
+5. Check `.github/github.json` when validation gates, workflow names, cleanup
+   policy, docs routing, or GitHub signal assumptions matter.
 
 ## Common Commands
 
@@ -49,10 +55,10 @@ Keep exact command matrices, environment setup, and troubleshooting in
    that README examples still match request/response behavior.
 4. For behavior that depends on a live JetBrains IDE, use the IDE smoke path
    below and open `TESTING_INSTRUCTIONS.md` for the exact manual sequence.
-5. For lifecycle, capture, or dogfood-exit readiness, run the dogfood smoke
-   matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are available;
-   it exercises preexisting and helper-opened closeout paths and records cleanup
-   evidence.
+5. For lifecycle, capture, routing, or dogfood-exit readiness, run the dogfood
+   smoke matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are
+   available; it exercises preexisting and helper-opened closeout paths and
+   records cleanup evidence.
 6. For release readiness, run `./scripts/test-all.sh` or the commit gate before
    build/release commands, and confirm CI status when GitHub state matters.
 
@@ -65,9 +71,16 @@ Keep exact command matrices, environment setup, and troubleshooting in
    parameter handling.
 3. For MCP tool behavior, validate the JVM MCP server tests and ensure direct
    HTTP examples still describe the same behavior.
-4. For project selection behavior, preserve the rule that blank or omitted
-   `project` uses the focused/active project and nonblank values must match an
-   open project.
+4. For project selection behavior, preserve the MCP auto-routing order:
+   `project_key`, `project_path`, MCP process working directory, then unique
+   project name. Blank or omitted selectors fall back to the focused/active
+   open project only when unambiguous.
+5. For route/session behavior, preserve `session_id` drift handling: stale
+   sessions must return a fresh-trigger requirement instead of silently using
+   old cached state.
+6. For clean/capture classification, preserve non-clean outcomes for
+   `capture_incomplete`, stale results, timeouts, indexing, session drift,
+   route ambiguity, wrong-worktree routes, and cleanup failures.
 
 ## IDE Smoke Testing
 
@@ -83,10 +96,16 @@ unit tests.
    scope.
 5. Prefer targeted scopes such as `current_file`, `files`, `directory`, or
    `changed_files` when full-project inspection is unnecessary.
-6. When validating agent closeout behavior across IDEs or repos, run
+6. For stateless HTTP clients, resolve `/api/inspection/route` first and pass
+   the returned `project_key` and `session_id` through trigger, wait, status,
+   and problems calls.
+7. When validating agent closeout behavior across IDEs or repos, run
    `./scripts/dogfood-smoke-matrix.sh` and inspect its JSON artifact for
    cleanup `closed`/`not_needed`, IDE identity, plugin version, and failure
    buckets.
+8. If lifecycle auto-open stalls, inspect trusted-root setup, project-opening
+   mode, IDE config layout, settings sync, and plugin installation before
+   changing product code.
 
 ## Release Work
 
