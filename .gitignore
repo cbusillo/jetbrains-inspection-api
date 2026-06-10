@@ -96,3 +96,4 @@ mcp-server/coverage/
 *.override.*
 /mcp-server-jvm/build/
 /inspection-core/build/
+/handoff*.md
