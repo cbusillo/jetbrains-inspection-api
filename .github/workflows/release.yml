@@ -81,7 +81,10 @@ jobs:
 
       - name: Get version
         id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+        run: |
+          tag_name="${GITHUB_REF#refs/tags/}"
+          echo "TAG_NAME=$tag_name" >> "$GITHUB_OUTPUT"
+          echo "VERSION=${tag_name#v}" >> "$GITHUB_OUTPUT"
 
       - name: Generate release notes
         run: |
@@ -95,8 +98,8 @@ jobs:
         id: create_release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ github.ref }}
-          name: Release ${{ steps.get_version.outputs.VERSION }}
+          tag_name: ${{ steps.get_version.outputs.TAG_NAME }}
+          name: Release ${{ steps.get_version.outputs.TAG_NAME }}
           body_path: release-notes.md
           draft: false
           prerelease: false
