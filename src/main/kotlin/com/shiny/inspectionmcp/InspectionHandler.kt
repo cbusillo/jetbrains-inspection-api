@@ -6,6 +6,7 @@ import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.ide.impl.OpenProjectTask
+import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
@@ -629,6 +630,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal var forceCloseProject: (Project) -> Boolean = { project ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, true)
     }
+    internal var trustProjectPath: (Path) -> Unit = { path ->
+        TrustedProjects.setProjectTrusted(path, true)
+    }
     internal var openProjectPath: (Path) -> Project? = { path ->
         ProjectManagerEx.getInstanceEx().openProject(
             path,
@@ -974,6 +978,14 @@ class InspectionHandler : HttpRequestHandler() {
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
             return lifecycleOpenAlreadyOpen(project)
         }
+        firstParameter(parameters, "session_id") ?: return mapOf(
+            "status" to "failed",
+            "opened" to false,
+            "reason" to "missing_session_id",
+            "message" to "Parameter 'session_id' is required before scheduling a lifecycle project open.",
+            "worktree_path" to target.path.toString(),
+            "session_id" to InspectionIdeSession.sessionId,
+        ) to HttpResponseStatus.BAD_REQUEST
         if (!openingProjectPaths.add(target.key)) {
             return mapOf(
                 "status" to "opening",
@@ -988,6 +1000,7 @@ class InspectionHandler : HttpRequestHandler() {
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
                 try {
+                    trustProjectPath(target.openPath)
                     openProjectPath(target.openPath)
                 } finally {
                     openingProjectPaths.remove(target.key)
