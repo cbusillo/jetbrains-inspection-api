@@ -186,7 +186,8 @@ api_get() {
 api_get_current() {
     local endpoint="$1"
     local params="${2:-}"
-    api_get "$IDE_PORT" "$endpoint" "$params"
+    local timeout="${3:-5}"
+    api_get "$IDE_PORT" "$endpoint" "$params" "$timeout"
 }
 
 normalize_ide_text() {
@@ -364,7 +365,8 @@ run_api_tests() {
 
     echo "⏳ Waiting for inspection to complete..."
     WAIT_TIMEOUT_MS=180000
-    WAIT_RESPONSE=$(api_get_current wait "$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000")
+    WAIT_CLIENT_TIMEOUT=$((WAIT_TIMEOUT_MS / 1000 + 10))
+    WAIT_RESPONSE=$(api_get_current wait "$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000" "$WAIT_CLIENT_TIMEOUT")
     WAIT_COMPLETED=$(echo "$WAIT_RESPONSE" | jq -r '.wait_completed // false')
     WAIT_REASON=$(echo "$WAIT_RESPONSE" | jq -r '.completion_reason // "unknown"')
     WAIT_TIMED_OUT=$(echo "$WAIT_RESPONSE" | jq -r '.timed_out // false')
