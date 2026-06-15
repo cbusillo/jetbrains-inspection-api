@@ -27,6 +27,11 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.13.2</b>
+        <ul>
+            <li>Prevents JetBrains trust prompts during helper-managed lifecycle opens by trusting the requested project path inside the running IDE before opening it.</li>
+            <li>Requires the current IDE session identifier before scheduling a new lifecycle open, reducing unintended local requests to the open endpoint.</li>
+        </ul>
         <b>Version 1.11.9</b>
         <ul>
             <li>Treats blank or whitespace <code>project</code> selectors like omitted selectors, falling back to the focused or active open project.</li>
