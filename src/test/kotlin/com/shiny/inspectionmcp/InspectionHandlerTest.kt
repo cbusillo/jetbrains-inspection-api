@@ -61,6 +61,7 @@ class InspectionHandlerTest {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        handler.trustProjectPath = {}
         
         mockProject = mockk<Project>()
         mockProjectManager = mockk<ProjectManager>()
@@ -809,6 +810,21 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open rejects scheduling new project without session id`() {
+        val tempDir = Files.createTempDirectory("inspection-open-missing-session")
+        every { mockProjectManager.openProjects } returns emptyArray()
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"reason\": \"missing_session_id\""))
+        verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
     fun `test lifecycle open opens project path in running IDE`() {
         val tempDir = Files.createTempDirectory("inspection-open-test")
         val openedProject = mockProject(
@@ -826,9 +842,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(tempDir))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -837,6 +851,39 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"opening_scheduled\": true"))
         assertTrue(body.contains(tempDir.toString()))
         assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open trusts project path before opening`() {
+        val tempDir = Files.createTempDirectory("inspection-open-trust-test")
+        val openedProject = mockProject(
+            name = "TrustedOpen",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        val events = mutableListOf<String>()
+        var trustedPath: Path? = null
+        var openedPath: Path? = null
+        handler.trustProjectPath = { path: Path ->
+            events += "trust"
+            trustedPath = path
+        }
+        handler.openProjectPath = { path: Path ->
+            events += "open"
+            openedPath = path
+            openedProject
+        }
+
+        val response = processGetRequest(lifecycleOpenUri(tempDir))
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(listOf("trust", "open"), events)
+        assertEquals(tempDir.toAbsolutePath().normalize(), trustedPath)
+        assertEquals(trustedPath, openedPath)
     }
 
     @Test
@@ -859,9 +906,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(projectFilePath.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(projectFilePath))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -891,9 +936,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(projectFilePath.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(projectFilePath))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -922,9 +965,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(ideaDir.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(ideaDir))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -953,9 +994,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(nestedIdeaDir.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(nestedIdeaDir))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -985,9 +1024,7 @@ class InspectionHandlerTest {
             openedProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(nestedIdeaFile.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(nestedIdeaFile))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -1028,9 +1065,7 @@ class InspectionHandlerTest {
             mockProject
         }
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(nestedPath.toString(), "UTF-8") }"
-        )
+        val response = processGetRequest(lifecycleOpenUri(nestedPath))
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -1111,9 +1146,8 @@ class InspectionHandlerTest {
         }
         handler.openProjectPath = { mockProject }
 
-        val encodedPath = java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")
-        val first = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
-        val second = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
@@ -1122,7 +1156,7 @@ class InspectionHandlerTest {
         assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
         scheduled.single().run()
-        val third = processGetRequest("/api/inspection/lifecycle/open?worktree_path=$encodedPath")
+        val third = processGetRequest(lifecycleOpenUri(tempDir))
         assertEquals(2, scheduled.size)
         assertEquals(HttpResponseStatus.OK, third.status())
     }
@@ -1143,12 +1177,8 @@ class InspectionHandlerTest {
         }
         handler.openProjectPath = { mockProject }
 
-        val first = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8") }"
-        )
-        val second = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode(symlink.toString(), "UTF-8") }"
-        )
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        val second = processGetRequest(lifecycleOpenUri(symlink))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
@@ -1684,6 +1714,16 @@ class InspectionHandlerTest {
 
     private fun processTriggerRequest(uri: String): FullHttpResponse {
         return processGetRequest(uri)
+    }
+
+    private fun lifecycleOpenUri(path: Path): String {
+        return lifecycleOpenUri(path.toString())
+    }
+
+    private fun lifecycleOpenUri(path: String): String {
+        val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
+        val encodedSession = java.net.URLEncoder.encode(InspectionIdeSession.sessionId, "UTF-8")
+        return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession"
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {
