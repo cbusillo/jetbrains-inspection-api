@@ -1076,6 +1076,38 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open schedules linked worktree when main checkout is open`() {
+        val tempDir = Files.createTempDirectory("inspection-open-linked-worktree")
+        val mainCheckout = tempDir.resolve("main")
+        val linkedWorktree = tempDir.resolve("worktrees/feature")
+        Files.createDirectories(mainCheckout)
+        Files.createDirectories(linkedWorktree)
+        every { mockProject.basePath } returns mainCheckout.toString()
+        every { mockProject.projectFilePath } returns mainCheckout.resolve(".idea/misc.xml").toString()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var openedPath: Path? = null
+        handler.openProjectPath = { path: Path ->
+            openedPath = path
+            mockProject(
+                name = "Feature",
+                basePath = linkedWorktree.toString(),
+                projectFilePath = linkedWorktree.resolve(".idea/misc.xml").toString(),
+            )
+        }
+
+        val response = processGetRequest(lifecycleOpenUri(linkedWorktree))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertFalse(body.contains("\"status\": \"already_open\""))
+        assertEquals(linkedWorktree.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
     fun `test lifecycle open reports already open project file path`() {
         val tempDir = Files.createTempDirectory("inspection-open-file-existing")
         val projectFilePath = tempDir.resolve(".idea/misc.xml").toString()
