@@ -443,10 +443,12 @@ run_api_tests() {
         return 1
     fi
 
-    echo "⚠️  No problems found"
+    echo "⚠️  Inspection did not prove GREEN or RED"
     if [ "$HAS_RESULTS" = "false" ]; then
         echo "   No inspection results available yet"
         echo "   Try triggering inspection through port $IDE_PORT after the IDE finishes indexing."
+    else
+        echo "   The API returned zero actionable findings, but clean was not confirmed."
     fi
     return 1
 }

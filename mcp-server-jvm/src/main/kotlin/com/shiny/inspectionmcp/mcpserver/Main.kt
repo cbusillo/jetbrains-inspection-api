@@ -472,15 +472,45 @@ internal class ToolExecutor(
         val hasMore = pagination?.get("has_more")?.jsonPrimitive?.booleanOrNull == true
         val nextOffset = pagination?.get("next_offset")?.jsonPrimitive?.intOrNull
 
-        val guidance = when {
+        val guidance = inspectionVerdictGuidance(
+            obj,
+            when {
+                status == "stale_results" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "stale_results",
+                    "Cached inspection results are stale because the project changed after the last run.",
+                    "Trigger inspection again before trusting cached results. Pass include_stale=true only for explicit cached-result diagnostics.",
+                )
+                status == "capture_incomplete" -> unknownCaptureVerdict(captureReason)
+                status == "no_results" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_results",
+                    "No trustworthy inspection result was captured.",
+                    "Trigger and wait for a fresh inspection, or open the Inspection Results view for the exact worktree before treating the result as clean.",
+                )
+                total != null && total > 0 -> McpInspectionVerdict(
+                    "RED",
+                    "actionable_findings",
+                    "Inspection worked and returned actionable findings. Found $total problems total, showing ${shown ?: total}.",
+                    "Fix the reported findings, then rerun inspection.",
+                )
+                total == 0 -> McpInspectionVerdict(
+                    "GREEN",
+                    "no_matching_findings",
+                    "Inspection worked and found no actionable findings for the selected scope/filter.",
+                    "No inspection action required for this scope/filter.",
+                )
+                else -> null
+            },
+        ) ?: when {
             status == "stale_results" ->
                 "\n\nWARN: Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings. Pass include_stale=true only for explicit cached-result diagnostics."
             status == "capture_incomplete" ->
                 captureIncompleteGuidance("WARN", captureReason)
             status == "no_results" ->
-                "\n\nWARN: No inspection results were captured. This can happen for clean runs or when the IDE results view was unavailable; re-run inspection if findings were expected."
+                "\n\nWARN: No trustworthy inspection result was captured. Trigger and wait for a fresh inspection before treating this as clean."
             total == 0 ->
-                "\n\nOK: No problems found matching filters."
+                "\n\nVERDICT: GREEN reason=no_matching_findings\nMESSAGE: Inspection worked and found no actionable findings for the selected scope/filter."
             total != null ->
                 "\n\nINFO: Found $total problems total, showing ${shown ?: total}."
             else -> ""
@@ -504,11 +534,52 @@ internal class ToolExecutor(
 
         val timeSince = obj["time_since_last_trigger_ms"]?.jsonPrimitive?.longOrNull
 
-        return when {
+        return inspectionVerdictGuidance(
+            obj,
+            when {
+                isScanning -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "inspection_still_running",
+                    "Inspection is still running.",
+                    "Wait before getting problems.",
+                )
+                stale -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "stale_results",
+                    "Project changed after the last inspection.",
+                    "Trigger inspection again before trusting cached results.",
+                )
+                captureIncomplete -> unknownCaptureVerdict(captureReason)
+                clean -> McpInspectionVerdict(
+                    "GREEN",
+                    "clean_confirmed",
+                    "Inspection complete and no actionable findings were found.",
+                    "No inspection action required for this scope/filter.",
+                )
+                hasResults -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "results_available_without_findings",
+                    "Inspection status says results are available, but this status response did not include actionable findings.",
+                    "Call inspection_get_problems and use its verdict before reporting GREEN or RED.",
+                )
+                timeSince != null && timeSince < 60000 -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_results",
+                    "Inspection finished but no trustworthy result was captured yet.",
+                    "Retry once, preferably with a narrower scope, before treating this as clean.",
+                )
+                else -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_recent_inspection",
+                    "No recent inspection result is available.",
+                    "Trigger inspection first.",
+                )
+            },
+        ) ?: when {
             isScanning -> "\n\nSTATUS: Inspection still running - wait before getting problems."
             stale -> "\n\nSTATUS: Project changed after the last inspection - trigger inspection again before trusting cached results."
             captureIncomplete -> captureIncompleteGuidance("STATUS", captureReason)
-            clean -> "\n\nSTATUS: Inspection complete - codebase is clean (no problems found)."
+            clean -> "\n\nSTATUS: Inspection complete - codebase is clean."
             hasResults -> "\n\nSTATUS: Inspection complete - problems found, ready to retrieve."
             timeSince != null && timeSince < 60000 ->
                 "\n\nSTATUS: Inspection finished but no results were captured yet. Retry once, preferably with a narrower scope, before treating this as clean."
@@ -523,7 +594,61 @@ internal class ToolExecutor(
         val reason = obj["completion_reason"]?.jsonPrimitive?.contentOrNull
         val captureReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
 
-        return when {
+        return inspectionVerdictGuidance(
+            obj,
+            when {
+                completed && reason == "clean" -> McpInspectionVerdict(
+                    "GREEN",
+                    "clean_confirmed",
+                    "Inspection complete and no actionable findings were found.",
+                    "No inspection action required for this scope/filter.",
+                )
+                completed && reason == "results" -> McpInspectionVerdict(
+                    "RED",
+                    "actionable_findings",
+                    "Inspection complete and problems are ready to retrieve.",
+                    "Call inspection_get_problems, fix the reported findings, then rerun inspection.",
+                )
+                completed && reason == "capture_incomplete" -> unknownCaptureVerdict(captureReason)
+                completed && reason == "stale_results" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "stale_results",
+                    "Cached inspection results are stale.",
+                    "Trigger inspection again before trusting findings.",
+                )
+                completed && reason == "no_results" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_results",
+                    "Inspection finished with no trustworthy captured result.",
+                    "Retry once with a narrower scope before treating this as clean.",
+                )
+                reason == "no_recent_inspection" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_recent_inspection",
+                    "No recent inspection result is available.",
+                    "Trigger inspection first.",
+                )
+                reason == "no_project" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "no_project",
+                    "No project was found.",
+                    "Ensure the IDE has an open project, or pass the exact project name.",
+                )
+                reason == "interrupted" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "interrupted",
+                    "Inspection wait was interrupted.",
+                    "Try again.",
+                )
+                timedOut -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "timeout",
+                    "Inspection wait timed out.",
+                    "Try inspection_get_status or increase timeout_ms.",
+                )
+                else -> null
+            },
+        ) ?: when {
             completed && reason == "clean" -> "\n\nSTATUS: Inspection complete - codebase is clean."
             completed && reason == "results" -> "\n\nSTATUS: Inspection complete - problems found."
             completed && reason == "capture_incomplete" ->
@@ -531,7 +656,7 @@ internal class ToolExecutor(
             completed && reason == "stale_results" ->
                 "\n\nSTATUS: Cached inspection results are stale - trigger inspection again before trusting findings."
             completed && reason == "no_results" ->
-                "\n\nSTATUS: Inspection finished with no captured results. This can be clean; retry once with a narrower scope if findings were expected."
+                "\n\nSTATUS: Inspection finished with no trustworthy captured result. Retry once with a narrower scope before treating this as clean."
             reason == "no_recent_inspection" -> "\n\nSTATUS: No recent inspection - trigger inspection first."
             reason == "no_project" -> "\n\nSTATUS: No project found - ensure the IDE has an open project, or pass the exact project name."
             reason == "interrupted" -> "\n\nSTATUS: Wait interrupted - try again."
@@ -543,6 +668,132 @@ internal class ToolExecutor(
     private fun captureIncompleteGuidance(prefix: String, reason: String?): String {
         val reasonText = if (reason.isNullOrBlank()) "" else " reason=$reason."
         return "\n\n$prefix: capture_incomplete$reasonText do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report the reason and capture_diagnostic."
+    }
+
+    private data class McpInspectionVerdict(
+        val verdict: String,
+        val reason: String,
+        val message: String,
+        val nextAction: String,
+    )
+
+    private fun inspectionVerdictGuidance(obj: JsonObject, fallback: McpInspectionVerdict?): String? {
+        val blockerVerdict = blockerVerdict(obj)
+        val pluginVerdict = obj["inspection_verdict"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it == "GREEN" || it == "RED" || it == "UNKNOWN" }
+            ?.let { verdict ->
+                McpInspectionVerdict(
+                    verdict = verdict,
+                    reason = obj["inspection_verdict_reason"]?.jsonPrimitive?.contentOrNull ?: "plugin_verdict",
+                    message = obj["inspection_verdict_message"]?.jsonPrimitive?.contentOrNull
+                        ?: "Inspection plugin provided the verdict.",
+                    nextAction = obj["inspection_verdict_next_action"]?.jsonPrimitive?.contentOrNull
+                        ?: "Follow the inspection plugin verdict.",
+                )
+            }
+
+        val verdict = blockerVerdict ?: pluginVerdict ?: fallback ?: return null
+        return "\n\nVERDICT: ${verdict.verdict} reason=${verdict.reason}" +
+            "\nMESSAGE: ${verdict.message}" +
+            "\nNEXT_ACTION: ${verdict.nextAction}"
+    }
+
+    private fun blockerVerdict(obj: JsonObject): McpInspectionVerdict? {
+        val status = obj["status"]?.jsonPrimitive?.contentOrNull
+        val completionReason = obj["completion_reason"]?.jsonPrimitive?.contentOrNull
+        val captureReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
+        return when {
+            obj["session_drift"]?.jsonPrimitive?.booleanOrNull == true -> McpInspectionVerdict(
+                "UNKNOWN",
+                "session_drift",
+                "The IDE/plugin session changed before inspection could be trusted.",
+                "Resolve the route again and rerun inspection.",
+            )
+            obj["ambiguous"]?.jsonPrimitive?.booleanOrNull == true -> McpInspectionVerdict(
+                "UNKNOWN",
+                "ambiguous_route",
+                "The inspection route is ambiguous.",
+                "Pass project_key, project_path, or worktree_path so the exact project is inspected.",
+            )
+            obj["unavailable"]?.jsonPrimitive?.booleanOrNull == true -> McpInspectionVerdict(
+                "UNKNOWN",
+                "inspection_api_unavailable",
+                "The inspection API is unavailable.",
+                "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed.",
+            )
+            obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull == true || status == "stale_results" || completionReason == "stale_results" ->
+                McpInspectionVerdict(
+                    "UNKNOWN",
+                    "stale_results",
+                    "Cached inspection results are stale because the project changed after the last run.",
+                    "Trigger inspection again before trusting cached results. Pass include_stale=true only for explicit cached-result diagnostics.",
+                )
+            obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull == true || status == "capture_incomplete" || completionReason == "capture_incomplete" ->
+                unknownCaptureVerdict(captureReason)
+            obj["timed_out"]?.jsonPrimitive?.booleanOrNull == true || completionReason == "timeout" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "timeout",
+                "Inspection wait timed out.",
+                "Try inspection_get_status or increase timeout_ms.",
+            )
+            obj["indexing"]?.jsonPrimitive?.booleanOrNull == true ||
+                obj["is_scanning"]?.jsonPrimitive?.booleanOrNull == true ||
+                obj["inspection_in_progress"]?.jsonPrimitive?.booleanOrNull == true ||
+                status == "indexing" ||
+                status == "running" -> McpInspectionVerdict(
+                    "UNKNOWN",
+                    "inspection_still_running",
+                    "Inspection is still running.",
+                    "Wait before getting problems.",
+                )
+            status == "no_results" || completionReason == "no_results" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "no_results",
+                "Inspection finished with no trustworthy captured result.",
+                "Retry once with a narrower scope before treating this as clean.",
+            )
+            status == "no_project" || completionReason == "no_project" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "no_project",
+                "No project was found.",
+                "Ensure the IDE has an open project, or pass the exact project name.",
+            )
+            status == "no_recent_inspection" || completionReason == "no_recent_inspection" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "no_recent_inspection",
+                "No recent inspection result is available.",
+                "Trigger inspection first.",
+            )
+            completionReason == "interrupted" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "interrupted",
+                "Inspection wait was interrupted.",
+                "Try again.",
+            )
+            else -> null
+        }
+    }
+
+    private fun unknownCaptureVerdict(reason: String?): McpInspectionVerdict {
+        val safeReason = reason?.takeIf { it.isNotBlank() } ?: "capture_incomplete"
+        val nextAction = when (safeReason) {
+            "non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error" ->
+                "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
+            "view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results" ->
+                "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
+            "current_run_psi_churn" ->
+                "Save documents and rerun inspection after the IDE finishes updating PSI state."
+            "timeout" ->
+                "Wait for indexing/scanning to settle or rerun with a larger timeout."
+            else ->
+                "Retry once, preferably with a narrower scope; if it repeats, report the reason and capture_diagnostic."
+        }
+        return McpInspectionVerdict(
+            "UNKNOWN",
+            safeReason,
+            "Inspection finished, but the plugin could not conclusively capture IDE results.",
+            nextAction,
+        )
     }
 
     private fun toolText(text: String, isError: Boolean = false): JsonObject {

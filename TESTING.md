@@ -92,7 +92,12 @@ non-clean outcomes. Cached stale findings are returned only when the helper is
 run with `--include-stale` for explicit diagnostics. `capture_incomplete`
 responses expose `capture_incomplete_reason` plus `capture_diagnostic`; use the
 reason bucket for triage and the diagnostic payload for counters and state
-evidence. When this repo changes
+evidence. Agent-facing reports should use the helper verdict: `GREEN` means the
+inspection worked and found no actionable findings for the selected
+scope/filter, `RED` means the inspection worked and returned actionable
+findings, and `UNKNOWN` means the tooling did not prove either state and must
+include the helper's next action.
+When this repo changes
 inspection status semantics, route metadata, clean/capture classification,
 lifecycle cleanup contracts, or MCP tool response contracts, update the skill
 docs/tests/scripts in the `jetbrains-inspection` skill as part of the same
