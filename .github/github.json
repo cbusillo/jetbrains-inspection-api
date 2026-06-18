@@ -28,7 +28,8 @@
     },
     "manualSmoke": {
       "automatedIde": "./scripts/test-automated.sh",
-      "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh"
+      "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh",
+      "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh"
     },
     "docsRequiredWhen": [
       "behavior changes",
