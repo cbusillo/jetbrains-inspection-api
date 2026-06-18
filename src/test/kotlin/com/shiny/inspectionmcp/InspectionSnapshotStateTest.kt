@@ -1301,6 +1301,102 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Non-empty unmapped inspection tree becomes a scoped fallback finding")
+    fun testUnmappedInspectionFallbackFindingForSingleFileScope() {
+        val problems = buildUnmappedInspectionFallbackProblems(
+            project = mockProject,
+            captureScope = InspectionCaptureScope(
+                scopeParam = "files",
+                files = listOf("src/main/java/RedFixture.java"),
+            ),
+            diagnostic = mapOf(
+                "observed_non_empty_inspection_tree" to true,
+                "model_problem_descriptor_count" to 0,
+                "last_view_observation" to mapOf("root_child_count" to 1),
+            ),
+        )
+
+        assertEquals(1, problems.size)
+        val problem = problems.single()
+        assertEquals("/tmp/TestProject/src/main/java/RedFixture.java", problem["file"])
+        assertEquals("error", problem["severity"])
+        assertEquals("UnmappedInspectionTree", problem["inspectionType"])
+        assertEquals("unmapped_inspection_tree_fallback", problem["source"])
+        assertEquals(false, problem["locationKnown"])
+        assertTrue((problem["description"] as String).contains("non-empty problem tree"))
+    }
+
+    @Test
+    @DisplayName("Clean or empty evidence does not create fallback findings")
+    fun testUnmappedInspectionFallbackRequiresRedEvidence() {
+        val problems = buildUnmappedInspectionFallbackProblems(
+            project = mockProject,
+            captureScope = InspectionCaptureScope(
+                scopeParam = "files",
+                files = listOf("src/main/java/CleanFixture.java"),
+            ),
+            diagnostic = mapOf(
+                "observed_non_empty_inspection_tree" to false,
+                "model_problem_descriptor_count" to 0,
+            ),
+        )
+
+        assertEquals(emptyList<Map<String, Any>>(), problems)
+    }
+
+    @Test
+    @DisplayName("Descriptor-only unmapped evidence becomes a fallback finding")
+    fun testUnmappedInspectionFallbackFindingForDescriptorEvidence() {
+        val problems = buildUnmappedInspectionFallbackProblems(
+            project = mockProject,
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            diagnostic = mapOf(
+                "observed_non_empty_inspection_tree" to false,
+                "model_problem_descriptor_count" to 2,
+            ),
+        )
+
+        assertEquals(1, problems.size)
+        assertEquals("/tmp/TestProject", problems.single()["file"])
+        assertTrue((problems.single()["description"] as String).contains("2 descriptor(s)"))
+    }
+
+    @Test
+    @DisplayName("Whole-project non-empty tree evidence becomes a fallback finding")
+    fun testUnmappedInspectionFallbackFindingForWholeProjectTreeEvidence() {
+        val problems = buildUnmappedInspectionFallbackProblems(
+            project = mockProject,
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            diagnostic = mapOf(
+                "observed_non_empty_inspection_tree" to true,
+                "model_problem_descriptor_count" to 0,
+                "last_view_observation" to mapOf("root_child_count" to 2),
+            ),
+        )
+
+        assertEquals(1, problems.size)
+        assertEquals("/tmp/TestProject", problems.single()["file"])
+        assertTrue((problems.single()["description"] as String).contains("non-empty problem tree"))
+    }
+
+    @Test
+    @DisplayName("Unmapped fallback remains actionable when project base path is unavailable")
+    fun testUnmappedInspectionFallbackWithoutProjectBasePath() {
+        val projectWithoutBasePath = mockk<Project>()
+        every { projectWithoutBasePath.basePath } returns null
+
+        val problems = buildUnmappedInspectionFallbackProblems(
+            project = projectWithoutBasePath,
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            diagnostic = mapOf("observed_non_empty_inspection_tree" to true),
+        )
+
+        assertEquals(1, problems.size)
+        assertEquals("unknown", problems.single()["file"])
+        assertEquals(false, problems.single()["locationKnown"])
+    }
+
+    @Test
     @DisplayName("Transient updating unreadable empty views provide guarded clean evidence")
     fun testTransientUpdatingUnreadableEmptyViewEvidence() {
         val transientUpdatingUnreadableEmpty = InspectionViewObservation(

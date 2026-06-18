@@ -8,6 +8,7 @@ import org.junit.jupiter.api.DisplayName
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.codeInspection.ui.InspectionTree
+import com.intellij.codeInspection.ui.ProblemDescriptionNode
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
@@ -23,6 +24,8 @@ import io.mockk.unmockkAll
 import javax.swing.JPanel
 import javax.swing.JTree
 import javax.swing.tree.DefaultMutableTreeNode
+import javax.swing.tree.TreeModel
+import javax.swing.tree.TreeNode
 
 class EnhancedTreeExtractorTest {
     
@@ -222,6 +225,146 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should emit fallback finding for unmapped non-empty inspection tree")
+    fun testUnmappedInspectionTreeProducesFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val root = DefaultMutableTreeNode("Inspection Results")
+        val inspection = DefaultMutableTreeNode("CompilerInspection")
+        val fileGroup = DefaultMutableTreeNode("InspectionRedFixture.java")
+        fileGroup.add(DefaultMutableTreeNode("Cannot resolve symbol definitelyMissingInspectionSymbol"))
+        inspection.add(fileGroup)
+        root.add(inspection)
+        val tree = JTree(root)
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns tree.model
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertEquals(1, problems.size)
+        assertEquals("Cannot resolve symbol definitelyMissingInspectionSymbol", problems[0]["description"])
+        assertTrue((problems[0]["file"] as String).endsWith("InspectionRedFixture.java"))
+        assertEquals(false, problems[0]["locationKnown"])
+        assertEquals(0, problems[0]["line"])
+        assertEquals("CompilerInspection", problems[0]["inspectionType"])
+        assertEquals("inspection_tree_fallback", problems[0]["source"])
+    }
+
+    @Test
+    @DisplayName("Should emit fallback finding for descriptorless problem node")
+    fun testDescriptorlessProblemNodeProducesFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val treeModel = mockk<TreeModel>()
+        val problemNode = mockk<ProblemDescriptionNode>(relaxed = true)
+        every { problemNode.descriptor } returns null
+        every { problemNode.toString() } returns "Cannot resolve symbol MissingType"
+        every { problemNode.parent } returns null
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns treeModel
+        every { treeModel.root } returns problemNode
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertEquals(1, problems.size)
+        assertEquals("Cannot resolve symbol MissingType", problems[0]["description"])
+        assertEquals("UnresolvedReference", problems[0]["inspectionType"])
+        assertEquals("inspection_node_fallback", problems[0]["source"])
+        assertEquals(false, problems[0]["locationKnown"])
+    }
+
+    @Test
+    @DisplayName("Should emit fallback finding for generic non-mutable tree node")
+    fun testGenericTreeNodeProducesFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        every { project.basePath } returns "/tmp/project"
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val treeModel = mockk<TreeModel>()
+        val root = SimpleTreeNode("Inspection Results")
+        val inspection = SimpleTreeNode("CompilerInspection", root)
+        val fileGroup = SimpleTreeNode("src/InspectionRedFixture.java", inspection)
+        val problem = SimpleTreeNode("Cannot resolve symbol definitelyMissingInspectionSymbol", fileGroup)
+        root.children.add(inspection)
+        inspection.children.add(fileGroup)
+        fileGroup.children.add(problem)
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns treeModel
+        every { treeModel.root } returns root
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertEquals(1, problems.size)
+        assertEquals("/tmp/project/src/InspectionRedFixture.java", problems[0]["file"])
+        assertEquals("CompilerInspection", problems[0]["inspectionType"])
+        assertEquals("inspection_tree_fallback", problems[0]["source"])
+    }
+
+    @Test
+    @DisplayName("Should not emit fallback finding for generic empty inspection tree")
+    fun testGenericEmptyInspectionTreeDoesNotProduceFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val root = DefaultMutableTreeNode("Inspection Results")
+        root.add(DefaultMutableTreeNode("empty"))
+        val tree = JTree(root)
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns tree.model
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertTrue(problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should not emit fallback finding for clean keyword-like grouping text")
+    fun testCleanKeywordLikeInspectionTreeDoesNotProduceFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val root = DefaultMutableTreeNode("Inspection Results")
+        val profileGroup = DefaultMutableTreeNode("Inspection profile: Default")
+        profileGroup.add(DefaultMutableTreeNode("Error handling notes"))
+        profileGroup.add(DefaultMutableTreeNode("Warning summary"))
+        root.add(profileGroup)
+        val tree = JTree(root)
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns tree.model
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertTrue(problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should not emit fallback finding for benign leaf under inspection category")
+    fun testBenignLeafUnderInspectionCategoryDoesNotProduceFallbackFinding() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val inspectionTree = mockk<InspectionTree>()
+        val root = DefaultMutableTreeNode("Inspection Results")
+        val inspection = DefaultMutableTreeNode("CompilerInspection")
+        inspection.add(DefaultMutableTreeNode("Generated sources summary"))
+        root.add(inspection)
+        val tree = JTree(root)
+
+        every { inspectionView.tree } returns inspectionTree
+        every { inspectionTree.model } returns tree.model
+
+        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+
+        assertTrue(problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should dedupe repeated problem maps from inspection view snapshots")
     fun testDedupeProblems() {
         val repeatedProblem = mapOf<String, Any>(
@@ -298,5 +441,21 @@ class EnhancedTreeExtractorTest {
         fun getSeverity(): String = "WARNING"
         fun getCategory(): String = "General"
         fun getInspectionToolId(): String = "FallbackInspection"
+    }
+
+    private class SimpleTreeNode(
+        private val label: String,
+        private val parentNode: TreeNode? = null,
+    ) : TreeNode {
+        val children = mutableListOf<TreeNode>()
+
+        override fun getChildAt(childIndex: Int): TreeNode = children[childIndex]
+        override fun getChildCount(): Int = children.size
+        override fun getParent(): TreeNode? = parentNode
+        override fun getIndex(node: TreeNode?): Int = children.indexOf(node)
+        override fun getAllowsChildren(): Boolean = true
+        override fun isLeaf(): Boolean = children.isEmpty()
+        override fun children(): java.util.Enumeration<out TreeNode> = java.util.Collections.enumeration(children)
+        override fun toString(): String = label
     }
 }

@@ -21,6 +21,9 @@ import java.awt.Component
 import java.awt.Container
 import java.io.File
 import java.lang.reflect.Method
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JTree
 
@@ -265,6 +268,7 @@ class EnhancedTreeExtractor {
                         val child = node.getChildAt(i)
                         walkNode(child, problems, project, depth + 1)
                     }
+                    extractFallbackProblemFromTreeNode(node, problems, project)
                 }
                 
                 is DefaultMutableTreeNode -> {
@@ -273,6 +277,7 @@ class EnhancedTreeExtractor {
                         val child = node.getChildAt(i)
                         walkNode(child, problems, project, depth + 1)
                     }
+                    extractFallbackProblemFromTreeNode(node, problems, project)
                 }
                 
                 is TreeNode -> {
@@ -280,6 +285,7 @@ class EnhancedTreeExtractor {
                         val child = node.getChildAt(i)
                         walkNode(child, problems, project, depth + 1)
                     }
+                    extractFallbackProblemFromTreeNode(node, problems, project)
                 }
             }
         } catch (e: Exception) {
@@ -340,6 +346,208 @@ class EnhancedTreeExtractor {
                 "source" to "problems_view",
             )
         )
+    }
+
+    private fun extractFallbackProblemFromTreeNode(
+        node: TreeNode,
+        problems: MutableList<Map<String, Any>>,
+        project: Project,
+    ) {
+        if (!shouldAddFallbackProblem(node)) {
+            return
+        }
+
+        val description = normalizeProblemDescription(treeNodeText(node))
+        if (description.isBlank() || isGenericInspectionTreeText(description)) {
+            return
+        }
+
+        val inspectionType = nearestInspectionType(node)
+        val filePath = nearestTreeFilePath(node, project)
+        val severity = severityFromTreeText(description)
+        problems.add(
+            mapOf(
+                "description" to description,
+                "file" to filePath,
+                "line" to 0,
+                "column" to 0,
+                "severity" to severity,
+                "category" to nearestInspectionCategory(node, inspectionType),
+                "inspectionType" to inspectionType,
+                "source" to "inspection_tree_fallback",
+                "locationKnown" to false,
+                "locationNote" to if (filePath != "unknown") {
+                    "Inspection result line unavailable from IDE tree; open Inspection Results for the exact line."
+                } else {
+                    "Inspection result location unavailable from IDE tree; open Inspection Results for the exact file and line."
+                },
+            )
+        )
+    }
+
+    private fun shouldAddFallbackProblem(node: TreeNode): Boolean {
+        if (node.childCount > 0) {
+            return false
+        }
+        val userObject = (node as? DefaultMutableTreeNode)?.userObject
+        if (userObject is ProblemDescriptionNode || userObject is InspectionNode || userObject is InspectionTreeNode) {
+            return false
+        }
+        return hasInspectionAncestor(node) && looksLikeInspectionProblemText(treeNodeText(node))
+    }
+
+    private fun hasInspectionAncestor(node: TreeNode): Boolean {
+        var current = node.parent
+        while (current != null) {
+            if (current is InspectionNode || current is InspectionTreeNode) {
+                return true
+            }
+            val text = current.toString()
+            if (looksLikeInspectionCategoryText(text)) {
+                return true
+            }
+            current = current.parent
+        }
+        return false
+    }
+
+    private fun treeNodeText(node: TreeNode): String {
+        return ((node as? DefaultMutableTreeNode)?.userObject ?: node).toString()
+    }
+
+    private fun treePath(node: TreeNode): List<TreeNode> {
+        val path = ArrayDeque<TreeNode>()
+        var current: TreeNode? = node
+        while (current != null) {
+            path.addFirst(current)
+            current = current.parent
+        }
+        return path.toList()
+    }
+
+    private fun nearestInspectionType(node: TreeNode): String {
+        var current: TreeNode? = node.parent
+        while (current != null) {
+            val text = current.toString().trim()
+            inspectionTypeNameFromText(text)?.let { return it }
+            current = current.parent
+        }
+        inspectionTypeFromText(node.toString().trim())?.let { return it }
+        return "InspectionTreeFallback"
+    }
+
+    private fun nearestInspectionCategory(node: TreeNode, inspectionType: String): String {
+        var current: TreeNode? = node.parent
+        while (current != null) {
+            val text = current.toString().trim()
+            if (text.isNotBlank() && !isGenericInspectionTreeText(text) && inspectionTypeNameFromText(text) == null) {
+                return text.take(80)
+            }
+            current = current.parent
+        }
+        return if (inspectionType == "InspectionTreeFallback") "General" else inspectionType
+    }
+
+    private fun nearestTreeFilePath(node: TreeNode, project: Project): String {
+        var current: TreeNode? = node
+        while (current != null) {
+            filePathFromTreeText(current.toString(), project)?.let { return it }
+            current = current.parent
+        }
+        return "unknown"
+    }
+
+    private fun filePathFromTreeText(text: String, project: Project): String? {
+        val normalized = text.trim()
+        if (normalized.isBlank()) return null
+        val fileMatch = Regex("(?:^|\\s)([^\\s:]+\\.(?:kt|kts|java|py|js|jsx|ts|tsx|swift|go|rs|rb|php|xml|json|ya?ml|sh|bash|zsh))(?:[:\\s]|$)")
+            .find(normalized)
+        val fileText = fileMatch?.groupValues?.getOrNull(1)?.trim('"', '\'', ',', ';', ')', ']') ?: return null
+        return resolveTreeFilePath(fileText, project)
+    }
+
+    private fun resolveTreeFilePath(fileText: String, project: Project): String {
+        val rawPath = runCatching { Paths.get(fileText) }.getOrNull()
+        if (rawPath != null && rawPath.isAbsolute) {
+            return rawPath.normalize().toString()
+        }
+        val basePath = project.basePath ?: return fileText
+        if (rawPath != null && fileText.contains('/')) {
+            return Paths.get(basePath, fileText).normalize().toString()
+        }
+        return findProjectFileByName(basePath, fileText) ?: fileText
+    }
+
+    private fun findProjectFileByName(basePath: String, fileName: String): String? {
+        val base = runCatching { Paths.get(basePath) }.getOrNull() ?: return null
+        return try {
+            Files.walk(base).use { stream ->
+                stream
+                    .filter { path -> Files.isRegularFile(path) && path.fileName?.toString() == fileName }
+                    .findFirst()
+                    .map(Path::toString)
+                    .orElse(null)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun inspectionTypeFromText(text: String): String? {
+        inspectionTypeNameFromText(text)?.let { return it }
+        if (text.isBlank()) return null
+        return when {
+            text.contains("Unresolved", ignoreCase = true) -> "UnresolvedReference"
+            text.contains("Cannot resolve", ignoreCase = true) -> "UnresolvedReference"
+            text.contains("Symbol", ignoreCase = true) -> "UnresolvedReference"
+            text.contains("Typo", ignoreCase = true) -> "SpellCheckingInspection"
+            text.contains("Grammar", ignoreCase = true) -> "GrazieInspection"
+            else -> null
+        }
+    }
+
+    private fun inspectionTypeNameFromText(text: String): String? {
+        if (text.isBlank()) return null
+        return Regex("\\b([A-Za-z][A-Za-z0-9_]*(?:Inspection|Check))\\b").find(text)?.groupValues?.getOrNull(1)
+    }
+
+    private fun looksLikeInspectionProblemText(text: String): Boolean {
+        val normalized = text.trim()
+        return normalized.contains("Cannot resolve", ignoreCase = true) ||
+            normalized.contains("Unresolved", ignoreCase = true) ||
+            normalized.contains("never used", ignoreCase = true) ||
+            normalized.contains("deprecated", ignoreCase = true) ||
+            normalized.contains("is missing", ignoreCase = true) ||
+            normalized.contains("Missing ", ignoreCase = false) ||
+            normalized.contains("Unknown ", ignoreCase = false)
+    }
+
+    private fun looksLikeInspectionCategoryText(text: String): Boolean {
+        val normalized = text.trim()
+        return inspectionTypeFromText(normalized) != null ||
+            inspectionTypeNameFromText(normalized) != null ||
+            normalized.contains("probable bugs", ignoreCase = true) ||
+            normalized.contains("compiler", ignoreCase = true) ||
+            normalized.contains("declaration redundancy", ignoreCase = true)
+    }
+
+    private fun isGenericInspectionTreeText(text: String): Boolean {
+        val normalized = text.trim().lowercase()
+        return normalized.isBlank() ||
+            normalized == "root" ||
+            normalized == "inspection results" ||
+            normalized == "problems" ||
+            normalized == "empty"
+    }
+
+    private fun severityFromTreeText(text: String): String {
+        return when {
+            text.contains("error", ignoreCase = true) -> "error"
+            text.contains("warning", ignoreCase = true) -> "warning"
+            text.contains("weak", ignoreCase = true) -> "weak_warning"
+            text.contains("info", ignoreCase = true) -> "info"
+            else -> "warning"
+        }
     }
 
     private fun resolveVirtualFile(fileObj: Any?): VirtualFile? {
@@ -664,8 +872,37 @@ class EnhancedTreeExtractor {
                 }
                 
                 problems.add(problemMap)
+            } else {
+                extractFallbackProblemFromInspectionNode(node, problems)
             }
         } catch (e: Exception) {
         }
+    }
+
+    private fun extractFallbackProblemFromInspectionNode(
+        node: ProblemDescriptionNode,
+        problems: MutableList<Map<String, Any>>,
+    ) {
+        val description = normalizeProblemDescription(node.toString())
+        if (description.isBlank() || isGenericInspectionTreeText(description)) {
+            return
+        }
+
+        val inspectionType = nearestInspectionType(node)
+        val severity = severityFromTreeText(description)
+        problems.add(
+            mapOf(
+                "description" to description,
+                "file" to "unknown",
+                "line" to 0,
+                "column" to 0,
+                "severity" to severity,
+                "category" to if (inspectionType == "InspectionTreeFallback") "General" else inspectionType,
+                "inspectionType" to inspectionType,
+                "source" to "inspection_node_fallback",
+                "locationKnown" to false,
+                "locationNote" to "Inspection result descriptor unavailable from IDE; open Inspection Results for the exact file and line.",
+            )
+        )
     }
 }
