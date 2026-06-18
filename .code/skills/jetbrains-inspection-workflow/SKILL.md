@@ -81,10 +81,15 @@ Keep exact command matrices, environment setup, and troubleshooting in
 6. For clean/capture classification, preserve non-clean outcomes for
    `capture_incomplete`, stale results, timeouts, indexing, session drift,
    route ambiguity, wrong-worktree routes, and cleanup failures.
-7. For red-lane smoke tests, require at least one current actionable finding in
-   the helper response, such as `total_problems > 0` with a non-empty
-   `problems` list. `capture_incomplete`, `non_empty_unmapped_tree`, or a
+7. For red-lane smoke tests, require current actionable findings in the helper
+   response, such as `total_problems > 0`; a paginated current page may have an
+   empty `problems` list even when matching findings exist. `capture_incomplete`, `non_empty_unmapped_tree`, or a
    non-clean zero-problem response proves only that clean was not confirmed.
+8. Agent-facing inspection reports should use the helper verdict: `GREEN` means
+   inspection worked and found no actionable findings for the selected
+   scope/filter, `RED` means inspection worked and found actionable current
+   problems, and `UNKNOWN` means the IDE/plugin/helper did not prove either
+   state and the next action must be reported.
 
 ## IDE Smoke Testing
 

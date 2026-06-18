@@ -633,6 +633,8 @@ class InspectionHandlerTest {
 
         assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
         assertTrue(response.contains("\"completion_reason\": \"no_project\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"no_project\""))
         assertTrue(response.contains("\"wait_completed\": false"))
         assertTrue(response.contains("\"timed_out\": false"))
         assertTrue(response.contains("\"wait_note\":"))
@@ -664,6 +666,9 @@ class InspectionHandlerTest {
         }
 
         assertEquals("Requested project 'odoo api' is not open in the IDE.", response["error"])
+        assertEquals("no_project", response["status"])
+        assertEquals("UNKNOWN", response["inspection_verdict"])
+        assertEquals("no_project", response["inspection_verdict_reason"])
         val recentSuggestions = response["suggested_recent_projects"] as List<*>
         assertEquals(1, recentSuggestions.size)
         val suggestion = recentSuggestions.first() as Map<*, *>
@@ -703,6 +708,8 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.CONFLICT, response.status())
         assertTrue(body.contains("\"session_drift\": true"))
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"session_drift\""))
         assertTrue(body.contains("\"expected_session_id\": \"old-session\""))
     }
 

@@ -166,7 +166,8 @@ class McpServerTest {
             val response = executor.handleToolCall(buildToolCall("inspection_get_problems", args))
             val text = response.firstText()
             assertTrue(text.contains("\"total_problems\": 2"))
-            assertTrue(text.contains("INFO: Found 2 problems total"))
+            assertTrue(text.contains("VERDICT: RED"))
+            assertTrue(text.contains("Found 2 problems total"))
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("file_pattern=my+file.js"))
             assertTrue(query.contains("limit=10"))
@@ -187,7 +188,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", args))
             val text = result.firstText()
-            assertTrue(text.contains("INFO: Found 5 problems total"))
+            assertTrue(text.contains("VERDICT: RED"))
+            assertTrue(text.contains("Found 5 problems total"))
             assertTrue(text.contains("NEXT: More results available"))
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("offset=2"))
@@ -204,8 +206,9 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("No inspection results were captured"))
-            assertTrue(text.contains("clean runs"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_results"))
+            assertFalse(text.contains("clean runs"))
         }
     }
 
@@ -241,8 +244,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("do not treat as clean"))
-            assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("NEXT_ACTION"))
             assertTrue(text.contains("reason=extractor_failure"))
             assertTrue(text.contains("capture_diagnostic"))
             assertFalse(text.contains("OK: No problems found matching filters"))
@@ -258,9 +261,26 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=stale_results"))
             assertTrue(text.contains("results are stale"))
             assertTrue(text.contains("include_stale=true"))
             assertTrue(text.contains("explicit cached-result diagnostics"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsBlockerOverridesPluginRedVerdict() {
+        val response = """{"status":"stale_results","results_may_be_stale":true,"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings","total_problems":5,"problems":[]}"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=stale_results"))
+            assertFalse(text.contains("VERDICT: RED"))
         }
     }
 
@@ -272,7 +292,10 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No problems found"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: GREEN"))
+            assertTrue(text.contains("reason=no_matching_findings"))
+            assertFalse(text.contains("No problems found"))
         }
     }
 
@@ -370,7 +393,8 @@ class McpServerTest {
             val response = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
             val text = response.firstText()
             assertTrue(text.contains("\"has_inspection_results\": true"))
-            assertTrue(text.contains("STATUS: Inspection complete"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=results_available_without_findings"))
         }
     }
 
@@ -407,6 +431,21 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusBlockerOverridesPluginGreenVerdict() {
+        val response = """{"is_scanning":true,"inspection_in_progress":true,"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed","clean_inspection":true}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=inspection_still_running"))
+            assertFalse(text.contains("VERDICT: GREEN"))
+        }
+    }
+
+    @Test
     fun inspectionGetStatusHandlesCleanInspection() {
         val response = """{"clean_inspection":true}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
@@ -414,7 +453,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            assertTrue(result.firstText().contains("codebase is clean"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: GREEN"))
+            assertTrue(text.contains("reason=clean_confirmed"))
         }
     }
 
@@ -426,7 +467,10 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            assertTrue(result.firstText().contains("trigger inspection again"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=stale_results"))
+            assertTrue(text.contains("Trigger inspection again"))
         }
     }
 
@@ -439,8 +483,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("do not treat as clean"))
-            assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("NEXT_ACTION"))
             assertTrue(text.contains("reason=view_not_ready"))
             assertFalse(text.contains("codebase is clean"))
         }
@@ -454,7 +498,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No recent inspection"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_recent_inspection"))
         }
     }
 
@@ -466,7 +512,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            assertTrue(result.firstText().contains("no results were captured"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_results"))
         }
     }
 
@@ -479,7 +527,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("codebase is clean"))
+            assertTrue(text.contains("VERDICT: GREEN"))
+            assertTrue(text.contains("reason=clean_confirmed"))
             assertFalse(text.contains("STATUS: Inspection complete - problems found"))
         }
     }
@@ -543,8 +592,10 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No project found"))
-            assertTrue(result.firstText().contains("exact project name"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_project"))
+            assertTrue(text.contains("exact project name"))
         }
     }
 
@@ -556,7 +607,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            assertTrue(result.firstText().contains("Wait interrupted"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=interrupted"))
         }
     }
 
@@ -568,7 +621,24 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            assertTrue(result.firstText().contains("Wait timed out"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=timeout"))
+        }
+    }
+
+    @Test
+    fun inspectionWaitBlockerOverridesPluginGreenVerdict() {
+        val response = """{"wait_completed":false,"timed_out":true,"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed"}"""
+        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=timeout"))
+            assertFalse(text.contains("VERDICT: GREEN"))
         }
     }
 
@@ -581,8 +651,9 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("no captured results"))
-            assertTrue(text.contains("retry once"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_results"))
+            assertTrue(text.contains("Retry once"))
         }
     }
 
@@ -594,7 +665,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            assertTrue(result.firstText().contains("No recent inspection"))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=no_recent_inspection"))
         }
     }
 
@@ -607,8 +680,9 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("results are stale"))
-            assertTrue(text.contains("trigger inspection again"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=stale_results"))
+            assertTrue(text.contains("Trigger inspection again"))
         }
     }
 
@@ -621,8 +695,8 @@ class McpServerTest {
 
             val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
             val text = result.firstText()
-            assertTrue(text.contains("do not treat as clean"))
-            assertTrue(text.contains("Retry once"))
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("NEXT_ACTION"))
             assertTrue(text.contains("reason=timeout"))
             assertFalse(text.contains("codebase is clean"))
         }
@@ -681,7 +755,7 @@ class McpServerTest {
         val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
 
         assertFalse(result.isError())
-        assertTrue(result.firstText().contains("codebase is clean"))
+        assertTrue(result.firstText().contains("VERDICT: GREEN"))
         assertEquals(1, replacementClientFactoryCalls.get())
     }
 

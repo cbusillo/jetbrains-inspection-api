@@ -143,6 +143,8 @@ class InspectionSnapshotStateTest {
         assertEquals(true, status["clean_inspection"])
         assertEquals(true, status["has_inspection_results"])
         assertEquals(false, status["capture_incomplete"])
+        assertEquals("GREEN", status["inspection_verdict"])
+        assertEquals("clean_confirmed", status["inspection_verdict_reason"])
     }
 
     @Test
@@ -165,6 +167,87 @@ class InspectionSnapshotStateTest {
         assertEquals(true, status["clean_inspection"])
         assertEquals(true, status["has_inspection_results"])
         assertEquals("clean_confirmed", status["snapshot_outcome"])
+    }
+
+    @Test
+    @DisplayName("Running inspection state overrides old clean verdict")
+    fun testRunningInspectionOverridesOldCleanVerdict() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+        beginInspectionRun()
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["inspection_in_progress"])
+        assertEquals(true, status["is_scanning"])
+        assertEquals(false, status["clean_inspection"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("inspection_still_running", status["inspection_verdict_reason"])
+    }
+
+    @Test
+    @DisplayName("Running inspection state overrides old findings verdict")
+    fun testRunningInspectionOverridesOldFindingsVerdict() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Old warning",
+                        "file" to "/tmp/TestProject/src/app.js",
+                        "line" to 12,
+                        "column" to 4,
+                        "severity" to "warning",
+                        "inspectionType" to "JSUnresolvedReference",
+                    )
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        beginInspectionRun()
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["inspection_in_progress"])
+        assertEquals(true, status["is_scanning"])
+        assertEquals(1, status["total_problems"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("inspection_still_running", status["inspection_verdict_reason"])
+    }
+
+    @Test
+    @DisplayName("Indexing overrides clean snapshot verdict")
+    fun testIndexingOverridesCleanSnapshotVerdict() {
+        every { DumbService.getInstance(mockProject).isDumb } returns true
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["indexing"])
+        assertEquals(true, status["is_scanning"])
+        assertEquals(false, status["clean_inspection"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("inspection_still_running", status["inspection_verdict_reason"])
     }
 
     @Test
@@ -265,6 +348,8 @@ class InspectionSnapshotStateTest {
         assertEquals(1, status["total_problems"])
         assertEquals("problems_found", status["snapshot_outcome"])
         assertEquals("tool_window", status["results_source"])
+        assertEquals("RED", status["inspection_verdict"])
+        assertEquals("actionable_findings", status["inspection_verdict_reason"])
     }
 
     @Test
@@ -442,6 +527,8 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"results_may_be_incomplete\": true"))
         assertTrue(response.contains("\"snapshot_outcome\": \"capture_incomplete\""))
         assertTrue(response.contains("\"capture_incomplete_reason\": \"timeout\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"timeout\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -456,6 +543,10 @@ class InspectionSnapshotStateTest {
         val response = getInspectionProblems()
 
         assertTrue(response.contains("\"status\": \"no_results\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"no_results\""))
+        assertTrue(response.contains("No trustworthy inspection result was captured"))
+        assertFalse(response.contains("100% pass"))
         assertTrue(response.contains("\"project\": \"TestProject\""))
         assertTrue(response.contains("\"project_key\":"))
         assertTrue(response.contains("\"total_problems\": 0"))
@@ -498,6 +589,33 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"total_problems\": 1"))
         assertTrue(response.contains("Live warning"))
         assertTrue(response.contains("\"method\": \"tool_window\""))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint verdict stays red for empty paginated pages with findings")
+    fun testProblemsEndpointVerdictUsesTotalForEmptyPage() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(description = "First warning", file = "/tmp/TestProject/src/app.js"),
+                    staleProblem(description = "Second warning", file = "/tmp/TestProject/src/other.js"),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+
+        val response = getInspectionProblems(limit = 1, offset = 2)
+
+        assertTrue(response.contains("\"status\": \"results_available\""))
+        assertTrue(response.contains("\"total_problems\": 2"))
+        assertTrue(response.contains("\"problems_shown\": 0"))
+        assertTrue(response.contains("\"problems\": []"))
+        assertTrue(response.contains("\"inspection_verdict\": \"RED\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"actionable_findings\""))
     }
 
     @Test
@@ -563,6 +681,8 @@ class InspectionSnapshotStateTest {
 
         assertTrue(response.contains("\"completion_reason\": \"capture_incomplete\""))
         assertTrue(response.contains("\"capture_incomplete_reason\": \"timeout\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"timeout\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -731,6 +851,8 @@ class InspectionSnapshotStateTest {
         val response = getInspectionProblems()
 
         assertTrue(response.contains("\"status\": \"stale_results\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"stale_results\""))
         assertTrue(response.contains("\"results_may_be_stale\": true"))
         assertTrue(response.contains("\"snapshot_change_kind\": \"project_changed_since_inspection\""))
         assertTrue(response.contains("\"cached_total_problems\": 1"))
@@ -993,7 +1115,10 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection()
 
         assertTrue(response.contains("\"completion_reason\": \"no_results\""))
-        assertTrue(response.contains("clean runs"))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"no_results\""))
+        assertTrue(response.contains("Treat this as UNKNOWN, not clean"))
+        assertFalse(response.contains("clean runs"))
         assertFalse(response.contains("\"completion_reason\": \"capture_incomplete\""))
     }
 
@@ -2396,7 +2521,12 @@ class InspectionSnapshotStateTest {
         return getInspectionProblems(includeStale = false)
     }
 
-    private fun getInspectionProblems(scope: String = "whole_project", includeStale: Boolean): String {
+    private fun getInspectionProblems(
+        scope: String = "whole_project",
+        includeStale: Boolean = false,
+        limit: Int = 100,
+        offset: Int = 0,
+    ): String {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems",
             Project::class.java,
@@ -2409,7 +2539,7 @@ class InspectionSnapshotStateTest {
             Boolean::class.javaPrimitiveType,
         )
         method.isAccessible = true
-        return method.invoke(handler, mockProject, "all", scope, null, null, 100, 0, includeStale) as String
+        return method.invoke(handler, mockProject, "all", scope, null, null, limit, offset, includeStale) as String
     }
 
     private fun staleProblem(

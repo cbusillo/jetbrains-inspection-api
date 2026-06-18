@@ -146,6 +146,13 @@ private data class CurrentRunPsiChurnReconciliation(
     val reconciled: Boolean,
 )
 
+private data class InspectionVerdict(
+    val verdict: String,
+    val reason: String,
+    val message: String,
+    val nextAction: String,
+)
+
 internal fun readInspectionRootChildCount(root: Any?): Int? {
     return when (root) {
         null -> null
@@ -735,6 +742,121 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun addInspectionVerdict(target: MutableMap<String, Any?>) {
+        target.putAll(inspectionVerdictFields(target))
+    }
+
+    private fun addStatusInspectionVerdict(target: MutableMap<String, Any>) {
+        target.putAll(inspectionVerdictFields(target))
+    }
+
+    private fun inspectionVerdictFields(payload: Map<String, Any?>): Map<String, String> {
+        val verdict = inspectionVerdict(payload)
+        return mapOf(
+            "inspection_verdict" to verdict.verdict,
+            "inspection_verdict_reason" to verdict.reason,
+            "inspection_verdict_message" to verdict.message,
+            "inspection_verdict_next_action" to verdict.nextAction,
+        )
+    }
+
+    private fun inspectionVerdict(payload: Map<String, Any?>): InspectionVerdict {
+        val status = payload["status"] as? String
+        val completionReason = payload["completion_reason"] as? String
+        val unknownReason = unknownVerdictReason(payload)
+        if (unknownReason != null) {
+            return InspectionVerdict(
+                verdict = "UNKNOWN",
+                reason = unknownReason,
+                message = "Inspection did not produce a trustworthy GREEN or RED result.",
+                nextAction = unknownVerdictNextAction(unknownReason, payload),
+            )
+        }
+        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
+        val problems = payload["problems"] as? List<*>
+        val hasExplicitZeroResult = totalProblems == 0
+        val hasCurrentFindings = ((totalProblems ?: problems?.size ?: 0) > 0) &&
+            payload["results_may_be_stale"] != true &&
+            payload["capture_incomplete"] != true
+        if (hasCurrentFindings) {
+            return InspectionVerdict(
+                verdict = "RED",
+                reason = "actionable_findings",
+                message = "Inspection worked and returned actionable findings for the selected scope/filter.",
+                nextAction = "Fix the reported findings, then rerun inspection.",
+            )
+        }
+        if (
+            (status == "results_available" && (hasExplicitZeroResult || payload["clean_inspection"] == true)) ||
+            status == "clean" ||
+            completionReason == "clean" ||
+            payload["clean_inspection"] == true
+        ) {
+            return InspectionVerdict(
+                verdict = "GREEN",
+                reason = if (status == "results_available") "no_matching_findings" else "clean_confirmed",
+                message = "Inspection worked and found no actionable findings for the selected scope/filter.",
+                nextAction = "No inspection action required for this scope/filter.",
+            )
+        }
+        return InspectionVerdict(
+            verdict = "UNKNOWN",
+            reason = completionReason ?: status ?: "unknown",
+            message = "Inspection did not produce a trustworthy GREEN or RED result.",
+            nextAction = unknownVerdictNextAction(completionReason ?: status ?: "unknown", payload),
+        )
+    }
+
+    private fun unknownVerdictReason(payload: Map<String, Any?>): String? {
+        val status = payload["status"] as? String
+        val completionReason = payload["completion_reason"] as? String
+        return when {
+            payload["session_drift"] == true -> "session_drift"
+            payload["ambiguous"] == true -> "ambiguous_route"
+            payload["unavailable"] == true -> "inspection_api_unavailable"
+            payload["results_may_be_stale"] == true || status == "stale_results" || completionReason == "stale_results" -> "stale_results"
+            payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete" -> {
+                (payload["capture_incomplete_reason"] as? String) ?: "capture_incomplete"
+            }
+            payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
+            payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
+            status == "no_results" || completionReason == "no_results" -> "no_results"
+            else -> null
+        }
+    }
+
+    private fun unknownVerdictNextAction(reason: String, payload: Map<String, Any?>): String {
+        if (reason in setOf("non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error")) {
+            return "Treat this as a plugin/helper bug: include capture_diagnostic, update the plugin or helper, and rerun."
+        }
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *>
+        if (diagnostic?.get("observed_non_empty_inspection_tree") == true) {
+            return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
+        }
+        return when (reason) {
+            "view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results" ->
+                "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
+            "current_run_psi_churn" ->
+                "Save documents and rerun inspection after the IDE finishes updating PSI state."
+            "stale_results" ->
+                "Rerun inspection; stale cached findings must not be treated as current."
+            "timeout" ->
+                "Wait for indexing/scanning to settle or rerun with a larger timeout."
+            "inspection_still_running" ->
+                "Wait for indexing/scanning to finish, then rerun inspection."
+            "inspection_api_unavailable" ->
+                "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
+            "ambiguous_route" ->
+                "Pass project_key, project_path, or worktree_path so the plugin can inspect the exact project."
+            "session_drift" ->
+                "Resolve the route again and rerun; the IDE/plugin session changed."
+            "no_project" ->
+                "Open the exact worktree in the configured JetBrains IDE, or pass the exact project_key, project_path, or worktree_path."
+            else ->
+                "Do not report GREEN or RED. Rerun inspection and include diagnostics if it remains UNKNOWN."
+        }
+    }
+
     override fun isSupported(request: FullHttpRequest): Boolean {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
     }
@@ -953,8 +1075,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (expectedSessionId == InspectionIdeSession.sessionId) {
             return null
         }
-        return formatJsonManually(
-            mapOf(
+        val response = mutableMapOf<String, Any>(
                 "error" to "IDE session changed",
                 "session_drift" to true,
                 "expected_session_id" to expectedSessionId,
@@ -962,7 +1083,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "started_at_ms" to InspectionIdeSession.startedAtMs,
                 "message" to "The JetBrains IDE session changed. Resolve the route again and re-trigger inspection before trusting cached results.",
             )
-        )
+        addStatusInspectionVerdict(response)
+        return formatJsonManually(response)
     }
 
     private fun buildRouteResponse(parameters: Map<String, List<String>>): String {
@@ -1488,6 +1610,7 @@ class InspectionHandler : HttpRequestHandler() {
                     staleBase["include_stale"] = false
                 }
                 staleSnapshot?.captureDiagnostic?.let { staleBase["capture_diagnostic"] = it }
+                addInspectionVerdict(staleBase)
                 return formatJsonManually(staleBase.filterValues { it != null })
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
@@ -1524,6 +1647,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 addCaptureIncompleteReason(response, snapshot, staleness)
                 snapshot.captureDiagnostic?.let { response["capture_diagnostic"] = it }
+                addInspectionVerdict(response)
                 return formatJsonManually(response)
             }
             val problems = if (snapshot?.problems != null) {
@@ -1575,17 +1699,18 @@ class InspectionHandler : HttpRequestHandler() {
                 snapshot?.triggerTimeMs?.let { response["snapshot_trigger_time_ms"] = it }
                 snapshot?.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 response["snapshot_change_kind"] = resolveSnapshotStaleness(project, snapshot).changeKind
+                addInspectionVerdict(response)
                 
                 formatJsonManually(response.filterValues { it != null })
             } else {
-                val response = mapOf(
+                val response = mutableMapOf<String, Any?>(
                     "status" to "no_results",
                     "project" to project.name,
                     "project_key" to key,
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(project),
                     "timestamp" to System.currentTimeMillis(),
-                    "message" to "No inspection results found. Either run an inspection first, or the last inspection found no problems (100% pass).",
+                    "message" to "No trustworthy inspection result was captured. Trigger and wait for a fresh inspection, or open the Inspection Results view for the exact worktree.",
                     "total_problems" to 0,
                     "problems_shown" to 0,
                     "problems" to emptyList<Map<String, Any>>(),
@@ -1603,6 +1728,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "method" to "enhanced_tree",
                 )
+                addInspectionVerdict(response)
                 formatJsonManually(response)
             }
         } catch (_: Exception) {
@@ -1751,12 +1877,14 @@ class InspectionHandler : HttpRequestHandler() {
 
         // Clear indicator for a clean inspection (finished, confirmed, and not stale)
         val cleanInspection = (
-            !isLikelyStillRunning &&
+            !isIndexing &&
+                !isLikelyStillRunning &&
                 !inspectionInProgress &&
                 snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
                 !staleness.stale
             )
         status["clean_inspection"] = cleanInspection
+        addStatusInspectionVerdict(status)
 
         return status
     }
@@ -1969,7 +2097,7 @@ class InspectionHandler : HttpRequestHandler() {
                     noResultsStableSince = now
                 }
                 if (noResultsWaitHasSettled(now, noResultsStableSince, timeSinceTrigger, minStableMs)) {
-                    status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
+                    status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
                 }
             } else {
@@ -2012,7 +2140,7 @@ class InspectionHandler : HttpRequestHandler() {
                     timeSinceTrigger != null &&
                     timeSinceTrigger >= 15000
                 ) {
-                    status["wait_note"] = "Inspection finished but no results were captured. This can happen for clean runs or when the Inspection Results view was unavailable. Re-run the inspection or open the Inspection Results tool window if findings were expected."
+                    status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
                 }
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout")
@@ -2050,6 +2178,7 @@ class InspectionHandler : HttpRequestHandler() {
         response["wait_ms"] = elapsed
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
+        addStatusInspectionVerdict(response)
         return formatJsonManually(response)
     }
 
@@ -2071,14 +2200,17 @@ class InspectionHandler : HttpRequestHandler() {
         response["wait_ms"] = System.currentTimeMillis() - startMs
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
+        addStatusInspectionVerdict(response)
         return formatJsonManually(response)
     }
 
     private fun buildMissingProjectResponse(projectName: String?): MutableMap<String, Any> {
         val response = mutableMapOf<String, Any>()
         response["session_id"] = InspectionIdeSession.sessionId
+        response["status"] = "no_project"
         if (projectName == null) {
             response["error"] = "No project found"
+            addStatusInspectionVerdict(response)
             return response
         }
 
@@ -2108,6 +2240,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
+        addStatusInspectionVerdict(response)
         return response
     }
 

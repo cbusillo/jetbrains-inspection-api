@@ -483,7 +483,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
 - `snapshot_change_kind: "current_run_psi_churn"` → The latest run's snapshot saw a PSI modification-count tick after capture; the plugin keeps waiting instead of treating the snapshot as stale cached data.
 - `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `current_run_psi_churn`, and `timeout`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
-- `clean_inspection: true` → Inspection complete. No problems found
+- `clean_inspection: true` → Inspection complete; `inspection_verdict` is `GREEN` for the selected scope/filter
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
 - If all three are false and `time_since_last_trigger_ms` is old, there was no recent inspection. Trigger one first.
@@ -494,11 +494,22 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 Common completion reasons:
 - `results`: inspection completed and problems are ready to fetch.
 - `clean`: inspection completed and a clean empty result was confirmed.
-- `no_results`: inspection finished, but no results were captured. This can be a clean run or an unavailable/filtered IDE view.
+- `no_results`: inspection finished, but no trustworthy result was captured. Treat this as `UNKNOWN`, not clean; rerun inspection or open the Inspection Results view for the exact worktree.
 - `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. The response includes `capture_incomplete_reason` when a bucket can be assigned; re-run the inspection or open the Problems/Inspection Results view.
 - `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings. Wait responses expose cached counts as `cached_total_problems`, not `total_problems`.
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
+
+For agent-facing reports, use `inspection_verdict` and the companion
+`inspection_verdict_reason`, `inspection_verdict_message`, and
+`inspection_verdict_next_action` fields. The verdict is `GREEN` when inspection
+worked and found no actionable findings for the selected scope/filter, `RED`
+when inspection worked and returned actionable current findings, and `UNKNOWN`
+when the IDE/plugin/helper did not produce a trustworthy result.
+`UNKNOWN` is not clean and not red; report the included diagnostic reason and
+next action, such as opening the exact worktree in the IDE, waiting for
+indexing, rerunning stale results, or updating the plugin/helper when capture
+evidence points to an extractor or helper bug.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.
