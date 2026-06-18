@@ -1,0 +1,7 @@
+{
+  "name": "inspection-red-lane-webstorm",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Intentional WebStorm inspection red-lane fixture",
+  "type": "module"
+}

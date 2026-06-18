@@ -760,6 +760,78 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Wait does not trust same-run global context findings after PSI churn without live confirmation")
+    fun testWaitDoesNotTrustSameRunGlobalContextFindingsAfterPsiChurnWithoutLiveConfirmation() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        enhancedTreeExtractorFactory = { extractor }
+        val problems = listOf(staleProblem(description = "Model warning"))
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = problems,
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "global_context",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
+        val status = buildInspectionStatus()
+
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
+        assertTrue(response.contains("\"results_may_be_stale\": true"))
+        assertTrue(response.contains("\"cached_total_problems\": 1"))
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
+        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
+        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
+    }
+
+    @Test
+    @DisplayName("Wait reconciles same-run global context findings when live findings still match")
+    fun testWaitReconcilesSameRunGlobalContextFindingsWithLiveConfirmation() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), currentRun.runId)
+        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
+        val problems = listOf(staleProblem(description = "Model warning"))
+        every { extractor.extractAllProblems(mockProject) } returns problems
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = problems,
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "global_context",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
+        val status = buildInspectionStatus()
+
+        assertTrue(response.contains("\"completion_reason\": \"results\""))
+        assertFalse(response.contains("\"completion_reason\": \"stale_results\""))
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals("fresh", status["snapshot_change_kind"])
+        assertEquals(8L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
+        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
+    }
+
+    @Test
     @DisplayName("Status distinguishes unreconciled current-run PSI churn")
     fun testStatusReportsCurrentRunPsiChurnWhenReconcileCannotConfirm() {
         val extractor = mockk<EnhancedTreeExtractor>()
@@ -1255,6 +1327,20 @@ class InspectionSnapshotStateTest {
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, nonEmptyTree.first)
 
+        val suspiciousEmptyModel = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedModelCleanInspection = true,
+            observedNonEmptyInspectionTree = false,
+            suspiciousEmptyModelReason = CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, suspiciousEmptyModel.first)
+        assertTrue(suspiciousEmptyModel.second?.contains("empty model") == true)
+
         val stableReadableEmptyView = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,
@@ -1325,6 +1411,81 @@ class InspectionSnapshotStateTest {
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, stillUnreadableView.first)
+    }
+
+    @Test
+    @DisplayName("Suspicious WebStorm RedLane empty model is not treated as clean")
+    fun testSuspiciousWebStormRedLaneEmptyModelReason() {
+        assertEquals(
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "WS",
+                requestedProfileName = "RedLane",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            null,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "IU",
+                requestedProfileName = "RedLane",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            null,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "WS",
+                requestedProfileName = "Default",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL,
+            classifyCaptureIncompleteReason(
+                mapOf("exit_reason" to CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue),
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Suspicious empty model verdict tells agents to report a plugin bug")
+    fun testSuspiciousEmptyModelNextActionReportsPluginBug() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+                    "ide_product_code" to "WS",
+                    "suspicious_empty_model" to true,
+                ),
+                captureIncompleteReason = CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL,
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals(CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue, status["inspection_verdict_reason"])
+        assertTrue((status["inspection_verdict_next_action"] as String).contains("plugin/helper bug"))
+        assertEquals(false, status["clean_inspection"])
     }
 
     @Test
@@ -1423,102 +1584,6 @@ class InspectionSnapshotStateTest {
             CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
             classifyCaptureIncompleteReason(mapOf("exit_reason" to "helper_plugin_error")),
         )
-    }
-
-    @Test
-    @DisplayName("Non-empty unmapped inspection tree becomes a scoped fallback finding")
-    fun testUnmappedInspectionFallbackFindingForSingleFileScope() {
-        val problems = buildUnmappedInspectionFallbackProblems(
-            project = mockProject,
-            captureScope = InspectionCaptureScope(
-                scopeParam = "files",
-                files = listOf("src/main/java/RedFixture.java"),
-            ),
-            diagnostic = mapOf(
-                "observed_non_empty_inspection_tree" to true,
-                "model_problem_descriptor_count" to 0,
-                "last_view_observation" to mapOf("root_child_count" to 1),
-            ),
-        )
-
-        assertEquals(1, problems.size)
-        val problem = problems.single()
-        assertEquals("/tmp/TestProject/src/main/java/RedFixture.java", problem["file"])
-        assertEquals("error", problem["severity"])
-        assertEquals("UnmappedInspectionTree", problem["inspectionType"])
-        assertEquals("unmapped_inspection_tree_fallback", problem["source"])
-        assertEquals(false, problem["locationKnown"])
-        assertTrue((problem["description"] as String).contains("non-empty problem tree"))
-    }
-
-    @Test
-    @DisplayName("Clean or empty evidence does not create fallback findings")
-    fun testUnmappedInspectionFallbackRequiresRedEvidence() {
-        val problems = buildUnmappedInspectionFallbackProblems(
-            project = mockProject,
-            captureScope = InspectionCaptureScope(
-                scopeParam = "files",
-                files = listOf("src/main/java/CleanFixture.java"),
-            ),
-            diagnostic = mapOf(
-                "observed_non_empty_inspection_tree" to false,
-                "model_problem_descriptor_count" to 0,
-            ),
-        )
-
-        assertEquals(emptyList<Map<String, Any>>(), problems)
-    }
-
-    @Test
-    @DisplayName("Descriptor-only unmapped evidence becomes a fallback finding")
-    fun testUnmappedInspectionFallbackFindingForDescriptorEvidence() {
-        val problems = buildUnmappedInspectionFallbackProblems(
-            project = mockProject,
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
-            diagnostic = mapOf(
-                "observed_non_empty_inspection_tree" to false,
-                "model_problem_descriptor_count" to 2,
-            ),
-        )
-
-        assertEquals(1, problems.size)
-        assertEquals("/tmp/TestProject", problems.single()["file"])
-        assertTrue((problems.single()["description"] as String).contains("2 descriptor(s)"))
-    }
-
-    @Test
-    @DisplayName("Whole-project non-empty tree evidence becomes a fallback finding")
-    fun testUnmappedInspectionFallbackFindingForWholeProjectTreeEvidence() {
-        val problems = buildUnmappedInspectionFallbackProblems(
-            project = mockProject,
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
-            diagnostic = mapOf(
-                "observed_non_empty_inspection_tree" to true,
-                "model_problem_descriptor_count" to 0,
-                "last_view_observation" to mapOf("root_child_count" to 2),
-            ),
-        )
-
-        assertEquals(1, problems.size)
-        assertEquals("/tmp/TestProject", problems.single()["file"])
-        assertTrue((problems.single()["description"] as String).contains("non-empty problem tree"))
-    }
-
-    @Test
-    @DisplayName("Unmapped fallback remains actionable when project base path is unavailable")
-    fun testUnmappedInspectionFallbackWithoutProjectBasePath() {
-        val projectWithoutBasePath = mockk<Project>()
-        every { projectWithoutBasePath.basePath } returns null
-
-        val problems = buildUnmappedInspectionFallbackProblems(
-            project = projectWithoutBasePath,
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
-            diagnostic = mapOf("observed_non_empty_inspection_tree" to true),
-        )
-
-        assertEquals(1, problems.size)
-        assertEquals("unknown", problems.single()["file"])
-        assertEquals(false, problems.single()["locationKnown"])
     }
 
     @Test
@@ -1695,6 +1760,85 @@ class InspectionSnapshotStateTest {
                 bestResultsEmpty = true,
                 observedNonEmptyInspectionTree = true,
                 stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+    }
+
+    @Test
+    @DisplayName("Clean model can override stale non-empty inspection tree residue")
+    fun testCleanModelOverridesStaleNonEmptyInspectionTreeResidue() {
+        assertTrue(
+            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
+                observedNonEmptyInspectionTree = true,
+                modelExtractionClean = true,
+                modelProblemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                extractionFailureCount = 0,
+                lastExtractionCycleSucceeded = true,
+                lastToolExtractionSucceeded = true,
+                inspectionViewUpdating = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
+                observedNonEmptyInspectionTree = true,
+                modelExtractionClean = false,
+                modelProblemDescriptorCount = 1,
+                bestResultsEmpty = true,
+                extractionFailureCount = 0,
+                lastExtractionCycleSucceeded = true,
+                lastToolExtractionSucceeded = true,
+                inspectionViewUpdating = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
+                observedNonEmptyInspectionTree = true,
+                modelExtractionClean = true,
+                modelProblemDescriptorCount = 0,
+                bestResultsEmpty = false,
+                extractionFailureCount = 0,
+                lastExtractionCycleSucceeded = true,
+                lastToolExtractionSucceeded = true,
+                inspectionViewUpdating = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
+                observedNonEmptyInspectionTree = true,
+                modelExtractionClean = true,
+                modelProblemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                extractionFailureCount = 1,
+                lastExtractionCycleSucceeded = false,
+                lastToolExtractionSucceeded = true,
+                inspectionViewUpdating = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            )
+        )
+
+        assertFalse(
+            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
+                observedNonEmptyInspectionTree = true,
+                modelExtractionClean = true,
+                modelProblemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                extractionFailureCount = 0,
+                lastExtractionCycleSucceeded = true,
+                lastToolExtractionSucceeded = true,
+                inspectionViewUpdating = false,
+                stableForMs = 4999L,
                 pollingElapsedMs = 30000L,
             )
         )

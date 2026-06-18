@@ -376,7 +376,7 @@ curl "http://localhost:63340/api/inspection/problems?include_stale=true"
 - `include_unversioned` (optional): `true|false` when `scope=changed_files` (default `true`).
 - `changed_files_mode` (optional): `all|staged|unstaged` (best‑effort; falls back to `all`).
 - `max_files` (optional): Positive integer to cap files inspected for responsiveness. Invalid values return HTTP 400 with `error`, `parameter`, and `message` fields.
-- `profile` (optional): Name of inspection profile to use; falls back to current profile if not found.
+- `profile` (optional): Name of inspection profile to use. If an explicitly requested profile is missing or cannot be verified, the result is `UNKNOWN`/`capture_incomplete` rather than silently falling back to another profile.
 
 **Examples**:
 ```bash

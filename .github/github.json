@@ -29,7 +29,10 @@
     "manualSmoke": {
       "automatedIde": "./scripts/test-automated.sh",
       "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh",
-      "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh"
+      "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh",
+      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij",
+      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm",
+      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm"
     },
     "docsRequiredWhen": [
       "behavior changes",
