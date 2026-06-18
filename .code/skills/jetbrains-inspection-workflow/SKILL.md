@@ -59,7 +59,12 @@ Keep exact command matrices, environment setup, and troubleshooting in
    smoke matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are
    available; it exercises preexisting and helper-opened closeout paths and
    records cleanup evidence.
-6. For release readiness, run `./scripts/test-all.sh` or the commit gate before
+6. For verdict or extraction changes that must prove the red lane, run
+   `./scripts/dogfood-red-lane-smoke.sh` with a local IntelliJ IDEA and the
+   current plugin installed; it copies the maintained known-bad fixture and
+   requires structured JSON with `RED`, `total_problems > 0`, and cleanup
+   `closed`.
+7. For release readiness, run `./scripts/test-all.sh` or the commit gate before
    build/release commands, and confirm CI status when GitHub state matters.
 
 ## When Changing Behavior
@@ -81,7 +86,8 @@ Keep exact command matrices, environment setup, and troubleshooting in
 6. For clean/capture classification, preserve non-clean outcomes for
    `capture_incomplete`, stale results, timeouts, indexing, session drift,
    route ambiguity, wrong-worktree routes, and cleanup failures.
-7. For red-lane smoke tests, require current actionable findings in the helper
+7. For red-lane smoke tests, prefer `./scripts/dogfood-red-lane-smoke.sh` and
+   require current actionable findings in the helper
    response, such as `total_problems > 0`; a paginated current page may have an
    empty `problems` list even when matching findings exist. `capture_incomplete`, `non_empty_unmapped_tree`, or a
    non-clean zero-problem response proves only that clean was not confirmed.

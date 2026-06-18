@@ -164,6 +164,18 @@ fi
 
 print_result $BUILD_RESULT "Plugin build"
 
+# Step 4b: Smoke Script Contract Tests
+print_section "4b. Smoke Script Contract Tests"
+
+echo "Running red-lane smoke script contract test..."
+if ./scripts/test-red-lane-smoke-script.sh; then
+  RED_LANE_SCRIPT_RESULT=0
+else
+  RED_LANE_SCRIPT_RESULT=1
+fi
+
+print_result $RED_LANE_SCRIPT_RESULT "Red-lane smoke script contract"
+
 # Step 5: Coverage Verification
 print_section "5. Coverage Verification"
 
@@ -205,6 +217,7 @@ print_result $PLUGIN_TEST_RESULT "  Plugin tests"
 print_result $CORE_TEST_RESULT "  Core tests"
 print_result $MCP_TEST_RESULT "  MCP server tests"
 print_result $BUILD_RESULT "  Plugin build"
+print_result $RED_LANE_SCRIPT_RESULT "  Red-lane smoke script contract"
 print_result $PLUGIN_COVERAGE_RESULT "  Plugin coverage threshold"
 print_result $CORE_COVERAGE_RESULT "  Core coverage threshold"
 print_result $MCP_COVERAGE_RESULT "  MCP coverage threshold"

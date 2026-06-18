@@ -81,6 +81,25 @@ product-specific IDE failure.
 9. For linked worktrees, confirm the route `base_path` exactly equals the linked
    worktree, not the main checkout.
 
+## Red lane live smoke
+
+Use this when changing verdict classification, extraction, or helper closeout
+behavior and you need to prove a real IDE finding reaches agents as `RED`:
+
+```bash
+./scripts/dogfood-red-lane-smoke.sh \
+  --ide "IntelliJ IDEA" \
+  --json-out tmp/dogfood-red-lane.json
+```
+
+The command copies `test-fixtures/inspection-red-lane` to a disposable project
+under `~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper
+closeout with `scope=whole_project`, and passes only when the structured helper
+JSON reports `VERDICT=RED`, reports `total_problems > 0`, and closes the
+helper-owned project. The helper may exit non-zero because `RED` is not
+readiness-clean. Use IntelliJ IDEA for the maintained Java fixture; product-specific RED
+fixtures for PyCharm or WebStorm should be added separately if needed.
+
 ## Fast-path scopes (manual)
 
 Changed files only (fast inner loop):
