@@ -5,16 +5,43 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
-FIXTURE_SOURCE="test-fixtures/inspection-red-lane/src/main/java/com/example/redlane/DefinitelyRed.java"
-FIXTURE_PROFILE="test-fixtures/inspection-red-lane/.idea/inspectionProfiles/RedLane.xml"
-
-grep -q 'INTENTIONAL RED-LANE FIXTURE' "$FIXTURE_SOURCE"
-grep -q 'MissingType value = MissingType.create();' "$FIXTURE_SOURCE"
-grep -q 'private void unusedMethod()' "$FIXTURE_SOURCE"
-grep -q 'JavaErrorInspection' "$FIXTURE_PROFILE"
-grep -q 'UnusedDeclaration' "$FIXTURE_PROFILE"
+grep -q -- '--product NAME' scripts/dogfood-red-lane-smoke.sh
+grep -q -- 'inspection-red-lane-pycharm' scripts/dogfood-red-lane-smoke.sh
+grep -q -- 'inspection-red-lane-webstorm' scripts/dogfood-red-lane-smoke.sh
 grep -q -- '--scope whole_project' scripts/dogfood-red-lane-smoke.sh
 grep -q -- '--profile RedLane' scripts/dogfood-red-lane-smoke.sh
+
+assert_fixture_intellij() {
+	local fixture_source="test-fixtures/inspection-red-lane/src/main/java/com/example/redlane/DefinitelyRed.java"
+	local fixture_profile="test-fixtures/inspection-red-lane/.idea/inspectionProfiles/RedLane.xml"
+
+	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
+	grep -q 'private String redLaneField' "$fixture_source"
+	grep -q 'redLaneField must stay non-final' "$fixture_source"
+	grep -q 'UnusedDeclaration' "$fixture_profile"
+}
+
+assert_fixture_pycharm() {
+	local fixture_source="test-fixtures/inspection-red-lane-pycharm/src/definitely_red.py"
+	local fixture_profile="test-fixtures/inspection-red-lane-pycharm/.idea/inspectionProfiles/RedLane.xml"
+
+	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
+	grep -q '1 + 1' "$fixture_source"
+	test -f test-fixtures/inspection-red-lane-pycharm/pyproject.toml
+	grep -q 'PyStatementEffectInspection' "$fixture_profile"
+}
+
+assert_fixture_webstorm() {
+	local fixture_source="test-fixtures/inspection-red-lane-webstorm/src/definitely-red.json"
+	local fixture_profile="test-fixtures/inspection-red-lane-webstorm/.idea/inspectionProfiles/RedLane.xml"
+
+	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
+	grep -q '"duplicate": "first"' "$fixture_source"
+	grep -q '"duplicate": "second"' "$fixture_source"
+	test -f test-fixtures/inspection-red-lane-webstorm/package.json
+	grep -q 'JsonDuplicatePropertyKeys' "$fixture_profile"
+	grep -q 'JsonStandardCompliance' "$fixture_profile"
+}
 
 TMP_DIR=$(mktemp -d)
 cleanup() {
@@ -30,15 +57,35 @@ import sys
 from pathlib import Path
 
 repo = ""
+ide = ""
 args = sys.argv[1:]
 while args:
     arg = args.pop(0)
     if arg == "--repo" and args:
         repo = args.pop(0)
+    elif arg == "--ide" and args:
+        ide = args.pop(0)
 
-fixture = Path(repo) / "src/main/java/com/example/redlane/DefinitelyRed.java"
-if not repo or not fixture.exists():
-    print(json.dumps({"status": "error", "error_reason": "missing_fixture"}))
+fixtures = [
+    ("IntelliJ IDEA", "src/main/java/com/example/redlane/DefinitelyRed.java", "redLaneField"),
+    ("PyCharm", "src/definitely_red.py", "1 + 1"),
+    ("WebStorm", "src/definitely-red.json", "duplicate"),
+]
+
+selected = None
+for expected_ide, rel_path, marker in fixtures:
+    path = Path(repo) / rel_path
+    if path.exists():
+        selected = (expected_ide, path, marker)
+        break
+
+if not repo or selected is None:
+    print(json.dumps({"status": "error", "error_reason": "missing_fixture", "repo": repo}))
+    sys.exit(3)
+
+expected_ide, fixture, marker = selected
+if ide != expected_ide:
+    print(json.dumps({"status": "error", "error_reason": "wrong_ide", "expected_ide": expected_ide, "actual_ide": ide}))
     sys.exit(3)
 
 print(json.dumps({
@@ -50,25 +97,45 @@ print(json.dumps({
     "problems_shown": 1,
     "clean": False,
     "cleanup": {"status": "closed"},
-    "route": {"base_path": repo, "project_name": "inspection-red-lane", "ide": {"name": "IntelliJ IDEA"}},
-    "problems": [{"severity": "error", "file": str(fixture), "line": 6, "description": "Cannot resolve symbol MissingType"}],
+    "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide}},
+    "problems": [{"severity": "error", "file": str(fixture), "line": 1, "description": f"Cannot resolve symbol {marker}"}],
 }))
 STUB
 chmod +x "$HELPER"
 
-JSON_OUT="$TMP_DIR/report.json"
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" \
-  --work-root "$TMP_DIR/work" \
-  --json-out "$JSON_OUT"
+run_case() {
+	local product=$1
+	local expected_ide=$2
+	local expected_marker=$3
+	local json_out="$TMP_DIR/$product-report.json"
 
-jq -e '
-  .status == "ok" and
-  .bucket == "red_confirmed" and
-  .verdict == "RED" and
-  .total_problems == 1 and
-  .cleanup.status == "closed" and
-  (.payload.problems[0].description | contains("MissingType"))
-' "$JSON_OUT" >/dev/null
+	./scripts/dogfood-red-lane-smoke.sh \
+		--product "$product" \
+		--helper "$HELPER" \
+		--work-root "$TMP_DIR/work" \
+		--json-out "$json_out"
+
+	jq -e \
+		--arg product "$product" \
+		--arg expected_ide "$expected_ide" \
+		--arg expected_marker "$expected_marker" '
+    .status == "ok" and
+    .bucket == "red_confirmed" and
+    .product == $product and
+    .ide == $expected_ide and
+    .verdict == "RED" and
+    .total_problems == 1 and
+    .cleanup.status == "closed" and
+    (.payload.problems[0].description | contains($expected_marker))
+  ' "$json_out" >/dev/null
+}
+
+assert_fixture_intellij
+assert_fixture_pycharm
+assert_fixture_webstorm
+
+run_case intellij "IntelliJ IDEA" redLaneField
+run_case pycharm PyCharm '1 + 1'
+run_case webstorm WebStorm duplicate
 
 echo "red-lane smoke script contract passed"

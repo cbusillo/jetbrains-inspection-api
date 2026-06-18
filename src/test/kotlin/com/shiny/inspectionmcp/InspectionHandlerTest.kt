@@ -178,6 +178,106 @@ class InspectionHandlerTest {
         assertEquals(false, status["results_may_be_stale"])
         assertEquals(0, status["total_problems"])
     }
+
+    @Test
+    fun `test explicit missing inspection profile publishes capture incomplete snapshot`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns emptyList()
+        every { mockProfileManager.getProfile("RedLane") } returns mockProfile
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val response = processTriggerRequest("/api/inspection/trigger?profile=RedLane")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"profile\": \"RedLane\""))
+        verify(exactly = 0) { mockProfileManager.getProfile("RedLane") }
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        val status = buildInspectionStatus()
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("profile_resolution", status["results_source"])
+        assertEquals(true, status["capture_incomplete"])
+        assertEquals("helper_plugin_error", status["capture_incomplete_reason"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("RedLane", diagnostic["profile_requested"])
+        assertEquals(true, diagnostic["profile_missing"])
+        assertEquals("profile_missing", diagnostic["exit_reason"])
+    }
+
+    @Test
+    fun `test explicit missing inspection profile is checked before empty changed files shortcut`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns emptyList()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=changed_files&include_unversioned=false&profile=RedLane")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"scope\": \"changed_files\""))
+        assertTrue(body.contains("\"profile\": \"RedLane\""))
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        val status = buildInspectionStatus()
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("profile_resolution", status["results_source"])
+        assertEquals(true, status["capture_incomplete"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("RedLane", diagnostic["profile_requested"])
+        assertEquals(true, diagnostic["profile_missing"])
+        assertEquals("profile_missing", diagnostic["exit_reason"])
+    }
+
+    @Test
+    fun `test explicit inspection profile with unreadable profile list is unknown`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } throws IllegalStateException("profiles unavailable")
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val response = processTriggerRequest("/api/inspection/trigger?profile=RedLane")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"profile\": \"RedLane\""))
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        val status = buildInspectionStatus()
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("profile_resolution", status["results_source"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("RedLane", diagnostic["profile_requested"])
+        assertEquals(true, diagnostic["profile_unverified"])
+        assertEquals(false, diagnostic["profile_list_readable"])
+        assertEquals("profile_list_unreadable", diagnostic["exit_reason"])
+    }
     
     @Test
     fun `test isSupported returns true for inspection endpoints`() {

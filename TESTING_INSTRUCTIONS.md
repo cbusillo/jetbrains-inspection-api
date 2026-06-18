@@ -88,17 +88,27 @@ behavior and you need to prove a real IDE finding reaches agents as `RED`:
 
 ```bash
 ./scripts/dogfood-red-lane-smoke.sh \
+  --product intellij \
   --ide "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
+
+./scripts/dogfood-red-lane-smoke.sh \
+  --product pycharm \
+  --ide "PyCharm" \
+  --json-out tmp/dogfood-red-lane-pycharm.json
+
+./scripts/dogfood-red-lane-smoke.sh \
+  --product webstorm \
+  --ide "WebStorm" \
+  --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
-The command copies `test-fixtures/inspection-red-lane` to a disposable project
-under `~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper
-closeout with `scope=whole_project`, and passes only when the structured helper
-JSON reports `VERDICT=RED`, reports `total_problems > 0`, and closes the
-helper-owned project. The helper may exit non-zero because `RED` is not
-readiness-clean. Use IntelliJ IDEA for the maintained Java fixture; product-specific RED
-fixtures for PyCharm or WebStorm should be added separately if needed.
+The command copies the selected `test-fixtures/inspection-red-lane*` fixture to a
+disposable project under
+`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper closeout
+with `scope=whole_project`, and passes only when the structured helper JSON
+reports `VERDICT=RED`, reports `total_problems > 0`, and closes the helper-owned
+project. The helper may exit non-zero because `RED` is not readiness-clean.
 
 ## Fast-path scopes (manual)
 

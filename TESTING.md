@@ -106,25 +106,34 @@ workstream.
 ### Red lane dogfood
 
 Use `./scripts/dogfood-red-lane-smoke.sh` when changing verdict semantics,
-capture behavior, extraction, helper closeout, or release readiness. It copies
-the maintained known-bad Java project in `test-fixtures/inspection-red-lane` to
-a disposable local project, runs the external `jb-inspect.py closeout`, and
-requires `VERDICT=RED`, `total_problems > 0`, and cleanup `closed`. The helper
-may exit non-zero because `RED` is not readiness-clean; the smoke trusts the
-structured JSON verdict and still fails on invalid JSON or missing cleanup.
-IntelliJ IDEA is the required product for this Java fixture;
-product-specific PyCharm or WebStorm red-lane fixtures should be added
-separately if needed.
+capture behavior, extraction, helper closeout, or release readiness. It copies a
+maintained known-bad project fixture to a disposable local project, runs the
+external `jb-inspect.py closeout`, and requires `VERDICT=RED`,
+`total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
+`RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
+still fails on invalid JSON or missing cleanup.
 
 ```bash
 ./scripts/dogfood-red-lane-smoke.sh \
+  --product intellij \
   --ide "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
+
+./scripts/dogfood-red-lane-smoke.sh \
+  --product pycharm \
+  --ide "PyCharm" \
+  --json-out tmp/dogfood-red-lane-pycharm.json
+
+./scripts/dogfood-red-lane-smoke.sh \
+  --product webstorm \
+  --ide "WebStorm" \
+  --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
 This is a live IDE smoke, not a normal CI unit test. `./scripts/test-all.sh`
-runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper to keep
-the script contract from drifting without requiring a GUI IDE.
+runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
+checks the IntelliJ, PyCharm, and WebStorm fixture contracts without requiring a
+GUI IDE.
 
 Before shipping changes to clean/capture classification, run the focused
 `InspectionSnapshotStateTest` coverage, then build the plugin with

@@ -14,8 +14,8 @@ else
 	HELPER="$DEFAULT_HELPER_HOME"
 fi
 
-FIXTURE="$ROOT/test-fixtures/inspection-red-lane"
-IDE="IntelliJ IDEA"
+PRODUCT="intellij"
+IDE=""
 TIMEOUT_MS=180000
 PREPARE_TIMEOUT_MS=180000
 WORK_ROOT="$HOME/.code/working/jetbrains-inspection-api/red-lane-smoke"
@@ -32,7 +32,8 @@ This is a live IDE dogfood smoke, not a normal CI unit test.
 
 Options:
   --helper PATH              Path to jb-inspect.py.
-  --ide NAME                 IDE selector. Default: IntelliJ IDEA.
+  --product NAME             Fixture product: intellij, pycharm, webstorm. Default: intellij.
+  --ide NAME                 IDE selector. Defaults from --product.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
   --work-root PATH           Parent directory for disposable fixture copies.
@@ -40,9 +41,9 @@ Options:
   --keep-project             Leave the disposable fixture project on disk.
   -h, --help                 Show this help.
 
-The fixture intentionally contains unresolved Java symbols. A passing smoke means:
-IDE inspection produced actionable findings, the plugin captured them, and the
-helper reported VERDICT=RED.
+Each fixture intentionally contains a product-specific inspection finding. A
+passing smoke means IDE inspection produced actionable findings, the plugin
+captured them, and the helper reported VERDICT=RED.
 USAGE
 }
 
@@ -61,6 +62,11 @@ abs_path() {
 
 while [ $# -gt 0 ]; do
 	case "$1" in
+	--product)
+		[ $# -ge 2 ] || die "--product requires a value"
+		PRODUCT=$2
+		shift 2
+		;;
 	--helper)
 		[ $# -ge 2 ] || die "--helper requires a path"
 		HELPER=$2
@@ -105,6 +111,37 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
+case "$PRODUCT" in
+intellij | idea)
+	PRODUCT="intellij"
+	FIXTURE="$ROOT/test-fixtures/inspection-red-lane"
+	PROJECT_SLUG="inspection-red-lane"
+	DEFAULT_IDE="IntelliJ IDEA"
+	REQUIRED_PROFILE_TOOLS=("UnusedDeclaration")
+	;;
+	pycharm | python)
+		PRODUCT="pycharm"
+		FIXTURE="$ROOT/test-fixtures/inspection-red-lane-pycharm"
+		PROJECT_SLUG="inspection-red-lane-pycharm"
+		DEFAULT_IDE="PyCharm"
+		REQUIRED_PROFILE_TOOLS=("PyStatementEffectInspection")
+		;;
+	webstorm | javascript | js)
+		PRODUCT="webstorm"
+		FIXTURE="$ROOT/test-fixtures/inspection-red-lane-webstorm"
+		PROJECT_SLUG="inspection-red-lane-webstorm"
+		DEFAULT_IDE="WebStorm"
+		REQUIRED_PROFILE_TOOLS=("JsonDuplicatePropertyKeys" "JsonStandardCompliance")
+		;;
+*)
+	die "unknown product: $PRODUCT"
+	;;
+esac
+
+if [ -z "$IDE" ]; then
+	IDE=$DEFAULT_IDE
+fi
+
 [ -x "$HELPER" ] || die "helper is not executable: $HELPER"
 [ -d "$FIXTURE" ] || die "fixture is missing: $FIXTURE"
 
@@ -112,11 +149,11 @@ WORK_ROOT=$(abs_path "$WORK_ROOT")
 mkdir -p "$WORK_ROOT"
 
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
-PROJECT="$WORK_ROOT/inspection-red-lane-$RUN_ID"
-RAW_OUT="$WORK_ROOT/inspection-red-lane-$RUN_ID.raw.json"
-ERR_OUT="$WORK_ROOT/inspection-red-lane-$RUN_ID.stderr.txt"
-PAYLOAD_FILE="$WORK_ROOT/inspection-red-lane-$RUN_ID.payload.json"
-COMMAND_FILE="$WORK_ROOT/inspection-red-lane-$RUN_ID.command.json"
+PROJECT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID"
+RAW_OUT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.raw.json"
+ERR_OUT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.stderr.txt"
+PAYLOAD_FILE="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.payload.json"
+COMMAND_FILE="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.command.json"
 
 # shellcheck disable=SC2329
 cleanup() {
@@ -129,6 +166,13 @@ trap cleanup EXIT
 rm -rf "$PROJECT"
 mkdir -p "$PROJECT"
 cp -R "$FIXTURE"/. "$PROJECT"/
+
+PROFILE_FILE="$PROJECT/.idea/inspectionProfiles/RedLane.xml"
+[ -f "$PROFILE_FILE" ] || die "fixture profile is missing: $PROFILE_FILE"
+for tool in "${REQUIRED_PROFILE_TOOLS[@]}"; do
+	grep -q "class=\"$tool\"[^>]*enabled=\"true\"" "$PROFILE_FILE" || \
+		die "fixture profile does not enable required inspection tool: $tool"
+done
 
 CMD=(uv run "$HELPER" --json closeout --repo "$PROJECT" --ide "$IDE" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
@@ -160,6 +204,7 @@ REPORT=$(
 		--arg bucket "$BUCKET" \
 		--arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 			--arg helper "$HELPER" \
+			--arg product "$PRODUCT" \
 			--arg ide "$IDE" \
 			--arg fixture "$FIXTURE" \
 			--arg project "$PROJECT" \
@@ -174,6 +219,7 @@ REPORT=$(
         bucket: $bucket,
         generated_at: $generated_at,
         helper: $helper,
+        product: $product,
         ide: $ide,
         fixture: $fixture,
         project: $project,
