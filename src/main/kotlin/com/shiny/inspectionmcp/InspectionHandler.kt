@@ -306,6 +306,64 @@ internal fun classifyEmptyInspectionCapture(
         "Inspection finished, but the plugin could not conclusively confirm that the IDE results were empty. Re-run the inspection or open the Inspection Results/Problems tool window."
 }
 
+internal fun buildUnmappedInspectionFallbackProblems(
+    project: Project,
+    captureScope: InspectionCaptureScope,
+    diagnostic: Map<String, Any?>?,
+): List<Map<String, Any>> {
+    val observedNonEmptyTree = diagnostic?.get("observed_non_empty_inspection_tree") as? Boolean ?: false
+    val descriptorCount = (diagnostic?.get("model_problem_descriptor_count") as? Number)?.toInt() ?: 0
+    if (!observedNonEmptyTree && descriptorCount <= 0) {
+        return emptyList()
+    }
+
+    val basePath = normalizeFileSystemPath(project.basePath)
+    fun resolvePath(raw: String?): String? {
+        val trimmed = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return try {
+            val path = Paths.get(trimmed)
+            normalizeFileSystemPath(
+                if (path.isAbsolute || basePath == null) trimmed else Paths.get(basePath, trimmed).toString()
+            )
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    fun singleFileTarget(): String? {
+        captureScope.resolvedCurrentFile?.let(::resolvePath)?.let { return it }
+        val files = captureScope.files.orEmpty().mapNotNull(::resolvePath).distinct()
+        if (files.size == 1) return files.single()
+        val directoryTarget = resolvePath(captureScope.directoryParam)
+        if (directoryTarget != null) return directoryTarget
+        return basePath
+    }
+
+    val target = singleFileTarget() ?: "unknown"
+    val rootChildCount = (diagnostic?.get("last_view_observation") as? Map<*, *>)
+        ?.get("root_child_count") as? Number
+    val evidence = buildList {
+        if (observedNonEmptyTree) add("Inspection Results reported a non-empty problem tree")
+        if (descriptorCount > 0) add("$descriptorCount descriptor(s) were present but unmapped")
+        rootChildCount?.let { add("root child count: ${it.toInt()}") }
+    }.joinToString("; ").ifBlank { "Inspection Results reported unmapped problems" }
+
+    return listOf(
+        mapOf(
+            "description" to "Inspection Results contains unmapped problems for the requested scope. $evidence.",
+            "file" to target,
+            "line" to 0,
+            "column" to 0,
+            "severity" to "error",
+            "category" to "Inspection capture",
+            "inspectionType" to "UnmappedInspectionTree",
+            "source" to "unmapped_inspection_tree_fallback",
+            "locationKnown" to false,
+            "locationNote" to "The IDE reported problems, but the plugin could not map the tree rows to exact source locations.",
+        )
+    )
+}
+
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
     return observation.updateStateReadable &&
         observation.problemStateReadable &&
@@ -2768,6 +2826,13 @@ class InspectionHandler : HttpRequestHandler() {
                             null
                         }
                         val captureIncompleteReason = classifyCaptureIncompleteReason(captureDiagnostic)
+                        val unmappedFallbackResults = if (
+                            bestResults.isEmpty() && emptyOutcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED
+                        ) {
+                            buildUnmappedInspectionFallbackProblems(project, captureScope, captureDiagnostic)
+                        } else {
+                            emptyList()
+                        }
                         val snapshot = when {
                             bestResults.isNotEmpty() -> InspectionResultsSnapshot(
                                 problems = bestResults,
@@ -2776,6 +2841,18 @@ class InspectionHandler : HttpRequestHandler() {
                                 outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
                                 source = bestSource,
                                 captureScope = captureScope,
+                                runId = runId,
+                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                            )
+                            unmappedFallbackResults.isNotEmpty() -> InspectionResultsSnapshot(
+                                problems = unmappedFallbackResults,
+                                timestamp = System.currentTimeMillis(),
+                                projectState = snapshotState,
+                                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                                source = "unmapped_inspection_tree_fallback",
+                                note = emptyNote,
+                                captureScope = captureScope,
+                                captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                             )

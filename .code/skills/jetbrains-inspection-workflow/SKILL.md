@@ -81,6 +81,10 @@ Keep exact command matrices, environment setup, and troubleshooting in
 6. For clean/capture classification, preserve non-clean outcomes for
    `capture_incomplete`, stale results, timeouts, indexing, session drift,
    route ambiguity, wrong-worktree routes, and cleanup failures.
+7. For red-lane smoke tests, require at least one current actionable finding in
+   the helper response, such as `total_problems > 0` with a non-empty
+   `problems` list. `capture_incomplete`, `non_empty_unmapped_tree`, or a
+   non-clean zero-problem response proves only that clean was not confirmed.
 
 ## IDE Smoke Testing
 
