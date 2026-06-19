@@ -212,7 +212,7 @@ Typical response (truncated):
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
-- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` for the detailed counters and booleans behind the classification.
+- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` for the detailed counters and booleans behind the classification.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale; `current_run_psi_churn` is a fresh-run PSI tick that the plugin attempts to reconcile before returning results.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
@@ -314,7 +314,7 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
 
 This contract lets script helpers preserve projects that were already open
 before automation started while cleaning up helper-opened worktrees after
-closeout.
+readiness inspection.
 
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`
@@ -482,7 +482,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - `is_scanning: true` → Inspection running, wait
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
 - `snapshot_change_kind: "current_run_psi_churn"` → The latest run's snapshot saw a PSI modification-count tick after capture; the plugin keeps waiting instead of treating the snapshot as stale cached data.
-- `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `current_run_psi_churn`, and `timeout`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
+- `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `current_run_psi_churn`, and `timeout`; profile configuration bucket is `profile_resolution_error`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
 - `clean_inspection: true` → Inspection complete; `inspection_verdict` is `GREEN` for the selected scope/filter
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.

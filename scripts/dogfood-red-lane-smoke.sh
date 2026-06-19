@@ -27,7 +27,7 @@ usage() {
 Usage: ./scripts/dogfood-red-lane-smoke.sh [options]
 
 Copies the maintained inspection-red-lane fixture to a disposable local project,
-runs the JetBrains inspection helper closeout, and requires a RED verdict.
+runs the JetBrains inspection helper readiness inspection, and requires a RED verdict.
 This is a live IDE dogfood smoke, not a normal CI unit test.
 
 Options:
@@ -174,7 +174,7 @@ for tool in "${REQUIRED_PROFILE_TOOLS[@]}"; do
 		die "fixture profile does not enable required inspection tool: $tool"
 done
 
-CMD=(uv run "$HELPER" --json closeout --repo "$PROJECT" --ide "$IDE" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"

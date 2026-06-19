@@ -51,7 +51,7 @@ Expected behavior:
 
 ## Helper lifecycle smoke
 
-Use this when validating worktree closeout behavior from the external helper.
+Use this when validating worktree readiness inspection behavior from the external helper.
 For release, merge-readiness, or dogfood-exit validation, prefer the repeatable
 matrix runner first:
 
@@ -63,7 +63,7 @@ Use the manual sequence below when debugging one matrix row or a
 product-specific IDE failure.
 
 1. Pick a repo worktree that is not currently open in the target IDE.
-2. Run `jb-inspect.py closeout --repo <worktree> --scope changed_files`.
+2. Run `jb-inspect.py inspect-closeout --repo <worktree> --scope changed_files`.
 3. Confirm the helper reports an exact route with `opened_by_helper=true` and a
    cleanup status of `closed` after inspection.
 4. Confirm no Trust Project, Safe Mode, or Open Project mode prompt appears; the
@@ -75,7 +75,7 @@ product-specific IDE failure.
 6. If debugging a product-specific failure, call `/api/inspection/lifecycle/open`
    directly and confirm the endpoint returns `status=opening` quickly; the
    helper polling loop must then prove the project appears in `/list`.
-7. Open the same worktree manually in the IDE and rerun closeout.
+7. Open the same worktree manually in the IDE and rerun `inspect-closeout`.
 8. Confirm cleanup reports `not_needed` and the manually opened project remains
    open.
 9. For linked worktrees, confirm the route `base_path` exactly equals the linked
@@ -83,7 +83,7 @@ product-specific IDE failure.
 
 ## Red lane live smoke
 
-Use this when changing verdict classification, extraction, or helper closeout
+Use this when changing verdict classification, extraction, or helper readiness inspection
 behavior and you need to prove a real IDE finding reaches agents as `RED`:
 
 ```bash
@@ -105,7 +105,7 @@ behavior and you need to prove a real IDE finding reaches agents as `RED`:
 
 The command copies the selected `test-fixtures/inspection-red-lane*` fixture to a
 disposable project under
-`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper closeout
+`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper `inspect-closeout`
 with `scope=whole_project`, and passes only when the structured helper JSON
 reports `VERDICT=RED`, reports `total_problems > 0`, and closes the helper-owned
 project. The helper may exit non-zero because `RED` is not readiness-clean.

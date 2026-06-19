@@ -84,6 +84,7 @@ internal enum class CaptureIncompleteReason(val apiValue: String) {
     CURRENT_RUN_PSI_CHURN("current_run_psi_churn"),
     INSPECTION_TRIGGER_EMPTY_MODEL("inspection_trigger_empty_model"),
     TIMEOUT("timeout"),
+    PROFILE_RESOLUTION_ERROR("profile_resolution_error"),
     HELPER_PLUGIN_ERROR("helper_plugin_error"),
     UNKNOWN("unknown"),
 }
@@ -847,6 +848,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Wait for indexing/scanning to finish, then rerun inspection."
             "inspection_api_unavailable" ->
                 "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
+            "profile_resolution_error" ->
+                "Check that the requested inspection profile exists and is loaded in the target IDE project, then rerun inspection."
             "ambiguous_route" ->
                 "Pass project_key, project_path, or worktree_path so the plugin can inspect the exact project."
             "session_drift" ->
@@ -2444,7 +2447,7 @@ class InspectionHandler : HttpRequestHandler() {
                             "profile_source" to "request",
                             "exit_reason" to exitReason,
                         ).filterValues { it != null },
-                        captureIncompleteReason = CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
+                        captureIncompleteReason = CaptureIncompleteReason.PROFILE_RESOLUTION_ERROR,
                         runId = runId,
                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                     )
