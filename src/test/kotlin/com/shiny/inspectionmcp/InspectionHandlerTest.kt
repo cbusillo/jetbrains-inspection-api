@@ -204,9 +204,9 @@ class InspectionHandlerTest {
         assertEquals("capture_incomplete", status["snapshot_outcome"])
         assertEquals("profile_resolution", status["results_source"])
         assertEquals(true, status["capture_incomplete"])
-        assertEquals("helper_plugin_error", status["capture_incomplete_reason"])
+        assertEquals("profile_resolution_error", status["capture_incomplete_reason"])
         assertEquals("UNKNOWN", status["inspection_verdict"])
-        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        assertEquals("profile_resolution_error", status["inspection_verdict_reason"])
         @Suppress("UNCHECKED_CAST")
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
         assertEquals("RedLane", diagnostic["profile_requested"])
@@ -239,7 +239,7 @@ class InspectionHandlerTest {
         assertEquals("profile_resolution", status["results_source"])
         assertEquals(true, status["capture_incomplete"])
         assertEquals("UNKNOWN", status["inspection_verdict"])
-        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        assertEquals("profile_resolution_error", status["inspection_verdict_reason"])
         @Suppress("UNCHECKED_CAST")
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
         assertEquals("RedLane", diagnostic["profile_requested"])
@@ -269,8 +269,9 @@ class InspectionHandlerTest {
         val status = buildInspectionStatus()
         assertEquals("capture_incomplete", status["snapshot_outcome"])
         assertEquals("profile_resolution", status["results_source"])
+        assertEquals("profile_resolution_error", status["capture_incomplete_reason"])
         assertEquals("UNKNOWN", status["inspection_verdict"])
-        assertEquals("helper_plugin_error", status["inspection_verdict_reason"])
+        assertEquals("profile_resolution_error", status["inspection_verdict_reason"])
         @Suppress("UNCHECKED_CAST")
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
         assertEquals("RedLane", diagnostic["profile_requested"])

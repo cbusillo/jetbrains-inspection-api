@@ -30,16 +30,16 @@ usage() {
 	cat <<'USAGE'
 Usage: ./scripts/dogfood-smoke-matrix.sh [options]
 
-Runs a local dogfood matrix around the jetbrains-inspection helper closeout
-flow. The matrix records IDE identity, plugin version, cleanup evidence, and a
-failure bucket linked to the current hardening issue.
+Runs a local dogfood matrix around the jetbrains-inspection helper readiness
+inspection flow. The matrix records IDE identity, plugin version, cleanup
+evidence, and a failure bucket linked to the current hardening issue.
 
 Options:
   --helper PATH              Path to jb-inspect.py.
   --repo [LABEL=]PATH        Repo/worktree to inspect. Repeatable.
   --ide NAME                 IDE selector, e.g. "IntelliJ IDEA". Repeatable.
   --case NAME                all, preexisting, or helper-opened. Default: all.
-  --scope SCOPE              Helper closeout scope. Default: changed_files.
+  --scope SCOPE              Helper readiness inspection scope. Default: changed_files.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
   --worktree-root PATH       Parent directory for disposable worktrees.
@@ -472,7 +472,7 @@ run_case() {
 		target_repo=$worktree_path
 	fi
 
-	local cmd=(uv run "$HELPER" --json closeout --repo "$target_repo" --ide "$ide" --scope "$SCOPE" --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+	local cmd=(uv run "$HELPER" --json inspect-closeout --repo "$target_repo" --ide "$ide" --scope "$SCOPE" --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 	if [ "$scenario" = "preexisting" ]; then
 		cmd+=(--no-open)
 	fi

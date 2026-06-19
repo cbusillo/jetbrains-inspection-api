@@ -54,24 +54,24 @@ installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash
 HELPER="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
-uv run "$HELPER" run \
+uv run "$HELPER" inspect \
   --repo "$PWD" \
   --scope changed_files
 ```
 
-For agent closeout/readiness, prefer `closeout` instead of plain `run`:
+For agent readiness, use `inspect-closeout` so cleanup status is explicit:
 
 ```bash
-uv run "$HELPER" closeout \
+uv run "$HELPER" inspect-closeout \
   --repo "$PWD" \
   --scope changed_files
 ```
 
-`closeout` serializes helper-owned IDE opens, requires an exact current-worktree
+`inspect-closeout` serializes helper-owned IDE opens, requires an exact current-worktree
 route, runs inspection, and calls the plugin lifecycle close endpoint only for
 projects opened by the helper. Projects that were open before the helper started
 are left open. On macOS, lifecycle opens use `open -g` by default so the IDE should
-not take focus while a closeout is preparing a worktree. Auto-open requires a
+not take focus while readiness inspection is preparing a worktree. Auto-open requires a
 global trusted-root policy in
 `${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`; test worktrees should be
 created under those roots, not random temp directories.
@@ -106,9 +106,9 @@ workstream.
 ### Red lane dogfood
 
 Use `./scripts/dogfood-red-lane-smoke.sh` when changing verdict semantics,
-capture behavior, extraction, helper closeout, or release readiness. It copies a
+capture behavior, extraction, helper readiness inspection, or release readiness. It copies a
 maintained known-bad project fixture to a disposable local project, runs the
-external `jb-inspect.py closeout`, and requires `VERDICT=RED`,
+external `jb-inspect.py inspect-closeout`, and requires `VERDICT=RED`,
 `total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
 `RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
 still fails on invalid JSON or missing cleanup.
@@ -147,7 +147,7 @@ validation.
 
 Use `./scripts/dogfood-smoke-matrix.sh` before release, after lifecycle or
 capture behavior changes, and when closing a dogfood session that should prove
-agent closeout behavior. The matrix wraps `jb-inspect.py closeout`, includes
+agent readiness inspection behavior. The matrix wraps `jb-inspect.py inspect-closeout`, includes
 this repo by default, includes `~/Developer/mediaforce` when present, and runs
 both preexisting-project and helper-opened worktree cases.
 

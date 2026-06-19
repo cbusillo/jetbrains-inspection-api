@@ -57,7 +57,7 @@ Keep exact command matrices, environment setup, and troubleshooting in
    below and open `TESTING_INSTRUCTIONS.md` for the exact manual sequence.
 5. For lifecycle, capture, routing, or dogfood-exit readiness, run the dogfood
    smoke matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are
-   available; it exercises preexisting and helper-opened closeout paths and
+   available; it exercises preexisting and helper-opened readiness inspection paths and
    records cleanup evidence.
 6. For verdict or extraction changes that must prove the red lane, run
    `./scripts/dogfood-red-lane-smoke.sh --product intellij|pycharm|webstorm`
@@ -114,7 +114,7 @@ unit tests.
 6. For stateless HTTP clients, resolve `/api/inspection/route` first and pass
    the returned `project_key` and `session_id` through trigger, wait, status,
    and problems calls.
-7. When validating agent closeout behavior across IDEs or repos, run
+7. When validating agent readiness inspection behavior across IDEs or repos, run
    `./scripts/dogfood-smoke-matrix.sh` and inspect its JSON artifact for
    cleanup `closed`/`not_needed`, IDE identity, plugin version, and failure
    buckets.
