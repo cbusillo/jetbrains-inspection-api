@@ -294,7 +294,7 @@ internal class ToolExecutor(
             ensurePinnedSessionStillValid("inspection_get_problems", target)
 
             val guidance = buildProblemsGuidance(result)
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + guidance + buildRouteGuidance(target)
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting problems: ${error.message}")
@@ -348,7 +348,8 @@ internal class ToolExecutor(
             val (result, target) = routeAndGet(autoPinnedArgs(args), "status", params)
             ensurePinnedSessionStillValid("inspection_get_status", target)
 
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildStatusGuidance(result) + buildRouteGuidance(target)
+            val guidance = buildStatusGuidance(result)
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting status: ${error.message}")
@@ -369,7 +370,8 @@ internal class ToolExecutor(
             val (result, target) = routeAndGet(autoPinnedArgs(args), "wait", params, requestTimeoutSeconds)
             ensurePinnedSessionStillValid("inspection_wait", target)
 
-            val text = prettyJson.encodeToString(JsonElement.serializer(), result) + buildWaitGuidance(result) + buildRouteGuidance(target)
+            val guidance = buildWaitGuidance(result)
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error waiting for inspection: ${error.message}")
@@ -670,6 +672,34 @@ internal class ToolExecutor(
         return "\n\n$prefix: capture_incomplete$reasonText do not treat as clean. Retry once, preferably with a narrower scope; if it repeats, report the reason and capture_diagnostic."
     }
 
+    private fun renderInspectionResult(result: JsonElement, guidance: String, routeGuidance: String): String {
+        val payload = sanitizeInspectionPayloadForAgent(result)
+        val jsonText = prettyJson.encodeToString(JsonElement.serializer(), payload)
+        val leadingGuidance = guidance.trim()
+        val leading = if (leadingGuidance.isEmpty()) "" else "$leadingGuidance\n\n"
+        return leading + jsonText + routeGuidance
+    }
+
+    private fun sanitizeInspectionPayloadForAgent(result: JsonElement): JsonElement {
+        val obj = result as? JsonObject ?: return result
+        val verdict = blockerVerdict(obj)?.verdict
+            ?: obj["inspection_verdict"]?.jsonPrimitive?.contentOrNull
+        val keep = obj.toMutableMap()
+        keep.remove("capture_diagnostic")
+        val includeStale = obj["include_stale"]?.jsonPrimitive?.booleanOrNull == true
+        if (verdict == "UNKNOWN" && !includeStale) {
+            keep.remove("total_problems")
+            keep.remove("problems_shown")
+            keep.remove("problems")
+            keep.remove("pagination")
+            keep.remove("inspection_verdict")
+            keep.remove("inspection_verdict_reason")
+            keep.remove("inspection_verdict_message")
+            keep.remove("inspection_verdict_next_action")
+        }
+        return JsonObject(keep)
+    }
+
     private data class McpInspectionVerdict(
         val verdict: String,
         val reason: String,
@@ -770,8 +800,27 @@ internal class ToolExecutor(
                 "Inspection wait was interrupted.",
                 "Try again.",
             )
+            proofFailures(obj).isNotEmpty() -> {
+                val proofFailures = proofFailures(obj)
+                McpInspectionVerdict(
+                    "UNKNOWN",
+                    "inspection_proof_failed",
+                    "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
+                    "Resolve the proof failure (${proofFailures.joinToString(", ")}), then trigger and wait for a fresh inspection before reporting GREEN or RED.",
+                )
+            }
             else -> null
         }
+    }
+
+    private fun proofFailures(obj: JsonObject): List<String> {
+        val topLevel = (obj["proof_failures"] as? JsonArray)
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: emptyList()
+        val nested = ((obj["inspection_proof"] as? JsonObject)?.get("proof_failures") as? JsonArray)
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?: emptyList()
+        return (topLevel + nested).distinct()
     }
 
     private fun unknownCaptureVerdict(reason: String?): McpInspectionVerdict {

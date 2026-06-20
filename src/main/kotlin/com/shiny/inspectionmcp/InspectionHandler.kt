@@ -174,6 +174,11 @@ internal data class InspectionRunState(
     val inProgress: Boolean,
 )
 
+private data class InspectionProof(
+    val summary: Map<String, Any?>,
+    val failures: List<String>,
+)
+
 internal data class InspectionProjectLease(
     val closeToken: String,
     val leaseId: String?,
@@ -745,11 +750,24 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun addInspectionVerdict(target: MutableMap<String, Any?>) {
+        addInspectionProof(target)
         target.putAll(inspectionVerdictFields(target))
     }
 
     private fun addStatusInspectionVerdict(target: MutableMap<String, Any>) {
+        @Suppress("UNCHECKED_CAST")
+        addInspectionProof(target as MutableMap<String, Any?>)
         target.putAll(inspectionVerdictFields(target))
+    }
+
+    private fun addInspectionProof(target: MutableMap<String, Any?>) {
+        val proof = inspectionProof(target)
+        target["inspection_proof"] = proof.summary.filterValues { it != null }
+        if (proof.failures.isNotEmpty()) {
+            target["proof_failures"] = proof.failures
+        } else {
+            target.remove("proof_failures")
+        }
     }
 
     private fun inspectionVerdictFields(payload: Map<String, Any?>): Map<String, String> {
@@ -772,6 +790,14 @@ class InspectionHandler : HttpRequestHandler() {
                 reason = unknownReason,
                 message = "Inspection did not produce a trustworthy GREEN or RED result.",
                 nextAction = unknownVerdictNextAction(unknownReason, payload),
+            )
+        }
+        if ((payload["proof_failures"] as? List<*>)?.isNotEmpty() == true) {
+            return InspectionVerdict(
+                verdict = "UNKNOWN",
+                reason = "inspection_proof_failed",
+                message = "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
+                nextAction = unknownVerdictNextAction("inspection_proof_failed", payload),
             )
         }
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
@@ -850,6 +876,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
             "profile_resolution_error" ->
                 "Check that the requested inspection profile exists and is loaded in the target IDE project, then rerun inspection."
+            "inspection_proof_failed" ->
+                "Resolve the route/profile/scope proof failure, then trigger and wait for a fresh inspection before reporting GREEN or RED."
             "ambiguous_route" ->
                 "Pass project_key, project_path, or worktree_path so the plugin can inspect the exact project."
             "session_drift" ->
@@ -859,6 +887,73 @@ class InspectionHandler : HttpRequestHandler() {
             else ->
                 "Do not report GREEN or RED. Rerun inspection and include diagnostics if it remains UNKNOWN."
         }
+    }
+
+    private fun inspectionProof(payload: Map<String, Any?>): InspectionProof {
+        val status = payload["status"] as? String
+        val completionReason = payload["completion_reason"] as? String
+        val route = payload["route"] as? Map<*, *>
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *>
+        val filters = payload["filters"] as? Map<*, *>
+        val captureScope = payload["capture_scope"] as? Map<*, *>
+        val snapshotRunId = (payload["snapshot_run_id"] as? Number)?.toLong()
+        val inspectionRunId = (payload["inspection_run_id"] as? Number)?.toLong()
+        val currentRunId = inspectionRunId ?: (payload["run_id"] as? Number)?.toLong()
+        val captureIncompleteReason = payload["capture_incomplete_reason"] as? String
+        val proofStatus = when {
+            payload["session_drift"] == true -> "failed"
+            payload["ambiguous"] == true -> "failed"
+            payload["unavailable"] == true -> "failed"
+            status == "no_project" || completionReason == "no_project" -> "failed"
+            payload["results_may_be_stale"] == true -> "failed"
+            payload["capture_incomplete"] == true -> "failed"
+            payload["timed_out"] == true -> "failed"
+            payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "pending"
+            payload["clean_inspection"] == true -> "complete"
+            status == "results_available" || status == "clean" || completionReason == "clean" || completionReason == "results" -> "complete"
+            else -> "unknown"
+        }
+        val scope = (filters?.get("scope") as? String)
+            ?: (captureScope?.get("scope") as? String)
+            ?: (diagnostic?.get("scope") as? String)
+        val profileRequested = diagnostic?.get("profile_requested") as? String
+        val profileResolved = diagnostic?.get("profile_resolved_name") as? String
+            ?: payload["profile"] as? String
+        val proof = mapOf(
+            "status" to proofStatus,
+            "project_key" to payload["project_key"],
+            "route_base_path" to route?.get("base_path"),
+            "project_instance_id" to route?.get("project_instance_id"),
+            "session_id" to payload["session_id"],
+            "scope" to scope,
+            "profile" to profileResolved,
+            "expected_profile" to profileRequested,
+            "snapshot_outcome" to payload["snapshot_outcome"],
+            "capture_complete" to (payload["capture_incomplete"] != true && status != "capture_incomplete"),
+            "inspection_completed" to (payload["inspection_in_progress"] != true && payload["is_scanning"] != true),
+            "indexing_complete" to (payload["indexing"] != true),
+            "session_fresh" to (payload["session_drift"] != true),
+            "results_fresh" to (payload["results_may_be_stale"] != true),
+            "snapshot_run_id" to snapshotRunId,
+            "inspection_run_id" to currentRunId,
+            "capture_incomplete_reason" to captureIncompleteReason,
+        )
+
+        val failures = mutableListOf<String>()
+        if (payload["session_drift"] == true) failures.add("session_drift")
+        if (payload["ambiguous"] == true) failures.add("ambiguous_route")
+        if (payload["unavailable"] == true) failures.add("inspection_api_unavailable")
+        if (payload["results_may_be_stale"] == true || status == "stale_results" || completionReason == "stale_results") failures.add("stale_results")
+        if (payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete") failures.add(captureIncompleteReason ?: "capture_incomplete")
+        if (payload["timed_out"] == true || completionReason == "timeout") failures.add("timeout")
+        if (payload["indexing"] == true) failures.add("indexing")
+        if (payload["is_scanning"] == true || payload["inspection_in_progress"] == true) failures.add("inspection_still_running")
+        if (status == "no_results" || completionReason == "no_results") failures.add("no_results")
+        if (status == "no_recent_inspection" || completionReason == "no_recent_inspection") failures.add("no_recent_inspection")
+        if (diagnostic?.get("profile_missing") == true || diagnostic?.get("profile_unverified") == true) failures.add("profile_mismatch")
+        if (snapshotRunId != null && currentRunId != null && snapshotRunId != currentRunId) failures.add("run_mismatch")
+
+        return InspectionProof(proof, failures.distinct())
     }
 
     override fun isSupported(request: FullHttpRequest): Boolean {
@@ -1553,6 +1648,7 @@ class InspectionHandler : HttpRequestHandler() {
             val key = projectKey(project)
             var snapshot = resultsStore.getSnapshot(key)
             val hasSnapshot = snapshot != null
+            val runState = inspectionRunStatesByProject[key]
             var staleness = resolveSnapshotStaleness(project, snapshot)
             if (staleness.changeKind == "current_run_psi_churn") {
                 val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
@@ -1582,6 +1678,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "project_key" to key,
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(project),
+                    "inspection_in_progress" to (runState?.inProgress == true),
+                    "inspection_run_id" to runState?.runId,
                     "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
@@ -1625,6 +1723,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "project_key" to key,
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(project),
+                    "inspection_in_progress" to (runState?.inProgress == true),
+                    "inspection_run_id" to runState?.runId,
                     "timestamp" to snapshot.timestamp,
                     "message" to (
                         snapshot.note
@@ -1681,6 +1781,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "project_key" to key,
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(project),
+                    "inspection_in_progress" to (runState?.inProgress == true),
+                    "inspection_run_id" to runState?.runId,
                     "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
                     "total_problems" to page.total,
                     "problems_shown" to page.shown,
@@ -1713,6 +1815,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "project_key" to key,
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(project),
+                    "inspection_in_progress" to (runState?.inProgress == true),
+                    "inspection_run_id" to runState?.runId,
                     "timestamp" to System.currentTimeMillis(),
                     "message" to "No trustworthy inspection result was captured. Trigger and wait for a fresh inspection, or open the Inspection Results view for the exact worktree.",
                     "total_problems" to 0,

@@ -145,6 +145,11 @@ class InspectionSnapshotStateTest {
         assertEquals(false, status["capture_incomplete"])
         assertEquals("GREEN", status["inspection_verdict"])
         assertEquals("clean_confirmed", status["inspection_verdict_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val proof = status["inspection_proof"] as Map<String, Any?>
+        assertEquals("complete", proof["status"])
+        assertEquals(true, proof["capture_complete"])
+        assertFalse(status.containsKey("proof_failures"))
     }
 
     @Test
@@ -529,6 +534,9 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"capture_incomplete_reason\": \"timeout\""))
         assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
         assertTrue(response.contains("\"inspection_verdict_reason\": \"timeout\""))
+        assertTrue(response.contains("\"inspection_proof\""))
+        assertTrue(response.contains("\"proof_failures\": ["))
+        assertTrue(response.contains("\"timeout\""))
         assertTrue(response.contains("\"capture_diagnostic\""))
         assertTrue(response.contains("\"exit_reason\": \"timeout\""))
         assertTrue(response.contains("\"view_ready_ok\": false"))
@@ -554,6 +562,31 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"problems\": []"))
         assertTrue(response.contains("\"pagination\":"))
         assertTrue(response.contains("\"filters\":"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint does not report old clean snapshot green during newer run")
+    fun testProblemsEndpointDoesNotReportOldCleanSnapshotGreenDuringNewerRun() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis() - 120000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis() - 120000L,
+            ),
+        )
+        beginInspectionRun()
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"inspection_still_running\""))
+        assertTrue(response.contains("\"inspection_in_progress\": true"))
+        assertFalse(response.contains("\"inspection_verdict\": \"GREEN\""))
     }
 
     @Test
