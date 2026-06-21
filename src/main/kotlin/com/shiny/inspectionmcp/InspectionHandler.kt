@@ -1,6 +1,7 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
@@ -11,6 +12,8 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
@@ -133,7 +136,25 @@ internal data class InspectionModelExtraction(
     val readableToolCount: Int,
     val unreadableToolCount: Int,
     val unreadableReasons: List<String> = emptyList(),
+    val targetToolStates: List<Map<String, Any?>> = emptyList(),
 ) {
+    constructor(
+        problems: List<Map<String, Any>>,
+        problemDescriptorCount: Int,
+        enabledToolCount: Int,
+        readableToolCount: Int,
+        unreadableToolCount: Int,
+        unreadableReasons: List<String> = emptyList(),
+    ) : this(
+        problems = problems,
+        problemDescriptorCount = problemDescriptorCount,
+        enabledToolCount = enabledToolCount,
+        readableToolCount = readableToolCount,
+        unreadableToolCount = unreadableToolCount,
+        unreadableReasons = unreadableReasons,
+        targetToolStates = emptyList(),
+    )
+
     val verdict: InspectionModelVerdict
         get() = when {
             problems.isNotEmpty() || problemDescriptorCount > 0 -> InspectionModelVerdict.HAS_PROBLEMS
@@ -2513,6 +2534,8 @@ class InspectionHandler : HttpRequestHandler() {
             clearPriorInspectionResults(project)
             
             syncProjectState(project)
+            waitForSmartMode(project)
+            val dumbAfterSync = DumbService.getInstance(project).isDumb
 
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
             val requestedProfileName = profileName?.trim()?.takeIf { it.isNotEmpty() }
@@ -2598,6 +2621,17 @@ class InspectionHandler : HttpRequestHandler() {
                 maxFiles = maxFiles,
                 resolvedChangedFiles = changedFilesScopeFiles,
             )
+            val scopeDiagnostics = inspectCaptureScopeFiles(
+                project = project,
+                scopeParam = scopeParam,
+                directoryParam = directoryParam,
+                files = files,
+                resolvedCurrentFile = resolvedCurrentFile,
+                resolvedChangedFiles = changedFilesScopeFiles,
+            ) + mapOf(
+                "dumb_after_sync" to dumbAfterSync,
+                "dispatch_thread_before_inspection" to ApplicationManager.getApplication().isDispatchThread,
+            )
             val scopeProblemMatcher = buildScopeProblemMatcher(
                 project = project,
                 scopeParam = scopeParam,
@@ -2629,6 +2663,10 @@ class InspectionHandler : HttpRequestHandler() {
                 "profile_available_names" to profileNames?.take(25),
                 "profile_source" to if (requestedProfileName != null) "request" else "current",
             ).filterValues { it != null }
+            val targetToolShortNames = expectedProofToolShortNames(
+                ideProductCode = safeInspectionIdentity()["ide_product_code"]?.toString(),
+                requestedProfileName = requestedProfileName,
+            )
 
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
@@ -2662,7 +2700,21 @@ class InspectionHandler : HttpRequestHandler() {
                         val extractor = enhancedTreeExtractorFactory()
                         var extractedFromContextSucceeded = false
                         val contextExtraction = try {
-                            extractProblemsFromContextSafe(globalContext, project).also {
+                            val fallbackScopeFiles = scopedPsiFilesForInspectionEngine(
+                                project,
+                                scopeParam,
+                                directoryParam,
+                                files,
+                                resolvedCurrentFile,
+                                resolvedChangedFiles = changedFilesScopeFiles,
+                                scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
+                            )
+                            extractProblemsFromContextSafe(
+                                globalContext,
+                                project,
+                                targetToolShortNames,
+                                fallbackScopeFiles,
+                            ).also {
                                 extractedFromContextSucceeded = true
                             }
                         } catch (e: Exception) {
@@ -3156,6 +3208,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 "model_readable_tool_count" to contextExtraction.readableToolCount,
                                 "model_unreadable_tool_count" to contextExtraction.unreadableToolCount,
                                 "model_unreadable_reasons" to contextExtraction.unreadableReasons,
+                                "target_tool_states" to contextExtraction.targetToolStates,
                                 "observed_non_empty_inspection_tree" to effectiveObservedNonEmptyInspectionTree,
                                 "observed_raw_non_empty_inspection_tree" to observedNonEmptyInspectionTree,
                                 "observed_stale_non_empty_inspection_tree" to observedStaleNonEmptyInspectionTree,
@@ -3180,7 +3233,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     "update_state_readable" to lastObservation?.updateStateReadable,
                                     "problem_state_readable" to lastObservation?.problemStateReadable,
                                 ).filterValues { it != null },
-                            )
+                            ) + scopeDiagnostics
                         } else {
                             null
                         }
@@ -3375,6 +3428,15 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun waitForSmartMode(project: Project) {
+        try {
+            DumbService.getInstance(project).waitForSmartMode()
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            logger.warn("Failed while waiting for smart mode before inspection", e)
+        }
+    }
+
     private fun clearPriorInspectionResults(project: Project) {
         val application = ApplicationManager.getApplication()
         val clearTask = Runnable {
@@ -3504,6 +3566,9 @@ class InspectionHandler : HttpRequestHandler() {
                     } catch (_: Exception) { p }
                     LocalFileSystem.getInstance().findFileByPath(absolute)
                 }.toSet()
+                if (resolved.size == 1) {
+                    psiFileForScope(project, resolved.first())?.let { return AnalysisScope(it) }
+                }
                 return if (resolved.isEmpty()) AnalysisScope(project) else AnalysisScope(project, resolved)
             }
 
@@ -3514,6 +3579,9 @@ class InspectionHandler : HttpRequestHandler() {
                     changedFilesMode = changedFilesMode,
                     maxFiles = maxFiles,
                 )
+                if (limited.size == 1) {
+                    psiFileForScope(project, limited.first())?.let { return AnalysisScope(it) }
+                }
                 return if (limited.isEmpty()) AnalysisScope(project) else AnalysisScope(project, limited.toSet())
             }
 
@@ -3552,6 +3620,90 @@ class InspectionHandler : HttpRequestHandler() {
             AnalysisScope(project)
         } catch (_: Exception) {
             AnalysisScope(project)
+        }
+    }
+
+    private fun psiFileForScope(project: Project, file: VirtualFile): com.intellij.psi.PsiFile? {
+        val app = ApplicationManager.getApplication()
+        return try {
+            app.runReadAction<com.intellij.psi.PsiFile?, Exception> {
+                PsiManager.getInstance(project).findFile(file)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun inspectCaptureScopeFiles(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?,
+        files: List<String>?,
+        resolvedCurrentFile: String?,
+        resolvedChangedFiles: List<VirtualFile>?,
+    ): Map<String, Any?> {
+        val scopeLower = scopeParam?.lowercase()?.trim()
+        val selectedFiles = when {
+            scopeLower == "files" && !files.isNullOrEmpty() -> resolveRequestedFiles(project, files)
+            scopeLower == "changed_files" -> resolvedChangedFiles.orEmpty()
+            scopeLower == "current_file" && !resolvedCurrentFile.isNullOrBlank() ->
+                listOfNotNull(LocalFileSystem.getInstance().findFileByPath(resolvedCurrentFile))
+            else -> emptyList()
+        }
+        val resolutionStatus = when {
+            scopeLower == "files" && !files.isNullOrEmpty() && selectedFiles.isEmpty() -> "files_unresolved_project_fallback"
+            scopeLower == "files" && !files.isNullOrEmpty() -> "files_resolved"
+            scopeLower == "changed_files" && selectedFiles.isEmpty() -> "changed_files_empty_project_fallback"
+            scopeLower == "changed_files" -> "changed_files_resolved"
+            scopeLower == "current_file" && selectedFiles.isEmpty() -> "current_file_unresolved_project_fallback"
+            scopeLower == "current_file" -> "current_file_resolved"
+            else -> "project_scope"
+        }
+        val inspectedFiles = selectedFiles.take(25).map { inspectVirtualFileForDiagnostics(project, it) }
+        return mapOf(
+            "scope_kind" to (scopeLower ?: "whole_project"),
+            "scope_resolution_status" to resolutionStatus,
+            "scope_directory_requested" to directoryParam,
+            "scope_file_requested_count" to (files?.size ?: 0),
+            "scope_file_resolved_count" to selectedFiles.size,
+            "scope_file_diagnostics" to inspectedFiles,
+        ).filterValues { it != null }
+    }
+
+    private fun resolveRequestedFiles(project: Project, files: List<String>): List<VirtualFile> {
+        val base = project.basePath
+        return files.mapNotNull { p ->
+            val absolute = try {
+                val path = Paths.get(p)
+                if (path.isAbsolute) p else if (!base.isNullOrBlank()) Paths.get(base, p).normalize().toString() else p
+            } catch (_: Exception) {
+                p
+            }
+            LocalFileSystem.getInstance().findFileByPath(absolute)
+        }
+    }
+
+    private fun inspectVirtualFileForDiagnostics(project: Project, file: VirtualFile): Map<String, Any?> {
+        val app = ApplicationManager.getApplication()
+        return try {
+            app.runReadAction<Map<String, Any?>, Exception> {
+                val projectIndex = ProjectFileIndex.getInstance(project)
+                val psiFile = PsiManager.getInstance(project).findFile(file)
+                val module = ModuleUtilCore.findModuleForFile(file, project)
+                mapOf(
+                    "path" to file.path,
+                    "valid" to file.isValid,
+                    "directory" to file.isDirectory,
+                    "file_type" to file.fileType.name,
+                    "psi_class" to psiFile?.javaClass?.name,
+                    "psi_language" to psiFile?.language?.id,
+                    "module" to module?.name,
+                    "in_content" to projectIndex.isInContent(file),
+                    "in_source" to projectIndex.isInSourceContent(file),
+                ).filterValues { it != null }
+            }
+        } catch (e: Exception) {
+            mapOf("path" to file.path, "diagnostic_error" to formatModelUnreadableReason("file_scope", e))
         }
     }
 
@@ -3916,23 +4068,24 @@ class InspectionHandler : HttpRequestHandler() {
     private fun extractProblemsFromContextSafe(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
+        targetToolShortNames: Set<String> = emptySet(),
+        fallbackScopeFiles: List<com.intellij.psi.PsiFile> = emptyList(),
     ): InspectionModelExtraction {
         val app = ApplicationManager.getApplication()
-        if (app.isDispatchThread) {
-            return app.runReadAction<InspectionModelExtraction, Exception> {
-                extractProblemsFromContext(globalContext, project)
-            }
-        }
-
-        val holder = AtomicReference<InspectionModelExtraction>()
-        app.invokeAndWait {
-            holder.set(
+        val presentationHolder = AtomicReference<InspectionModelExtraction>()
+        val presentationTask = Runnable {
+            presentationHolder.set(
                 app.runReadAction<InspectionModelExtraction, Exception> {
-                    extractProblemsFromContext(globalContext, project)
+                    extractProblemsFromContext(globalContext, project, targetToolShortNames)
                 }
             )
         }
-        return holder.get() ?: InspectionModelExtraction(
+        if (app.isDispatchThread) {
+            presentationTask.run()
+        } else {
+            app.invokeAndWait(presentationTask)
+        }
+        val presentationExtraction = presentationHolder.get() ?: return InspectionModelExtraction(
             problems = emptyList(),
             problemDescriptorCount = 0,
             enabledToolCount = 0,
@@ -3940,15 +4093,36 @@ class InspectionHandler : HttpRequestHandler() {
             unreadableToolCount = 1,
             unreadableReasons = listOf("empty_edtholder"),
         )
+        if (targetToolShortNames.isEmpty() || fallbackScopeFiles.isEmpty()) {
+            return presentationExtraction
+        }
+        if (app.isDispatchThread) {
+            return presentationExtraction.copy(
+                targetToolStates = markFallbackSkipped(
+                    presentationExtraction.targetToolStates,
+                    targetToolShortNames,
+                    "inspection_engine_skipped_on_edt",
+                ),
+            )
+        }
+        return mergeInspectionEngineFallback(
+            base = presentationExtraction,
+            globalContext = globalContext,
+            project = project,
+            targetToolShortNames = targetToolShortNames,
+            fallbackScopeFiles = fallbackScopeFiles,
+        )
     }
 
     @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
+        targetToolShortNames: Set<String> = emptySet(),
     ): InspectionModelExtraction {
         val problems = mutableListOf<Map<String, Any>>()
         val seen = LinkedHashSet<String>()
+        val targetToolStates = linkedMapOf<String, MutableMap<String, Any?>>()
         var problemDescriptorCount = 0
         var enabledToolCount = 0
         var readableToolCount = 0
@@ -3974,8 +4148,11 @@ class InspectionHandler : HttpRequestHandler() {
                 emptyList()
             }
             for (state in scopeStates) {
-                if (!state.isEnabled) continue
-                enabledToolCount += 1
+                val stateEnabled = try {
+                    state.isEnabled
+                } catch (_: Exception) {
+                    false
+                }
                 val wrapper = try {
                     state.tool
                 } catch (e: Exception) {
@@ -3986,6 +4163,24 @@ class InspectionHandler : HttpRequestHandler() {
                     unreadableToolCount += 1
                     continue
                 }
+                val shortName = try {
+                    wrapper.shortName
+                } catch (_: Exception) {
+                    null
+                }
+                val tracksTarget = shortName != null && shortName in targetToolShortNames
+                if (tracksTarget) {
+                    targetToolStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }.apply {
+                        this["wrapper_class"] = wrapper.javaClass.name
+                        this["present"] = true
+                        this["enabled"] = stateEnabled
+                        this["level"] = try { state.level.name } catch (_: Exception) { null }
+                        this["group"] = try { wrapper.groupDisplayName } catch (_: Exception) { null }
+                        this["tool_class"] = try { wrapper.tool.javaClass.name } catch (_: Exception) { null }
+                    }
+                }
+                if (!stateEnabled) continue
+                enabledToolCount += 1
 
                 val presentation = try {
                     globalContext.getPresentation(wrapper)
@@ -4017,6 +4212,12 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 readableToolCount += 1
                 problemDescriptorCount += descriptors.size
+                if (tracksTarget) {
+                    targetToolStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }.apply {
+                        this["descriptor_count"] = descriptors.size
+                        this["presentation_readable"] = true
+                    }
+                }
 
                 for (descriptor in descriptors) {
                     val map = buildProblemMap(descriptor, wrapper, project) ?: continue
@@ -4035,6 +4236,17 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
+        for (shortName in targetToolShortNames) {
+            targetToolStates.getOrPut(shortName) {
+                linkedMapOf(
+                    "short_name" to shortName,
+                    "present" to false,
+                    "enabled" to false,
+                    "descriptor_count" to 0,
+                )
+            }
+        }
+
         return InspectionModelExtraction(
             problems = problems,
             problemDescriptorCount = problemDescriptorCount,
@@ -4042,7 +4254,205 @@ class InspectionHandler : HttpRequestHandler() {
             readableToolCount = readableToolCount,
             unreadableToolCount = unreadableToolCount,
             unreadableReasons = unreadableReasons.toList(),
+            targetToolStates = targetToolStates.values.map { it.toMap() },
         )
+    }
+
+    private fun mergeInspectionEngineFallback(
+        base: InspectionModelExtraction,
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        project: Project,
+        targetToolShortNames: Set<String>,
+        fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+    ): InspectionModelExtraction {
+        val targetStates = base.targetToolStates.associate { state ->
+            val mutableState = state.toMutableMap()
+            mutableState["short_name"]?.toString().orEmpty() to mutableState
+        }.filterKeys { it.isNotEmpty() }.toMutableMap()
+        val baseKeys = base.problems.mapTo(LinkedHashSet()) { problemKey(it) }
+        val fallbackProblems = mutableListOf<Map<String, Any>>()
+        var fallbackDescriptorCount = 0
+        for (toolShortName in targetToolShortNames) {
+            val state = targetStates.getOrPut(toolShortName) {
+                linkedMapOf("short_name" to toolShortName, "present" to false, "enabled" to false)
+            }
+            val fallbackDescriptors = if (state["enabled"] == true && (state["descriptor_count"] as? Int ?: 0) == 0) {
+                runTargetInspectionEngineFallback(
+                    globalContext = globalContext,
+                    project = project,
+                    toolShortName = toolShortName,
+                    fallbackScopeFiles = fallbackScopeFiles,
+                    targetToolState = state,
+                )
+            } else {
+                emptyList()
+            }
+            state["inspection_engine_descriptor_count"] = fallbackDescriptors.size
+            fallbackDescriptorCount += fallbackDescriptors.size
+            for ((descriptor, wrapper) in fallbackDescriptors) {
+                val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                if (baseKeys.add(problemKey(map))) {
+                    fallbackProblems += map
+                }
+            }
+        }
+        if (fallbackDescriptorCount == 0) {
+            return base.copy(targetToolStates = targetStates.values.map { it.toMap() })
+        }
+        return base.copy(
+            problems = base.problems + fallbackProblems,
+            problemDescriptorCount = base.problemDescriptorCount + fallbackDescriptorCount,
+            targetToolStates = targetStates.values.map { it.toMap() },
+        )
+    }
+
+    private fun problemKey(map: Map<String, Any>): String {
+        return listOf(
+            map["severity"],
+            map["inspectionType"],
+            map["file"],
+            map["line"],
+            map["column"],
+            map["description"],
+        ).joinToString("|")
+    }
+
+    private fun markFallbackSkipped(
+        states: List<Map<String, Any?>>,
+        targetToolShortNames: Set<String>,
+        reason: String,
+    ): List<Map<String, Any?>> {
+        val mutableStates = states.associate { state ->
+            val mutableState = state.toMutableMap()
+            mutableState["short_name"]?.toString().orEmpty() to mutableState
+        }.filterKeys { it.isNotEmpty() }.toMutableMap()
+        for (shortName in targetToolShortNames) {
+            mutableStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }["inspection_engine_skip_reason"] = reason
+        }
+        return mutableStates.values.map { it.toMap() }
+    }
+
+    private fun runTargetInspectionEngineFallback(
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        project: Project,
+        toolShortName: String,
+        fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+        targetToolState: MutableMap<String, Any?>,
+    ): List<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>> {
+        val descriptors = mutableListOf<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>>()
+        val errors = mutableListOf<String>()
+        targetToolState["inspection_engine_file_count"] = fallbackScopeFiles.size
+        ApplicationManager.getApplication().runReadAction<Unit, Exception> {
+            for (psiFile in fallbackScopeFiles) {
+                try {
+                    val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                        project,
+                        psiFile,
+                        toolShortName,
+                    )
+                    if (batchWrapper == null) {
+                        errors += "inspection_engine:${psiFile.virtualFile?.path}:missing_batch_wrapper:$toolShortName"
+                        continue
+                    }
+                    targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
+                    descriptors += InspectionEngine.runInspectionOnFile(psiFile, batchWrapper, globalContext).map { it to batchWrapper }
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
+                    errors += formatModelUnreadableReason("inspection_engine:${psiFile.virtualFile?.path}", e)
+                }
+            }
+        }
+        if (errors.isNotEmpty()) {
+            targetToolState["inspection_engine_errors"] = errors.take(5)
+        }
+        return descriptors
+    }
+
+    private fun scopedPsiFilesForInspectionEngine(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?,
+        files: List<String>?,
+        resolvedCurrentFile: String?,
+        resolvedChangedFiles: List<VirtualFile>?,
+        targetScopeFileDiagnostics: List<*>?,
+    ): List<com.intellij.psi.PsiFile> {
+        val scopeLower = scopeParam?.lowercase()?.trim()
+        val paths = when {
+            scopeLower == "files" && !files.isNullOrEmpty() -> resolveRequestedFiles(project, files).map { it.path }
+            scopeLower == "changed_files" -> resolvedChangedFiles.orEmpty().map { it.path }
+            scopeLower == "current_file" && !resolvedCurrentFile.isNullOrBlank() -> listOf(resolvedCurrentFile)
+            else -> targetScopeFileDiagnostics
+                ?.filterIsInstance<Map<*, *>>()
+                ?.mapNotNull { it["path"] as? String }
+                .orEmpty()
+        }
+        if (paths.isNotEmpty()) {
+            return ApplicationManager.getApplication().runReadAction<List<com.intellij.psi.PsiFile>, Exception> {
+                paths.mapNotNull { path ->
+                    LocalFileSystem.getInstance().findFileByPath(path)?.let { file ->
+                        PsiManager.getInstance(project).findFile(file)
+                    }
+                }
+            }
+        }
+
+        if (scopeLower != null && scopeLower !in setOf("whole_project", "all")) {
+            return emptyList()
+        }
+        val files = mutableListOf<com.intellij.psi.PsiFile>()
+        val sourceRoot = directoryParam
+            ?.takeIf { it.isNotBlank() }
+            ?.let { directory ->
+                val base = project.basePath
+                val absolute = try {
+                    val path = Paths.get(directory)
+                    if (path.isAbsolute) directory else if (!base.isNullOrBlank()) Paths.get(base, directory).normalize().toString() else directory
+                } catch (_: Exception) {
+                    directory
+                }
+                LocalFileSystem.getInstance().findFileByPath(absolute)
+            }
+        ApplicationManager.getApplication().runReadAction<Unit, Exception> {
+            val index = ProjectFileIndex.getInstance(project)
+            val psiManager = PsiManager.getInstance(project)
+            val collectFile: (VirtualFile) -> Unit = { file ->
+                if (!file.isDirectory && index.isInSourceContent(file) && shouldRunWebStormRedLaneFallbackOnFile(file)) {
+                    psiManager.findFile(file)?.let { files += it }
+                }
+            }
+            val root = sourceRoot ?: project.basePath?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+            if (root != null) {
+                com.intellij.openapi.vfs.VfsUtilCore.visitChildrenRecursively(
+                    root,
+                    object : com.intellij.openapi.vfs.VirtualFileVisitor<Any>() {
+                        override fun visitFile(file: VirtualFile): Boolean {
+                            collectFile(file)
+                            return true
+                        }
+                    },
+                )
+            } else {
+                index.iterateContent { file ->
+                    collectFile(file)
+                    true
+                }
+            }
+        }
+        return files
+    }
+
+    private fun shouldRunWebStormRedLaneFallbackOnFile(file: VirtualFile): Boolean {
+        return file.extension?.lowercase() in setOf("js", "jsx", "ts", "tsx", "json", "json5")
+    }
+
+    private fun expectedProofToolShortNames(
+        ideProductCode: String?,
+        requestedProfileName: String?,
+    ): Set<String> {
+        if (!ideProductCode.equals("WS", ignoreCase = true)) return emptySet()
+        if (!requestedProfileName.equals("RedLane", ignoreCase = true)) return emptySet()
+        return linkedSetOf("JSUnresolvedReference", "JsonDuplicatePropertyKeys", "JsonStandardCompliance")
     }
 
     private fun formatModelUnreadableReason(stage: String, exception: Exception): String {
