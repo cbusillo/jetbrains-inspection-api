@@ -1447,12 +1447,36 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Suspicious WebStorm RedLane empty model is not treated as clean")
-    fun testSuspiciousWebStormRedLaneEmptyModelReason() {
+    @DisplayName("Suspicious product RedLane empty model is not treated as clean")
+    fun testSuspiciousProductRedLaneEmptyModelReason() {
         assertEquals(
             CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
             suspiciousEmptyInspectionModelReason(
                 ideProductCode = "WS",
+                requestedProfileName = "RedLane",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "PY",
+                requestedProfileName = "RedLane",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "PC",
                 requestedProfileName = "RedLane",
                 modelVerdict = InspectionModelVerdict.CLEAN,
                 problemDescriptorCount = 0,

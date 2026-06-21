@@ -26,9 +26,9 @@ assert_fixture_pycharm() {
 	local fixture_profile="test-fixtures/inspection-red-lane-pycharm/.idea/inspectionProfiles/RedLane.xml"
 
 	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
-	grep -q '1 + 1' "$fixture_source"
+	grep -q 'definitely_missing_symbol()' "$fixture_source"
 	test -f test-fixtures/inspection-red-lane-pycharm/pyproject.toml
-	grep -q 'PyStatementEffectInspection' "$fixture_profile"
+	grep -q 'PyUnresolvedReferencesInspection' "$fixture_profile"
 }
 
 assert_fixture_webstorm() {
@@ -68,7 +68,7 @@ while args:
 
 fixtures = [
     ("IntelliJ IDEA", "src/main/java/com/example/redlane/DefinitelyRed.java", "redLaneField"),
-    ("PyCharm", "src/definitely_red.py", "1 + 1"),
+    ("PyCharm", "src/definitely_red.py", "definitely_missing_symbol"),
     ("WebStorm", "src/definitely-red.json", "duplicate"),
 ]
 
@@ -135,7 +135,7 @@ assert_fixture_pycharm
 assert_fixture_webstorm
 
 run_case intellij "IntelliJ IDEA" redLaneField
-run_case pycharm PyCharm '1 + 1'
+run_case pycharm PyCharm definitely_missing_symbol
 run_case webstorm WebStorm duplicate
 
 echo "red-lane smoke script contract passed"

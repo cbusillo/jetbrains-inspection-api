@@ -124,7 +124,7 @@ intellij | idea)
 		FIXTURE="$ROOT/test-fixtures/inspection-red-lane-pycharm"
 		PROJECT_SLUG="inspection-red-lane-pycharm"
 		DEFAULT_IDE="PyCharm"
-		REQUIRED_PROFILE_TOOLS=("PyStatementEffectInspection")
+		REQUIRED_PROFILE_TOOLS=("PyUnresolvedReferencesInspection")
 		;;
 	webstorm | javascript | js)
 		PRODUCT="webstorm"
