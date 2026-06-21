@@ -355,10 +355,10 @@ internal fun suspiciousEmptyInspectionModelReason(
     bestResultsEmpty: Boolean,
     observedNonEmptyInspectionTree: Boolean,
 ): String? {
-    val isWebStorm = ideProductCode.equals("WS", ignoreCase = true)
+    val isSupportedProofLane = ideProductCode.equals("WS", ignoreCase = true) || isPyCharmProductCode(ideProductCode)
     val isRedLaneProof = requestedProfileName.equals("RedLane", ignoreCase = true)
     return if (
-        isWebStorm &&
+        isSupportedProofLane &&
             isRedLaneProof &&
             bestResultsEmpty &&
             !observedNonEmptyInspectionTree &&
@@ -369,6 +369,10 @@ internal fun suspiciousEmptyInspectionModelReason(
     } else {
         null
     }
+}
+
+internal fun isPyCharmProductCode(ideProductCode: String?): Boolean {
+    return ideProductCode.equals("PY", ignoreCase = true) || ideProductCode.equals("PC", ignoreCase = true)
 }
 
 internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
@@ -2663,8 +2667,9 @@ class InspectionHandler : HttpRequestHandler() {
                 "profile_available_names" to profileNames?.take(25),
                 "profile_source" to if (requestedProfileName != null) "request" else "current",
             ).filterValues { it != null }
+            val ideProductCode = safeInspectionIdentity()["ide_product_code"]?.toString()
             val targetToolShortNames = expectedProofToolShortNames(
-                ideProductCode = safeInspectionIdentity()["ide_product_code"]?.toString(),
+                ideProductCode = ideProductCode,
                 requestedProfileName = requestedProfileName,
             )
 
@@ -2708,6 +2713,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 resolvedCurrentFile,
                                 resolvedChangedFiles = changedFilesScopeFiles,
                                 scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
+                                ideProductCode = ideProductCode,
                             )
                             extractProblemsFromContextSafe(
                                 globalContext,
@@ -4376,6 +4382,7 @@ class InspectionHandler : HttpRequestHandler() {
         resolvedCurrentFile: String?,
         resolvedChangedFiles: List<VirtualFile>?,
         targetScopeFileDiagnostics: List<*>?,
+        ideProductCode: String?,
     ): List<com.intellij.psi.PsiFile> {
         val scopeLower = scopeParam?.lowercase()?.trim()
         val paths = when {
@@ -4417,7 +4424,7 @@ class InspectionHandler : HttpRequestHandler() {
             val index = ProjectFileIndex.getInstance(project)
             val psiManager = PsiManager.getInstance(project)
             val collectFile: (VirtualFile) -> Unit = { file ->
-                if (!file.isDirectory && index.isInSourceContent(file) && shouldRunWebStormRedLaneFallbackOnFile(file)) {
+                if (!file.isDirectory && index.isInSourceContent(file) && shouldRunRedLaneFallbackOnFile(file, ideProductCode)) {
                     psiManager.findFile(file)?.let { files += it }
                 }
             }
@@ -4442,17 +4449,27 @@ class InspectionHandler : HttpRequestHandler() {
         return files
     }
 
-    private fun shouldRunWebStormRedLaneFallbackOnFile(file: VirtualFile): Boolean {
-        return file.extension?.lowercase() in setOf("js", "jsx", "ts", "tsx", "json", "json5")
+    private fun shouldRunRedLaneFallbackOnFile(file: VirtualFile, ideProductCode: String?): Boolean {
+        val extension = file.extension?.lowercase() ?: return false
+        return when {
+            ideProductCode.equals("WS", ignoreCase = true) -> extension in setOf("js", "jsx", "ts", "tsx", "json", "json5")
+            isPyCharmProductCode(ideProductCode) -> extension == "py"
+            else -> false
+        }
     }
 
     private fun expectedProofToolShortNames(
         ideProductCode: String?,
         requestedProfileName: String?,
     ): Set<String> {
-        if (!ideProductCode.equals("WS", ignoreCase = true)) return emptySet()
         if (!requestedProfileName.equals("RedLane", ignoreCase = true)) return emptySet()
-        return linkedSetOf("JSUnresolvedReference", "JsonDuplicatePropertyKeys", "JsonStandardCompliance")
+        return when {
+            ideProductCode.equals("WS", ignoreCase = true) ->
+                linkedSetOf("JSUnresolvedReference", "JsonDuplicatePropertyKeys", "JsonStandardCompliance")
+            isPyCharmProductCode(ideProductCode) ->
+                linkedSetOf("PyUnresolvedReferencesInspection")
+            else -> emptySet()
+        }
     }
 
     private fun formatModelUnreadableReason(stage: String, exception: Exception): String {
