@@ -213,7 +213,10 @@ evidence for:
   `--ide-app` values for the installed apps.
 - The exec-harness worktree scenario in
   `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`, with
-  `CODE_EXEC_HARNESS` pointing at the local `tools/code-exec-harness` checkout.
+  `JETBRAINS_INSPECTION_API_REPO` pointing at this checkout,
+  `CODE_EXEC_HARNESS_ROOT` pointing at the checkout that contains
+  `tools/code-exec-harness`, and `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` pointing
+  at the installed IntelliJ IDEA 2026.2 config directory.
 
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a

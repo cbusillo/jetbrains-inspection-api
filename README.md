@@ -623,7 +623,10 @@ For agent-facing worktree proof, run the maintained exec-harness scenario in
 `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`; it
 copies the red-lane fixture into an isolated workspace and requires the helper
 to prove a `RED` result, cleanup, and exact route matching in IntelliJ IDEA
-2026.2.
+2026.2. Set `JETBRAINS_INSPECTION_API_REPO` to this checkout,
+`CODE_EXEC_HARNESS_ROOT` to the checkout that contains `tools/code-exec-harness`,
+and pass the installed 2026.2 IDE config directory through
+`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` when running the scenario directly.
 
 Shortcut:
 

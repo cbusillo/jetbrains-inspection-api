@@ -36,7 +36,7 @@
       "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij",
       "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm",
       "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm 2026.2 EAP\"",
-      "execHarness262Worktree": "python3 ${CODE_EXEC_HARNESS}/harness.py test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json --inherit-auth --skill-root ${JETBRAINS_INSPECTION_SKILL_ROOT:-$HOME/.code/skills} --max-seconds 420"
+      "execHarness262Worktree": "JETBRAINS_INSPECTION_API_REPO=$PWD JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS=${CODE_EXEC_HARNESS_ROOT:?Set CODE_EXEC_HARNESS_ROOT}/.tmp/code-exec-harness JETBRAINS_INSPECTION_IDE_CONFIG_DIR=\"${JETBRAINS_INSPECTION_IDE_CONFIG_DIR:?Set JETBRAINS_INSPECTION_IDE_CONFIG_DIR}\" python3 ${CODE_EXEC_HARNESS_ROOT}/tools/code-exec-harness/harness.py test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json --inherit-auth --skill-root ${JETBRAINS_INSPECTION_SKILL_ROOT:-$HOME/.code/skills} --max-seconds 420"
     },
     "releaseCompatibility": {
       "jetbrainsBuildRange": "251-262.*",
