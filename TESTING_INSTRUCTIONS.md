@@ -13,15 +13,15 @@ Direct HTTP example:
 IDE_PORT=63341
 PROJECT_NAME="MyProject"
 
-curl "http://localhost:$IDE_PORT/api/inspection/trigger?project=$PROJECT_NAME&scope=whole_project"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?project=$PROJECT_NAME&scope=whole_project"
 
 # Poll until is_scanning=false and either clean_inspection=true or has_inspection_results=true
-curl "http://localhost:$IDE_PORT/api/inspection/status?project=$PROJECT_NAME"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/status?project=$PROJECT_NAME"
 
 # Or long-poll until results are ready
-curl "http://localhost:$IDE_PORT/api/inspection/wait?project=$PROJECT_NAME&timeout_ms=180000&poll_ms=1000"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/wait?project=$PROJECT_NAME&timeout_ms=180000&poll_ms=1000"
 
-curl "http://localhost:$IDE_PORT/api/inspection/problems?project=$PROJECT_NAME&severity=error&limit=1"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/problems?project=$PROJECT_NAME&severity=error&limit=1"
 ```
 
 Expected behavior:
@@ -116,28 +116,28 @@ Changed files only (fast inner loop):
 
 ```bash
 IDE_PORT=63341
-curl "http://localhost:$IDE_PORT/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=25"
-curl "http://localhost:$IDE_PORT/api/inspection/status"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=25"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/status"
 ```
 
 Explicit files list:
 
 ```bash
 IDE_PORT=63341
-curl "http://localhost:$IDE_PORT/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
-curl "http://localhost:$IDE_PORT/api/inspection/status"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/status"
 ```
 
 Light inspection profile:
 
 ```bash
 IDE_PORT=63341
-curl "http://localhost:$IDE_PORT/api/inspection/trigger?profile=LLM%20Fast%20Checks"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
 
 After triggering, wait for status to settle, then fetch problems:
 
 ```bash
 IDE_PORT=63341
-curl "http://localhost:$IDE_PORT/api/inspection/problems?severity=warning&limit=1"
+curl "http://127.0.0.1:$IDE_PORT/api/inspection/problems?severity=warning&limit=1"
 ```

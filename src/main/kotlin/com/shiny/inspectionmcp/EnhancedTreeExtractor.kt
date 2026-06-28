@@ -1,7 +1,6 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.codeInspection.ui.InspectionResultsView
-import com.intellij.codeInspection.ui.InspectionTree
 import com.intellij.codeInspection.ui.ProblemDescriptionNode
 import com.intellij.codeInspection.ui.InspectionNode
 import com.intellij.codeInspection.ui.InspectionTreeNode
@@ -213,10 +212,6 @@ class EnhancedTreeExtractor {
     }
     
     private fun findInspectionTree(component: Component): JTree? {
-        if (component is InspectionTree) {
-            return component
-        }
-        
         if (component is JTree) {
             return component
         }
@@ -235,10 +230,18 @@ class EnhancedTreeExtractor {
     
     private fun extractProblemsFromView(view: InspectionResultsView, problems: MutableList<Map<String, Any>>, project: Project) {
         try {
-            val tree = view.tree
+            val tree = inspectionResultsTree(view) ?: return
             extractProblemsFromTree(tree, problems, project)
         } catch (e: Exception) {
         }
+    }
+
+    private fun inspectionResultsTree(view: InspectionResultsView): JTree? {
+        return try {
+            getZeroArgMethod(view.javaClass, "getTree")?.invoke(view) as? JTree
+        } catch (_: Exception) {
+            null
+        } ?: findInspectionTree(view)
     }
     
     private fun extractProblemsFromTree(tree: JTree, problems: MutableList<Map<String, Any>>, project: Project) {

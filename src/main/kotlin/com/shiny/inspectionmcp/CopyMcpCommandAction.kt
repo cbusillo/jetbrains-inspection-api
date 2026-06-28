@@ -7,15 +7,12 @@ import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.SystemInfo
-import com.intellij.ide.plugins.PluginManagerCore
-import com.intellij.openapi.extensions.PluginId
 import java.awt.datatransfer.StringSelection
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
 private const val MCP_JAR_NAME = "jetbrains-inspection-mcp.jar"
-private const val COPY_MCP_PLUGIN_ID = "com.shiny.inspection.api"
 
 class CopyMcpCommandAction : AnAction() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
@@ -108,11 +105,21 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
 }
 
 private fun resolveMcpJarPath(): Path? {
-    val descriptor = PluginManagerCore.getPlugin(PluginId.getId(COPY_MCP_PLUGIN_ID)) ?: return null
-    val pluginPath = descriptor.pluginPath
-    val basePath = if (Files.isDirectory(pluginPath)) pluginPath else pluginPath.parent
-    val candidate = basePath.resolve("lib").resolve(MCP_JAR_NAME)
-    return if (Files.exists(candidate)) candidate else null
+    val codeSource = runCatching {
+        CopyMcpCommandAction::class.java.protectionDomain?.codeSource?.location?.toURI()?.let(Paths::get)
+    }.getOrNull() ?: return null
+    val candidates = buildList {
+        if (Files.isDirectory(codeSource)) {
+            add(codeSource.resolve(MCP_JAR_NAME))
+            codeSource.parent?.let { parent -> add(parent.resolve("lib").resolve(MCP_JAR_NAME)) }
+        } else {
+            codeSource.parent?.let { lib ->
+                add(lib.resolve(MCP_JAR_NAME))
+                lib.parent?.let { pluginRoot -> add(pluginRoot.resolve("lib").resolve(MCP_JAR_NAME)) }
+            }
+        }
+    }
+    return candidates.firstOrNull { Files.exists(it) }
 }
 
 private fun resolveJavaBinary(): String {

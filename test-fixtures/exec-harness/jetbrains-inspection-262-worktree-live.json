@@ -1,0 +1,31 @@
+{
+  "name": "jetbrains-inspection-262-worktree-live",
+  "prompt": "Run this exact helper command before answering: `uv run \"$CODE_HOME/skills/jetbrains-inspection/scripts/jb-inspect.py\" --json inspect-closeout --repo \"$PWD/project\" --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --scope whole_project --profile RedLane --timeout-ms 240000 --prepare-timeout-ms 240000`. Then decide whether the inspected worktree is clean or has findings. Do not modify files. Your final answer must include the IDE name, verdict, total problems, cleanup status, and whether the route base path matched `$PWD/project`.",
+  "copy": [
+    {
+      "source": "/Users/cbusillo/Developer/jetbrains-inspection-api/test-fixtures/inspection-red-lane",
+      "target": "project"
+    }
+  ],
+  "git_init": false,
+  "skill_roots": [
+    "/Users/cbusillo/Developer/codex-skills/jetbrains-inspection"
+  ],
+  "env": {
+    "JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS": "/Users/cbusillo/Developer/code-prealign-new-skills/.tmp/code-exec-harness",
+    "JETBRAINS_INSPECTION_IDE_CONFIG_DIR": "/Users/cbusillo/Library/Application Support/JetBrains/IntelliJIdea2026.2"
+  },
+  "inherit_auth": true,
+  "expect": {
+    "returncode": 0,
+    "command_contains": ["jb-inspect.py", "inspect-closeout", "--ide-app"],
+    "assistant_contains": [
+      "IntelliJ IDEA 2026.2 EAP",
+      "RED",
+      "Total problems",
+      "matched"
+    ]
+  },
+  "max_seconds": 420,
+  "timeout_seconds": 480
+}

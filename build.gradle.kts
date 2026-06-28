@@ -1,5 +1,6 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -31,6 +32,9 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
     @get:Internal
     abstract val gitDirectory: DirectoryProperty
 
+    @get:Input
+    abstract val pluginVersion: Property<String>
+
     @get:OutputFile
     abstract val outputFile: RegularFileProperty
 
@@ -55,6 +59,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
         }
 
         val properties = Properties().apply {
+            setProperty("plugin.version", pluginVersion.get())
             setProperty("plugin.build.commit", commit)
             setProperty("plugin.build.short_commit", shortCommit)
             setProperty("plugin.build.dirty", dirty)
@@ -112,6 +117,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
 val generateInspectionBuildInfo = tasks.register<GenerateInspectionBuildInfoTask>("generateInspectionBuildInfo") {
     gitDirectory.set(layout.projectDirectory)
+    pluginVersion.set(project.property("pluginVersion").toString())
     outputFile.set(generatedBuildInfoDir.map {
         it.file("com/shiny/inspectionmcp/inspection-build.properties")
     })
@@ -293,7 +299,7 @@ intellijPlatform {
         
         ideaVersion {
             sinceBuild = "251"
-            untilBuild = "261.*"
+            untilBuild = "262.*"
         }
     }
     
@@ -301,5 +307,14 @@ intellijPlatform {
         ides {
             recommended()
         }
+        failureLevel.set(listOf(
+            VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
+            VerifyPluginTask.FailureLevel.SCHEDULED_FOR_REMOVAL_API_USAGES,
+            VerifyPluginTask.FailureLevel.OVERRIDE_ONLY_API_USAGES,
+            VerifyPluginTask.FailureLevel.NON_EXTENDABLE_API_USAGES,
+            VerifyPluginTask.FailureLevel.PLUGIN_STRUCTURE_WARNINGS,
+            VerifyPluginTask.FailureLevel.MISSING_DEPENDENCIES,
+            VerifyPluginTask.FailureLevel.INVALID_PLUGIN,
+        ))
     }
 }
