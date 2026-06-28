@@ -16,17 +16,24 @@
             <li>HTTP API access to inspection results</li>
             <li>Scope-based filtering (whole project, current file, directory)</li>
             <li>Trigger inspections programmatically and poll status</li>
-            <li>Works with JetBrains IDEs (2025.x compatible)</li>
+            <li>Works with JetBrains IDEs (2025.1-2026.2 compatible)</li>
             <li>Bundled MCP server + setup command for Every Code, Codex CLI, Claude Code, and Gemini CLI</li>
             <li>IDE-only inspections (e.g., PyCharm’s Odoo plugin checks) are made available to automation</li>
         </ul>
         <br/>
-        Endpoints available at http://localhost:&lt;Built-in Server Port&gt;/api/inspection/*
+        Endpoints available at http://127.0.0.1:&lt;Built-in Server Port&gt;/api/inspection/*
         <br/>
         Tip: Check your IDE's built-in server port under Settings → Tools → Web Browsers and Preview.
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.13.3</b>
+        <ul>
+            <li>Adds JetBrains 2026.2 compatibility metadata and release verification coverage.</li>
+            <li>Improves 2026.2 route handling, numeric loopback URLs, and async inspection endpoint responsiveness.</li>
+            <li>Updates helper-facing lifecycle, cleanup, and red-lane smoke behavior for IntelliJ IDEA, PyCharm, WebStorm, and exec-harness worktrees.</li>
+            <li>Keeps Plugin Verifier strict for compatibility, dependency, and structure problems while documenting the remaining intentional inspection-engine internal API dependency.</li>
+        </ul>
         <b>Version 1.13.2</b>
         <ul>
             <li>Prevents JetBrains trust prompts during helper-managed lifecycle opens by trusting the requested project path inside the running IDE before opening it.</li>
@@ -80,7 +87,7 @@
             <li>Scope filtering (whole project, current file, directory)</li>
             <li>Enhanced results extraction and severity mapping (incl. grammar/typo)</li>
             <li>MCP tools for AI assistants</li>
-            <li>JetBrains 2025.x compatibility updates</li>
+            <li>JetBrains 2025.1-2026.2 compatibility updates</li>
             <li>Initial HTTP API and status detection</li>
         </ul>
     ]]></change-notes>

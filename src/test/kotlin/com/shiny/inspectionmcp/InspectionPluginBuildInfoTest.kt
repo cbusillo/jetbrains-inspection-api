@@ -10,6 +10,7 @@ class InspectionPluginBuildInfoTest {
     fun generatedBuildInfoResourceIsReadable() {
         val buildInfo = loadInspectionPluginBuildInfo()
 
+        assertNotNull(buildInfo.version)
         assertNotNull(buildInfo.commit)
         assertNotNull(buildInfo.shortCommit)
         assertNotNull(buildInfo.dirty)
@@ -17,6 +18,7 @@ class InspectionPluginBuildInfoTest {
         assertNotNull(buildInfo.fingerprint)
         val shortCommit = requireNotNull(buildInfo.shortCommit)
         val fingerprint = requireNotNull(buildInfo.fingerprint)
+        assertTrue(requireNotNull(buildInfo.version).isNotBlank())
         assertTrue(shortCommit.isNotBlank())
         assertTrue(fingerprint.contains(shortCommit))
     }

@@ -52,6 +52,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
+import javax.swing.JTree
 import javax.swing.tree.TreeNode
 
 internal fun normalizeOptionalFilter(raw: String?): String? {
@@ -1051,11 +1052,19 @@ class InspectionHandler : HttpRequestHandler() {
                     val offset = parseIntParameter(parameters, "offset", defaultValue = 0, min = 0)
                     val includeStale = parameters["include_stale"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: false
                     val projectName = extractProjectSelector(urlDecoder, request)
-                    withCurrentProject(context, projectName, refreshProjectState = true) { project ->
-                        val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
-                            getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset, includeStale)
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        try {
+                            withCurrentProject(context, projectName, refreshProjectState = true) { project ->
+                                val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
+                                    getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset, includeStale)
+                                }
+                                sendJsonResponse(context, result)
+                            }
+                        } catch (error: BadRequestException) {
+                            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+                        } catch (_: Exception) {
+                            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
                         }
-                        sendJsonResponse(context, result)
                     }
                 }
                 "/api/inspection/trigger" -> {
@@ -1124,7 +1133,7 @@ class InspectionHandler : HttpRequestHandler() {
                         return true
                     }
                     val projectName = extractProjectSelector(urlDecoder, request)
-                    withCurrentProject(context, projectName, refreshProjectState = true) { project ->
+                    withCurrentProject(context, projectName) { project ->
                         val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                             getInspectionStatus(project)
                         }
@@ -1139,8 +1148,16 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
-                    val result = waitForInspection(projectName, timeoutMs, pollMs)
-                    sendJsonResponse(context, result)
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        try {
+                            val result = waitForInspection(projectName, timeoutMs, pollMs)
+                            sendJsonResponse(context, result)
+                        } catch (error: BadRequestException) {
+                            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+                        } catch (_: Exception) {
+                            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
+                        }
+                    }
                 }
                 else -> {
                     sendJsonResponse(context, """{"error": "Unknown endpoint"}""", HttpResponseStatus.NOT_FOUND)
@@ -1568,7 +1585,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun routeMetadata(resolved: ResolvedInspectionRoute): Map<String, Any?> {
         return mapOf(
             "port" to resolved.identity["port"],
-            "base_url" to resolved.identity["port"]?.let { port -> "http://localhost:$port/api/inspection" },
+            "base_url" to resolved.identity["port"]?.let { port -> routeBaseUrl(port) },
             "session_id" to resolved.identity["session_id"],
             "started_at_ms" to resolved.identity["started_at_ms"],
             "heartbeat_ms" to resolved.identity["heartbeat_ms"],
@@ -1581,6 +1598,10 @@ class InspectionHandler : HttpRequestHandler() {
             "ide" to ideRouteMetadata(resolved.identity),
             "score" to resolved.score,
         )
+    }
+
+    private fun routeBaseUrl(port: Any): String {
+        return listOf("http://127.0.0.1:", port.toString(), "/api/inspection").joinToString("")
     }
 
     private fun routeBasePath(projectIdentity: Map<String, Any?>): String? {
@@ -1755,6 +1776,7 @@ class InspectionHandler : HttpRequestHandler() {
                         snapshot.note
                             ?: "Inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Inspection Results tool window."
                         ),
+                    "capture_incomplete" to true,
                     "results_may_be_incomplete" to true,
                     "total_problems" to 0,
                     "problems_shown" to 0,
@@ -2795,7 +2817,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                             fun inspectViewState(): InspectionViewObservation {
                                 val rootChildCount = try {
-                                    readInspectionRootChildCount(view.tree.model.root)
+                                    readInspectionRootChildCount(inspectionResultsTree(view)?.model?.root)
                                 } catch (e: Exception) {
                                     rethrowIfCanceled(e)
                                     null
@@ -3479,6 +3501,14 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         return false
+    }
+
+    private fun inspectionResultsTree(view: InspectionResultsView): JTree? {
+        return try {
+            view.javaClass.getMethod("getTree").invoke(view) as? JTree
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun captureProjectState(project: Project): InspectionProjectStateSnapshot {

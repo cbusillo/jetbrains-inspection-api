@@ -1,9 +1,7 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.util.SystemInfo
@@ -21,7 +19,6 @@ import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
-private const val PLUGIN_ID = "com.shiny.inspection.api"
 private const val BUILD_INFO_RESOURCE = "/com/shiny/inspectionmcp/inspection-build.properties"
 private const val REGISTRY_DIR_ENV = "JETBRAINS_INSPECTION_REGISTRY_DIR"
 private const val REGISTRY_HEARTBEAT_SECONDS = 10L
@@ -32,6 +29,7 @@ internal object InspectionIdeSession {
 }
 
 internal data class InspectionPluginBuildInfo(
+    val version: String?,
     val commit: String?,
     val shortCommit: String?,
     val dirty: Boolean?,
@@ -46,6 +44,7 @@ internal fun loadInspectionPluginBuildInfo(): InspectionPluginBuildInfo {
     }
     fun value(key: String): String? = properties.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
     return InspectionPluginBuildInfo(
+        version = value("plugin.version"),
         commit = value("plugin.build.commit"),
         shortCommit = value("plugin.build.short_commit"),
         dirty = value("plugin.build.dirty")?.toBooleanStrictOrNull(),
@@ -55,6 +54,8 @@ internal fun loadInspectionPluginBuildInfo(): InspectionPluginBuildInfo {
 }
 
 private val pluginBuildInfo: InspectionPluginBuildInfo by lazy { loadInspectionPluginBuildInfo() }
+
+internal fun inspectionPluginVersion(): String? = pluginBuildInfo.version
 
 internal fun buildInspectionIdentity(): Map<String, Any?> {
     val appInfo = ApplicationInfo.getInstance()
@@ -68,7 +69,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "ide_name" to appInfo.fullApplicationName,
         "ide_version" to appInfo.fullVersion,
         "ide_product_code" to resolveIdeProductCode(appInfo),
-        "plugin_version" to PluginManagerCore.getPlugin(PluginId.getId(PLUGIN_ID))?.version,
+        "plugin_version" to buildInfo.version,
         "plugin_build_fingerprint" to buildInfo.fingerprint,
         "plugin_build_commit" to buildInfo.commit,
         "plugin_build_short_commit" to buildInfo.shortCommit,

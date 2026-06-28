@@ -18,7 +18,10 @@
       "mcpServer": "./gradlew :mcp-server-jvm:test"
     },
     "build": {
+      "buildPlugin": "./gradlew buildPlugin",
       "plugin": "./gradlew buildPlugin",
+      "verifyPluginStructure": "./gradlew verifyPluginStructure",
+      "verifyPluginCompatibility": "./gradlew verifyPlugin",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
@@ -32,7 +35,20 @@
       "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh",
       "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij",
       "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm",
-      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm"
+      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm 2026.2 EAP\"",
+      "execHarness262Worktree": "JETBRAINS_INSPECTION_API_REPO=$PWD JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS=${CODE_EXEC_HARNESS_ROOT:?Set CODE_EXEC_HARNESS_ROOT}/.tmp/code-exec-harness JETBRAINS_INSPECTION_IDE_CONFIG_DIR=\"${JETBRAINS_INSPECTION_IDE_CONFIG_DIR:?Set JETBRAINS_INSPECTION_IDE_CONFIG_DIR}\" python3 ${CODE_EXEC_HARNESS_ROOT}/tools/code-exec-harness/harness.py test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json --inherit-auth --skill-root ${JETBRAINS_INSPECTION_SKILL_ROOT:-$HOME/.code/skills} --max-seconds 420"
+    },
+    "releaseCompatibility": {
+      "jetbrainsBuildRange": "251-262.*",
+      "requiredFor262": [
+        "qualityGate.build.buildPlugin",
+        "qualityGate.build.verifyPluginStructure",
+        "qualityGate.build.verifyPluginCompatibility",
+        "qualityGate.manualSmoke.redLaneDogfoodIntelliJ",
+        "qualityGate.manualSmoke.redLaneDogfoodPyCharm",
+        "qualityGate.manualSmoke.redLaneDogfoodWebStorm",
+        "qualityGate.manualSmoke.execHarness262Worktree"
+      ]
     },
     "docsRequiredWhen": [
       "behavior changes",

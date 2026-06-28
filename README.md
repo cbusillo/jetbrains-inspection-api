@@ -119,34 +119,34 @@ configured a different IDE built-in server port, use that port in each URL.
 
 ```bash
 # Trigger inspection
-curl "http://localhost:63340/api/inspection/trigger"
+curl "http://127.0.0.1:63340/api/inspection/trigger"
 
 # Check inspection status
-curl "http://localhost:63340/api/inspection/status"
+curl "http://127.0.0.1:63340/api/inspection/status"
 
 # Wait for inspection to finish (long-poll)
-curl "http://localhost:63340/api/inspection/wait?timeout_ms=180000&poll_ms=1000"
+curl "http://127.0.0.1:63340/api/inspection/wait?timeout_ms=180000&poll_ms=1000"
 
 # Get all problems in project
-curl "http://localhost:63340/api/inspection/problems"
+curl "http://127.0.0.1:63340/api/inspection/problems"
 
 # Get problems for current file only
-curl "http://localhost:63340/api/inspection/problems?scope=current_file"
+curl "http://127.0.0.1:63340/api/inspection/problems?scope=current_file"
 
 # Get only error-level problems
-curl "http://localhost:63340/api/inspection/problems?severity=error"
+curl "http://127.0.0.1:63340/api/inspection/problems?severity=error"
 
 # Specify which project to inspect (v1.10.5+)
-curl "http://localhost:63340/api/inspection/problems?project=MyProject"
+curl "http://127.0.0.1:63340/api/inspection/problems?project=MyProject"
 
 # Trigger inspection for specific project
-curl "http://localhost:63340/api/inspection/trigger?project=odoo-ai"
+curl "http://127.0.0.1:63340/api/inspection/trigger?project=odoo-ai"
 
 # Inspect IDE/plugin identity and open project metadata
-curl "http://localhost:63340/api/inspection/identity"
+curl "http://127.0.0.1:63340/api/inspection/identity"
 
 # Resolve a stateless client route before trigger/wait/problems
-curl "http://localhost:63340/api/inspection/route?cwd=/Users/me/Developer/MyProject"
+curl "http://127.0.0.1:63340/api/inspection/route?cwd=/Users/me/Developer/MyProject"
 ```
 
 Stateless skill or script clients should resolve a route, then pass the returned
@@ -192,7 +192,7 @@ Typical response (truncated):
   },
   "route": {
     "port": 63340,
-    "base_url": "http://localhost:63340/api/inspection",
+    "base_url": "http://127.0.0.1:63340/api/inspection",
     "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
     "project_key": "path:/abs/path/to/MyProject",
     "project_name": "MyProject",
@@ -241,7 +241,7 @@ routing state.
   "status": "resolved",
   "route": {
     "port": 63340,
-    "base_url": "http://localhost:63340/api/inspection",
+    "base_url": "http://127.0.0.1:63340/api/inspection",
     "session_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8",
     "project_key": "path:/Users/me/Developer/MyProject",
     "project_instance_id": "4c171eb1-2f1f-4b0c-9b5b-0dd1d5b9e2a8:123456789",
@@ -340,20 +340,20 @@ Invalid `limit` or `offset` values return HTTP 400 with `error`, `parameter`, an
 **Examples**:
 ```bash
 # Get only Python unresolved reference errors
-curl "http://localhost:63340/api/inspection/problems?problem_type=PyUnresolvedReferences&severity=error"
+curl "http://127.0.0.1:63340/api/inspection/problems?problem_type=PyUnresolvedReferences&severity=error"
 
 # Get problems in test files only
-curl "http://localhost:63340/api/inspection/problems?file_pattern=.*test.*\.py$"
+curl "http://127.0.0.1:63340/api/inspection/problems?file_pattern=.*test.*\.py$"
 
 # Paginate through large result sets
-curl "http://localhost:63340/api/inspection/problems?limit=50&offset=0"
-curl "http://localhost:63340/api/inspection/problems?limit=50&offset=50"
+curl "http://127.0.0.1:63340/api/inspection/problems?limit=50&offset=0"
+curl "http://127.0.0.1:63340/api/inspection/problems?limit=50&offset=50"
 
 # Combine filters for precise results
-curl "http://localhost:63340/api/inspection/problems?severity=error&file_pattern=src/&problem_type=TypeScript"
+curl "http://127.0.0.1:63340/api/inspection/problems?severity=error&file_pattern=src/&problem_type=TypeScript"
 
 # Diagnose cached stale findings without treating them as current
-curl "http://localhost:63340/api/inspection/problems?include_stale=true"
+curl "http://127.0.0.1:63340/api/inspection/problems?include_stale=true"
 ```
 
 ### Trigger Endpoint
@@ -381,26 +381,26 @@ curl "http://localhost:63340/api/inspection/problems?include_stale=true"
 **Examples**:
 ```bash
 # Whole project (default)
-curl "http://localhost:63340/api/inspection/trigger"
+curl "http://127.0.0.1:63340/api/inspection/trigger"
 
 # Current editor file only
-curl "http://localhost:63340/api/inspection/trigger?scope=current_file"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=current_file"
 
 # A specific directory (relative to project)
-curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=src"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=directory&dir=src"
 
 # A specific directory (absolute path)
-curl "http://localhost:63340/api/inspection/trigger?scope=directory&dir=/full/path/to/addons/hr_employee_name_extended"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=directory&dir=/full/path/to/addons/hr_employee_name_extended"
 
 # Only files you specify
-curl "http://localhost:63340/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
-curl "http://localhost:63340/api/inspection/trigger?scope=files&files=src/a.py,src/b.py"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=files&files=src/a.py,src/b.py"
 
 # Only changed files (fast inner loop)
-curl "http://localhost:63340/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=50"
+curl "http://127.0.0.1:63340/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=50"
 
 # Use a lighter inspection profile by name
-curl "http://localhost:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
+curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
 
 **Response**:
@@ -443,11 +443,11 @@ curl "http://localhost:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ### Recommended Pattern
 ```bash
 # 1. Trigger inspection
-curl "http://localhost:63340/api/inspection/trigger"
+curl "http://127.0.0.1:63340/api/inspection/trigger"
 
 # 2. Wait for completion (check every 2-3 seconds)
 while true; do
-  STATUS=$(curl -s "http://localhost:63340/api/inspection/status")
+  STATUS=$(curl -s "http://127.0.0.1:63340/api/inspection/status")
   IS_SCANNING=$(echo $STATUS | jq -r '.is_scanning')
   HAS_RESULTS=$(echo $STATUS | jq -r '.has_inspection_results')
   CLEAN=$(echo $STATUS | jq -r '.clean_inspection')
@@ -462,7 +462,7 @@ while true; do
 done
 
 # 3. Get problems when ready
-curl "http://localhost:63340/api/inspection/problems?severity=all"
+curl "http://127.0.0.1:63340/api/inspection/problems?severity=all"
 ```
 
 ### Understanding Status Response
@@ -606,6 +606,27 @@ Release notes live on GitHub Releases:
 - https://github.com/cbusillo/jetbrains-inspection-api/releases
 
 Release publishing is tag-based. Bump `pluginVersion`, then tag, and push the tag. The GitHub Actions release workflow will publish to the JetBrains Marketplace (requires `PUBLISH_TOKEN` in GitHub Secrets) and create the GitHub Release.
+
+Before publishing a compatibility-range update, capture release evidence for the
+target IDE line:
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
+./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA"
+./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm"
+./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm 2026.2 EAP"
+```
+
+For agent-facing worktree proof, run the maintained exec-harness scenario in
+`test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`; it
+copies the red-lane fixture into an isolated workspace and requires the helper
+to prove a `RED` result, cleanup, and exact route matching in IntelliJ IDEA
+2026.2. Set `JETBRAINS_INSPECTION_API_REPO` to this checkout,
+`CODE_EXEC_HARNESS_ROOT` to the checkout that contains `tools/code-exec-harness`,
+and pass the installed 2026.2 IDE config directory through
+`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` when running the scenario directly.
 
 Shortcut:
 

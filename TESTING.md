@@ -117,18 +117,26 @@ still fails on invalid JSON or missing cleanup.
 ./scripts/dogfood-red-lane-smoke.sh \
   --product intellij \
   --ide "IntelliJ IDEA" \
+  --ide-app "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
   --product pycharm \
   --ide "PyCharm" \
+  --ide-app "PyCharm" \
   --json-out tmp/dogfood-red-lane-pycharm.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
   --product webstorm \
   --ide "WebStorm" \
+  --ide-app "WebStorm 2026.2 EAP" \
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
+
+Use `--ide` for the inspection identity selector and `--ide-app` for the exact
+macOS app bundle to launch. This matters for EAP installs such as
+`WebStorm 2026.2 EAP`, where the app bundle name is more specific than the
+product selector.
 
 This is a live IDE smoke, not a normal CI unit test. `./scripts/test-all.sh`
 runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
@@ -192,3 +200,24 @@ GitHub Actions runs the commit gate on pull requests and pushes to `main` via
 Version tags (`v*`) run `.github/workflows/release.yml`, which repeats the
 commit gate before publishing to the JetBrains Marketplace and creating the
 GitHub Release.
+
+## 2026.2 compatibility release gates
+
+Before publishing a compatibility-range change for JetBrains 2026.2, capture
+evidence for:
+
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure`
+- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin`
+- IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
+  `--ide-app` values for the installed apps.
+- The exec-harness worktree scenario in
+  `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`, with
+  `JETBRAINS_INSPECTION_API_REPO` pointing at this checkout,
+  `CODE_EXEC_HARNESS_ROOT` pointing at the checkout that contains
+  `tools/code-exec-harness`, and `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` pointing
+  at the installed IntelliJ IDEA 2026.2 config directory.
+
+The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
+large-project release smokes should prefer helper closeout JSON and rerun with a
+fresh route rather than treating one long wait timeout as a clean result.

@@ -16,6 +16,7 @@ fi
 
 PRODUCT="intellij"
 IDE=""
+IDE_APP=""
 TIMEOUT_MS=180000
 PREPARE_TIMEOUT_MS=180000
 WORK_ROOT="$HOME/.code/working/jetbrains-inspection-api/red-lane-smoke"
@@ -34,6 +35,7 @@ Options:
   --helper PATH              Path to jb-inspect.py.
   --product NAME             Fixture product: intellij, pycharm, webstorm. Default: intellij.
   --ide NAME                 IDE selector. Defaults from --product.
+  --ide-app NAME             Exact macOS app bundle name to launch. Defaults to --ide.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
   --work-root PATH           Parent directory for disposable fixture copies.
@@ -75,6 +77,11 @@ while [ $# -gt 0 ]; do
 	--ide)
 		[ $# -ge 2 ] || die "--ide requires a value"
 		IDE=$2
+		shift 2
+		;;
+	--ide-app)
+		[ $# -ge 2 ] || die "--ide-app requires a value"
+		IDE_APP=$2
 		shift 2
 		;;
 	--timeout-ms)
@@ -119,20 +126,20 @@ intellij | idea)
 	DEFAULT_IDE="IntelliJ IDEA"
 	REQUIRED_PROFILE_TOOLS=("UnusedDeclaration")
 	;;
-	pycharm | python)
-		PRODUCT="pycharm"
-		FIXTURE="$ROOT/test-fixtures/inspection-red-lane-pycharm"
-		PROJECT_SLUG="inspection-red-lane-pycharm"
-		DEFAULT_IDE="PyCharm"
-		REQUIRED_PROFILE_TOOLS=("PyUnresolvedReferencesInspection")
-		;;
-	webstorm | javascript | js)
-		PRODUCT="webstorm"
-		FIXTURE="$ROOT/test-fixtures/inspection-red-lane-webstorm"
-		PROJECT_SLUG="inspection-red-lane-webstorm"
-		DEFAULT_IDE="WebStorm"
-		REQUIRED_PROFILE_TOOLS=("JsonDuplicatePropertyKeys" "JsonStandardCompliance")
-		;;
+pycharm | python)
+	PRODUCT="pycharm"
+	FIXTURE="$ROOT/test-fixtures/inspection-red-lane-pycharm"
+	PROJECT_SLUG="inspection-red-lane-pycharm"
+	DEFAULT_IDE="PyCharm"
+	REQUIRED_PROFILE_TOOLS=("PyUnresolvedReferencesInspection")
+	;;
+webstorm | javascript | js)
+	PRODUCT="webstorm"
+	FIXTURE="$ROOT/test-fixtures/inspection-red-lane-webstorm"
+	PROJECT_SLUG="inspection-red-lane-webstorm"
+	DEFAULT_IDE="WebStorm"
+	REQUIRED_PROFILE_TOOLS=("JsonDuplicatePropertyKeys" "JsonStandardCompliance")
+	;;
 *)
 	die "unknown product: $PRODUCT"
 	;;
@@ -140,6 +147,9 @@ esac
 
 if [ -z "$IDE" ]; then
 	IDE=$DEFAULT_IDE
+fi
+if [ -z "$IDE_APP" ]; then
+	IDE_APP=$IDE
 fi
 
 [ -x "$HELPER" ] || die "helper is not executable: $HELPER"
@@ -170,11 +180,11 @@ cp -R "$FIXTURE"/. "$PROJECT"/
 PROFILE_FILE="$PROJECT/.idea/inspectionProfiles/RedLane.xml"
 [ -f "$PROFILE_FILE" ] || die "fixture profile is missing: $PROFILE_FILE"
 for tool in "${REQUIRED_PROFILE_TOOLS[@]}"; do
-	grep -q "class=\"$tool\"[^>]*enabled=\"true\"" "$PROFILE_FILE" || \
+	grep -q "class=\"$tool\"[^>]*enabled=\"true\"" "$PROFILE_FILE" ||
 		die "fixture profile does not enable required inspection tool: $tool"
 done
 
-CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --ide-app "$IDE_APP" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
@@ -203,15 +213,15 @@ REPORT=$(
 		--arg status "$STATUS" \
 		--arg bucket "$BUCKET" \
 		--arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-			--arg helper "$HELPER" \
-			--arg product "$PRODUCT" \
-			--arg ide "$IDE" \
-			--arg fixture "$FIXTURE" \
-			--arg project "$PROJECT" \
-			--argjson exit_code "$EXIT_CODE" \
-			--slurpfile command "$COMMAND_FILE" \
-			--slurpfile payload "$PAYLOAD_FILE" \
-			--arg stderr "$(head -c 4000 "$ERR_OUT" 2>/dev/null || true)" '
+		--arg helper "$HELPER" \
+		--arg product "$PRODUCT" \
+		--arg ide "$IDE" \
+		--arg fixture "$FIXTURE" \
+		--arg project "$PROJECT" \
+		--argjson exit_code "$EXIT_CODE" \
+		--slurpfile command "$COMMAND_FILE" \
+		--slurpfile payload "$PAYLOAD_FILE" \
+		--arg stderr "$(head -c 4000 "$ERR_OUT" 2>/dev/null || true)" '
       def command: $command[0];
       def payload: $payload[0];
       {

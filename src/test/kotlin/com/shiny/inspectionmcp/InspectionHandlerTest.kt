@@ -207,6 +207,11 @@ class InspectionHandlerTest {
         assertEquals("profile_resolution_error", status["capture_incomplete_reason"])
         assertEquals("UNKNOWN", status["inspection_verdict"])
         assertEquals("profile_resolution_error", status["inspection_verdict_reason"])
+        val problemsResponse = processGetRequest("/api/inspection/problems?severity=all")
+        val problemsBody = problemsResponse.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.OK, problemsResponse.status())
+        assertTrue(problemsBody.contains("\"status\": \"capture_incomplete\""))
+        assertTrue(problemsBody.contains("\"capture_incomplete\": true"))
         @Suppress("UNCHECKED_CAST")
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
         assertEquals("RedLane", diagnostic["profile_requested"])
@@ -360,6 +365,7 @@ class InspectionHandlerTest {
     @Test
     fun `test process handles missing project gracefully`() {
         every { mockProjectManager.openProjects } returns emptyArray()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -382,6 +388,7 @@ class InspectionHandlerTest {
     @Test
     fun `test problems endpoint returns valid response structure`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -399,10 +406,57 @@ class InspectionHandlerTest {
         assertTrue(result)
         verify { mockContext.writeAndFlush(any()) }
     }
-    
+
+    @Test
+    fun `test status endpoint does not refresh project state`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+
+        val response = processGetRequest("/api/inspection/status")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"project_name\": \"TestProject\""))
+        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+    }
+
+    @Test
+    fun `test wait endpoint executes on pooled thread`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+
+        val response = processGetRequest("/api/inspection/wait?timeout_ms=1000&poll_ms=200")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"completion_reason\":"))
+        verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test problems endpoint executes on pooled thread`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        mockInspectionPrerequisites(mockProject)
+
+        val response = processGetRequest("/api/inspection/problems?severity=all")
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
     @Test
     fun `test scope parameter handling with whole_project`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -425,6 +479,7 @@ class InspectionHandlerTest {
     @Test
     fun `test scope parameter handling with current_file`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -447,6 +502,7 @@ class InspectionHandlerTest {
     @Test
     fun `test scope parameter handling with custom scope`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -469,6 +525,7 @@ class InspectionHandlerTest {
     @Test
     fun `test scope parameter defaults to whole_project when missing`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -490,6 +547,7 @@ class InspectionHandlerTest {
     @Test
     fun `test scope and severity parameters together`() {
         val handler = InspectionHandler()
+        runPooledTasksInline()
         
         val mockUrlDecoder = mockk<QueryStringDecoder>()
         val mockRequest = mockk<FullHttpRequest>()
@@ -1683,6 +1741,17 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test route base url uses numeric loopback`() {
+        val method = InspectionHandler::class.java.getDeclaredMethod("routeBaseUrl", Any::class.java)
+        method.isAccessible = true
+
+        val result = method.invoke(handler, 63342)
+
+        val expected = "http://" + "127.0.0.1" + ":63342" + "/api/" + "inspection"
+        assertEquals(expected, result)
+    }
+
+    @Test
     fun `test route endpoint exposes effective base path from project file when base path is missing`() {
         val tempDir = Files.createTempDirectory("inspection-route-file-root")
         every { mockProject.basePath } returns null
@@ -1864,6 +1933,13 @@ class InspectionHandlerTest {
         val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
         val encodedSession = java.net.URLEncoder.encode(InspectionIdeSession.sessionId, "UTF-8")
         return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession"
+    }
+
+    private fun runPooledTasksInline() {
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {
