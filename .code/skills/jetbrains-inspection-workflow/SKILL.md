@@ -118,7 +118,16 @@ unit tests.
    `./scripts/dogfood-smoke-matrix.sh` and inspect its JSON artifact for
    cleanup `closed`/`not_needed`, IDE identity, plugin version, and failure
    buckets.
-8. If lifecycle auto-open stalls, inspect trusted-root setup, project-opening
+8. Product-level IDE selectors such as `WebStorm`, `PyCharm`, and
+   `IntelliJ IDEA` should resolve to the latest installed stable/non-EAP app and
+   matching config dir. Use exact selectors such as `--ide-channel eap`,
+   `--ide-version 2026.2`, or `--ide-app` only when the test intentionally
+   targets an EAP or exact IDE version.
+9. If lifecycle auto-open stalls with `ide_selection_required`,
+   `ide_config_ambiguous`, or `ide_config_missing`, treat that as repo metadata
+   work: add preferred IDE metadata to `.github/github.json` or explicitly pass
+   the exact IDE for a one-off smoke run.
+10. If lifecycle auto-open stalls, inspect trusted-root setup, project-opening
    mode, IDE config layout, settings sync, and plugin installation before
    changing product code.
 
