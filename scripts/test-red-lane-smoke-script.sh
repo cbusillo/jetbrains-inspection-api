@@ -10,6 +10,8 @@ grep -q -- 'inspection-red-lane-pycharm' scripts/dogfood-red-lane-smoke.sh
 grep -q -- 'inspection-red-lane-webstorm' scripts/dogfood-red-lane-smoke.sh
 grep -q -- '--scope whole_project' scripts/dogfood-red-lane-smoke.sh
 grep -q -- '--profile RedLane' scripts/dogfood-red-lane-smoke.sh
+grep -q -- '--ide-channel' scripts/dogfood-red-lane-smoke.sh
+grep -q -- '--ide-version' scripts/dogfood-red-lane-smoke.sh
 
 assert_fixture_intellij() {
 	local fixture_source="test-fixtures/inspection-red-lane/src/main/java/com/example/redlane/DefinitelyRed.java"
@@ -58,6 +60,8 @@ from pathlib import Path
 
 repo = ""
 ide = ""
+ide_channel = ""
+ide_version = ""
 args = sys.argv[1:]
 while args:
     arg = args.pop(0)
@@ -65,6 +69,10 @@ while args:
         repo = args.pop(0)
     elif arg == "--ide" and args:
         ide = args.pop(0)
+    elif arg == "--ide-channel" and args:
+        ide_channel = args.pop(0)
+    elif arg == "--ide-version" and args:
+        ide_version = args.pop(0)
 
 fixtures = [
     ("IntelliJ IDEA", "src/main/java/com/example/redlane/DefinitelyRed.java", "redLaneField"),
@@ -97,6 +105,7 @@ print(json.dumps({
     "problems_shown": 1,
     "clean": False,
     "cleanup": {"status": "closed"},
+    "ide_selection": {"channel": ide_channel or None, "version": ide_version or None},
     "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide}},
     "problems": [{"severity": "error", "file": str(fixture), "line": 1, "description": f"Cannot resolve symbol {marker}"}],
 }))
@@ -113,6 +122,8 @@ run_case() {
 		--product "$product" \
 		--helper "$HELPER" \
 		--work-root "$TMP_DIR/work" \
+		--ide-channel eap \
+		--ide-version 2026.2 \
 		--json-out "$json_out"
 
 	jq -e \
@@ -123,6 +134,8 @@ run_case() {
     .bucket == "red_confirmed" and
     .product == $product and
     .ide == $expected_ide and
+    .ide_channel == "eap" and
+    .ide_version == "2026.2" and
     .verdict == "RED" and
     .total_problems == 1 and
     .cleanup.status == "closed" and

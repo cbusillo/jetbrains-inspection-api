@@ -736,6 +736,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
+    internal var closeVerificationTimeoutMs: Long = 10_000
+    internal var closeVerificationPollMs: Long = 100
+    internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(path, true)
@@ -1463,10 +1466,11 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {
         val attempts = mutableListOf<LifecycleCloseAttempt>()
+        val verificationDeadline = closeVerificationNow() + closeVerificationTimeoutMs
         val saveModes = listOf(true, false, false)
         for ((index, save) in saveModes.withIndex()) {
             val forceCloseReturned = closeProjectOnEdt(project, save)
-            val closedVerified = waitForProjectClosed(project, projectInstanceId)
+            val closedVerified = waitForProjectClosed(project, projectInstanceId, verificationDeadline)
             attempts.add(
                 LifecycleCloseAttempt(
                     attempt = index + 1,
@@ -1498,18 +1502,19 @@ class InspectionHandler : HttpRequestHandler() {
         }.getOrDefault(false)
     }
 
-    private fun waitForProjectClosed(project: Project, projectInstanceId: String): Boolean {
+    private fun waitForProjectClosed(project: Project, projectInstanceId: String, deadline: Long): Boolean {
         if (ApplicationManager.getApplication().isDispatchThread) {
             return project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null
         }
-        repeat(10) { attempt ->
+        do {
             if (project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null) {
                 return true
             }
-            if (attempt < 9) {
-                closeVerificationSleep(100)
+            val remainingMs = deadline - closeVerificationNow()
+            if (remainingMs > 0) {
+                closeVerificationSleep(minOf(closeVerificationPollMs, remainingMs))
             }
-        }
+        } while (closeVerificationNow() < deadline)
         return project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null
     }
 
