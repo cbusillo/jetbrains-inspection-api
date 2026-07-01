@@ -17,6 +17,8 @@ fi
 PRODUCT="intellij"
 IDE=""
 IDE_APP=""
+IDE_CHANNEL=""
+IDE_VERSION=""
 TIMEOUT_MS=180000
 PREPARE_TIMEOUT_MS=180000
 WORK_ROOT="$HOME/.code/working/jetbrains-inspection-api/red-lane-smoke"
@@ -36,6 +38,8 @@ Options:
   --product NAME             Fixture product: intellij, pycharm, webstorm. Default: intellij.
   --ide NAME                 IDE selector. Defaults from --product.
   --ide-app NAME             Exact macOS app bundle name to launch. Defaults to --ide.
+  --ide-channel CHANNEL      IDE channel selector: stable, eap, or any.
+  --ide-version VERSION      Exact IDE version selector, e.g. 2026.2.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
   --work-root PATH           Parent directory for disposable fixture copies.
@@ -82,6 +86,16 @@ while [ $# -gt 0 ]; do
 	--ide-app)
 		[ $# -ge 2 ] || die "--ide-app requires a value"
 		IDE_APP=$2
+		shift 2
+		;;
+	--ide-channel)
+		[ $# -ge 2 ] || die "--ide-channel requires a value"
+		IDE_CHANNEL=$2
+		shift 2
+		;;
+	--ide-version)
+		[ $# -ge 2 ] || die "--ide-version requires a value"
+		IDE_VERSION=$2
 		shift 2
 		;;
 	--timeout-ms)
@@ -184,7 +198,14 @@ for tool in "${REQUIRED_PROFILE_TOOLS[@]}"; do
 		die "fixture profile does not enable required inspection tool: $tool"
 done
 
-CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --ide-app "$IDE_APP" --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --ide-app "$IDE_APP")
+if [ -n "$IDE_CHANNEL" ]; then
+	CMD+=(--ide-channel "$IDE_CHANNEL")
+fi
+if [ -n "$IDE_VERSION" ]; then
+	CMD+=(--ide-version "$IDE_VERSION")
+fi
+CMD+=(--scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
@@ -216,6 +237,8 @@ REPORT=$(
 		--arg helper "$HELPER" \
 		--arg product "$PRODUCT" \
 		--arg ide "$IDE" \
+		--arg ide_channel "$IDE_CHANNEL" \
+		--arg ide_version "$IDE_VERSION" \
 		--arg fixture "$FIXTURE" \
 		--arg project "$PROJECT" \
 		--argjson exit_code "$EXIT_CODE" \
@@ -231,6 +254,8 @@ REPORT=$(
         helper: $helper,
         product: $product,
         ide: $ide,
+        ide_channel: (if $ide_channel == "" then null else $ide_channel end),
+        ide_version: (if $ide_version == "" then null else $ide_version end),
         fixture: $fixture,
         project: $project,
         exit_code: $exit_code,
