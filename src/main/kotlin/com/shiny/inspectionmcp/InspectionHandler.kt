@@ -1466,10 +1466,10 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {
         val attempts = mutableListOf<LifecycleCloseAttempt>()
-        val verificationDeadline = closeVerificationNow() + closeVerificationTimeoutMs
         val saveModes = listOf(true, false, false)
         for ((index, save) in saveModes.withIndex()) {
             val forceCloseReturned = closeProjectOnEdt(project, save)
+            val verificationDeadline = closeVerificationNow() + closeVerificationTimeoutMs
             val closedVerified = waitForProjectClosed(project, projectInstanceId, verificationDeadline)
             attempts.add(
                 LifecycleCloseAttempt(

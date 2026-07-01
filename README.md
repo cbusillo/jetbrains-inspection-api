@@ -616,7 +616,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
 ./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
-./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
+./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm 2026.2 EAP" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ```
 
 For agent-facing worktree proof, run the maintained exec-harness scenario in

@@ -1656,6 +1656,51 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close gives no-save retry a fresh verification window`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        handler.closeVerificationTimeoutMs = 300
+        handler.closeVerificationPollMs = 100
+        var nowMs = 0L
+        var noSaveStartMs: Long? = null
+        handler.closeVerificationNow = { nowMs }
+        handler.closeVerificationSleep = { millis -> nowMs += millis }
+        val saveModes = mutableListOf<Boolean>()
+        handler.forceCloseProject = { _, save ->
+            saveModes.add(save)
+            if (save) {
+                false
+            } else {
+                noSaveStartMs = nowMs
+                true
+            }
+        }
+        every { mockProjectManager.openProjects } answers {
+            val retryStart = noSaveStartMs
+            if (retryStart != null && nowMs - retryStart >= 200) emptyArray() else arrayOf(mockProject)
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(listOf(true, false), saveModes)
+        assertTrue(body.contains("\"status\": \"closed\""))
+        assertTrue(body.contains("\"attempt\": 2"))
+        assertTrue(body.contains("\"closed_verified\": true"))
+    }
+
+    @Test
     fun `test lifecycle close does not poll for close verification on dispatch thread`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
