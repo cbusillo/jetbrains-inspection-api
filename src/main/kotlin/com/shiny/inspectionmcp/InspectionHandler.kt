@@ -720,14 +720,23 @@ class InspectionHandler : HttpRequestHandler() {
         val projectRoot: Path,
         val key: String,
     )
+
+    private data class LifecycleCloseAttempt(
+        val attempt: Int,
+        val save: Boolean,
+        val forceCloseReturned: Boolean,
+        val closedVerified: Boolean,
+        val projectDisposed: Boolean,
+    )
     
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
     private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
     private val openingProjectPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
-    internal var forceCloseProject: (Project) -> Boolean = { project ->
-        ProjectManagerEx.getInstanceEx().forceCloseProject(project, true)
+    internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
+        ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
+    internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(path, true)
     }
@@ -1429,21 +1438,16 @@ class InspectionHandler : HttpRequestHandler() {
             return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
         }
 
-        val closed = runCatching {
-            val application = ApplicationManager.getApplication()
-            if (application.isDispatchThread) {
-                forceCloseProject(project)
-            } else {
-                val closeResult = AtomicReference<Boolean>()
-                application.invokeAndWait {
-                    closeResult.set(forceCloseProject(project))
-                }
-                closeResult.get() == true
-            }
-        }.getOrDefault(false)
+        val closeAttempts = closeClaimedProject(project, expectedProjectInstanceId)
+        val closed = closeAttempts.any { attempt -> attempt.closedVerified }
 
         if (!closed) {
-            return lifecycleCloseSkipped("close_failed", "JetBrains IDE declined or failed to close the claimed project.", HttpResponseStatus.CONFLICT)
+            return lifecycleCloseSkipped(
+                "close_failed",
+                "JetBrains IDE declined or failed to close the claimed project.",
+                HttpResponseStatus.CONFLICT,
+                closeAttempts,
+            )
         }
         leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
         return mapOf(
@@ -1453,13 +1457,79 @@ class InspectionHandler : HttpRequestHandler() {
             "lease_id" to lease.leaseId,
             "session_id" to InspectionIdeSession.sessionId,
             "closed_at_ms" to System.currentTimeMillis(),
+            "close_attempts" to closeAttemptPayload(closeAttempts),
         ).filterValues { value -> value != null } to HttpResponseStatus.OK
+    }
+
+    private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {
+        val attempts = mutableListOf<LifecycleCloseAttempt>()
+        val saveModes = listOf(true, false, false)
+        for ((index, save) in saveModes.withIndex()) {
+            val forceCloseReturned = closeProjectOnEdt(project, save)
+            val closedVerified = waitForProjectClosed(project, projectInstanceId)
+            attempts.add(
+                LifecycleCloseAttempt(
+                    attempt = index + 1,
+                    save = save,
+                    forceCloseReturned = forceCloseReturned,
+                    closedVerified = closedVerified,
+                    projectDisposed = project.isDisposed,
+                )
+            )
+            if (closedVerified) {
+                break
+            }
+        }
+        return attempts
+    }
+
+    private fun closeProjectOnEdt(project: Project, save: Boolean): Boolean {
+        return runCatching {
+            val application = ApplicationManager.getApplication()
+            if (application.isDispatchThread) {
+                forceCloseProject(project, save)
+            } else {
+                val closeResult = AtomicReference<Boolean>()
+                application.invokeAndWait {
+                    closeResult.set(forceCloseProject(project, save))
+                }
+                closeResult.get() == true
+            }
+        }.getOrDefault(false)
+    }
+
+    private fun waitForProjectClosed(project: Project, projectInstanceId: String): Boolean {
+        if (ApplicationManager.getApplication().isDispatchThread) {
+            return project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null
+        }
+        repeat(10) { attempt ->
+            if (project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null) {
+                return true
+            }
+            if (attempt < 9) {
+                closeVerificationSleep(100)
+            }
+        }
+        return project.isDisposed || findOpenProjectByInstanceId(projectInstanceId) == null
+    }
+
+    private fun closeAttemptPayload(attempts: List<LifecycleCloseAttempt>): List<Map<String, Any?>> {
+        return attempts.map { attempt ->
+            mapOf(
+                "attempt" to attempt.attempt,
+                "save" to attempt.save,
+                "force_close_returned" to attempt.forceCloseReturned,
+                "closed_verified" to attempt.closedVerified,
+                "project_disposed" to attempt.projectDisposed,
+            )
+        }
     }
 
     private fun lifecycleCloseSkipped(
         reason: String,
         message: String,
         status: HttpResponseStatus = HttpResponseStatus.OK,
+        closeAttempts: List<LifecycleCloseAttempt> = emptyList(),
     ): Pair<Map<String, Any?>, HttpResponseStatus> {
         return mapOf(
             "status" to "skipped",
@@ -1467,6 +1537,7 @@ class InspectionHandler : HttpRequestHandler() {
             "reason" to reason,
             "message" to message,
             "session_id" to InspectionIdeSession.sessionId,
+            "close_attempts" to closeAttemptPayload(closeAttempts).takeIf { it.isNotEmpty() },
         ) to status
     }
 

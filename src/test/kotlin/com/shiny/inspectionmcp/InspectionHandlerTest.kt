@@ -1512,8 +1512,9 @@ class InspectionHandlerTest {
         assertNotNull(token)
         every { mockApplication.isDispatchThread } returns true
         var closedProject: Project? = null
-        handler.forceCloseProject = { project ->
+        handler.forceCloseProject = { project, _ ->
             closedProject = project
+            every { mockProjectManager.openProjects } returns arrayOf(mainProject)
             true
         }
 
@@ -1552,7 +1553,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close keeps lease when close fails`() {
+    fun `test lifecycle close verifies closed project after false close result`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -1562,7 +1563,105 @@ class InspectionHandlerTest {
         val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
         assertNotNull(token)
         every { mockApplication.isDispatchThread } returns true
-        handler.forceCloseProject = { false }
+        handler.forceCloseProject = { _, _ ->
+            every { mockProjectManager.openProjects } returns emptyArray()
+            false
+        }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = first.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertTrue(body.contains("\"status\": \"closed\""))
+        assertTrue(body.contains("\"force_close_returned\": false"))
+        assertTrue(body.contains("\"closed_verified\": true"))
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+    }
+
+    @Test
+    fun `test lifecycle close retries no-save fallback after transient refusal`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        handler.closeVerificationSleep = {}
+        val saveModes = mutableListOf<Boolean>()
+        handler.forceCloseProject = { _, save ->
+            saveModes.add(save)
+            if (!save) {
+                every { mockProjectManager.openProjects } returns emptyArray()
+                true
+            } else {
+                false
+            }
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"closed\""))
+        assertEquals(listOf(true, false), saveModes)
+        assertTrue(body.contains("\"attempt\": 2"))
+        assertTrue(body.contains("\"save\": false"))
+    }
+
+    @Test
+    fun `test lifecycle close does not poll for close verification on dispatch thread`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns true
+        var sleepCount = 0
+        handler.closeVerificationSleep = { sleepCount++ }
+        handler.forceCloseProject = { _, _ -> false }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("\"reason\": \"close_failed\""))
+        assertEquals(0, sleepCount)
+    }
+
+    @Test
+    fun `test lifecycle close keeps lease when close fails after retries`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        handler.closeVerificationSleep = {}
+        val saveModes = mutableListOf<Boolean>()
+        handler.forceCloseProject = { _, save ->
+            saveModes.add(save)
+            false
+        }
 
         val first = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
@@ -1575,6 +1674,8 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.CONFLICT, second.status())
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
         assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
+        assertEquals(listOf(true, false, false, true, false, false), saveModes)
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"closed_verified\": false"))
     }
 
     @Test
