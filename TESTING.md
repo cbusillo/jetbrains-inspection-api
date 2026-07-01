@@ -210,7 +210,7 @@ evidence for:
 - `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure`
 - `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
-  `--ide-app` values for the installed apps.
+  2026.2 EAP selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - The exec-harness worktree scenario in
   `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`, with
   `JETBRAINS_INSPECTION_API_REPO` pointing at this checkout,

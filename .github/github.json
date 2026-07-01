@@ -33,9 +33,9 @@
       "automatedIde": "./scripts/test-automated.sh",
       "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh",
       "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh",
-      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij",
-      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm",
-      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm 2026.2 EAP\"",
+      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000",
+      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide \"PyCharm\" --ide-app \"PyCharm\" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000",
+      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm\" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000",
       "execHarness262Worktree": "JETBRAINS_INSPECTION_API_REPO=$PWD JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS=${CODE_EXEC_HARNESS_ROOT:?Set CODE_EXEC_HARNESS_ROOT}/.tmp/code-exec-harness JETBRAINS_INSPECTION_IDE_CONFIG_DIR=\"${JETBRAINS_INSPECTION_IDE_CONFIG_DIR:?Set JETBRAINS_INSPECTION_IDE_CONFIG_DIR}\" python3 ${CODE_EXEC_HARNESS_ROOT}/tools/code-exec-harness/harness.py test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json --inherit-auth --skill-root ${JETBRAINS_INSPECTION_SKILL_ROOT:-$HOME/.code/skills} --max-seconds 420"
     },
     "releaseCompatibility": {

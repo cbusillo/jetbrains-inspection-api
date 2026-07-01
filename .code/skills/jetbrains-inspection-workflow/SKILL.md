@@ -64,6 +64,9 @@ Keep exact command matrices, environment setup, and troubleshooting in
    with the matching local IDE and the current plugin installed; it copies the
    maintained known-bad fixture and requires structured JSON with `RED`,
    `total_problems > 0`, and cleanup `closed`.
+   For 2026.2 EAP release gates, pass `--ide-channel eap --ide-version 2026.2`
+   and use `--timeout-ms 300000 --prepare-timeout-ms 300000`; this matches the
+   plugin wait cap and avoids treating a slow EAP inspection as release evidence.
 7. For release readiness, run `./scripts/test-all.sh` or the commit gate before
    build/release commands, and confirm CI status when GitHub state matters.
 
