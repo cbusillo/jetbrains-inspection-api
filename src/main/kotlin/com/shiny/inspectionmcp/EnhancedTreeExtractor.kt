@@ -40,6 +40,7 @@ class EnhancedTreeExtractor {
 
     private enum class InspectionToolWindowState {
         HAS_RESULTS_VIEW,
+        HAS_TREE,
         EMPTY,
         UNREADABLE,
     }
@@ -134,7 +135,7 @@ class EnhancedTreeExtractor {
             }
             val state = inspectToolWindowForResults(direct)
             return InspectionToolWindowSearch(
-                toolWindows = if (state == InspectionToolWindowState.HAS_RESULTS_VIEW) listOf(direct) else emptyList(),
+                toolWindows = if (state.isExtractable) listOf(direct) else emptyList(),
                 succeeded = state != InspectionToolWindowState.UNREADABLE,
             )
         }
@@ -144,17 +145,16 @@ class EnhancedTreeExtractor {
         for (id in ids) {
             val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
             val state = inspectToolWindowForResults(toolWindow)
-            if (state == InspectionToolWindowState.HAS_RESULTS_VIEW) {
+            val isKnownInspectionWindow = id in inspectionResultsToolWindowIds
+            if (state == InspectionToolWindowState.HAS_RESULTS_VIEW ||
+                (isKnownInspectionWindow && (state == InspectionToolWindowState.HAS_TREE || state == InspectionToolWindowState.EMPTY))
+            ) {
                 matches.add(toolWindow)
-            } else if (id in inspectionResultsToolWindowIds && state == InspectionToolWindowState.UNREADABLE) {
+            } else if (isKnownInspectionWindow && state == InspectionToolWindowState.UNREADABLE) {
                 succeeded = false
             }
         }
         return InspectionToolWindowSearch(matches, succeeded)
-    }
-
-    private fun toolWindowHasInspectionResults(toolWindow: ToolWindow): Boolean {
-        return inspectToolWindowForResults(toolWindow) == InspectionToolWindowState.HAS_RESULTS_VIEW
     }
 
     private fun inspectToolWindowForResults(toolWindow: ToolWindow): InspectionToolWindowState {
@@ -166,12 +166,18 @@ class EnhancedTreeExtractor {
                 if (findInspectionResultsView(component) != null) {
                     return InspectionToolWindowState.HAS_RESULTS_VIEW
                 }
+                if (findInspectionTree(component) != null) {
+                    return InspectionToolWindowState.HAS_TREE
+                }
             }
         } catch (_: Exception) {
             return InspectionToolWindowState.UNREADABLE
         }
         return InspectionToolWindowState.EMPTY
     }
+
+    private val InspectionToolWindowState.isExtractable: Boolean
+        get() = this == InspectionToolWindowState.HAS_RESULTS_VIEW || this == InspectionToolWindowState.HAS_TREE
 
     private fun extractFromToolWindow(
         toolWindow: ToolWindow,

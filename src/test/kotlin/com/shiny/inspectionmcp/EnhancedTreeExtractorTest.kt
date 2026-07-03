@@ -183,6 +183,44 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should keep tree-only inspection result windows in status extraction")
+    fun testExtractionStatusKeepsTreeOnlyInspectionWindow() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+        assertEquals("FallbackInspection", result.problems[0]["inspectionType"])
+    }
+
+    @Test
     @DisplayName("Should fall back to Problems view when Inspection Results are empty")
     fun testFallsBackToProblemsViewWhenInspectionResultsAreEmpty() {
         val app = mockk<Application>()
