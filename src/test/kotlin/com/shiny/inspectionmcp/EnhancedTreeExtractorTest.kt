@@ -123,6 +123,24 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should report unsuccessful status when inspection tree traversal fails")
+    fun testExtractionStatusReportsTreeTraversalFailure() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val tree = mockk<InspectionTree>()
+        val model = mockk<TreeModel>()
+
+        every { inspectionView.tree } returns tree
+        every { tree.model } returns model
+        every { model.root } throws IllegalStateException("tree traversal failed")
+
+        val result = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should fall back to Problems view when Inspection Results are empty")
     fun testFallsBackToProblemsViewWhenInspectionResultsAreEmpty() {
         val app = mockk<Application>()

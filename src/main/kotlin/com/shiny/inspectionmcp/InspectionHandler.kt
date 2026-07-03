@@ -194,7 +194,23 @@ internal data class InspectionRunState(
     val runId: Long,
     val triggerTimeMs: Long,
     val inProgress: Boolean,
-)
+    val captureScope: InspectionCaptureScope? = null,
+) {
+    constructor(runId: Long, triggerTimeMs: Long, inProgress: Boolean) : this(
+        runId = runId,
+        triggerTimeMs = triggerTimeMs,
+        inProgress = inProgress,
+        captureScope = null,
+    )
+}
+
+private data class ScopedCleanProof(
+    val problems: List<Map<String, Any>>,
+    val extractionSucceeded: Boolean,
+    val scopedMatcherAvailable: Boolean,
+) {
+    val isClean: Boolean = extractionSucceeded && scopedMatcherAvailable && problems.isEmpty()
+}
 
 private data class InspectionProof(
     val summary: Map<String, Any?>,
@@ -262,6 +278,7 @@ internal fun projectKey(project: Project): String {
     return "name:${project.name}"
 }
 
+@Suppress("SameReturnValue")
 private fun normalizeFileSystemPath(value: String?): String? {
     val raw = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     val expanded = if (raw.startsWith("~")) {
@@ -740,6 +757,7 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationPollMs: Long = 100
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var inspectionRunExpirationMs: Long = 300000L
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(path, true)
     }
@@ -998,6 +1016,7 @@ class InspectionHandler : HttpRequestHandler() {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
     }
 
+    @Suppress("SameReturnValue")
     override fun process(
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
@@ -1063,12 +1082,33 @@ class InspectionHandler : HttpRequestHandler() {
                     val limit = parseIntParameter(parameters, "limit", defaultValue = 100, min = 1, max = 1000)
                     val offset = parseIntParameter(parameters, "offset", defaultValue = 0, min = 0)
                     val includeStale = parameters["include_stale"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: false
+                    val directory = parameters["dir"]?.firstOrNull()
+                        ?: parameters["directory"]?.firstOrNull()
+                        ?: parameters["path"]?.firstOrNull()
+                    val filesList = requestedFiles(parameters)
+                    val includeUnversioned = parameters["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
+                    val changedFilesMode = parameters["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
+                    val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
                     val projectName = extractProjectSelector(urlDecoder, request)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            withCurrentProject(context, projectName, refreshProjectState = true) { project ->
+                            withCurrentProject(context, projectName, refreshProjectState = false) { project ->
                                 val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
-                                    getInspectionProblems(project, severity, scope, problemType, filePattern, limit, offset, includeStale)
+                                    getInspectionProblems(
+                                        project,
+                                        severity,
+                                        scope,
+                                        problemType,
+                                        filePattern,
+                                        limit,
+                                        offset,
+                                        includeStale,
+                                        directory,
+                                        filesList.takeIf { it.isNotEmpty() },
+                                        includeUnversioned,
+                                        changedFilesMode,
+                                        maxFiles,
+                                    )
                                 }
                                 sendJsonResponse(context, result)
                             }
@@ -1090,30 +1130,35 @@ class InspectionHandler : HttpRequestHandler() {
                         ?: parameters["directory"]?.firstOrNull()
                         ?: parameters["path"]?.firstOrNull()
                     val filesList = mutableListOf<String>()
-                    val repeatedFiles = parameters["file"] ?: emptyList()
-                    if (repeatedFiles.isNotEmpty()) filesList.addAll(repeatedFiles)
-                    val filesParam = parameters["files"]?.firstOrNull()
-                    if (!filesParam.isNullOrBlank()) {
-                        filesList.addAll(filesParam.split('\n', ',', ';').map { it.trim() }.filter { it.isNotEmpty() })
-                    }
+                    filesList.addAll(requestedFiles(parameters))
                     val includeUnversioned = parameters["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
                     val changedFilesMode = parameters["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
                     val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
                     val profile = parameters["profile"]?.firstOrNull()
                     val projectName = extractProjectSelector(urlDecoder, request)
                     withCurrentProject(context, projectName) { project ->
-                        val runState = beginInspectionRun(project)
+                        val requestedCurrentFileScope = scope?.lowercase()?.trim() == "current_file"
+                        val resolvedCurrentFile = if (requestedCurrentFileScope) {
+                            resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
+                        } else {
+                            null
+                        }
+                        val captureScope = InspectionCaptureScope(
+                            scopeParam = if (requestedCurrentFileScope && resolvedCurrentFile == null) null else scope,
+                            directoryParam = directory,
+                            files = if (filesList.isEmpty()) null else filesList,
+                            resolvedCurrentFile = resolvedCurrentFile,
+                            includeUnversioned = includeUnversioned,
+                            changedFilesMode = changedFilesMode,
+                            maxFiles = maxFiles,
+                        )
+                        val runState = beginInspectionRun(project, captureScope)
                         try {
                             ApplicationManager.getApplication().executeOnPooledThread {
                                 triggerInspectionAsync(
                                     project = project,
                                     runId = runState.runId,
-                                    scopeParam = scope,
-                                    directoryParam = directory,
-                                    files = if (filesList.isEmpty()) null else filesList,
-                                    includeUnversioned = includeUnversioned,
-                                    changedFilesMode = changedFilesMode,
-                                    maxFiles = maxFiles,
+                                    captureScope = captureScope,
                                     profileName = profile
                                 )
                             }
@@ -1211,6 +1256,16 @@ class InspectionHandler : HttpRequestHandler() {
             throw BadRequestException(name, "Parameter '$name' must be at most $max.")
         }
         return value
+    }
+
+    private fun requestedFiles(parameters: Map<String, List<String>>): List<String> {
+        val repeatedFiles = parameters["file"].orEmpty()
+        val filesParam = parameters["files"].orEmpty().flatMap { raw ->
+            raw.split('\n', ',', ';')
+        }
+        return (repeatedFiles + filesParam)
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
     }
 
     private fun formatBadRequest(error: BadRequestException): String {
@@ -1764,8 +1819,14 @@ class InspectionHandler : HttpRequestHandler() {
         limit: Int = 100,
         offset: Int = 0,
         includeStale: Boolean = false,
+        directoryParam: String? = null,
+        files: List<String>? = null,
+        includeUnversioned: Boolean = true,
+        changedFilesMode: String? = null,
+        maxFiles: Int? = null,
     ): String {
         return try {
+            val requestedScope = scope.trim().takeIf { it.isNotEmpty() } ?: "whole_project"
             val normalizedScope = normalizeProblemsScope(scope)
             val key = projectKey(project)
             var snapshot = resultsStore.getSnapshot(key)
@@ -1785,8 +1846,19 @@ class InspectionHandler : HttpRequestHandler() {
                 val staleSnapshot = snapshot ?: resultsStore.getSnapshot(key)
                 val cachedProblems = staleSnapshot?.problems ?: emptyList()
                 val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
+                val scopeProblemMatcher = buildScopeProblemMatcher(
+                    project = project,
+                    scopeParam = requestedScope,
+                    directoryParam = directoryParam,
+                    files = files,
+                    resolvedCurrentFile = currentFilePath,
+                    includeUnversioned = includeUnversioned,
+                    changedFilesMode = changedFilesMode,
+                    maxFiles = maxFiles,
+                )
+                val scopedCachedProblems = filterProblemsForScope(cachedProblems, scopeProblemMatcher)
                 val filteredCachedProblems = filterProblems(
-                    problems = cachedProblems,
+                    problems = scopedCachedProblems,
                     severity = severity,
                     scope = normalizedScope,
                     currentFilePath = currentFilePath,
@@ -1814,7 +1886,9 @@ class InspectionHandler : HttpRequestHandler() {
                     "cached_problems_shown" to if (includeStale) page.shown else 0,
                     "filters" to mapOf(
                         "severity" to severity,
-                        "scope" to normalizedScope,
+                        "scope" to requestedScope,
+                        "dir" to directoryParam,
+                        "files_requested" to (files?.size ?: 0),
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     )
@@ -1865,7 +1939,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "filters" to mapOf(
                         "severity" to severity,
-                        "scope" to normalizedScope,
+                        "scope" to requestedScope,
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     ),
@@ -1886,9 +1960,20 @@ class InspectionHandler : HttpRequestHandler() {
             
             if (problems.isNotEmpty() || hasSnapshot) {
                 val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
+                val scopeProblemMatcher = buildScopeProblemMatcher(
+                    project = project,
+                    scopeParam = requestedScope,
+                    directoryParam = directoryParam,
+                    files = files,
+                    resolvedCurrentFile = currentFilePath,
+                    includeUnversioned = includeUnversioned,
+                    changedFilesMode = changedFilesMode,
+                    maxFiles = maxFiles,
+                )
+                val scopedProblems = filterProblemsForScope(problems, scopeProblemMatcher)
 
                 val filteredProblems = filterProblems(
-                    problems = problems,
+                    problems = scopedProblems,
                     severity = severity,
                     scope = normalizedScope,
                     currentFilePath = currentFilePath,
@@ -1918,7 +2003,9 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "filters" to mapOf(
                         "severity" to severity,
-                        "scope" to normalizedScope,
+                        "scope" to requestedScope,
+                        "dir" to directoryParam,
+                        "files_requested" to (files?.size ?: 0),
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     ),
@@ -1953,7 +2040,9 @@ class InspectionHandler : HttpRequestHandler() {
                     ),
                     "filters" to mapOf(
                         "severity" to severity,
-                        "scope" to normalizedScope,
+                        "scope" to requestedScope,
+                        "dir" to directoryParam,
+                        "files_requested" to (files?.size ?: 0),
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all"),
                     ),
@@ -1965,6 +2054,34 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: Exception) {
             """{"error": "Failed to get inspection problems"}"""
         }
+    }
+
+    @Suppress("unused")
+    private fun getInspectionProblems(
+        project: Project,
+        severity: String = "all",
+        scope: String = "whole_project",
+        problemType: String? = null,
+        filePattern: String? = null,
+        limit: Int = 100,
+        offset: Int = 0,
+        includeStale: Boolean = false,
+    ): String {
+        return getInspectionProblems(
+            project = project,
+            severity = severity,
+            scope = scope,
+            problemType = problemType,
+            filePattern = filePattern,
+            limit = limit,
+            offset = offset,
+            includeStale = includeStale,
+            directoryParam = null,
+            files = null,
+            includeUnversioned = true,
+            changedFilesMode = null,
+            maxFiles = null,
+        )
     }
 
     private fun withCurrentProject(
@@ -2016,7 +2133,7 @@ class InspectionHandler : HttpRequestHandler() {
         status["route"] = routeMetadata(project)
 
         val currentTime = System.currentTimeMillis()
-        val runState = inspectionRunStatesByProject[key]
+        val runState = effectiveInspectionRunState(key, inspectionRunStatesByProject[key], currentTime)
         val lastInspectionTriggerTime = runState?.triggerTimeMs ?: 0L
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
         status["inspection_triggered"] = lastInspectionTriggerTime > 0L
@@ -2040,19 +2157,21 @@ class InspectionHandler : HttpRequestHandler() {
         if (!staleness.stale) {
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
         }
-        val extractor = enhancedTreeExtractorFactory()
+        val scopedCleanProof = if (!hasInspectionSnapshot && runState != null && !runState.inProgress) {
+            buildScopedCleanProof(project, runState.captureScope)
+        } else {
+            null
+        }
         val problemsSnapshot = if (hasInspectionSnapshot) {
             snapshot?.problems ?: emptyList()
         } else {
-            try {
-                extractor.extractAllProblems(project)
-            } catch (_: Exception) { emptyList() }
+            scopedCleanProof?.problems ?: extractLiveProblems(project)
         }
         val captureIncomplete = snapshot?.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale
         val resultsAvailable = if (hasInspectionSnapshot) {
             snapshot?.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && !staleness.stale
         } else {
-            problemsSnapshot.isNotEmpty()
+            problemsSnapshot.isNotEmpty() || scopedCleanProof?.isClean == true
         }
         if (hasInspectionSnapshot && staleness.stale) {
             status["cached_total_problems"] = problemsSnapshot.size
@@ -2061,6 +2180,10 @@ class InspectionHandler : HttpRequestHandler() {
         }
         status["results_source"] = snapshot?.source ?: "tool_window"
         status["results_may_be_stale"] = hasInspectionSnapshot && staleness.stale
+        if (scopedCleanProof != null) {
+            status["scoped_clean_extraction_succeeded"] = scopedCleanProof.extractionSucceeded
+            status["scoped_clean_matcher_available"] = scopedCleanProof.scopedMatcherAvailable
+        }
         if (snapshot != null) {
             status["results_timestamp_ms"] = snapshot.timestamp
             status["snapshot_outcome"] = snapshot.outcome.apiValue
@@ -2089,7 +2212,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         val inspectionInProgress = runState?.inProgress == true
-        val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < 300000
+        val isLikelyStillRunning = inspectionInProgress && timeSinceLastTrigger < inspectionRunExpirationMs
 
         status["is_scanning"] = isIndexing || isLikelyStillRunning
         status["has_inspection_results"] = resultsAvailable
@@ -2098,6 +2221,9 @@ class InspectionHandler : HttpRequestHandler() {
         status["time_since_last_trigger_ms"] = timeSinceLastTrigger
         if (runState != null) {
             status["inspection_run_id"] = runState.runId
+            if (!runState.inProgress && timeSinceLastTrigger >= inspectionRunExpirationMs) {
+                status["inspection_run_expired"] = true
+            }
         }
         if (snapshot != null) {
             status["results_age_ms"] = (currentTime - snapshot.timestamp).coerceAtLeast(0L)
@@ -2111,13 +2237,65 @@ class InspectionHandler : HttpRequestHandler() {
             !isIndexing &&
                 !isLikelyStillRunning &&
                 !inspectionInProgress &&
-                snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
+                (snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED || scopedCleanProof?.isClean == true) &&
                 !staleness.stale
             )
         status["clean_inspection"] = cleanInspection
         addStatusInspectionVerdict(status)
 
         return status
+    }
+
+    private fun buildScopedCleanProof(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+    ): ScopedCleanProof? {
+        val requestedScope = captureScope?.scopeParam?.lowercase()?.trim()
+        val hasExplicitScopedProofLane = when (requestedScope) {
+            "files" -> !captureScope.files.isNullOrEmpty()
+            "directory" -> !captureScope.directoryParam.isNullOrBlank()
+            "current_file" -> !captureScope.resolvedCurrentFile.isNullOrBlank()
+            "changed_files" -> true
+            else -> !captureScope?.directoryParam.isNullOrBlank()
+        }
+        if (!hasExplicitScopedProofLane) {
+            return null
+        }
+        val scopeMatcher = captureScope?.let { scope ->
+            buildScopeProblemMatcher(
+                project = project,
+                scopeParam = scope.scopeParam,
+                directoryParam = scope.directoryParam,
+                files = scope.files,
+                resolvedCurrentFile = scope.resolvedCurrentFile,
+                includeUnversioned = scope.includeUnversioned,
+                changedFilesMode = scope.changedFilesMode,
+                maxFiles = scope.maxFiles,
+            )
+        }
+        val scopedMatcherAvailable = scopeMatcher != null
+        return try {
+            val extraction = enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
+            ScopedCleanProof(
+                problems = filterProblemsForScope(extraction.problems, scopeMatcher),
+                extractionSucceeded = extraction.succeeded,
+                scopedMatcherAvailable = scopedMatcherAvailable,
+            )
+        } catch (_: Exception) {
+            ScopedCleanProof(
+                problems = emptyList(),
+                extractionSucceeded = false,
+                scopedMatcherAvailable = scopedMatcherAvailable,
+            )
+        }
+    }
+
+    private fun extractLiveProblems(project: Project): List<Map<String, Any>> {
+        return try {
+            enhancedTreeExtractorFactory().extractAllProblems(project)
+        } catch (_: Exception) {
+            emptyList()
+        }
     }
 
     private fun reconcileSnapshotWithLiveProblems(
@@ -2192,11 +2370,13 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
-        if (compatibleLiveProblems != snapshot.problems) {
+        val compatibleSnapshotProblems = filterProblemsForScope(snapshot.problems, captureScopeMatcher)
+        if (compatibleLiveProblems != compatibleSnapshotProblems) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
 
         val reconciledSnapshot = snapshot.copy(
+            problems = compatibleSnapshotProblems,
             timestamp = System.currentTimeMillis(),
             projectState = captureProjectState(project),
         )
@@ -2266,6 +2446,7 @@ class InspectionHandler : HttpRequestHandler() {
         var stableSince: Long? = null
         var cleanStableSince: Long? = null
         var noResultsStableSince: Long? = null
+        var noResultsObservationCount = 0
         var status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
@@ -2326,13 +2507,16 @@ class InspectionHandler : HttpRequestHandler() {
             if (toolWindowNoResults) {
                 if (noResultsStableSince == null) {
                     noResultsStableSince = now
+                    noResultsObservationCount = 0
                 }
+                noResultsObservationCount += 1
                 if (noResultsWaitHasSettled(now, noResultsStableSince, timeSinceTrigger, minStableMs)) {
                     status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
                 }
             } else {
                 noResultsStableSince = null
+                noResultsObservationCount = 0
             }
 
             if (
@@ -2369,7 +2553,8 @@ class InspectionHandler : HttpRequestHandler() {
                     !inProgress &&
                     inspectionTriggered &&
                     timeSinceTrigger != null &&
-                    timeSinceTrigger >= 15000
+                    timeSinceTrigger >= 15000 &&
+                    noResultsObservationCount >= 2
                 ) {
                     status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
@@ -2597,35 +2782,10 @@ class InspectionHandler : HttpRequestHandler() {
     private fun triggerInspectionAsync(
         project: Project,
         runId: Long,
-        scopeParam: String? = null,
-        directoryParam: String? = null,
-        files: List<String>? = null,
-        includeUnversioned: Boolean = true,
-        changedFilesMode: String? = null,
-        maxFiles: Int? = null,
+        captureScope: InspectionCaptureScope,
         profileName: String? = null,
     ) {
         val key = projectKey(project)
-        val requestedCurrentFileScope = scopeParam?.lowercase()?.trim() == "current_file"
-        val resolvedCurrentFile = if (requestedCurrentFileScope) {
-            resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
-        } else {
-            null
-        }
-        val captureScopeParam = if (requestedCurrentFileScope && resolvedCurrentFile == null) {
-            null
-        } else {
-            scopeParam
-        }
-        val captureScope = InspectionCaptureScope(
-            scopeParam = captureScopeParam,
-            directoryParam = directoryParam,
-            files = files,
-            resolvedCurrentFile = resolvedCurrentFile,
-            includeUnversioned = includeUnversioned,
-            changedFilesMode = changedFilesMode,
-            maxFiles = maxFiles,
-        )
         var captureScheduled = false
         try {
             if (!isCurrentInspectionRun(key, runId)) {
@@ -2684,12 +2844,12 @@ class InspectionHandler : HttpRequestHandler() {
                 return
             }
 
-            val changedFilesScopeFiles = if (scopeParam?.lowercase()?.trim() == "changed_files") {
+            val changedFilesScopeFiles = if (captureScope.scopeParam?.lowercase()?.trim() == "changed_files") {
                 resolveChangedFilesScopeFiles(
                     project = project,
-                    includeUnversioned = includeUnversioned,
-                    changedFilesMode = changedFilesMode,
-                    maxFiles = maxFiles,
+                    includeUnversioned = captureScope.includeUnversioned,
+                    changedFilesMode = captureScope.changedFilesMode,
+                    maxFiles = captureScope.maxFiles,
                 )
             } else {
                 null
@@ -2714,21 +2874,21 @@ class InspectionHandler : HttpRequestHandler() {
 
             val scope: AnalysisScope = buildAnalysisScope(
                 project = project,
-                scopeParam = scopeParam,
-                directoryParam = directoryParam,
-                files = files,
-                resolvedCurrentFile = resolvedCurrentFile,
-                includeUnversioned = includeUnversioned,
-                changedFilesMode = changedFilesMode,
-                maxFiles = maxFiles,
+                scopeParam = captureScope.scopeParam,
+                directoryParam = captureScope.directoryParam,
+                files = captureScope.files,
+                resolvedCurrentFile = captureScope.resolvedCurrentFile,
+                includeUnversioned = captureScope.includeUnversioned,
+                changedFilesMode = captureScope.changedFilesMode,
+                maxFiles = captureScope.maxFiles,
                 resolvedChangedFiles = changedFilesScopeFiles,
             )
             val scopeDiagnostics = inspectCaptureScopeFiles(
                 project = project,
-                scopeParam = scopeParam,
-                directoryParam = directoryParam,
-                files = files,
-                resolvedCurrentFile = resolvedCurrentFile,
+                scopeParam = captureScope.scopeParam,
+                directoryParam = captureScope.directoryParam,
+                files = captureScope.files,
+                resolvedCurrentFile = captureScope.resolvedCurrentFile,
                 resolvedChangedFiles = changedFilesScopeFiles,
             ) + mapOf(
                 "dumb_after_sync" to dumbAfterSync,
@@ -2736,13 +2896,13 @@ class InspectionHandler : HttpRequestHandler() {
             )
             val scopeProblemMatcher = buildScopeProblemMatcher(
                 project = project,
-                scopeParam = scopeParam,
-                directoryParam = directoryParam,
-                files = files,
-                resolvedCurrentFile = resolvedCurrentFile,
-                includeUnversioned = includeUnversioned,
-                changedFilesMode = changedFilesMode,
-                maxFiles = maxFiles,
+                scopeParam = captureScope.scopeParam,
+                directoryParam = captureScope.directoryParam,
+                files = captureScope.files,
+                resolvedCurrentFile = captureScope.resolvedCurrentFile,
+                includeUnversioned = captureScope.includeUnversioned,
+                changedFilesMode = captureScope.changedFilesMode,
+                maxFiles = captureScope.maxFiles,
                 resolvedChangedFiles = changedFilesScopeFiles,
             )
             
@@ -2805,10 +2965,10 @@ class InspectionHandler : HttpRequestHandler() {
                         val contextExtraction = try {
                             val fallbackScopeFiles = scopedPsiFilesForInspectionEngine(
                                 project,
-                                scopeParam,
-                                directoryParam,
-                                files,
-                                resolvedCurrentFile,
+                                captureScope.scopeParam,
+                                captureScope.directoryParam,
+                                captureScope.files,
+                                captureScope.resolvedCurrentFile,
                                 resolvedChangedFiles = changedFilesScopeFiles,
                                 scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
                                 ideProductCode = ideProductCode,
@@ -2876,16 +3036,16 @@ class InspectionHandler : HttpRequestHandler() {
                             readableEmptyInspectionViewObservationCount = 0
                         }
 
-                        fun extractFromViewSafe(view: InspectionResultsView): List<Map<String, Any>> {
+                        fun extractFromViewSafe(view: InspectionResultsView): ProblemExtractionResult {
                             val app = ApplicationManager.getApplication()
                             if (app.isDispatchThread) {
-                                return extractor.extractAllProblemsFromInspectionView(view, project)
+                                return extractor.extractAllProblemsFromInspectionViewWithStatus(view, project)
                             }
-                            val holder = AtomicReference<List<Map<String, Any>>>()
+                            val holder = AtomicReference<ProblemExtractionResult>()
                             app.invokeAndWait {
-                                holder.set(extractor.extractAllProblemsFromInspectionView(view, project))
+                                holder.set(extractor.extractAllProblemsFromInspectionViewWithStatus(view, project))
                             }
-                            return holder.get() ?: emptyList()
+                            return holder.get() ?: ProblemExtractionResult(emptyList(), succeeded = false)
                         }
 
                         fun inspectViewStateSafe(view: InspectionResultsView): InspectionViewObservation {
@@ -3045,8 +3205,12 @@ class InspectionHandler : HttpRequestHandler() {
                                     }
                                 }
                                 val attempt = try {
-                                    extractFromViewSafe(view)
-                                        .also { viewExtractionSucceeded = true }
+                                    val extraction = extractFromViewSafe(view)
+                                    viewExtractionSucceeded = extraction.succeeded
+                                    if (!extraction.succeeded) {
+                                        extractionFailureCount += 1
+                                    }
+                                    extraction.problems
                                 } catch (e: Exception) {
                                     rethrowIfCanceled(e)
                                     extractionFailureCount += 1
@@ -3064,11 +3228,14 @@ class InspectionHandler : HttpRequestHandler() {
 
                             var toolExtractionSucceeded = false
                             val toolResults = try {
-                                ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
-                                    extractor.extractAllProblems(project)
-                                }.also {
-                                    toolExtractionSucceeded = true
+                                val extraction = ApplicationManager.getApplication().runReadAction<ProblemExtractionResult, Exception> {
+                                    extractor.extractAllProblemsWithStatus(project)
                                 }
+                                toolExtractionSucceeded = extraction.succeeded
+                                if (!extraction.succeeded) {
+                                    extractionFailureCount += 1
+                                }
+                                extraction.problems
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
                                 extractionFailureCount += 1
@@ -3462,11 +3629,24 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun beginInspectionRun(project: Project, captureScope: InspectionCaptureScope): InspectionRunState {
+        val runState = InspectionRunState(
+            runId = runIdSequence.incrementAndGet(),
+            triggerTimeMs = System.currentTimeMillis(),
+            inProgress = true,
+            captureScope = captureScope,
+        )
+        inspectionRunStatesByProject[projectKey(project)] = runState
+        return runState
+    }
+
+    @Suppress("unused")
     private fun beginInspectionRun(project: Project): InspectionRunState {
         val runState = InspectionRunState(
             runId = runIdSequence.incrementAndGet(),
             triggerTimeMs = System.currentTimeMillis(),
             inProgress = true,
+            captureScope = null,
         )
         inspectionRunStatesByProject[projectKey(project)] = runState
         return runState
@@ -3488,6 +3668,24 @@ class InspectionHandler : HttpRequestHandler() {
                 state
             }
         }
+    }
+
+    private fun effectiveInspectionRunState(
+        key: String,
+        runState: InspectionRunState?,
+        currentTimeMs: Long,
+    ): InspectionRunState? {
+        if (runState?.inProgress != true) {
+            return runState
+        }
+        if (currentTimeMs - runState.triggerTimeMs < inspectionRunExpirationMs) {
+            return runState
+        }
+        val expiredRunState = runState.copy(inProgress = false)
+        inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
+            if (state.runId == runState.runId) expiredRunState else state
+        }
+        return inspectionRunStatesByProject[key] ?: expiredRunState
     }
 
     private fun publishCaptureFailureIfCurrent(
@@ -4098,21 +4296,21 @@ class InspectionHandler : HttpRequestHandler() {
     private fun bestPathMatchScore(selectorPath: String?, projectPaths: List<String>): Int? {
         val normalizedSelector = normalizeProjectPath(selectorPath) ?: return null
         return projectPaths.maxOfOrNull { projectPath ->
-            pathMatchScore(normalizedSelector, projectPath) ?: 0
+            pathMatchScore(normalizedSelector, projectPath)
         }?.takeIf { it > 0 }
     }
 
-    private fun pathMatchScore(selectorPath: String, projectPath: String): Int? {
-        val normalizedProjectPath = normalizeProjectPath(projectPath) ?: return null
+    private fun pathMatchScore(selectorPath: String, projectPath: String): Int {
+        val normalizedProjectPath = normalizeProjectPath(projectPath) ?: return 0
         return runCatching {
             val selector = Paths.get(selectorPath).normalize().toAbsolutePath()
             val project = Paths.get(normalizedProjectPath).normalize().toAbsolutePath()
             when {
                 selector == project -> 2_000_000 + project.toString().length
                 selector.startsWith(project) -> 1_000_000 + project.toString().length
-                else -> null
+                else -> 0
             }
-        }.getOrNull()
+        }.getOrDefault(0)
     }
 
     private fun pathMatchesProject(selectorPath: String, projectPath: String): Boolean {
@@ -4210,10 +4408,9 @@ class InspectionHandler : HttpRequestHandler() {
         }
         if (app.isDispatchThread) {
             return presentationExtraction.copy(
-                targetToolStates = markFallbackSkipped(
+                targetToolStates = markInspectionEngineSkippedOnEdt(
                     presentationExtraction.targetToolStates,
                     targetToolShortNames,
-                    "inspection_engine_skipped_on_edt",
                 ),
             )
         }
@@ -4429,17 +4626,19 @@ class InspectionHandler : HttpRequestHandler() {
         ).joinToString("|")
     }
 
-    private fun markFallbackSkipped(
+    private fun markInspectionEngineSkippedOnEdt(
         states: List<Map<String, Any?>>,
         targetToolShortNames: Set<String>,
-        reason: String,
     ): List<Map<String, Any?>> {
+        val reason = "inspection_engine_skipped_on_edt"
         val mutableStates = states.associate { state ->
             val mutableState = state.toMutableMap()
             mutableState["short_name"]?.toString().orEmpty() to mutableState
         }.filterKeys { it.isNotEmpty() }.toMutableMap()
         for (shortName in targetToolShortNames) {
-            mutableStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }["inspection_engine_skip_reason"] = reason
+            val state = mutableStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }
+            state["inspection_engine_skip_reason"] = reason
+            state["inspection_engine_state"] = "skipped:$reason"
         }
         return mutableStates.values.map { it.toMap() }
     }
@@ -4541,7 +4740,7 @@ class InspectionHandler : HttpRequestHandler() {
                     object : com.intellij.openapi.vfs.VirtualFileVisitor<Any>() {
                         override fun visitFile(file: VirtualFile): Boolean {
                             collectFile(file)
-                            return true
+                            return file.isDirectory || !shouldRunRedLaneFallbackOnFile(file, ideProductCode)
                         }
                     },
                 )
