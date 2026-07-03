@@ -33,6 +33,17 @@ internal data class ProblemExtractionResult(
 
 class EnhancedTreeExtractor {
 
+    private data class InspectionToolWindowSearch(
+        val toolWindows: List<ToolWindow>,
+        val succeeded: Boolean,
+    )
+
+    private enum class InspectionToolWindowState {
+        HAS_RESULTS_VIEW,
+        EMPTY,
+        UNREADABLE,
+    }
+
     private companion object {
         private val noMethod = Any()
         private val zeroArgMethodCache = ConcurrentHashMap<Class<*>, ConcurrentHashMap<String, Any>>()
@@ -84,7 +95,9 @@ class EnhancedTreeExtractor {
 
             val seen = LinkedHashSet<String>()
 
-            val inspectionWindows = findToolWindowsContainingInspectionResults(toolWindowManager)
+            val inspectionSearch = findToolWindowsContainingInspectionResults(toolWindowManager)
+            succeeded = inspectionSearch.succeeded && succeeded
+            val inspectionWindows = inspectionSearch.toolWindows
             if (inspectionWindows.isNotEmpty()) {
                 for (tw in inspectionWindows) {
                     succeeded = extractFromToolWindow(tw, problems, project, seen) && succeeded
@@ -108,7 +121,7 @@ class EnhancedTreeExtractor {
         return ProblemExtractionResult(problems, succeeded)
     }
 
-    private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): List<ToolWindow> {
+    private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): InspectionToolWindowSearch {
         val ids = try {
             toolWindowManager.toolWindowIds.toList()
         } catch (_: Exception) {
@@ -116,33 +129,48 @@ class EnhancedTreeExtractor {
         }
         if (ids.isEmpty()) {
             val direct = toolWindowManager.getToolWindow(inspectionResultsToolWindowIds.first())
-            return if (direct != null) listOf(direct) else emptyList()
+            if (direct == null) {
+                return InspectionToolWindowSearch(emptyList(), succeeded = true)
+            }
+            val state = inspectToolWindowForResults(direct)
+            return InspectionToolWindowSearch(
+                toolWindows = if (state == InspectionToolWindowState.HAS_RESULTS_VIEW) listOf(direct) else emptyList(),
+                succeeded = state != InspectionToolWindowState.UNREADABLE,
+            )
         }
 
         val matches = mutableListOf<ToolWindow>()
+        var succeeded = true
         for (id in ids) {
             val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
-            if (toolWindowHasInspectionResults(toolWindow)) {
+            val state = inspectToolWindowForResults(toolWindow)
+            if (state == InspectionToolWindowState.HAS_RESULTS_VIEW) {
                 matches.add(toolWindow)
+            } else if (id in inspectionResultsToolWindowIds && state == InspectionToolWindowState.UNREADABLE) {
+                succeeded = false
             }
         }
-        return matches
+        return InspectionToolWindowSearch(matches, succeeded)
     }
 
     private fun toolWindowHasInspectionResults(toolWindow: ToolWindow): Boolean {
+        return inspectToolWindowForResults(toolWindow) == InspectionToolWindowState.HAS_RESULTS_VIEW
+    }
+
+    private fun inspectToolWindowForResults(toolWindow: ToolWindow): InspectionToolWindowState {
         try {
-            val contentManager = getContentManager(toolWindow) ?: return false
+            val contentManager = getContentManager(toolWindow) ?: return InspectionToolWindowState.UNREADABLE
             for (i in 0 until contentManager.contentCount) {
                 val content = contentManager.getContent(i) ?: continue
                 val component = content.component
                 if (findInspectionResultsView(component) != null) {
-                    return true
+                    return InspectionToolWindowState.HAS_RESULTS_VIEW
                 }
             }
         } catch (_: Exception) {
-            return false
+            return InspectionToolWindowState.UNREADABLE
         }
-        return false
+        return InspectionToolWindowState.EMPTY
     }
 
     private fun extractFromToolWindow(
@@ -151,7 +179,7 @@ class EnhancedTreeExtractor {
         project: Project,
         seen: MutableSet<String>,
     ): Boolean {
-        val contentManager = getContentManager(toolWindow) ?: return true
+        val contentManager = getContentManager(toolWindow) ?: return false
         var succeeded = true
         return try {
             for (i in 0 until contentManager.contentCount) {
@@ -262,7 +290,7 @@ class EnhancedTreeExtractor {
         project: Project,
     ): Boolean {
         return try {
-            val tree = inspectionResultsTree(view) ?: return true
+            val tree = inspectionResultsTree(view) ?: return false
             extractProblemsFromTree(tree, problems, project)
         } catch (e: Exception) {
             false
