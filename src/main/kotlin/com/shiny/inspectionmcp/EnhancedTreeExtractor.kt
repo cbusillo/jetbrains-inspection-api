@@ -138,12 +138,13 @@ class EnhancedTreeExtractor {
             val state = inspectToolWindowForResults(direct)
             return InspectionToolWindowSearch(
                 toolWindows = if (state.isExtractable) listOf(direct) else emptyList(),
-                succeeded = enumeratedIds && state != InspectionToolWindowState.UNREADABLE,
+                succeeded = state != InspectionToolWindowState.UNREADABLE && (enumeratedIds || state.isExtractable),
             )
         }
 
         val matches = mutableListOf<ToolWindow>()
-        var succeeded = true
+        var foundExtractableInspectionWindow = false
+        var foundUnreadableKnownInspectionWindow = false
         for (id in ids) {
             val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
             val state = inspectToolWindowForResults(toolWindow)
@@ -152,11 +153,17 @@ class EnhancedTreeExtractor {
                 (isKnownInspectionWindow && (state == InspectionToolWindowState.HAS_TREE || state == InspectionToolWindowState.EMPTY))
             ) {
                 matches.add(toolWindow)
+                if (state.isExtractable) {
+                    foundExtractableInspectionWindow = true
+                }
             } else if (isKnownInspectionWindow && state == InspectionToolWindowState.UNREADABLE) {
-                succeeded = false
+                foundUnreadableKnownInspectionWindow = true
             }
         }
-        return InspectionToolWindowSearch(matches, succeeded)
+        return InspectionToolWindowSearch(
+            matches,
+            succeeded = foundExtractableInspectionWindow || !foundUnreadableKnownInspectionWindow,
+        )
     }
 
     private fun inspectToolWindowForResults(toolWindow: ToolWindow): InspectionToolWindowState {

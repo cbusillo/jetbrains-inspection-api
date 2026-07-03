@@ -208,6 +208,151 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should preserve successful status when direct inspection fallback works after ID enumeration fails")
+    fun testExtractionStatusPreservesSuccessWhenDirectFallbackWorksAfterEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("Should fail status when ID enumeration fails and direct inspection window is empty")
+    fun testExtractionStatusFailsWhenDirectFallbackAfterEnumerationFailureIsEmpty() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        every { inspectionContent.component } returns JPanel()
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should not fail status when another inspection window extracts valid results")
+    fun testExtractionStatusIgnoresUnreadableStaleWindowWhenReadableInspectionWindowHasResults() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val unreadableWindow = mockk<ToolWindow>()
+        val readableWindow = mockk<ToolWindow>()
+        val readableContentManager = mockk<ContentManager>()
+        val readableContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Inspections")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns unreadableWindow
+        every { toolWindowManager.getToolWindow("Inspections") } returns readableWindow
+
+        every { unreadableWindow.contentManager } throws IllegalStateException("stale content manager")
+        every { readableWindow.contentManager } returns readableContentManager
+        every { readableContentManager.contentCount } returns 1
+        every { readableContentManager.getContent(0) } returns readableContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { readableContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("Should fail status when unreadable inspection window only has an empty candidate beside it")
+    fun testExtractionStatusFailsWhenUnreadableWindowOnlyHasEmptyCandidate() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val unreadableWindow = mockk<ToolWindow>()
+        val emptyWindow = mockk<ToolWindow>()
+        val emptyContentManager = mockk<ContentManager>()
+        val emptyContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Inspections")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns unreadableWindow
+        every { toolWindowManager.getToolWindow("Inspections") } returns emptyWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+
+        every { unreadableWindow.contentManager } throws IllegalStateException("stale content manager")
+        every { emptyWindow.contentManager } returns emptyContentManager
+        every { emptyContentManager.contentCount } returns 1
+        every { emptyContentManager.getContent(0) } returns emptyContent
+        every { emptyContent.component } returns JPanel()
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should keep tree-only inspection result windows in status extraction")
     fun testExtractionStatusKeepsTreeOnlyInspectionWindow() {
         val app = mockk<Application>()
