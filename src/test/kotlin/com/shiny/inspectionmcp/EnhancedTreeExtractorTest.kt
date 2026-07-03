@@ -183,6 +183,31 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should report unsuccessful status when tool window IDs cannot be enumerated")
+    fun testExtractionStatusReportsToolWindowEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns false
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns null
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should keep tree-only inspection result windows in status extraction")
     fun testExtractionStatusKeepsTreeOnlyInspectionWindow() {
         val app = mockk<Application>()
@@ -211,6 +236,44 @@ class EnhancedTreeExtractorTest {
         val panel = JPanel()
         panel.add(JTree(root))
         every { inspectionContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+        assertEquals("FallbackInspection", result.problems[0]["inspectionType"])
+    }
+
+    @Test
+    @DisplayName("Should keep tree-only Inspections tool windows in status extraction")
+    fun testExtractionStatusKeepsTreeOnlyInspectionsWindow() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionsWindow = mockk<ToolWindow>()
+        val inspectionsContentManager = mockk<ContentManager>()
+        val inspectionsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspections")
+        every { toolWindowManager.getToolWindow("Inspections") } returns inspectionsWindow
+
+        every { inspectionsWindow.contentManager } returns inspectionsContentManager
+        every { inspectionsContentManager.contentCount } returns 1
+        every { inspectionsContentManager.getContent(0) } returns inspectionsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionsContent.component } returns panel
 
         val result = extractor.extractAllProblemsWithStatus(project)
 
