@@ -123,20 +123,22 @@ class EnhancedTreeExtractor {
     }
 
     private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): InspectionToolWindowSearch {
+        var enumeratedIds = true
         val ids = try {
             toolWindowManager.toolWindowIds.toList()
         } catch (_: Exception) {
+            enumeratedIds = false
             emptyList()
         }
         if (ids.isEmpty()) {
             val direct = toolWindowManager.getToolWindow(inspectionResultsToolWindowIds.first())
             if (direct == null) {
-                return InspectionToolWindowSearch(emptyList(), succeeded = true)
+                return InspectionToolWindowSearch(emptyList(), succeeded = enumeratedIds)
             }
             val state = inspectToolWindowForResults(direct)
             return InspectionToolWindowSearch(
                 toolWindows = if (state.isExtractable) listOf(direct) else emptyList(),
-                succeeded = state != InspectionToolWindowState.UNREADABLE,
+                succeeded = enumeratedIds && state != InspectionToolWindowState.UNREADABLE,
             )
         }
 

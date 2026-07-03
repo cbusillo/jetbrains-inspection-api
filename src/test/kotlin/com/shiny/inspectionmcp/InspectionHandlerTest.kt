@@ -2270,6 +2270,7 @@ class InspectionHandlerTest {
         every { toolWindowManager.getToolWindow("Inspection Results") } returns toolWindow
         every { toolWindowManager.getToolWindow("Problems View") } returns null
         every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
         every { toolWindow.contentManager } returns contentManager
         every { contentManager.contentCount } returns 3
         every { contentManager.getContent(2) } returns otherContent
