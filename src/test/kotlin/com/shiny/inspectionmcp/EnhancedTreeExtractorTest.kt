@@ -141,6 +141,48 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should report unsuccessful status when inspection view has no readable tree")
+    fun testExtractionStatusReportsMissingInspectionTree() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+
+        every { inspectionView.tree } throws IllegalStateException("tree unavailable")
+        every { inspectionView.components } returns emptyArray()
+
+        val result = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should report unsuccessful status when tool window content manager is unavailable")
+    fun testExtractionStatusReportsUnavailableContentManager() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns false
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+        every { inspectionWindow.contentManager } throws IllegalStateException("content manager unavailable")
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should fall back to Problems view when Inspection Results are empty")
     fun testFallsBackToProblemsViewWhenInspectionResultsAreEmpty() {
         val app = mockk<Application>()
