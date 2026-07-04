@@ -565,9 +565,11 @@ class EnhancedTreeExtractorTest {
 
         mockkStatic(ToolWindowManager::class)
         every { ToolWindowManager.getInstance(project) } returns toolWindowManager
-        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Problems View")
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results")
         every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
         every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
 
         every { inspectionWindow.contentManager } returns inspectionContentManager
         every { inspectionContentManager.contentCount } returns 1
@@ -587,6 +589,59 @@ class EnhancedTreeExtractorTest {
 
         assertTrue(result.succeeded)
         assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should keep probing Problems fallback when primary inspection result is empty")
+    fun testExtractionStatusChecksProblemsFallbackAfterEmptyPrimaryInspectionResult() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val problemsWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val problemsContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val problemsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        val cleanRoot = DefaultMutableTreeNode("Inspection Results")
+        cleanRoot.add(DefaultMutableTreeNode("empty"))
+        val cleanPanel = JPanel()
+        cleanPanel.add(JTree(cleanRoot))
+        every { inspectionContent.component } returns cleanPanel
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { problemsContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+        assertEquals("problems_view", result.problems[0]["source"])
     }
 
     @Test

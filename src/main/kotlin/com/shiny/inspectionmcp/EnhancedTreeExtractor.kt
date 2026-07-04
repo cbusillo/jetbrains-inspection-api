@@ -110,6 +110,7 @@ class EnhancedTreeExtractor {
             val inspectionSearch = findToolWindowsContainingInspectionResults(toolWindowManager)
             succeeded = inspectionSearch.succeeded && succeeded
             val inspectionWindows = inspectionSearch.toolWindows
+            var primaryEmptySurfaceSucceeded: Boolean? = null
             if (inspectionWindows.isNotEmpty()) {
                 var extractedProblems = false
                 var extractedResultsSurface = false
@@ -126,21 +127,33 @@ class EnhancedTreeExtractor {
                     extractedResultsSurface = extractedResultsSurface || extraction.sawResultsSurface
                     succeeded = extraction.succeeded && succeeded
                 }
-                if (problems.isNotEmpty() || extractedResultsSurface) {
+                if (problems.isNotEmpty()) {
                     return ProblemExtractionResult(problems, succeeded || extractedProblems)
+                }
+                if (extractedResultsSurface) {
+                    primaryEmptySurfaceSucceeded = succeeded || extractedProblems
                 }
             }
 
             // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
             for (name in inspectionFallbackToolWindowIds) {
-                val fallback = toolWindowManager.getToolWindow(name) ?: continue
+                val fallback = try {
+                    toolWindowManager.getToolWindow(name)
+                } catch (_: Exception) {
+                    null
+                } ?: continue
                 val beforeFallback = problems.size
                 val extraction = extractFromToolWindow(fallback, problems, project, seen, acceptEmptyTreeSurface = false)
                 if (extraction.addedProblems || problems.size > beforeFallback) {
                     succeeded = extraction.succeeded
                     break
                 }
-                succeeded = false
+                if (primaryEmptySurfaceSucceeded == null && !extraction.sawResultsSurface) {
+                    succeeded = false
+                }
+            }
+            if (problems.isEmpty() && primaryEmptySurfaceSucceeded != null) {
+                succeeded = primaryEmptySurfaceSucceeded
             }
             
         } catch (e: Exception) {
