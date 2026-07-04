@@ -258,6 +258,9 @@ class EnhancedTreeExtractorTest {
         every { ToolWindowManager.getInstance(project) } returns toolWindowManager
         every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
         every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
 
         every { inspectionWindow.contentManager } returns inspectionContentManager
         every { inspectionContentManager.contentCount } returns 1
@@ -268,6 +271,136 @@ class EnhancedTreeExtractorTest {
         val panel = JPanel()
         panel.add(JTree(root))
         every { inspectionContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("Should probe all known inspection windows when ID enumeration fails")
+    fun testExtractionStatusProbesInspectionsDirectFallbackAfterEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionsWindow = mockk<ToolWindow>()
+        val inspectionsContentManager = mockk<ContentManager>()
+        val inspectionsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns null
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns inspectionsWindow
+
+        every { inspectionsWindow.contentManager } returns inspectionsContentManager
+        every { inspectionsContentManager.contentCount } returns 1
+        every { inspectionsContentManager.getContent(0) } returns inspectionsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionsContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("Should skip blank direct fallback windows when a later inspection window is extractable")
+    fun testExtractionStatusSkipsBlankDirectFallbackAfterEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val blankWindow = mockk<ToolWindow>()
+        val blankContentManager = mockk<ContentManager>()
+        val blankContent = mockk<Content>()
+        val inspectionsWindow = mockk<ToolWindow>()
+        val inspectionsContentManager = mockk<ContentManager>()
+        val inspectionsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns blankWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns inspectionsWindow
+
+        every { blankWindow.contentManager } returns blankContentManager
+        every { blankContentManager.contentCount } returns 1
+        every { blankContentManager.getContent(0) } returns blankContent
+        every { blankContent.component } returns JPanel()
+
+        every { inspectionsWindow.contentManager } returns inspectionsContentManager
+        every { inspectionsContentManager.contentCount } returns 1
+        every { inspectionsContentManager.getContent(0) } returns inspectionsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionsContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("Should skip unreadable direct fallback windows when a later inspection window is extractable")
+    fun testExtractionStatusSkipsUnreadableDirectFallbackAfterEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val unreadableWindow = mockk<ToolWindow>()
+        val inspectionsWindow = mockk<ToolWindow>()
+        val inspectionsContentManager = mockk<ContentManager>()
+        val inspectionsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns unreadableWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns null
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns inspectionsWindow
+
+        every { unreadableWindow.contentManager } throws IllegalStateException("content manager unavailable")
+        every { inspectionsWindow.contentManager } returns inspectionsContentManager
+        every { inspectionsContentManager.contentCount } returns 1
+        every { inspectionsContentManager.getContent(0) } returns inspectionsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { inspectionsContent.component } returns panel
 
         val result = extractor.extractAllProblemsWithStatus(project)
 
@@ -329,6 +462,8 @@ class EnhancedTreeExtractorTest {
         every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
         every { toolWindowManager.getToolWindow("Inspection Results") } returns null
         every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
 
         every { problemsWindow.contentManager } returns problemsContentManager
         every { problemsContentManager.contentCount } returns 1
@@ -372,6 +507,115 @@ class EnhancedTreeExtractorTest {
         every { problemsContentManager.contentCount } returns 1
         every { problemsContentManager.getContent(0) } returns problemsContent
         every { problemsContent.component } returns JPanel()
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should not report successful fallback extraction for blank Problems shell")
+    fun testExtractionStatusFailsWhenFallbackProblemsShellIsBlank() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val problemsWindow = mockk<ToolWindow>()
+        val problemsContentManager = mockk<ContentManager>()
+        val problemsContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Problems View")
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { problemsContent.component } returns JPanel()
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should keep clean primary inspection result successful when fallback shell is blank")
+    fun testExtractionStatusCleanPrimaryResultIsNotPoisonedByBlankFallback() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val inspectionWindow = mockk<ToolWindow>()
+        val problemsWindow = mockk<ToolWindow>()
+        val inspectionContentManager = mockk<ContentManager>()
+        val problemsContentManager = mockk<ContentManager>()
+        val inspectionContent = mockk<Content>()
+        val problemsContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Inspection Results", "Problems View")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns inspectionWindow
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+
+        every { inspectionWindow.contentManager } returns inspectionContentManager
+        every { inspectionContentManager.contentCount } returns 1
+        every { inspectionContentManager.getContent(0) } returns inspectionContent
+        val cleanRoot = DefaultMutableTreeNode("Inspection Results")
+        cleanRoot.add(DefaultMutableTreeNode("empty"))
+        val cleanPanel = JPanel()
+        cleanPanel.add(JTree(cleanRoot))
+        every { inspectionContent.component } returns cleanPanel
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { problemsContent.component } returns JPanel()
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should not report successful fallback extraction for empty Problems tree")
+    fun testExtractionStatusFailsWhenFallbackProblemsTreeIsEmpty() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val problemsWindow = mockk<ToolWindow>()
+        val problemsContentManager = mockk<ContentManager>()
+        val problemsContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } returns arrayOf("Problems View")
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+        every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        val emptyPanel = JPanel()
+        emptyPanel.add(JTree(DefaultMutableTreeNode("root")))
+        every { problemsContent.component } returns emptyPanel
 
         val result = extractor.extractAllProblemsWithStatus(project)
 
