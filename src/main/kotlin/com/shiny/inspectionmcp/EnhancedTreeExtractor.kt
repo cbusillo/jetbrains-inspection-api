@@ -113,7 +113,9 @@ class EnhancedTreeExtractor {
                 toolWindowManager.getToolWindow(name)
             }
                 ?: return ProblemExtractionResult(problems, succeeded)
-            succeeded = extractFromToolWindow(fallback, problems, project, seen) && succeeded
+            val beforeFallback = problems.size
+            val fallbackSucceeded = extractFromToolWindow(fallback, problems, project, seen)
+            succeeded = fallbackSucceeded && (succeeded || problems.size > beforeFallback)
             
         } catch (e: Exception) {
             succeeded = false
