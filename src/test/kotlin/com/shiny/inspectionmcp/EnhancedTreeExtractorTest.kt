@@ -278,6 +278,76 @@ class EnhancedTreeExtractorTest {
     }
 
     @Test
+    @DisplayName("Should preserve successful status when Problems fallback extracts findings after ID enumeration fails")
+    fun testExtractionStatusPreservesSuccessWhenProblemsFallbackWorksAfterEnumerationFailure() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val problemsWindow = mockk<ToolWindow>()
+        val problemsContentManager = mockk<ContentManager>()
+        val problemsContent = mockk<Content>()
+        val virtualFile = mockk<VirtualFile>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns null
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { virtualFile.path } returns "/tmp/project/App.kt"
+        val root = DefaultMutableTreeNode("root")
+        root.add(DefaultMutableTreeNode(FallbackProblem(virtualFile)))
+        val panel = JPanel()
+        panel.add(JTree(root))
+        every { problemsContent.component } returns panel
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertTrue(result.succeeded)
+        assertEquals(1, result.problems.size)
+        assertEquals("Fallback warning", result.problems[0]["description"])
+        assertEquals("problems_view", result.problems[0]["source"])
+    }
+
+    @Test
+    @DisplayName("Should keep failed status when Problems fallback is empty after ID enumeration fails")
+    fun testExtractionStatusKeepsFailureWhenProblemsFallbackAfterEnumerationFailureIsEmpty() {
+        val app = mockk<Application>()
+        val project = mockk<Project>(relaxed = true)
+        val toolWindowManager = mockk<ToolWindowManager>()
+        val problemsWindow = mockk<ToolWindow>()
+        val problemsContentManager = mockk<ContentManager>()
+        val problemsContent = mockk<Content>()
+
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns app
+        every { app.isDispatchThread } returns true
+
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(project) } returns toolWindowManager
+        every { toolWindowManager.toolWindowIds } throws IllegalStateException("tool windows unavailable")
+        every { toolWindowManager.getToolWindow("Inspection Results") } returns null
+        every { toolWindowManager.getToolWindow("Problems View") } returns problemsWindow
+
+        every { problemsWindow.contentManager } returns problemsContentManager
+        every { problemsContentManager.contentCount } returns 1
+        every { problemsContentManager.getContent(0) } returns problemsContent
+        every { problemsContent.component } returns JPanel()
+
+        val result = extractor.extractAllProblemsWithStatus(project)
+
+        assertFalse(result.succeeded)
+        assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
     @DisplayName("Should not fail status when another inspection window extracts valid results")
     fun testExtractionStatusIgnoresUnreadableStaleWindowWhenReadableInspectionWindowHasResults() {
         val app = mockk<Application>()
