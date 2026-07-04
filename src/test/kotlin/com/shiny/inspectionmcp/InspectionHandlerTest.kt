@@ -62,6 +62,8 @@ class InspectionHandlerTest {
     fun setup() {
         handler = InspectionHandler()
         handler.trustProjectPath = {}
+        handler.inspectionRunExpirationMs = 300000L
+        enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
         mockProject = mockk<Project>()
         mockProjectManager = mockk<ProjectManager>()
@@ -408,6 +410,237 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test problems endpoint applies requested files scope to cached snapshot`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Included.kt",
+                        "line" to 1,
+                        "column" to 1,
+                        "severity" to "warning",
+                        "inspectionType" to "Included",
+                        "description" to "included problem",
+                    ),
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Excluded.kt",
+                        "line" to 1,
+                        "column" to 1,
+                        "severity" to "warning",
+                        "inspectionType" to "Excluded",
+                        "description" to "excluded problem",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                runId = 1L,
+            )
+        )
+
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "getInspectionProblems",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            List::class.java,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaObjectType,
+        )
+        method.isAccessible = true
+        val body = method.invoke(
+            handler,
+            mockProject,
+            "all",
+            "files",
+            null,
+            null,
+            100,
+            0,
+            false,
+            null,
+            listOf("src/Included.kt"),
+            true,
+            null,
+            null,
+        ) as String
+
+        assertTrue(body.contains("\"total_problems\": 1"))
+        assertTrue(body.contains("included problem"))
+        assertFalse(body.contains("excluded problem"))
+        assertTrue(body.contains("\"scope\": \"files\""))
+        assertTrue(body.contains("\"files_requested\": 1"))
+    }
+
+    @Test
+    fun `test problems endpoint does not refresh project state before reading snapshot`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Included.kt",
+                        "severity" to "warning",
+                        "description" to "included problem",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                runId = 1L,
+            )
+        )
+
+        val response = processGetRequest("/api/inspection/problems?scope=files&file=src/Included.kt")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"results_available\""))
+        assertFalse(body.contains("\"status\": \"stale_results\""))
+        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+    }
+
+    @Test
+    fun `test same run non-empty snapshot survives psi churn`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        setInspectionRunState(projectKey(mockProject), InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false))
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "included problem",
+            ),
+            mapOf(
+                "file" to "/tmp/TestProject/src/Excluded.kt",
+                "severity" to "warning",
+                "description" to "excluded problem",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = snapshotProblems,
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                captureScope = InspectionCaptureScope(scopeParam = "files", files = listOf("src/Included.kt")),
+                runId = 1L,
+            )
+        )
+
+        val body = getFileInspectionProblems(listOf("src/Included.kt"))
+
+        assertTrue(body.contains("\"status\": \"results_available\""))
+        assertFalse(body.contains("\"status\": \"stale_results\""))
+        assertTrue(body.contains("\"total_problems\": 1"))
+        assertTrue(body.contains("included problem"))
+        assertFalse(body.contains("excluded problem"))
+    }
+
+    @Test
+    fun `test expired inspection run no longer reports in progress`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        handler.inspectionRunExpirationMs = 500L
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis() - 1000L, inProgress = true),
+        )
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                note = "Inspection failed before results could be captured.",
+                runId = 1L,
+            )
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(false, status["inspection_in_progress"])
+        assertEquals(true, status["inspection_run_expired"])
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+    }
+
+    @Test
+    fun `test completed scoped run with empty extraction proves clean status without snapshot`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+        mockExtractor(emptyList())
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "files", files = listOf("src/Included.kt")),
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(true, status["has_inspection_results"])
+        assertEquals(true, status["clean_inspection"])
+        assertEquals(0, status["total_problems"])
+        assertEquals(true, status["scoped_clean_extraction_succeeded"])
+        assertEquals(true, status["scoped_clean_matcher_available"])
+    }
+
+    @Test
+    fun `test completed scoped run does not prove clean when extraction fails`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+        mockExtractorFailure()
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "files", files = listOf("src/Included.kt")),
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals(false, status["has_inspection_results"])
+        assertEquals(false, status["clean_inspection"])
+        assertEquals(true, status["scoped_clean_matcher_available"])
+        assertEquals(false, status["scoped_clean_extraction_succeeded"])
+    }
+
+    @Test
     fun `test status endpoint does not refresh project state`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -590,11 +823,16 @@ class InspectionHandlerTest {
             Int::class.java,     // limit
             Int::class.java,     // offset
             Boolean::class.java, // includeStale
+            String::class.java,  // directoryParam (nullable)
+            List::class.java,    // files (nullable)
+            Boolean::class.java, // includeUnversioned
+            String::class.java,  // changedFilesMode (nullable)
+            Int::class.javaObjectType, // maxFiles (nullable)
         )
         
         assertNotNull(method)
         assertEquals("getInspectionProblems", method.name)
-        assertEquals(8, method.parameterCount)
+        assertEquals(13, method.parameterCount)
     }
     
     @Test
@@ -2032,6 +2270,7 @@ class InspectionHandlerTest {
         every { toolWindowManager.getToolWindow("Inspection Results") } returns toolWindow
         every { toolWindowManager.getToolWindow("Problems View") } returns null
         every { toolWindowManager.getToolWindow("Problems") } returns null
+        every { toolWindowManager.getToolWindow("Inspections") } returns null
         every { toolWindow.contentManager } returns contentManager
         every { contentManager.contentCount } returns 3
         every { contentManager.getContent(2) } returns otherContent
@@ -2147,6 +2386,70 @@ class InspectionHandlerTest {
         method.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
+    }
+
+    private fun mockExtractor(problems: List<Map<String, Any>>) {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns problems
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = problems,
+            succeeded = true,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+    }
+
+    private fun mockExtractorFailure() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } throws IllegalStateException("extractor failed")
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = false,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+    }
+
+    private fun getFileInspectionProblems(files: List<String>): String {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "getInspectionProblems",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            String::class.java,
+            Int::class.javaPrimitiveType,
+            Int::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            List::class.java,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaObjectType,
+        )
+        method.isAccessible = true
+        return method.invoke(
+            handler,
+            mockProject,
+            "all",
+            "files",
+            null,
+            null,
+            100,
+            0,
+            false,
+            null,
+            files,
+            true,
+            null,
+            null,
+        ) as String
+    }
+
+    private fun setInspectionRunState(projectKey: String, state: InspectionRunState) {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val states = field.get(handler) as MutableMap<String, InspectionRunState>
+        states[projectKey] = state
     }
 
     private fun mockProject(name: String, basePath: String?, projectFilePath: String): Project {

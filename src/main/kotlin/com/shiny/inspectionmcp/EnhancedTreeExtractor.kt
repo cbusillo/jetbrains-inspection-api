@@ -26,7 +26,35 @@ import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
 import javax.swing.JTree
 
+internal data class ProblemExtractionResult(
+    val problems: List<Map<String, Any>>,
+    val succeeded: Boolean,
+)
+
 class EnhancedTreeExtractor {
+
+    private data class InspectionToolWindowSearch(
+        val toolWindows: List<InspectionToolWindowCandidate>,
+        val succeeded: Boolean,
+    )
+
+    private data class InspectionToolWindowCandidate(
+        val toolWindow: ToolWindow,
+        val acceptEmptyTreeSurface: Boolean,
+    )
+
+    private data class ToolWindowExtractionResult(
+        val succeeded: Boolean,
+        val sawResultsSurface: Boolean,
+        val addedProblems: Boolean,
+    )
+
+    private enum class InspectionToolWindowState {
+        HAS_RESULTS_VIEW,
+        HAS_TREE,
+        EMPTY,
+        UNREADABLE,
+    }
 
     private companion object {
         private val noMethod = Any()
@@ -50,110 +78,227 @@ class EnhancedTreeExtractor {
     }
 
     fun extractAllProblemsFromInspectionView(view: InspectionResultsView, project: Project): List<Map<String, Any>> {
+        return extractAllProblemsFromInspectionViewWithStatus(view, project).problems
+    }
+
+    internal fun extractAllProblemsFromInspectionViewWithStatus(
+        view: InspectionResultsView,
+        project: Project,
+    ): ProblemExtractionResult {
         val problems = mutableListOf<Map<String, Any>>()
-        try {
+        val succeeded = try {
             extractProblemsFromView(view, problems, project)
         } catch (_: Exception) {
+            false
         }
-        return dedupeProblems(problems)
+        return ProblemExtractionResult(dedupeProblems(problems), succeeded)
     }
     
     fun extractAllProblems(project: Project): List<Map<String, Any>> {
+        return extractAllProblemsWithStatus(project).problems
+    }
+
+    internal fun extractAllProblemsWithStatus(project: Project): ProblemExtractionResult {
         val problems = mutableListOf<Map<String, Any>>()
+        var succeeded = true
         
         try {
             val toolWindowManager = ToolWindowManager.getInstance(project)
 
             val seen = LinkedHashSet<String>()
 
-            val inspectionWindows = findToolWindowsContainingInspectionResults(toolWindowManager)
+            val inspectionSearch = findToolWindowsContainingInspectionResults(toolWindowManager)
+            succeeded = inspectionSearch.succeeded && succeeded
+            val inspectionWindows = inspectionSearch.toolWindows
+            var primaryEmptySurfaceSucceeded: Boolean? = null
             if (inspectionWindows.isNotEmpty()) {
-                for (tw in inspectionWindows) {
-                    extractFromToolWindow(tw, problems, project, seen)
+                var extractedProblems = false
+                var extractedResultsSurface = false
+                for (candidate in inspectionWindows) {
+                    val before = problems.size
+                    val extraction = extractFromToolWindow(
+                        candidate.toolWindow,
+                        problems,
+                        project,
+                        seen,
+                        acceptEmptyTreeSurface = candidate.acceptEmptyTreeSurface,
+                    )
+                    extractedProblems = extractedProblems || extraction.addedProblems || problems.size > before
+                    extractedResultsSurface = extractedResultsSurface || extraction.sawResultsSurface
+                    succeeded = extraction.succeeded && succeeded
                 }
                 if (problems.isNotEmpty()) {
-                    return problems
+                    return ProblemExtractionResult(problems, succeeded || extractedProblems)
+                }
+                if (extractedResultsSurface) {
+                    primaryEmptySurfaceSucceeded = succeeded || extractedProblems
                 }
             }
 
             // Fallback: when no Inspect Code results exist, scrape the Problems tool window.
-            val fallback = inspectionFallbackToolWindowIds.firstNotNullOfOrNull { name ->
-                toolWindowManager.getToolWindow(name)
+            for (name in inspectionFallbackToolWindowIds) {
+                val fallback = try {
+                    toolWindowManager.getToolWindow(name)
+                } catch (_: Exception) {
+                    null
+                } ?: continue
+                val beforeFallback = problems.size
+                val extraction = extractFromToolWindow(fallback, problems, project, seen, acceptEmptyTreeSurface = false)
+                if (extraction.addedProblems || problems.size > beforeFallback) {
+                    succeeded = extraction.succeeded
+                    break
+                }
+                if (primaryEmptySurfaceSucceeded == null && !extraction.sawResultsSurface) {
+                    succeeded = false
+                }
             }
-                ?: return problems
-            extractFromToolWindow(fallback, problems, project, seen)
+            if (problems.isEmpty() && primaryEmptySurfaceSucceeded != null) {
+                succeeded = primaryEmptySurfaceSucceeded
+            }
             
         } catch (e: Exception) {
+            succeeded = false
         }
         
-        return problems
+        return ProblemExtractionResult(problems, succeeded)
     }
 
-    private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): List<ToolWindow> {
+    private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): InspectionToolWindowSearch {
+        var enumeratedIds = true
         val ids = try {
             toolWindowManager.toolWindowIds.toList()
         } catch (_: Exception) {
+            enumeratedIds = false
             emptyList()
         }
         if (ids.isEmpty()) {
-            val direct = toolWindowManager.getToolWindow(inspectionResultsToolWindowIds.first())
-            return if (direct != null) listOf(direct) else emptyList()
+            val directMatches = inspectionResultsToolWindowIds.mapNotNull { id ->
+                val toolWindow = toolWindowManager.getToolWindow(id) ?: return@mapNotNull null
+                val state = inspectToolWindowForResults(toolWindow)
+                if (state.isExtractable) {
+                    InspectionToolWindowCandidate(
+                        toolWindow,
+                        acceptEmptyTreeSurface = id.acceptsCleanEmptyTreeSurface || state == InspectionToolWindowState.HAS_RESULTS_VIEW,
+                    )
+                } else {
+                    null
+                }
+            }
+            if (directMatches.isEmpty()) {
+                return InspectionToolWindowSearch(emptyList(), succeeded = enumeratedIds)
+            }
+            return InspectionToolWindowSearch(directMatches, succeeded = true)
         }
 
-        val matches = mutableListOf<ToolWindow>()
+        val matches = mutableListOf<InspectionToolWindowCandidate>()
+        var foundExtractableInspectionWindow = false
+        var foundEmptyKnownInspectionWindow = false
+        var foundUnreadableKnownInspectionWindow = false
         for (id in ids) {
             val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
-            if (toolWindowHasInspectionResults(toolWindow)) {
-                matches.add(toolWindow)
+            val state = inspectToolWindowForResults(toolWindow)
+            val isKnownInspectionWindow = id in inspectionResultsToolWindowIds
+            if (state == InspectionToolWindowState.HAS_RESULTS_VIEW ||
+                (isKnownInspectionWindow && state == InspectionToolWindowState.HAS_TREE)
+            ) {
+                matches.add(
+                    InspectionToolWindowCandidate(
+                        toolWindow,
+                        acceptEmptyTreeSurface = id.acceptsCleanEmptyTreeSurface || state == InspectionToolWindowState.HAS_RESULTS_VIEW,
+                    )
+                )
+                if (state.isExtractable) {
+                    foundExtractableInspectionWindow = true
+                }
+            } else if (isKnownInspectionWindow && state == InspectionToolWindowState.EMPTY) {
+                foundEmptyKnownInspectionWindow = true
+            } else if (isKnownInspectionWindow && state == InspectionToolWindowState.UNREADABLE) {
+                foundUnreadableKnownInspectionWindow = true
             }
         }
-        return matches
+        return InspectionToolWindowSearch(
+            matches,
+            succeeded = foundExtractableInspectionWindow || (!foundUnreadableKnownInspectionWindow && !foundEmptyKnownInspectionWindow),
+        )
     }
 
-    private fun toolWindowHasInspectionResults(toolWindow: ToolWindow): Boolean {
+    private fun inspectToolWindowForResults(toolWindow: ToolWindow): InspectionToolWindowState {
         try {
-            val contentManager = getContentManager(toolWindow) ?: return false
+            val contentManager = getContentManager(toolWindow) ?: return InspectionToolWindowState.UNREADABLE
             for (i in 0 until contentManager.contentCount) {
                 val content = contentManager.getContent(i) ?: continue
                 val component = content.component
                 if (findInspectionResultsView(component) != null) {
-                    return true
+                    return InspectionToolWindowState.HAS_RESULTS_VIEW
+                }
+                if (findInspectionTree(component) != null) {
+                    return InspectionToolWindowState.HAS_TREE
                 }
             }
         } catch (_: Exception) {
-            return false
+            return InspectionToolWindowState.UNREADABLE
         }
-        return false
+        return InspectionToolWindowState.EMPTY
     }
+
+    private val InspectionToolWindowState.isExtractable: Boolean
+        get() = this == InspectionToolWindowState.HAS_RESULTS_VIEW || this == InspectionToolWindowState.HAS_TREE
+
+    private val String.acceptsCleanEmptyTreeSurface: Boolean
+        get() = this == "Inspection Results" || this == "Inspections"
 
     private fun extractFromToolWindow(
         toolWindow: ToolWindow,
         problems: MutableList<Map<String, Any>>,
         project: Project,
         seen: MutableSet<String>,
-    ) {
-        val contentManager = getContentManager(toolWindow) ?: return
-        for (i in 0 until contentManager.contentCount) {
-            val content = contentManager.getContent(i) ?: continue
-            val component = content.component
+        acceptEmptyTreeSurface: Boolean,
+    ): ToolWindowExtractionResult {
+        val contentManager = getContentManager(toolWindow)
+            ?: return ToolWindowExtractionResult(succeeded = false, sawResultsSurface = false, addedProblems = false)
+        var succeeded = true
+        var foundResultsSurface = false
+        var addedProblems = false
+        return try {
+            for (i in 0 until contentManager.contentCount) {
+                val content = contentManager.getContent(i) ?: continue
+                val component = content.component
 
-            val before = problems.size
-            val inspectionView = findInspectionResultsView(component)
-            if (inspectionView != null) {
-                extractProblemsFromView(inspectionView, problems, project)
-            } else {
-                val tree = findInspectionTree(component)
-                if (tree != null) {
-                    extractProblemsFromTree(tree, problems, project)
+                val before = problems.size
+                val inspectionView = findInspectionResultsView(component)
+                val contentSucceeded = if (inspectionView != null) {
+                    foundResultsSurface = true
+                    extractProblemsFromView(inspectionView, problems, project)
+                } else {
+                    val tree = findInspectionTree(component)
+                    if (tree != null) {
+                        val beforeTree = problems.size
+                        val treeSucceeded = extractProblemsFromTree(tree, problems, project)
+                        if (acceptEmptyTreeSurface || problems.size > beforeTree) {
+                            foundResultsSurface = true
+                        }
+                        treeSucceeded
+                    } else {
+                        false
+                    }
+                }
+                succeeded = contentSucceeded && succeeded
+
+                if (problems.size != before) {
+                    addedProblems = true
+                    val newSlice = problems.subList(before, problems.size)
+                    val deduped = newSlice.filter { p -> seen.add(problemDedupKey(p)) }
+                    newSlice.clear()
+                    problems.addAll(deduped)
                 }
             }
-
-            if (problems.size != before) {
-                val newSlice = problems.subList(before, problems.size)
-                val deduped = newSlice.filter { p -> seen.add(problemDedupKey(p)) }
-                newSlice.clear()
-                problems.addAll(deduped)
-            }
+            ToolWindowExtractionResult(
+                succeeded = succeeded && foundResultsSurface,
+                sawResultsSurface = foundResultsSurface,
+                addedProblems = addedProblems,
+            )
+        } catch (_: Exception) {
+            ToolWindowExtractionResult(succeeded = false, sawResultsSurface = foundResultsSurface, addedProblems = addedProblems)
         }
     }
 
@@ -228,11 +373,16 @@ class EnhancedTreeExtractor {
         return null
     }
     
-    private fun extractProblemsFromView(view: InspectionResultsView, problems: MutableList<Map<String, Any>>, project: Project) {
-        try {
-            val tree = inspectionResultsTree(view) ?: return
+    private fun extractProblemsFromView(
+        view: InspectionResultsView,
+        problems: MutableList<Map<String, Any>>,
+        project: Project,
+    ): Boolean {
+        return try {
+            val tree = inspectionResultsTree(view) ?: return false
             extractProblemsFromTree(tree, problems, project)
         } catch (e: Exception) {
+            false
         }
     }
 
@@ -244,8 +394,8 @@ class EnhancedTreeExtractor {
         } ?: findInspectionTree(view)
     }
     
-    private fun extractProblemsFromTree(tree: JTree, problems: MutableList<Map<String, Any>>, project: Project) {
-        try {
+    private fun extractProblemsFromTree(tree: JTree, problems: MutableList<Map<String, Any>>, project: Project): Boolean {
+        return try {
             val model = tree.model
             val root = model.root
             
@@ -253,13 +403,15 @@ class EnhancedTreeExtractor {
             walkNode(root, problems, project, 0)
             
         } catch (e: Exception) {
+            false
         }
     }
     
-    private fun walkNode(node: Any?, problems: MutableList<Map<String, Any>>, project: Project, depth: Int) {
-        if (node == null) return
+    private fun walkNode(node: Any?, problems: MutableList<Map<String, Any>>, project: Project, depth: Int): Boolean {
+        if (node == null) return true
         
-        try {
+        return try {
+            var succeeded = true
             when (node) {
                 is ProblemDescriptionNode -> {
                     extractProblemFromNode(node, problems, project)
@@ -269,7 +421,7 @@ class EnhancedTreeExtractor {
                     
                     for (i in 0 until node.childCount) {
                         val child = node.getChildAt(i)
-                        walkNode(child, problems, project, depth + 1)
+                        succeeded = walkNode(child, problems, project, depth + 1) && succeeded
                     }
                     extractFallbackProblemFromTreeNode(node, problems, project)
                 }
@@ -278,7 +430,7 @@ class EnhancedTreeExtractor {
                     extractProblemFromUserObject(node, problems)
                     for (i in 0 until node.childCount) {
                         val child = node.getChildAt(i)
-                        walkNode(child, problems, project, depth + 1)
+                        succeeded = walkNode(child, problems, project, depth + 1) && succeeded
                     }
                     extractFallbackProblemFromTreeNode(node, problems, project)
                 }
@@ -286,12 +438,14 @@ class EnhancedTreeExtractor {
                 is TreeNode -> {
                     for (i in 0 until node.childCount) {
                         val child = node.getChildAt(i)
-                        walkNode(child, problems, project, depth + 1)
+                        succeeded = walkNode(child, problems, project, depth + 1) && succeeded
                     }
                     extractFallbackProblemFromTreeNode(node, problems, project)
                 }
             }
+            succeeded
         } catch (e: Exception) {
+            false
         }
     }
 
