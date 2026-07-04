@@ -100,11 +100,15 @@ class EnhancedTreeExtractor {
             succeeded = inspectionSearch.succeeded && succeeded
             val inspectionWindows = inspectionSearch.toolWindows
             if (inspectionWindows.isNotEmpty()) {
+                var extractedProblems = false
                 for (tw in inspectionWindows) {
-                    succeeded = extractFromToolWindow(tw, problems, project, seen) && succeeded
+                    val before = problems.size
+                    val windowSucceeded = extractFromToolWindow(tw, problems, project, seen)
+                    extractedProblems = extractedProblems || problems.size > before
+                    succeeded = windowSucceeded && succeeded
                 }
                 if (problems.isNotEmpty()) {
-                    return ProblemExtractionResult(problems, succeeded)
+                    return ProblemExtractionResult(problems, succeeded || extractedProblems)
                 }
             }
 
@@ -140,31 +144,34 @@ class EnhancedTreeExtractor {
             val state = inspectToolWindowForResults(direct)
             return InspectionToolWindowSearch(
                 toolWindows = if (state.isExtractable) listOf(direct) else emptyList(),
-                succeeded = state != InspectionToolWindowState.UNREADABLE && (enumeratedIds || state.isExtractable),
+                succeeded = state.isExtractable,
             )
         }
 
         val matches = mutableListOf<ToolWindow>()
         var foundExtractableInspectionWindow = false
+        var foundEmptyKnownInspectionWindow = false
         var foundUnreadableKnownInspectionWindow = false
         for (id in ids) {
             val toolWindow = toolWindowManager.getToolWindow(id) ?: continue
             val state = inspectToolWindowForResults(toolWindow)
             val isKnownInspectionWindow = id in inspectionResultsToolWindowIds
             if (state == InspectionToolWindowState.HAS_RESULTS_VIEW ||
-                (isKnownInspectionWindow && (state == InspectionToolWindowState.HAS_TREE || state == InspectionToolWindowState.EMPTY))
+                (isKnownInspectionWindow && state == InspectionToolWindowState.HAS_TREE)
             ) {
                 matches.add(toolWindow)
                 if (state.isExtractable) {
                     foundExtractableInspectionWindow = true
                 }
+            } else if (isKnownInspectionWindow && state == InspectionToolWindowState.EMPTY) {
+                foundEmptyKnownInspectionWindow = true
             } else if (isKnownInspectionWindow && state == InspectionToolWindowState.UNREADABLE) {
                 foundUnreadableKnownInspectionWindow = true
             }
         }
         return InspectionToolWindowSearch(
             matches,
-            succeeded = foundExtractableInspectionWindow || !foundUnreadableKnownInspectionWindow,
+            succeeded = foundExtractableInspectionWindow || (!foundUnreadableKnownInspectionWindow && !foundEmptyKnownInspectionWindow),
         )
     }
 
