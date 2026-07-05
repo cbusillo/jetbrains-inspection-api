@@ -145,7 +145,7 @@ pycharm | python)
 	FIXTURE="$ROOT/test-fixtures/inspection-red-lane-pycharm"
 	PROJECT_SLUG="inspection-red-lane-pycharm"
 	DEFAULT_IDE="PyCharm"
-	REQUIRED_PROFILE_TOOLS=("PyUnresolvedReferencesInspection")
+	REQUIRED_PROFILE_TOOLS=("PyDictDuplicateKeysInspection")
 	;;
 webstorm | javascript | js)
 	PRODUCT="webstorm"
@@ -220,13 +220,23 @@ fi
 VERDICT=$(jq -r '.verdict // .inspection_verdict // ""' "$PAYLOAD_FILE")
 TOTAL=$(jq -r '.total_problems // 0' "$PAYLOAD_FILE")
 CLEANUP_STATUS=$(jq -r '.cleanup.status // ""' "$PAYLOAD_FILE")
+AGENT_BUCKET=$(jq -r '.agent_result.bucket // .bucket // ""' "$PAYLOAD_FILE")
+AGENT_RETRY=$(jq -r '(.agent_result.retry_policy.retry // .retry_policy.retry // false) | tostring' "$PAYLOAD_FILE")
 
-if [ "$EXIT_CODE" -le 1 ] && [ "$VERDICT" = "RED" ] && [ "$TOTAL" != "0" ] && [ "$TOTAL" != "null" ] && [ "$CLEANUP_STATUS" = "closed" ]; then
+if [ "$EXIT_CODE" -le 1 ] && [ "$VERDICT" = "RED" ] && { [ "$AGENT_BUCKET" = "" ] || [ "$AGENT_BUCKET" = "actionable_findings" ]; } && [ "$TOTAL" != "0" ] && [ "$TOTAL" != "null" ] && [ "$CLEANUP_STATUS" = "closed" ]; then
 	STATUS="ok"
 	BUCKET="red_confirmed"
 else
 	STATUS="failed"
-	BUCKET="red_not_confirmed"
+	if [ -n "$AGENT_BUCKET" ] && [ "$AGENT_BUCKET" != "actionable_findings" ]; then
+		if [ "$AGENT_RETRY" = "true" ]; then
+			BUCKET="red_unknown_retryable:$AGENT_BUCKET"
+		else
+			BUCKET="red_unknown_terminal:$AGENT_BUCKET"
+		fi
+	else
+		BUCKET="red_not_confirmed"
+	fi
 fi
 
 REPORT=$(
@@ -261,6 +271,11 @@ REPORT=$(
         exit_code: $exit_code,
         verdict: (payload.verdict // payload.inspection_verdict // null),
         verdict_reason: (payload.verdict_reason // payload.inspection_verdict_reason // null),
+        agent_result: (payload.agent_result // {
+          bucket: (payload.bucket // null),
+          retry_policy: (payload.retry_policy // null),
+          agent_report: (payload.agent_report // null)
+        }),
         total_problems: (payload.total_problems // null),
         problems_shown: (payload.problems_shown // null),
         cleanup: (payload.cleanup // null),
@@ -271,7 +286,7 @@ REPORT=$(
       }'
 )
 
-printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-")"'
+printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-")"'
 
 if [ -n "$JSON_OUT" ]; then
 	mkdir -p "$(dirname "$JSON_OUT")"

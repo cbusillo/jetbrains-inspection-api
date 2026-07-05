@@ -46,8 +46,10 @@ Use focused validation first, then broaden based on risk and user-facing impact.
 Keep exact command matrices, environment setup, and troubleshooting in
 `TESTING.md`; keep manual IDE endpoint recipes in `TESTING_INSTRUCTIONS.md`.
 
-1. For narrow docs-only changes, inspect the rendered Markdown or affected
-   examples when useful; do not run the full suite unless behavior changed.
+1. For narrow docs-only changes where no runtime behavior changed, skip
+   inspection and record a one-line not-run reason. Inspect the rendered
+   Markdown or affected examples only when examples describe behavior that is
+   itself under test; do not run the full suite unless behavior changed.
 2. For plugin or inspection-core changes, start with the closest Gradle test
    target, then run broader plugin tests if extraction, filtering, scope, or
    stale-location behavior changed.
@@ -57,8 +59,8 @@ Keep exact command matrices, environment setup, and troubleshooting in
    below and open `TESTING_INSTRUCTIONS.md` for the exact manual sequence.
 5. For lifecycle, capture, routing, or dogfood-exit readiness, run the dogfood
    smoke matrix (`./scripts/dogfood-smoke-matrix.sh`) when local IDEs are
-   available; it exercises preexisting and helper-opened readiness inspection paths and
-   records cleanup evidence.
+   available; it exercises preexisting and helper-opened readiness inspection
+   paths and records cleanup evidence.
 6. For verdict or extraction changes that must prove the red lane, run
    `./scripts/dogfood-red-lane-smoke.sh --product intellij|pycharm|webstorm`
    with the matching local IDE and the current plugin installed; it copies the
@@ -92,13 +94,18 @@ Keep exact command matrices, environment setup, and troubleshooting in
 7. For red-lane smoke tests, prefer `./scripts/dogfood-red-lane-smoke.sh` with
    the relevant `--product` and require current actionable findings in the helper
    response, such as `total_problems > 0`; a paginated current page may have an
-   empty `problems` list even when matching findings exist. `capture_incomplete`, `non_empty_unmapped_tree`, or a
-   non-clean zero-problem response proves only that clean was not confirmed.
+   empty `problems` list even when matching findings exist.
+   `capture_incomplete`, `non_empty_unmapped_tree`, or a non-clean zero-problem
+   response proves only that clean was not confirmed.
 8. Agent-facing inspection reports should use the helper verdict: `GREEN` means
    inspection worked and found no actionable findings for the selected
    scope/filter, `RED` means inspection worked and found actionable current
    problems, and `UNKNOWN` means the IDE/plugin/helper did not prove either
-   state and the next action must be reported.
+   state and the next action must be reported. Prefer the helper's compact
+   `agent_result` envelope: verdict, bucket, scope, one-line finding summary
+   with file/line when available, retry policy, and next action. Raw diagnostic
+   fields such as `capture_diagnostic` belong in helper debugging only. On
+   `UNKNOWN`, retry at most once and only when `retry_policy.retry=true`.
 
 ## IDE Smoke Testing
 
@@ -125,7 +132,9 @@ unit tests.
    `IntelliJ IDEA` should resolve to the latest installed stable/non-EAP app and
    matching config dir. Use exact selectors such as `--ide-channel eap`,
    `--ide-version 2026.2`, or `--ide-app` only when the test intentionally
-   targets an EAP or exact IDE version.
+   targets an EAP or exact IDE version. Never infer EAP from a discovered EAP
+   install; EAP must be explicitly requested through repo metadata, CLI flags,
+   exact app/version selection, or task text.
 9. If lifecycle auto-open stalls with `ide_selection_required`,
    `ide_config_ambiguous`, or `ide_config_missing`, treat that as repo metadata
    work: add preferred IDE metadata to `.github/github.json` or explicitly pass
