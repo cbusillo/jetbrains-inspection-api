@@ -4772,7 +4772,7 @@ class InspectionHandler : HttpRequestHandler() {
             ideProductCode.equals("WS", ignoreCase = true) ->
                 linkedSetOf("JSUnresolvedReference", "JsonDuplicatePropertyKeys", "JsonStandardCompliance")
             isPyCharmProductCode(ideProductCode) ->
-                linkedSetOf("PyUnresolvedReferencesInspection")
+                linkedSetOf("PyDictDuplicateKeysInspection")
             else -> emptySet()
         }
     }

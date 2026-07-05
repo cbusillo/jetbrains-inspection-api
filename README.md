@@ -212,7 +212,7 @@ Typical response (truncated):
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
-- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` for the detailed counters and booleans behind the classification.
+- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale; `current_run_psi_churn` is a fresh-run PSI tick that the plugin attempts to reconcile before returning results.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
@@ -500,16 +500,15 @@ Common completion reasons:
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
 
-For agent-facing reports, use `inspection_verdict` and the companion
-`inspection_verdict_reason`, `inspection_verdict_message`, and
+For agent-facing reports from the plugin API, use `inspection_verdict` and the
+companion `inspection_verdict_reason`, `inspection_verdict_message`, and
 `inspection_verdict_next_action` fields. The verdict is `GREEN` when inspection
 worked and found no actionable findings for the selected scope/filter, `RED`
 when inspection worked and returned actionable current findings, and `UNKNOWN`
-when the IDE/plugin/helper did not produce a trustworthy result.
-`UNKNOWN` is not clean and not red; report the included diagnostic reason and
-next action, such as opening the exact worktree in the IDE, waiting for
-indexing, rerunning stale results, or updating the plugin/helper when capture
-evidence points to an extractor or helper bug.
+when the IDE/plugin/helper did not produce a trustworthy result. `UNKNOWN` is
+not clean and not red; report the included reason and next action. The external
+`jb-inspect.py` helper may wrap these fields in its own compact `agent_result`
+envelope for agent workflows.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.

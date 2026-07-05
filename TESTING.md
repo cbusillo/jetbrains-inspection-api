@@ -91,12 +91,18 @@ session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
 non-clean outcomes. Cached stale findings are returned only when the helper is
 run with `--include-stale` for explicit diagnostics. `capture_incomplete`
 responses expose `capture_incomplete_reason` plus `capture_diagnostic`; use the
-reason bucket for triage and the diagnostic payload for counters and state
-evidence. Agent-facing reports should use the helper verdict: `GREEN` means the
-inspection worked and found no actionable findings for the selected
-scope/filter, `RED` means the inspection worked and returned actionable
-findings, and `UNKNOWN` means the tooling did not prove either state and must
-include the helper's next action.
+reason bucket for triage and keep the diagnostic payload for helper debugging.
+Agent-facing reports from plugin endpoint responses should use
+`inspection_verdict`, `inspection_verdict_reason`, `inspection_verdict_message`,
+and `inspection_verdict_next_action`. `GREEN` means the inspection worked and
+found no actionable findings for the selected scope/filter, `RED` means the
+inspection worked and returned actionable findings, and `UNKNOWN` means the
+tooling did not prove either state. The external `jb-inspect.py` helper may wrap
+these fields in its own compact `agent_result` envelope with retry policy for
+agent workflows.
+Use `uv run "$HELPER" summarize-outcomes` to view a helper-side rollup of
+`outcomes.jsonl` by verdict, bucket, retry, IDE channel, and cleanup status
+without running another inspection.
 When this repo changes
 inspection status semantics, route metadata, clean/capture classification,
 lifecycle cleanup contracts, or MCP tool response contracts, update the skill
@@ -106,9 +112,9 @@ workstream.
 ### Red lane dogfood
 
 Use `./scripts/dogfood-red-lane-smoke.sh` when changing verdict semantics,
-capture behavior, extraction, helper readiness inspection, or release readiness. It copies a
-maintained known-bad project fixture to a disposable local project, runs the
-external `jb-inspect.py inspect-closeout`, and requires `VERDICT=RED`,
+capture behavior, extraction, helper readiness inspection, or release readiness.
+It copies a maintained known-bad project fixture to a disposable local project,
+runs the external `jb-inspect.py inspect-closeout`, and requires `VERDICT=RED`,
 `total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
 `RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
 still fails on invalid JSON or missing cleanup.
@@ -155,9 +161,10 @@ validation.
 
 Use `./scripts/dogfood-smoke-matrix.sh` before release, after lifecycle or
 capture behavior changes, and when closing a dogfood session that should prove
-agent readiness inspection behavior. The matrix wraps `jb-inspect.py inspect-closeout`, includes
-this repo by default, includes `~/Developer/mediaforce` when present, and runs
-both preexisting-project and helper-opened worktree cases.
+agent readiness inspection behavior. The matrix wraps
+`jb-inspect.py inspect-closeout`, includes this repo by default, includes
+`~/Developer/mediaforce` when present, and runs both preexisting-project and
+helper-opened worktree cases.
 
 ```bash
 ./scripts/dogfood-smoke-matrix.sh \
@@ -169,9 +176,9 @@ project is not already open it is reported as a skipped preexisting row. The
 helper-opened case creates a disposable linked worktree under
 `~/.code/working/jetbrains-inspection-api/dogfood-smoke`, expects
 `opened_by_helper=true`, and expects cleanup `closed`. Each row records the IDE
-identity, plugin version, cleanup status, result bucket, and the issue bucket to
-check for failures such as `capture_incomplete`, opaque helper errors, or
-lifecycle cleanup regressions.
+identity, plugin version, cleanup status, result bucket, helper `agent_result`
+bucket/retry decision, and the issue bucket to check for failures such as
+`capture_incomplete`, opaque helper errors, or lifecycle cleanup regressions.
 
 For a smaller targeted pass, restrict the matrix explicitly:
 

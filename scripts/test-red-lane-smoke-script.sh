@@ -28,9 +28,10 @@ assert_fixture_pycharm() {
 	local fixture_profile="test-fixtures/inspection-red-lane-pycharm/.idea/inspectionProfiles/RedLane.xml"
 
 	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
-	grep -q 'definitely_missing_symbol()' "$fixture_source"
+	grep -q '"duplicate": "first"' "$fixture_source"
+	grep -q '"duplicate": "second"' "$fixture_source"
 	test -f test-fixtures/inspection-red-lane-pycharm/pyproject.toml
-	grep -q 'PyUnresolvedReferencesInspection' "$fixture_profile"
+	grep -q 'PyDictDuplicateKeysInspection' "$fixture_profile"
 }
 
 assert_fixture_webstorm() {
@@ -55,6 +56,7 @@ HELPER="$TMP_DIR/jb-inspect.py"
 cat >"$HELPER" <<'STUB'
 #!/usr/bin/env python3
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -76,7 +78,7 @@ while args:
 
 fixtures = [
     ("IntelliJ IDEA", "src/main/java/com/example/redlane/DefinitelyRed.java", "redLaneField"),
-    ("PyCharm", "src/definitely_red.py", "definitely_missing_symbol"),
+    ("PyCharm", "src/definitely_red.py", "duplicate"),
     ("WebStorm", "src/definitely-red.json", "duplicate"),
 ]
 
@@ -96,6 +98,23 @@ if ide != expected_ide:
     print(json.dumps({"status": "error", "error_reason": "wrong_ide", "expected_ide": expected_ide, "actual_ide": ide}))
     sys.exit(3)
 
+stub_bucket = os.environ.get("JB_INSPECT_STUB_BUCKET", "")
+if stub_bucket:
+    retry = os.environ.get("JB_INSPECT_STUB_RETRY", "false") == "true"
+    print(json.dumps({
+        "status": "no_results",
+        "verdict": "UNKNOWN",
+        "verdict_reason": "no_results",
+        "total_problems": 0,
+        "cleanup": {"status": "closed"},
+        "agent_result": {
+            "bucket": stub_bucket,
+            "retry_policy": {"retry": retry, "max_attempts": 1 if retry else 0},
+            "agent_report": "Stubbed unknown result",
+        },
+    }))
+    sys.exit(1)
+
 print(json.dumps({
     "status": "findings",
     "verdict": "RED",
@@ -105,6 +124,11 @@ print(json.dumps({
     "problems_shown": 1,
     "clean": False,
     "cleanup": {"status": "closed"},
+    "agent_result": {
+        "bucket": "actionable_findings",
+        "retry_policy": {"retry": False, "max_attempts": 0},
+        "agent_report": "Inspection worked and returned actionable findings.",
+    },
     "ide_selection": {"channel": ide_channel or None, "version": ide_version or None},
     "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide}},
     "problems": [{"severity": "error", "file": str(fixture), "line": 1, "description": f"Cannot resolve symbol {marker}"}],
@@ -139,7 +163,40 @@ run_case() {
     .verdict == "RED" and
     .total_problems == 1 and
     .cleanup.status == "closed" and
+    .agent_result.bucket == "actionable_findings" and
+    .payload.agent_result.bucket == "actionable_findings" and
     (.payload.problems[0].description | contains($expected_marker))
+  ' "$json_out" >/dev/null
+}
+
+run_unknown_case() {
+	local product=$1
+	local stub_bucket=$2
+	local stub_retry=$3
+	local expected_bucket=$4
+	local json_out="$TMP_DIR/$product-$stub_bucket-report.json"
+
+	if JB_INSPECT_STUB_BUCKET="$stub_bucket" JB_INSPECT_STUB_RETRY="$stub_retry" \
+		./scripts/dogfood-red-lane-smoke.sh \
+		--product "$product" \
+		--helper "$HELPER" \
+		--work-root "$TMP_DIR/work" \
+		--json-out "$json_out"; then
+		echo "expected unknown red-lane smoke case to fail: $product $stub_bucket" >&2
+		return 1
+	fi
+
+	jq -e \
+		--arg expected_bucket "$expected_bucket" \
+		--arg stub_bucket "$stub_bucket" \
+		--argjson stub_retry "$stub_retry" '
+    .status == "failed" and
+    .bucket == $expected_bucket and
+    .verdict == "UNKNOWN" and
+    .total_problems == 0 and
+    .cleanup.status == "closed" and
+    .agent_result.bucket == $stub_bucket and
+    .agent_result.retry_policy.retry == $stub_retry
   ' "$json_out" >/dev/null
 }
 
@@ -148,7 +205,9 @@ assert_fixture_pycharm
 assert_fixture_webstorm
 
 run_case intellij "IntelliJ IDEA" redLaneField
-run_case pycharm PyCharm definitely_missing_symbol
+run_case pycharm PyCharm duplicate
 run_case webstorm WebStorm duplicate
+run_unknown_case pycharm capture_not_ready true red_unknown_retryable:capture_not_ready
+run_unknown_case pycharm tool_bug false red_unknown_terminal:tool_bug
 
 echo "red-lane smoke script contract passed"

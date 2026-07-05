@@ -203,8 +203,7 @@ cleanup() {
 trap cleanup EXIT
 
 write_row() {
-	ROW_INDEX=$((ROW_INDEX + 1))
-	cat >"$TMP_DIR/row-$ROW_INDEX.json"
+	cat >"$TMP_DIR/row-$(date +%s)-$RANDOM-$RANDOM.json"
 }
 
 command_json() {
@@ -213,7 +212,7 @@ command_json() {
 
 issue_for_bucket() {
 	case "$1" in
-	opaque_error | helper_error | invalid_helper_json | capture_incomplete* | cleanup_* | lifecycle_* | skipped_preexisting_not_open | dry_run | clean | findings) echo "#68" ;;
+	opaque_error | helper_error | invalid_helper_json | capture_incomplete* | cleanup_* | lifecycle_* | skipped_preexisting_not_open | dry_run | clean | findings | unknown_retryable:* | unknown_terminal:*) echo "#68" ;;
 	*) echo "#65" ;;
 	esac
 }
@@ -234,17 +233,19 @@ classify_payload() {
 		return
 	fi
 
-	local status error_reason capture cleanup_status clean total
+	local status error_reason capture cleanup_status clean total agent_bucket agent_retry
 	status=$(jq -r '.status // ""' "$payload")
 	error_reason=$(jq -r '.error_reason // ""' "$payload")
 	capture=$(jq -r '(.capture_incomplete // false) | tostring' "$payload")
 	cleanup_status=$(jq -r '.cleanup.status // ""' "$payload")
 	clean=$(jq -r '(.clean // false) | tostring' "$payload")
 	total=$(jq -r '(.total_problems // .wait.total_problems // 0) | tostring' "$payload")
+	agent_bucket=$(jq -r '.agent_result.bucket // .bucket // ""' "$payload")
+	agent_retry=$(jq -r '(.agent_result.retry_policy.retry // .retry_policy.retry // false) | tostring' "$payload")
 
 	if [ "$scenario" = "preexisting" ] && [ "$exit_code" -ne 0 ] && [ "$status" = "error" ]; then
 		case "$error_reason" in
-		inspection_api_unavailable | missing_project | project_not_open | route_not_found | no_open_project | invalid_project | ide_open_failed | inspection_helper_error | worktree_route_mismatch)
+		inspection_api_unavailable | missing_project | project_not_open | target_project_not_open | route_not_found | no_open_project | invalid_project | ide_open_failed | inspection_helper_error | worktree_route_mismatch)
 			echo "skipped_preexisting_not_open"
 			return
 			;;
@@ -297,6 +298,14 @@ classify_payload() {
 	fi
 
 	if [ "$exit_code" -ne 0 ]; then
+		if [ -n "$agent_bucket" ]; then
+			if [ "$agent_retry" = "true" ]; then
+				echo "unknown_retryable:$agent_bucket"
+			else
+				echo "unknown_terminal:$agent_bucket"
+			fi
+			return
+		fi
 		echo "helper_error"
 		return
 	fi
@@ -362,6 +371,11 @@ build_row() {
         scenario: $scenario,
         exit_code: $exit_code,
         bucket: $bucket,
+        agent_result: ($payload.agent_result // {
+          bucket: ($payload.bucket // null),
+          retry_policy: ($payload.retry_policy // null),
+          agent_report: ($payload.agent_report // null)
+        }),
         issue: $issue,
         status: ($payload.status // null),
         clean: ($payload.clean // null),
@@ -441,6 +455,7 @@ write_static_row() {
 	: >"$raw_file"
 	: >"$stderr_file"
 	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" 2 "$bucket" "$cmd_file" "$payload_file" true "$raw_file" "$stderr_file" "" | write_row
+	ROW_INDEX=$((ROW_INDEX + 1))
 }
 
 run_case() {
@@ -504,6 +519,7 @@ run_case() {
 	local bucket
 	bucket=$(classify_payload "$scenario" "$exit_code" "$payload_file" "$valid_json")
 	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" "$exit_code" "$bucket" "$cmd_file" "$payload_file" "$valid_json" "$raw_file" "$stderr_file" "$worktree_path" | write_row
+	ROW_INDEX=$((ROW_INDEX + 1))
 }
 
 SCENARIOS=()
@@ -563,6 +579,8 @@ REPORT=$(
       summary: {
         rows: ($rows[0] | length),
         by_bucket: ($rows[0] | group_by(.bucket) | map({key: .[0].bucket, value: length}) | from_entries),
+        by_agent_bucket: ($rows[0] | group_by(.agent_result.bucket // "unknown") | map({key: (.[0].agent_result.bucket // "unknown"), value: length}) | from_entries),
+        by_agent_retry: ($rows[0] | group_by((.agent_result.retry_policy.retry // false) | tostring) | map({key: ((.[0].agent_result.retry_policy.retry // false) | tostring), value: length}) | from_entries),
         by_issue: ($rows[0] | group_by(.issue) | map({key: .[0].issue, value: length}) | from_entries)
       },
       rows: $rows[0]
@@ -571,7 +589,7 @@ REPORT=$(
 
 printf '%s\n' "$REPORT" | jq -r '
   "status=\(.status) rows=\(.summary.rows)",
-  (.rows[] | "[\(.bucket)] \(.scenario) \(.label) on \(.ide) cleanup=\(.cleanup.status // "-") open=\(.prepared.opened_by_helper // "-") plugin=\(.identity.plugin_version // "unknown") issue=\(.issue)")
+  (.rows[] | "[\(.bucket)] \(.scenario) \(.label) on \(.ide) agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) cleanup=\(.cleanup.status // "-") open=\(.prepared.opened_by_helper // "-") plugin=\(.identity.plugin_version // "unknown") issue=\(.issue)")
 '
 
 if [ -n "$JSON_OUT" ]; then
