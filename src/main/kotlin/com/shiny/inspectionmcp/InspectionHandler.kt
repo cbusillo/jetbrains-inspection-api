@@ -1439,25 +1439,28 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         ApplicationManager.getApplication().executeOnPooledThread {
-            val neverObservedDeadlineMs = lifecycleOpenGuardNow() + lifecycleOpenGuardNeverObservedTimeoutMs
-            var observedOpenProject = false
-            while (openingProjectPaths.contains(key)) {
-                val nowMs = lifecycleOpenGuardNow()
-                val lifecycleComplete = runCatching {
-                    ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                        val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
-                        observedOpenProject = observedOpenProject || isOpenProject
-                        project.isDisposed ||
-                            isUsableProject(project) ||
-                            (observedOpenProject && !isOpenProject) ||
-                            (!observedOpenProject && nowMs >= neverObservedDeadlineMs)
+            try {
+                val neverObservedDeadlineMs = lifecycleOpenGuardNow() + lifecycleOpenGuardNeverObservedTimeoutMs
+                var observedOpenProject = false
+                while (openingProjectPaths.contains(key)) {
+                    val nowMs = lifecycleOpenGuardNow()
+                    val lifecycleComplete = runCatching {
+                        ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                            val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
+                            observedOpenProject = observedOpenProject || isOpenProject
+                            project.isDisposed ||
+                                isUsableProject(project) ||
+                                (observedOpenProject && !isOpenProject) ||
+                                (!observedOpenProject && nowMs >= neverObservedDeadlineMs)
+                        }
+                    }.getOrDefault(false)
+                    if (lifecycleComplete) {
+                        return@executeOnPooledThread
                     }
-                }.getOrDefault(false)
-                if (lifecycleComplete) {
-                    openingProjectPaths.remove(key)
-                    return@executeOnPooledThread
+                    lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                 }
-                lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
+            } finally {
+                openingProjectPaths.remove(key)
             }
         }
     }

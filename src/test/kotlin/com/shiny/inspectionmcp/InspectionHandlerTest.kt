@@ -1817,6 +1817,48 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open releases opening guard when poller aborts`() {
+        val tempDir = Files.createTempDirectory("inspection-open-aborted-poller")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-aborted-poller"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardSleep = { error("poller aborted") }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        assertThrows(IllegalStateException::class.java) {
+            guardPolls.single().run()
+        }
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(2, scheduled.size)
+        assertTrue(secondBody.contains("\"status\": \"opening\""))
+        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
+    }
+
+    @Test
     fun `test lifecycle open coalesces symlink aliases`() {
         val tempDir = Files.createTempDirectory("inspection-open-real")
         val symlink = tempDir.parent.resolve("inspection-open-link-${System.nanoTime()}")
