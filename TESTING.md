@@ -234,3 +234,12 @@ evidence for:
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a
 fresh route rather than treating one long wait timeout as a clean result.
+
+For normal dogfood against the latest installed stable IDE, use
+`qualityGate.manualSmoke.execHarnessInstalledWorktree` from `.github/github.json`
+or run `test-fixtures/exec-harness/jetbrains-inspection-installed-worktree-live.json`
+with the harness output rooted in this checkout and
+`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` pointing at the installed stable IntelliJ
+IDEA config directory. The 2026.2 fixture is an exact EAP compatibility gate; do
+not use it for ordinary local agent-readiness checks unless the matching 2026.2
+EAP app and config directory are installed.

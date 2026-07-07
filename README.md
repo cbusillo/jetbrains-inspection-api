@@ -618,14 +618,19 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
 ./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm 2026.2 EAP" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ```
 
-For agent-facing worktree proof, run the maintained exec-harness scenario in
-`test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`; it
-copies the red-lane fixture into an isolated workspace and requires the helper
-to prove a `RED` result, cleanup, and exact route matching in IntelliJ IDEA
-2026.2. Set `JETBRAINS_INSPECTION_API_REPO` to this checkout,
-`CODE_EXEC_HARNESS_ROOT` to the checkout that contains `tools/code-exec-harness`,
-and pass the installed 2026.2 IDE config directory through
-`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` when running the scenario directly.
+For normal agent-facing worktree proof, run the maintained installed-IDE
+exec-harness scenario in
+`test-fixtures/exec-harness/jetbrains-inspection-installed-worktree-live.json`.
+It copies the red-lane fixture into an isolated workspace and requires the
+helper to prove a `RED` result, cleanup, and exact route matching in the latest
+installed stable IntelliJ IDEA. The 2026.2 fixture in
+`test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json` is an
+exact EAP compatibility gate; use it only when the matching 2026.2 EAP app and
+config directory are installed. Set `JETBRAINS_INSPECTION_API_REPO` to this
+checkout and `CODE_EXEC_HARNESS_ROOT` to the checkout that contains
+`tools/code-exec-harness` when running either scenario directly. Set
+`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` to the installed stable IntelliJ IDEA
+config directory for the installed-IDE scenario.
 
 Shortcut:
 
