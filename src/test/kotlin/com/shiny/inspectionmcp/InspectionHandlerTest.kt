@@ -1767,7 +1767,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle open keeps guard past timeout after project is observed`() {
+    fun `test lifecycle open releases guard at hard timeout after project is observed`() {
         val tempDir = Files.createTempDirectory("inspection-open-observed-timeout")
         val openProjects = arrayOfNulls<Project>(1)
         every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
@@ -1782,7 +1782,7 @@ class InspectionHandlerTest {
         val scheduled = mutableListOf<Runnable>()
         val guardPolls = mutableListOf<Runnable>()
         var nowMs = 1_000L
-        var retryAfterTimeoutBody = ""
+        var retryBeforeHardTimeoutBody = ""
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
@@ -1791,11 +1791,12 @@ class InspectionHandlerTest {
             mockk(relaxed = true)
         }
         handler.lifecycleOpenGuardNeverObservedTimeoutMs = 100
+        handler.lifecycleOpenGuardTimeoutMs = 400
         handler.lifecycleOpenGuardNow = { nowMs }
         handler.lifecycleOpenGuardSleep = { millis ->
             nowMs += millis
-            retryAfterTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
-            initialized = true
+            retryBeforeHardTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+            nowMs = 1_400L
         }
         handler.openProjectPath = {
             openProjects[0] = initializingProject
@@ -1810,10 +1811,12 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(1, scheduled.size)
-        assertTrue(retryAfterTimeoutBody.contains("\"reason\": \"already_opening\""))
-        assertTrue(retryAfterTimeoutBody.contains("\"opening_scheduled\": false"))
-        assertTrue(secondBody.contains("\"status\": \"already_open\""))
+        assertEquals(2, scheduled.size)
+        assertFalse(initialized)
+        assertTrue(retryBeforeHardTimeoutBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryBeforeHardTimeoutBody.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"status\": \"opening\""))
+        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
     }
 
     @Test
