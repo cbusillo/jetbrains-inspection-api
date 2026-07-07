@@ -1374,7 +1374,11 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
-            return lifecycleOpenAlreadyOpen(project)
+            return if (isUsableProject(project)) {
+                lifecycleOpenAlreadyOpen(project)
+            } else {
+                lifecycleOpenAlreadyOpening(target)
+            }
         }
         firstParameter(parameters, "session_id") ?: return mapOf(
             "status" to "failed",
@@ -1478,6 +1482,17 @@ class InspectionHandler : HttpRequestHandler() {
         ) to HttpResponseStatus.OK
     }
 
+    private fun lifecycleOpenAlreadyOpening(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+        return mapOf(
+            "status" to "opening",
+            "opened" to false,
+            "opening_scheduled" to false,
+            "reason" to "already_opening",
+            "worktree_path" to target.path.toString(),
+            "session_id" to InspectionIdeSession.sessionId,
+        ) to HttpResponseStatus.OK
+    }
+
     private fun resolveLifecycleOpenTarget(path: Path): LifecycleOpenTarget {
         val projectRoot = lifecycleOpenProjectRoot(path)
             ?: throw BadRequestException(
@@ -1518,9 +1533,13 @@ class InspectionHandler : HttpRequestHandler() {
     private fun findOpenProjectForLifecycleOpenKey(key: String): Project? {
         return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
-                isUsableProject(project) && lifecycleOpenKeys(project).contains(key)
+                isLifecycleOpenProject(project) && lifecycleOpenKeys(project).contains(key)
             }
         }
+    }
+
+    private fun isLifecycleOpenProject(project: Project?): Boolean {
+        return project != null && !project.isDefault && !project.isDisposed
     }
 
     private fun lifecycleOpenKeys(project: Project): Set<String> {
