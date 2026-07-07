@@ -257,6 +257,9 @@ REPORT=$(
 		--arg stderr "$(head -c 4000 "$ERR_OUT" 2>/dev/null || true)" '
       def command: $command[0];
       def payload: $payload[0];
+      def route: payload.route // payload.prepared.route // payload.prepared.lease.route // payload.prepared.claim.route // {};
+      def identity: route.ide // {};
+      def open_attempts: payload.open_attempts // payload.prepared.open_attempts // payload.prepared.lease.open_attempts // payload.lease.open_attempts // [];
       {
         status: $status,
         bucket: $bucket,
@@ -271,6 +274,13 @@ REPORT=$(
         exit_code: $exit_code,
         verdict: (payload.verdict // payload.inspection_verdict // null),
         verdict_reason: (payload.verdict_reason // payload.inspection_verdict_reason // null),
+        error_reason: (payload.error_reason // null),
+        blocked_diagnostic: (payload.blocked_diagnostic // null),
+        route_diagnostic: (payload.route_diagnostic // null),
+        open_attempts: open_attempts,
+        open_attempt_count: (open_attempts | length),
+        open_methods: (open_attempts | map(.method) | unique),
+        first_attempt_reliable: ((open_attempts | length) <= 1),
         agent_result: (payload.agent_result // {
           bucket: (payload.bucket // null),
           retry_policy: (payload.retry_policy // null),
@@ -279,14 +289,22 @@ REPORT=$(
         total_problems: (payload.total_problems // null),
         problems_shown: (payload.problems_shown // null),
         cleanup: (payload.cleanup // null),
-        route: (payload.route // null),
+        route: (if route == {} then null else route end),
+        identity: {
+          name: (identity.name // null),
+          product_code: (identity.product_code // null),
+          version: (identity.version // null),
+          plugin_version: (identity.plugin_version // null),
+          plugin_fingerprint: (identity.plugin_fingerprint // null),
+          pid: (identity.pid // null)
+        },
         command: command,
         payload: payload,
         stderr_excerpt: (if $stderr == "" then null else $stderr end)
       }'
 )
 
-printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-")"'
+printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) reason=\(.verdict_reason // .error_reason // "-") agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-") attempts=\(.open_attempt_count) methods=\((.open_methods // []) | join(",")) plugin=\(.identity.plugin_version // "unknown")"'
 
 if [ -n "$JSON_OUT" ]; then
 	mkdir -p "$(dirname "$JSON_OUT")"

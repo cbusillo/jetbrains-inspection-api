@@ -759,14 +759,15 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var trustProjectPath: (Path) -> Unit = { path ->
-        TrustedProjects.setProjectTrusted(path, true)
+        TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
     internal var openProjectPath: (Path) -> Project? = { path ->
+        val openPath = canonicalTrustPath(path)
         ProjectManagerEx.getInstanceEx().openProject(
-            path,
+            openPath,
             OpenProjectTask.build()
                 .withForceOpenInNewFrame(true)
-                .withProjectName(path.fileName?.toString() ?: path.toString()),
+                .withProjectName(openPath.fileName?.toString() ?: openPath.toString()),
         )
     }
 
@@ -1387,11 +1388,19 @@ class InspectionHandler : HttpRequestHandler() {
 
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
+                var opened: Project? = null
+                var keepOpeningGuard = false
                 try {
                     trustProjectPath(target.openPath)
-                    openProjectPath(target.openPath)
+                    opened = openProjectPath(target.openPath)
+                    if (opened != null) {
+                        keepOpeningGuard = true
+                        releaseLifecycleOpenGuardWhenUsable(target.key, opened)
+                    }
                 } finally {
-                    openingProjectPaths.remove(target.key)
+                    if (!keepOpeningGuard) {
+                        openingProjectPaths.remove(target.key)
+                    }
                 }
             }
         }.isSuccess
@@ -1414,6 +1423,25 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to target.path.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
+    }
+
+    private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
+        ApplicationManager.getApplication().executeOnPooledThread {
+            val deadline = System.currentTimeMillis() + 30_000L
+            try {
+                while (System.currentTimeMillis() <= deadline) {
+                    val usable = runCatching {
+                        ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                            isUsableProject(project)
+                        }
+                    }.getOrDefault(false)
+                    if (usable) return@executeOnPooledThread
+                    Thread.sleep(200L)
+                }
+            } finally {
+                openingProjectPaths.remove(key)
+            }
+        }
     }
 
     private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
@@ -1451,6 +1479,11 @@ class InspectionHandler : HttpRequestHandler() {
     private fun canonicalLifecycleOpenKey(path: Path): String {
         return runCatching { path.toRealPath().toString() }
             .getOrElse { path.normalize().toAbsolutePath().toString() }
+    }
+
+    private fun canonicalTrustPath(path: Path): Path {
+        return runCatching { path.toRealPath() }
+            .getOrElse { path.normalize().toAbsolutePath() }
     }
 
     private fun findOpenProjectForLifecycleOpen(path: String): Project? {
@@ -1611,12 +1644,14 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun findOpenProjectByPath(path: String): Project? {
         val normalized = normalizeFileSystemPath(path) ?: return null
+        val canonical = runCatching { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
         return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 isUsableProject(project) &&
                     (normalizeFileSystemPath(project.basePath) == normalized ||
                         projectRootFromProjectFilePath(project.projectFilePath) == normalized ||
                         normalizeFileSystemPath(project.projectFilePath) == normalized ||
+                        canonical?.let { lifecycleOpenKeys(project).contains(it) } == true ||
                         projectKey(project) == "path:$normalized" ||
                         projectKey(project) == "file:$normalized")
             }

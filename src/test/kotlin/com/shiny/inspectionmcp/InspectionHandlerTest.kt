@@ -1580,7 +1580,7 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = { mockProject }
+        handler.openProjectPath = { null }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         val second = processGetRequest(lifecycleOpenUri(tempDir))
@@ -1595,6 +1595,35 @@ class InspectionHandlerTest {
         val third = processGetRequest(lifecycleOpenUri(tempDir))
         assertEquals(2, scheduled.size)
         assertEquals(HttpResponseStatus.OK, third.status())
+    }
+
+    @Test
+    fun `test lifecycle open keeps opening guard until returned project is initialized`() {
+        val tempDir = Files.createTempDirectory("inspection-open-initializing")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-initializing"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.openProjectPath = { initializingProject }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
     }
 
     @Test
