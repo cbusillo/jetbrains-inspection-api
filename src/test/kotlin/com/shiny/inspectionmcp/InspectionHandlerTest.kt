@@ -1767,7 +1767,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle open releases guard at hard timeout after project is observed`() {
+    fun `test lifecycle open avoids duplicate scheduling at hard timeout after project is observed`() {
         val tempDir = Files.createTempDirectory("inspection-open-observed-timeout")
         val openProjects = arrayOfNulls<Project>(1)
         every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
@@ -1811,12 +1811,13 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(2, scheduled.size)
+        assertEquals(1, scheduled.size)
         assertFalse(initialized)
         assertTrue(retryBeforeHardTimeoutBody.contains("\"reason\": \"already_opening\""))
         assertTrue(retryBeforeHardTimeoutBody.contains("\"opening_scheduled\": false"))
         assertTrue(secondBody.contains("\"status\": \"opening\""))
-        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
     }
 
     @Test
@@ -1856,9 +1857,10 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(2, scheduled.size)
+        assertEquals(1, scheduled.size)
         assertTrue(secondBody.contains("\"status\": \"opening\""))
-        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
     }
 
     @Test
