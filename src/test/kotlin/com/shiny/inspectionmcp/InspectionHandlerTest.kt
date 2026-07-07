@@ -1726,6 +1726,97 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open releases opening guard when returned project is never observed`() {
+        val tempDir = Files.createTempDirectory("inspection-open-never-observed")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-never-observed"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardNeverObservedTimeoutMs = 400
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
+        handler.openProjectPath = { initializingProject }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val inFlight = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+        guardPolls.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(2, scheduled.size)
+        assertTrue(inFlight.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"status\": \"opening\""))
+        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
+    }
+
+    @Test
+    fun `test lifecycle open keeps guard past timeout after project is observed`() {
+        val tempDir = Files.createTempDirectory("inspection-open-observed-timeout")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        var initialized = false
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } answers { initialized }
+        every { initializingProject.name } returns "inspection-open-observed-timeout"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        var retryAfterTimeoutBody = ""
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardNeverObservedTimeoutMs = 100
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis ->
+            nowMs += millis
+            retryAfterTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+            initialized = true
+        }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        guardPolls.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(retryAfterTimeoutBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryAfterTimeoutBody.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"status\": \"already_open\""))
+    }
+
+    @Test
     fun `test lifecycle open coalesces symlink aliases`() {
         val tempDir = Files.createTempDirectory("inspection-open-real")
         val symlink = tempDir.parent.resolve("inspection-open-link-${System.nanoTime()}")

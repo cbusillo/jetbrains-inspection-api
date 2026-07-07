@@ -762,6 +762,8 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
+    internal var lifecycleOpenGuardNeverObservedTimeoutMs: Long = 2_000
+    internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var trustProjectPath: (Path) -> Unit = { path ->
@@ -1437,15 +1439,18 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         ApplicationManager.getApplication().executeOnPooledThread {
+            val neverObservedDeadlineMs = lifecycleOpenGuardNow() + lifecycleOpenGuardNeverObservedTimeoutMs
             var observedOpenProject = false
             while (openingProjectPaths.contains(key)) {
+                val nowMs = lifecycleOpenGuardNow()
                 val lifecycleComplete = runCatching {
                     ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
                         val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
                         observedOpenProject = observedOpenProject || isOpenProject
                         project.isDisposed ||
                             isUsableProject(project) ||
-                            (observedOpenProject && !isOpenProject)
+                            (observedOpenProject && !isOpenProject) ||
+                            (!observedOpenProject && nowMs >= neverObservedDeadlineMs)
                     }
                 }.getOrDefault(false)
                 if (lifecycleComplete) {
