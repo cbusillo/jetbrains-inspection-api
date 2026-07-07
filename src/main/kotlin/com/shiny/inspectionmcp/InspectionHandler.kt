@@ -373,7 +373,11 @@ internal fun suspiciousEmptyInspectionModelReason(
     bestResultsEmpty: Boolean,
     observedNonEmptyInspectionTree: Boolean,
 ): String? {
-    val isSupportedProofLane = ideProductCode.equals("WS", ignoreCase = true) || isPyCharmProductCode(ideProductCode)
+    val isSupportedProofLane =
+        ideProductCode.equals("WS", ignoreCase = true) ||
+            ideProductCode.equals("IU", ignoreCase = true) ||
+            ideProductCode.equals("IC", ignoreCase = true) ||
+            isPyCharmProductCode(ideProductCode)
     val isRedLaneProof = requestedProfileName.equals("RedLane", ignoreCase = true)
     return if (
         isSupportedProofLane &&

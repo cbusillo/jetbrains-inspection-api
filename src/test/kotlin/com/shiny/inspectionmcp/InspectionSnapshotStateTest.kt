@@ -1486,9 +1486,21 @@ class InspectionSnapshotStateTest {
         )
 
         assertEquals(
-            null,
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
             suspiciousEmptyInspectionModelReason(
                 ideProductCode = "IU",
+                requestedProfileName = "RedLane",
+                modelVerdict = InspectionModelVerdict.CLEAN,
+                problemDescriptorCount = 0,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+            ),
+        )
+
+        assertEquals(
+            CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
+            suspiciousEmptyInspectionModelReason(
+                ideProductCode = "IC",
                 requestedProfileName = "RedLane",
                 modelVerdict = InspectionModelVerdict.CLEAN,
                 problemDescriptorCount = 0,
