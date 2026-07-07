@@ -18,6 +18,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ex.ProjectManagerEx
+import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -761,6 +762,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationPollMs: Long = 100
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var lifecycleOpenGuardPollMs: Long = 200
+    internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var lifecycleRunAfterOpened: (Project, Runnable) -> Unit = { project, runnable ->
+        StartupManager.getInstance(project).runAfterOpened(runnable)
+    }
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
@@ -1430,20 +1436,34 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
+        if (isUsableProject(project) || project.isDisposed) {
+            openingProjectPaths.remove(key)
+            return
+        }
+        val releaseAfterOpenedRegistered = runCatching {
+            lifecycleRunAfterOpened(project, Runnable { openingProjectPaths.remove(key) })
+        }.isSuccess
+        if (!releaseAfterOpenedRegistered) {
+            openingProjectPaths.remove(key)
+            return
+        }
         ApplicationManager.getApplication().executeOnPooledThread {
-            val deadline = System.currentTimeMillis() + 30_000L
-            try {
-                while (System.currentTimeMillis() <= deadline) {
-                    val usable = runCatching {
-                        ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                            isUsableProject(project)
-                        }
-                    }.getOrDefault(false)
-                    if (usable) return@executeOnPooledThread
-                    Thread.sleep(200L)
+            var observedOpenProject = false
+            while (openingProjectPaths.contains(key)) {
+                val lifecycleComplete = runCatching {
+                    ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                        val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
+                        observedOpenProject = observedOpenProject || isOpenProject
+                        project.isDisposed ||
+                            isUsableProject(project) ||
+                            (observedOpenProject && !isOpenProject)
+                    }
+                }.getOrDefault(false)
+                if (lifecycleComplete) {
+                    openingProjectPaths.remove(key)
+                    return@executeOnPooledThread
                 }
-            } finally {
-                openingProjectPaths.remove(key)
+                lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
             }
         }
     }
