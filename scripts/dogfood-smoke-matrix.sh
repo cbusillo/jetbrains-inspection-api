@@ -362,6 +362,7 @@ build_row() {
         // $payload.prepared.claim.route
         // {};
       def identity: route.ide // {};
+      def open_attempts: $payload.open_attempts // $payload.prepared.open_attempts // $payload.prepared.lease.open_attempts // $payload.lease.open_attempts // [];
       {
         label: $label,
         source_repo: $source_repo,
@@ -378,6 +379,8 @@ build_row() {
         }),
         issue: $issue,
         status: ($payload.status // null),
+        verdict_reason: ($payload.verdict_reason // $payload.inspection_verdict_reason // null),
+        error_reason: ($payload.error_reason // null),
         clean: ($payload.clean // null),
         total_problems: ($payload.total_problems // $payload.wait.total_problems // null),
         capture_incomplete: ($payload.capture_incomplete // null),
@@ -390,6 +393,10 @@ build_row() {
           // null
         ),
         cleanup: ($payload.cleanup // null),
+        open_attempts: open_attempts,
+        open_attempt_count: (open_attempts | length),
+        open_methods: (open_attempts | map(.method) | unique),
+        first_attempt_reliable: ((open_attempts | length) <= 1),
         prepared: {
           opened_by_helper: ($payload.prepared.lease.opened_by_helper // $payload.prepared.opened_by_helper // null),
           open_method: ($payload.prepared.lease.open_method // $payload.prepared.open_method // null),
@@ -589,7 +596,7 @@ REPORT=$(
 
 printf '%s\n' "$REPORT" | jq -r '
   "status=\(.status) rows=\(.summary.rows)",
-  (.rows[] | "[\(.bucket)] \(.scenario) \(.label) on \(.ide) agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) cleanup=\(.cleanup.status // "-") open=\(.prepared.opened_by_helper // "-") plugin=\(.identity.plugin_version // "unknown") issue=\(.issue)")
+  (.rows[] | "[\(.bucket)] \(.scenario) \(.label) on \(.ide) agent=\(.agent_result.bucket // "-") reason=\(.verdict_reason // .error_reason // "-") attempts=\(.open_attempt_count) retry=\(.agent_result.retry_policy.retry // false) cleanup=\(.cleanup.status // "-") open=\(.prepared.opened_by_helper // "-") plugin=\(.identity.plugin_version // "unknown") issue=\(.issue)")
 '
 
 if [ -n "$JSON_OUT" ]; then

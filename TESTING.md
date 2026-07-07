@@ -67,14 +67,14 @@ uv run "$HELPER" inspect-closeout \
   --scope changed_files
 ```
 
-`inspect-closeout` serializes helper-owned IDE opens, requires an exact current-worktree
-route, runs inspection, and calls the plugin lifecycle close endpoint only for
-projects opened by the helper. Projects that were open before the helper started
-are left open. On macOS, lifecycle opens use `open -g` by default so the IDE should
-not take focus while readiness inspection is preparing a worktree. Auto-open requires a
-global trusted-root policy in
-`${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`; test worktrees should be
-created under those roots, not random temp directories.
+`inspect-closeout` serializes helper-owned IDE opens, requires an exact
+current-worktree route, runs inspection, and calls the plugin lifecycle close
+endpoint only for projects opened by the helper. Projects that were open before
+the helper started are left open. On macOS, lifecycle opens use `open -g` by
+default so the IDE should not take focus while readiness inspection is preparing
+a worktree. Auto-open requires a global trusted-root policy in
+`${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`; test
+worktrees should be created under those roots, not random temp directories.
 
 Before it starts lifecycle auto-open, the helper adds the matching trusted root
 to the selected JetBrains product's Trusted Locations and sets project opening
@@ -118,6 +118,12 @@ runs the external `jb-inspect.py inspect-closeout`, and requires `VERDICT=RED`,
 `total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
 `RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
 still fails on invalid JSON or missing cleanup.
+
+The report prints and stores `open_attempt_count`, `open_methods`,
+verdict/error reason, and plugin identity so first-attempt reliability is
+visible. A warm IDE red-lane run should normally be
+`attempts=1 methods=running_ide`; cold IDE runs may include bootstrap attempts,
+but must still end in a trustworthy RED with cleanup `closed`.
 
 ```bash
 ./scripts/dogfood-red-lane-smoke.sh \

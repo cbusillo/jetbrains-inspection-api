@@ -112,6 +112,9 @@ if stub_bucket:
             "retry_policy": {"retry": retry, "max_attempts": 1 if retry else 0},
             "agent_report": "Stubbed unknown result",
         },
+        "open_attempts": [{"method": "running_ide", "accepted": False, "reason": "project_open_blocked"}],
+        "route_diagnostic": {"reason": "target_ide_running_without_target_project"},
+        "blocked_diagnostic": {"reason": "jetbrains_project_open_blocked"},
     }))
     sys.exit(1)
 
@@ -129,8 +132,9 @@ print(json.dumps({
         "retry_policy": {"retry": False, "max_attempts": 0},
         "agent_report": "Inspection worked and returned actionable findings.",
     },
+    "open_attempts": [{"method": "running_ide", "accepted": True, "endpoint_status": "opening"}],
     "ide_selection": {"channel": ide_channel or None, "version": ide_version or None},
-    "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide}},
+    "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide, "plugin_version": "test-1.0.0", "plugin_fingerprint": "test-clean"}},
     "problems": [{"severity": "error", "file": str(fixture), "line": 1, "description": f"Cannot resolve symbol {marker}"}],
 }))
 STUB
@@ -165,6 +169,10 @@ run_case() {
     .cleanup.status == "closed" and
     .agent_result.bucket == "actionable_findings" and
     .payload.agent_result.bucket == "actionable_findings" and
+    .open_attempt_count == 1 and
+    .first_attempt_reliable == true and
+    .open_methods == ["running_ide"] and
+    .identity.plugin_version == "test-1.0.0" and
     (.payload.problems[0].description | contains($expected_marker))
   ' "$json_out" >/dev/null
 }
@@ -196,7 +204,11 @@ run_unknown_case() {
     .total_problems == 0 and
     .cleanup.status == "closed" and
     .agent_result.bucket == $stub_bucket and
-    .agent_result.retry_policy.retry == $stub_retry
+    .agent_result.retry_policy.retry == $stub_retry and
+    .open_attempt_count == 1 and
+    .open_methods == ["running_ide"] and
+    .route_diagnostic.reason == "target_ide_running_without_target_project" and
+    .blocked_diagnostic.reason == "jetbrains_project_open_blocked"
   ' "$json_out" >/dev/null
 }
 
