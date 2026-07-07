@@ -18,7 +18,6 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ex.ProjectManagerEx
-import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -764,9 +763,6 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
-    internal var lifecycleRunAfterOpened: (Project, Runnable) -> Unit = { project, runnable ->
-        StartupManager.getInstance(project).runAfterOpened(runnable)
-    }
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
@@ -1437,13 +1433,6 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
         if (isUsableProject(project) || project.isDisposed) {
-            openingProjectPaths.remove(key)
-            return
-        }
-        val releaseAfterOpenedRegistered = runCatching {
-            lifecycleRunAfterOpened(project, Runnable { openingProjectPaths.remove(key) })
-        }.isSuccess
-        if (!releaseAfterOpenedRegistered) {
             openingProjectPaths.remove(key)
             return
         }
