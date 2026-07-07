@@ -1600,7 +1600,9 @@ class InspectionHandlerTest {
     @Test
     fun `test lifecycle open keeps opening guard until returned project is initialized`() {
         val tempDir = Files.createTempDirectory("inspection-open-initializing")
-        every { mockProjectManager.openProjects } returns emptyArray()
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        var afterOpened: Runnable? = null
         val initializingProject = mockk<Project>()
         every { initializingProject.isDefault } returns false
         every { initializingProject.isDisposed } returns false
@@ -1612,18 +1614,139 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = { initializingProject }
+        handler.lifecycleRunAfterOpened = { _, runnable ->
+            afterOpened = runnable
+        }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
+        every { initializingProject.isInitialized } returns true
+        afterOpened?.run()
+        val third = processGetRequest(lifecycleOpenUri(tempDir))
+        val thirdBody = third.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
         assertEquals(1, scheduled.size)
         assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+        assertEquals(HttpResponseStatus.OK, third.status())
+        assertTrue(thirdBody.contains("\"status\": \"already_open\""))
+    }
+
+    @Test
+    fun `test lifecycle open keeps opening guard while project remains open but not initialized`() {
+        val tempDir = Files.createTempDirectory("inspection-open-slow-initializing")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        var afterOpened: Runnable? = null
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-slow-initializing"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        var inFlightResponseBody = ""
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.lifecycleRunAfterOpened = { _, runnable ->
+            afterOpened = runnable
+        }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        inFlightResponseBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+        every { initializingProject.isInitialized } returns true
+        afterOpened?.run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(inFlightResponseBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(inFlightResponseBody.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"status\": \"already_open\""))
+    }
+
+    @Test
+    fun `test lifecycle open releases opening guard when project disappears before initialization`() {
+        val tempDir = Files.createTempDirectory("inspection-open-disappears")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-disappears"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleRunAfterOpened = { _, _ -> }
+        handler.lifecycleOpenGuardSleep = {
+            openProjects[0] = null
+        }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        guardPolls.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(2, scheduled.size)
+    }
+
+    @Test
+    fun `test lifecycle open releases opening guard when startup callback registration fails`() {
+        val tempDir = Files.createTempDirectory("inspection-open-callback-fails")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-callback-fails"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.lifecycleRunAfterOpened = { _, _ -> error("startup callback unavailable") }
+        handler.openProjectPath = { initializingProject }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(2, scheduled.size)
     }
 
     @Test
