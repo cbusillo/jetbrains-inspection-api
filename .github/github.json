@@ -12,6 +12,8 @@
   "qualityGate": {
     "test": {
       "commitGate": "./scripts/commit-gate.sh --ci",
+      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml",
+      "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test",
       "core": "./gradlew :inspection-core:test",
@@ -61,7 +63,12 @@
       "manual smoke test flow changes"
     ]
   },
-  "importantWorkflows": ["CI", "Release"],
+  "importantWorkflows": ["CI", "CodeQL", "Release"],
+  "requiredStatusChecks": [
+    "commit-gate",
+    "Analyze (actions)",
+    "Analyze (python)"
+  ],
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],
