@@ -1373,6 +1373,12 @@ class InspectionHandler : HttpRequestHandler() {
                 return lifecycleOpenAlreadyOpen(project)
             }
         }
+        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
+            if (isUnresolvedLifecycleOpenActive(project)) {
+                return lifecycleOpenStateUnknown(target)
+            }
+            unresolvedLifecycleOpenProjects.remove(target.key, project)
+        }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
             unresolvedLifecycleOpenProjects.remove(target.key)
             return if (isUsableProject(project)) {
@@ -1380,12 +1386,6 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 lifecycleOpenAlreadyOpening(target)
             }
-        }
-        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
-            if (isUnresolvedLifecycleOpenActive(project)) {
-                return lifecycleOpenStateUnknown(target)
-            }
-            unresolvedLifecycleOpenProjects.remove(target.key, project)
         }
         firstParameter(parameters, "session_id") ?: return mapOf(
             "status" to "failed",
@@ -1472,7 +1472,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 val isIdentifiableProject = isOpenProject && lifecycleOpenKeys(project).contains(key)
                                 val isUsableLifecycleProject = isIdentifiableProject && isUsableProject(project)
                                 observedOpenProject = observedOpenProject || isOpenProject
-                                unresolvedOpenState = !isIdentifiableProject && nowMs >= deadlineMs
+                                unresolvedOpenState = !isUsableLifecycleProject && nowMs >= deadlineMs
                                 project.isDisposed ||
                                     isUsableLifecycleProject ||
                                     (observedOpenProject && !isOpenProject) ||
