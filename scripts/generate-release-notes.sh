@@ -54,7 +54,7 @@ maintenance="$(mktemp)"
 other_updates="$(mktemp)"
 seen_subjects="$(mktemp)"
 
-git log --pretty=format:'%s' --no-merges $range > "$commit_summary"
+git log --pretty=format:'%s' --no-merges "$range" > "$commit_summary"
 
 while IFS= read -r subject; do
   [[ -n "$subject" ]] || continue
