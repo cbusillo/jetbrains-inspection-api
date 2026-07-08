@@ -42,6 +42,7 @@ import org.jetbrains.concurrency.rejectedPromise
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.RejectedExecutionException
 import javax.swing.JFrame
 import javax.swing.JPanel
 
@@ -1726,7 +1727,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle open releases opening guard when returned project is never observed`() {
+    fun `test lifecycle open keeps opening guard while returned project is never observed`() {
         val tempDir = Files.createTempDirectory("inspection-open-never-observed")
         every { mockProjectManager.openProjects } returns emptyArray()
         val initializingProject = mockk<Project>()
@@ -1739,6 +1740,8 @@ class InspectionHandlerTest {
         val scheduled = mutableListOf<Runnable>()
         val guardPolls = mutableListOf<Runnable>()
         var nowMs = 1_000L
+        var retryAfterOldNeverObservedTimeout = ""
+        var scheduledAfterRetry = 0
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
@@ -1746,9 +1749,15 @@ class InspectionHandlerTest {
             guardPolls += firstArg<Runnable>()
             mockk(relaxed = true)
         }
-        handler.lifecycleOpenGuardNeverObservedTimeoutMs = 400
+        handler.lifecycleOpenGuardTimeoutMs = 1_000
         handler.lifecycleOpenGuardNow = { nowMs }
-        handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
+        handler.lifecycleOpenGuardSleep = { millis ->
+            nowMs += millis
+            if (nowMs >= 1_400L && retryAfterOldNeverObservedTimeout.isEmpty()) {
+                retryAfterOldNeverObservedTimeout = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+                scheduledAfterRetry = scheduled.size
+            }
+        }
         handler.openProjectPath = { initializingProject }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
@@ -1759,11 +1768,85 @@ class InspectionHandlerTest {
         val secondBody = second.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
-        assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(2, scheduled.size)
+        assertEquals(HttpResponseStatus.CONFLICT, second.status())
+        assertEquals(1, scheduledAfterRetry)
+        assertEquals(1, scheduled.size)
         assertTrue(inFlight.contains("\"reason\": \"already_opening\""))
-        assertTrue(secondBody.contains("\"status\": \"opening\""))
-        assertFalse(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryAfterOldNeverObservedTimeout.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryAfterOldNeverObservedTimeout.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"status\": \"failed\""))
+        assertTrue(secondBody.contains("\"reason\": \"open_state_unknown\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+    }
+
+    @Test
+    fun `test lifecycle open retries after unresolved returned project is disposed`() {
+        val tempDir = Files.createTempDirectory("inspection-open-unresolved-disposed")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        var disposed = false
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } answers { disposed }
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-unresolved-disposed"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardTimeoutMs = 400
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
+        handler.openProjectPath = { initializingProject }
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        guardPolls.single().run()
+        val unknown = processGetRequest(lifecycleOpenUri(tempDir))
+        disposed = true
+        val retry = processGetRequest(lifecycleOpenUri(tempDir))
+
+        assertEquals(HttpResponseStatus.CONFLICT, unknown.status())
+        assertEquals(HttpResponseStatus.OK, retry.status())
+        assertEquals(2, scheduled.size)
+        assertTrue(unknown.content().toString(Charsets.UTF_8).contains("\"reason\": \"open_state_unknown\""))
+    }
+
+    @Test
+    fun `test lifecycle open keeps unresolved guard when poller submission fails`() {
+        val tempDir = Files.createTempDirectory("inspection-open-poller-submit-fails")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns false
+        every { initializingProject.name } returns "inspection-open-poller-submit-fails"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } throws RejectedExecutionException("pool stopped")
+        handler.openProjectPath = { initializingProject }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.CONFLICT, second.status())
+        assertEquals(1, scheduled.size)
+        assertTrue(secondBody.contains("\"reason\": \"open_state_unknown\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
     }
 
     @Test
@@ -1790,7 +1873,6 @@ class InspectionHandlerTest {
             guardPolls += firstArg<Runnable>()
             mockk(relaxed = true)
         }
-        handler.lifecycleOpenGuardNeverObservedTimeoutMs = 100
         handler.lifecycleOpenGuardTimeoutMs = 400
         handler.lifecycleOpenGuardNow = { nowMs }
         handler.lifecycleOpenGuardSleep = { millis ->
