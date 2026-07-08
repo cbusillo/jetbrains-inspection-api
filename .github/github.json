@@ -63,7 +63,7 @@
       "manual smoke test flow changes"
     ]
   },
-  "importantWorkflows": ["CI", "CodeQL", "Release"],
+  "importantWorkflows": ["CI", "CodeQL", "Dependabot Updates", "Dependency Graph", "Release"],
   "requiredStatusChecks": [
     "commit-gate",
     "Analyze (actions)",
