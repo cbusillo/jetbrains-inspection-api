@@ -8,6 +8,7 @@ name: CI
       - main
 
 permissions:
+  checks: write
   contents: read
   pull-requests: write
 
@@ -28,11 +29,19 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Lint GitHub Actions workflows
+      - name: Lint GitHub Actions workflows for pull requests
+        if: github.event_name == 'pull_request'
         uses: reviewdog/action-actionlint@v1
         with:
           fail_level: error
-          reporter: github-pr-review
+          reporter: github-pr-annotations
+
+      - name: Lint GitHub Actions workflows for pushes
+        if: github.event_name == 'push'
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: github-check
 
       - name: Lint shell scripts
         run: shellcheck --severity=warning scripts/*.sh
