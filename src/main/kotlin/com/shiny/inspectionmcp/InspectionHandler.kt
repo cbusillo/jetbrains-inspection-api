@@ -754,6 +754,7 @@ class InspectionHandler : HttpRequestHandler() {
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
     private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
     private val openingProjectPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val unresolvedLifecycleOpenProjects = java.util.concurrent.ConcurrentHashMap<String, Project>()
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
@@ -763,7 +764,6 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
     internal var lifecycleOpenGuardTimeoutMs: Long = 10_000
-    internal var lifecycleOpenGuardNeverObservedTimeoutMs: Long = 2_000
     internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunExpirationMs: Long = 300000L
@@ -1374,11 +1374,18 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
+            unresolvedLifecycleOpenProjects.remove(target.key)
             return if (isUsableProject(project)) {
                 lifecycleOpenAlreadyOpen(project)
             } else {
                 lifecycleOpenAlreadyOpening(target)
             }
+        }
+        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
+            if (isUnresolvedLifecycleOpenActive(project)) {
+                return lifecycleOpenStateUnknown(target)
+            }
+            unresolvedLifecycleOpenProjects.remove(target.key, project)
         }
         firstParameter(parameters, "session_id") ?: return mapOf(
             "status" to "failed",
@@ -1398,6 +1405,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "session_id" to InspectionIdeSession.sessionId,
             ) to HttpResponseStatus.OK
         }
+        unresolvedLifecycleOpenProjects.remove(target.key)
 
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
@@ -1441,36 +1449,57 @@ class InspectionHandler : HttpRequestHandler() {
     private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
         if (isUsableProject(project) || project.isDisposed) {
             openingProjectPaths.remove(key)
+            unresolvedLifecycleOpenProjects.remove(key)
             return
         }
-        ApplicationManager.getApplication().executeOnPooledThread {
-            try {
-                val startedAtMs = lifecycleOpenGuardNow()
-                val deadlineMs = startedAtMs + lifecycleOpenGuardTimeoutMs
-                val neverObservedDeadlineMs = startedAtMs + lifecycleOpenGuardNeverObservedTimeoutMs
-                var observedOpenProject = false
-                while (openingProjectPaths.contains(key)) {
-                    val nowMs = lifecycleOpenGuardNow()
-                    val lifecycleComplete = runCatching {
-                        ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                            val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
-                            observedOpenProject = observedOpenProject || isOpenProject
-                            project.isDisposed ||
-                                isUsableProject(project) ||
-                                (observedOpenProject && !isOpenProject) ||
-                                nowMs >= deadlineMs ||
-                                (!observedOpenProject && nowMs >= neverObservedDeadlineMs)
+        val submitted = runCatching {
+            ApplicationManager.getApplication().executeOnPooledThread {
+                var unresolvedOpenState = false
+                try {
+                    val startedAtMs = lifecycleOpenGuardNow()
+                    val deadlineMs = startedAtMs + lifecycleOpenGuardTimeoutMs
+                    var observedOpenProject = false
+                    while (openingProjectPaths.contains(key)) {
+                        val nowMs = lifecycleOpenGuardNow()
+                        val lifecycleComplete = runCatching {
+                            ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                                val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
+                                observedOpenProject = observedOpenProject || isOpenProject
+                                unresolvedOpenState = !observedOpenProject && nowMs >= deadlineMs
+                                project.isDisposed ||
+                                    isUsableProject(project) ||
+                                    (observedOpenProject && !isOpenProject) ||
+                                    (observedOpenProject && nowMs >= deadlineMs) ||
+                                    unresolvedOpenState
+                            }
+                        }.getOrDefault(false)
+                        if (lifecycleComplete) {
+                            return@executeOnPooledThread
                         }
-                    }.getOrDefault(false)
-                    if (lifecycleComplete) {
-                        return@executeOnPooledThread
+                        lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                     }
-                    lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
+                } finally {
+                    openingProjectPaths.remove(key)
+                    if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
+                        unresolvedLifecycleOpenProjects[key] = project
+                    }
                 }
-            } finally {
-                openingProjectPaths.remove(key)
+            }
+        }.isSuccess
+        if (!submitted) {
+            openingProjectPaths.remove(key)
+            if (isUnresolvedLifecycleOpenActive(project)) {
+                unresolvedLifecycleOpenProjects[key] = project
             }
         }
+    }
+
+    private fun isUnresolvedLifecycleOpenActive(project: Project): Boolean {
+        return runCatching {
+            ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                !project.isDisposed && !isUsableProject(project)
+            }
+        }.getOrDefault(!project.isDisposed)
     }
 
     private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
@@ -1491,6 +1520,18 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to target.path.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
+    }
+
+    private fun lifecycleOpenStateUnknown(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+        return mapOf(
+            "status" to "failed",
+            "opened" to false,
+            "opening_scheduled" to false,
+            "reason" to "open_state_unknown",
+            "message" to "The IDE accepted the lifecycle open request but did not report the project before the guard timeout.",
+            "worktree_path" to target.path.toString(),
+            "session_id" to InspectionIdeSession.sessionId,
+        ) to HttpResponseStatus.CONFLICT
     }
 
     private fun resolveLifecycleOpenTarget(path: Path): LifecycleOpenTarget {
