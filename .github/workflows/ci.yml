@@ -27,6 +27,15 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Lint GitHub Actions workflows
+        uses: reviewdog/action-actionlint@v1
+        with:
+          fail_level: error
+          reporter: github-check
+
+      - name: Lint shell scripts
+        run: shellcheck --severity=warning scripts/*.sh
+
       - name: Run commit gate
         run: ./scripts/commit-gate.sh --ci
 
