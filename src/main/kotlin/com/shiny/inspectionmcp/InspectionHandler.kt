@@ -1447,7 +1447,12 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
-        if (isUsableProject(project) || project.isDisposed) {
+        if (project.isDisposed) {
+            openingProjectPaths.remove(key)
+            unresolvedLifecycleOpenProjects.remove(key)
+            return
+        }
+        if (isLifecycleOpenProjectUsable(key, project)) {
             openingProjectPaths.remove(key)
             unresolvedLifecycleOpenProjects.remove(key)
             return
@@ -1464,12 +1469,13 @@ class InspectionHandler : HttpRequestHandler() {
                         val lifecycleComplete = runCatching {
                             ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
                                 val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
+                                val isIdentifiableProject = isOpenProject && lifecycleOpenKeys(project).contains(key)
+                                val isUsableLifecycleProject = isIdentifiableProject && isUsableProject(project)
                                 observedOpenProject = observedOpenProject || isOpenProject
-                                unresolvedOpenState = !observedOpenProject && nowMs >= deadlineMs
+                                unresolvedOpenState = !isIdentifiableProject && nowMs >= deadlineMs
                                 project.isDisposed ||
-                                    isUsableProject(project) ||
+                                    isUsableLifecycleProject ||
                                     (observedOpenProject && !isOpenProject) ||
-                                    (observedOpenProject && nowMs >= deadlineMs) ||
                                     unresolvedOpenState
                             }
                         }.getOrDefault(false)
@@ -1497,9 +1503,20 @@ class InspectionHandler : HttpRequestHandler() {
     private fun isUnresolvedLifecycleOpenActive(project: Project): Boolean {
         return runCatching {
             ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                !project.isDisposed && !isUsableProject(project)
+                !project.isDisposed
             }
         }.getOrDefault(!project.isDisposed)
+    }
+
+    private fun isLifecycleOpenProjectUsable(key: String, project: Project): Boolean {
+        return runCatching {
+            ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                isLifecycleOpenProject(project) &&
+                    ProjectManager.getInstance().openProjects.any { openProject -> openProject === project } &&
+                    lifecycleOpenKeys(project).contains(key) &&
+                    isUsableProject(project)
+            }
+        }.getOrDefault(false)
     }
 
     private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
@@ -1567,8 +1584,28 @@ class InspectionHandler : HttpRequestHandler() {
             .getOrElse { path.normalize().toAbsolutePath() }
     }
 
+    @Suppress("SameReturnValue")
     private fun findOpenProjectForLifecycleOpen(path: String): Project? {
-        return findOpenProjectByPath(path)
+        val normalized = normalizeFileSystemPath(path) ?: return null
+        val canonical = runCatching { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
+        return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
+            for (project in ProjectManager.getInstance().openProjects) {
+                if (!isUsableProject(project)) continue
+                val candidatePaths = projectCandidatePaths(project)
+                val matchesNormalizedPath = candidatePaths.any { candidatePath ->
+                    normalizeFileSystemPath(candidatePath) == normalized
+                }
+                val matchesCanonicalPath = canonical?.let { key ->
+                    candidatePaths.any { candidatePath ->
+                        runCatching { canonicalLifecycleOpenKey(Paths.get(candidatePath)) }.getOrNull() == key
+                    }
+                } == true
+                if (matchesNormalizedPath || matchesCanonicalPath) {
+                    return@runReadAction project
+                }
+            }
+            null
+        }
     }
 
     private fun findOpenProjectForLifecycleOpenKey(key: String): Project? {
@@ -1723,22 +1760,6 @@ class InspectionHandler : HttpRequestHandler() {
         return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
             ProjectManager.getInstance().openProjects.firstOrNull { project ->
                 isUsableProject(project) && projectInstanceId(project) == projectInstanceId
-            }
-        }
-    }
-
-    private fun findOpenProjectByPath(path: String): Project? {
-        val normalized = normalizeFileSystemPath(path) ?: return null
-        val canonical = runCatching { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
-        return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
-            ProjectManager.getInstance().openProjects.firstOrNull { project ->
-                isUsableProject(project) &&
-                    (normalizeFileSystemPath(project.basePath) == normalized ||
-                        projectRootFromProjectFilePath(project.projectFilePath) == normalized ||
-                        normalizeFileSystemPath(project.projectFilePath) == normalized ||
-                        canonical?.let { lifecycleOpenKeys(project).contains(it) } == true ||
-                        projectKey(project) == "path:$normalized" ||
-                        projectKey(project) == "file:$normalized")
             }
         }
     }

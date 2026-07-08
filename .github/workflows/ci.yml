@@ -8,7 +8,6 @@ name: CI
       - main
 
 permissions:
-  checks: write
   contents: read
 
 jobs:
@@ -32,7 +31,7 @@ jobs:
         uses: reviewdog/action-actionlint@v1
         with:
           fail_level: error
-          reporter: github-check
+          reporter: github-pr-review
 
       - name: Lint shell scripts
         run: shellcheck --severity=warning scripts/*.sh

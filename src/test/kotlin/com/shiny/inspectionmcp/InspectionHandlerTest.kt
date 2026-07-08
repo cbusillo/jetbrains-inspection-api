@@ -1611,13 +1611,8 @@ class InspectionHandlerTest {
         every { initializingProject.basePath } returns tempDir.toString()
         every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
         val scheduled = mutableListOf<Runnable>()
-        val guardPolls = mutableListOf<Runnable>()
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
-        }
-        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
-            guardPolls += firstArg<Runnable>()
-            mockk(relaxed = true)
         }
         handler.openProjectPath = {
             openProjects[0] = initializingProject
@@ -1629,14 +1624,12 @@ class InspectionHandlerTest {
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
         every { initializingProject.isInitialized } returns true
-        guardPolls.single().run()
         val third = processGetRequest(lifecycleOpenUri(tempDir))
         val thirdBody = third.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
         assertEquals(1, scheduled.size)
-        assertEquals(1, guardPolls.size)
         assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
         assertEquals(HttpResponseStatus.OK, third.status())
@@ -1656,14 +1649,9 @@ class InspectionHandlerTest {
         every { initializingProject.basePath } returns tempDir.toString()
         every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
         val scheduled = mutableListOf<Runnable>()
-        val guardPolls = mutableListOf<Runnable>()
         var inFlightResponseBody = ""
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
-        }
-        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
-            guardPolls += firstArg<Runnable>()
-            mockk(relaxed = true)
         }
         handler.openProjectPath = {
             openProjects[0] = initializingProject
@@ -1674,21 +1662,19 @@ class InspectionHandlerTest {
         scheduled.single().run()
         inFlightResponseBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
         every { initializingProject.isInitialized } returns true
-        guardPolls.single().run()
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, first.status())
         assertEquals(HttpResponseStatus.OK, second.status())
         assertEquals(1, scheduled.size)
-        assertEquals(1, guardPolls.size)
         assertTrue(inFlightResponseBody.contains("\"reason\": \"already_opening\""))
         assertTrue(inFlightResponseBody.contains("\"opening_scheduled\": false"))
         assertTrue(secondBody.contains("\"status\": \"already_open\""))
     }
 
     @Test
-    fun `test lifecycle open releases opening guard when project disappears before initialization`() {
+    fun `test lifecycle open retries when project disappears before initialization`() {
         val tempDir = Files.createTempDirectory("inspection-open-disappears")
         val openProjects = arrayOfNulls<Project>(1)
         every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
@@ -1863,9 +1849,50 @@ class InspectionHandlerTest {
         every { initializingProject.basePath } returns tempDir.toString()
         every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
         val scheduled = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.lifecycleOpenGuardTimeoutMs = 400
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
+        handler.openProjectPath = {
+            openProjects[0] = initializingProject
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(1, scheduled.size)
+        assertFalse(initialized)
+        assertTrue(secondBody.contains("\"status\": \"opening\""))
+        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+    }
+
+    @Test
+    fun `test lifecycle open keeps guard while observed project is not identifiable`() {
+        val tempDir = Files.createTempDirectory("inspection-open-unidentifiable")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        every { mockProject.basePath } returns null
+        every { mockProject.projectFilePath } returns null
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns true
+        every { initializingProject.name } returns "inspection-open-unidentifiable"
+        every { initializingProject.basePath } returns null
+        every { initializingProject.projectFilePath } returns null
+        val scheduled = mutableListOf<Runnable>()
         val guardPolls = mutableListOf<Runnable>()
         var nowMs = 1_000L
-        var retryBeforeHardTimeoutBody = ""
+        var retryBeforeTimeoutBody = ""
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
@@ -1877,7 +1904,7 @@ class InspectionHandlerTest {
         handler.lifecycleOpenGuardNow = { nowMs }
         handler.lifecycleOpenGuardSleep = { millis ->
             nowMs += millis
-            retryBeforeHardTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
+            retryBeforeTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
             nowMs = 1_400L
         }
         handler.openProjectPath = {
@@ -1886,19 +1913,18 @@ class InspectionHandlerTest {
         }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(1, scheduled.size)
         scheduled.single().run()
         guardPolls.single().run()
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
-        assertEquals(HttpResponseStatus.OK, first.status())
-        assertEquals(HttpResponseStatus.OK, second.status())
+        assertEquals(HttpResponseStatus.CONFLICT, second.status())
         assertEquals(1, scheduled.size)
-        assertFalse(initialized)
-        assertTrue(retryBeforeHardTimeoutBody.contains("\"reason\": \"already_opening\""))
-        assertTrue(retryBeforeHardTimeoutBody.contains("\"opening_scheduled\": false"))
-        assertTrue(secondBody.contains("\"status\": \"opening\""))
-        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryBeforeTimeoutBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(retryBeforeTimeoutBody.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"reason\": \"open_state_unknown\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
     }
 
@@ -1915,15 +1941,9 @@ class InspectionHandlerTest {
         every { initializingProject.basePath } returns tempDir.toString()
         every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
         val scheduled = mutableListOf<Runnable>()
-        val guardPolls = mutableListOf<Runnable>()
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
-            guardPolls += firstArg<Runnable>()
-            mockk(relaxed = true)
-        }
-        handler.lifecycleOpenGuardSleep = { error("poller aborted") }
         handler.openProjectPath = {
             openProjects[0] = initializingProject
             initializingProject
@@ -1931,9 +1951,6 @@ class InspectionHandlerTest {
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
-        assertThrows(IllegalStateException::class.java) {
-            guardPolls.single().run()
-        }
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
