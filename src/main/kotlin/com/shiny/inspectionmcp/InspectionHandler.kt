@@ -165,6 +165,62 @@ internal data class InspectionModelExtraction(
         }
 }
 
+internal data class InspectionCaptureSnapshotInput(
+    val bestResults: List<Map<String, Any>>,
+    val bestSource: String,
+    val snapshotTimeMs: Long,
+    val projectState: InspectionProjectStateSnapshot,
+    val emptyOutcome: InspectionSnapshotOutcome,
+    val emptyNote: String?,
+    val captureScope: InspectionCaptureScope,
+    val captureDiagnostic: Map<String, Any?>?,
+    val runId: Long,
+    val triggerTimeMs: Long?,
+    val viewReadyOk: Boolean,
+)
+
+internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
+    val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
+    return when {
+        input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
+            problems = input.bestResults,
+            timestamp = input.snapshotTimeMs,
+            projectState = input.projectState,
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = input.bestSource,
+            captureScope = input.captureScope,
+            runId = input.runId,
+            triggerTimeMs = input.triggerTimeMs,
+        )
+
+        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = input.snapshotTimeMs,
+            projectState = input.projectState,
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = input.captureScope,
+            captureDiagnostic = input.captureDiagnostic,
+            runId = input.runId,
+            triggerTimeMs = input.triggerTimeMs,
+        )
+
+        else -> InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = input.snapshotTimeMs,
+            projectState = input.projectState,
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = if (input.viewReadyOk) "inspection_view" else "tool_window",
+            note = input.emptyNote,
+            captureScope = input.captureScope,
+            captureDiagnostic = input.captureDiagnostic,
+            captureIncompleteReason = captureIncompleteReason,
+            runId = input.runId,
+            triggerTimeMs = input.triggerTimeMs,
+        )
+    }
+}
+
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
     val reconciled: Boolean,
@@ -3649,43 +3705,21 @@ class InspectionHandler : HttpRequestHandler() {
                         } else {
                             null
                         }
-                        val captureIncompleteReason = classifyCaptureIncompleteReason(captureDiagnostic)
-                        val snapshot = when {
-                            bestResults.isNotEmpty() -> InspectionResultsSnapshot(
-                                problems = bestResults,
-                                timestamp = System.currentTimeMillis(),
+                        val snapshot = buildInspectionCaptureSnapshot(
+                            InspectionCaptureSnapshotInput(
+                                bestResults = bestResults,
+                                bestSource = bestSource,
+                                snapshotTimeMs = System.currentTimeMillis(),
                                 projectState = snapshotState,
-                                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
-                                source = bestSource,
-                                captureScope = captureScope,
-                                runId = runId,
-                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                            )
-                            emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
-                                problems = emptyList(),
-                                timestamp = System.currentTimeMillis(),
-                                projectState = snapshotState,
-                                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
-                                source = "inspection_view",
+                                emptyOutcome = emptyOutcome,
+                                emptyNote = emptyNote,
                                 captureScope = captureScope,
                                 captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                                viewReadyOk = viewReadyOk,
                             )
-                            else -> InspectionResultsSnapshot(
-                                problems = emptyList(),
-                                timestamp = System.currentTimeMillis(),
-                                projectState = snapshotState,
-                                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                                source = if (viewReadyOk) "inspection_view" else "tool_window",
-                                note = emptyNote,
-                                captureScope = captureScope,
-                                captureDiagnostic = captureDiagnostic,
-                                captureIncompleteReason = captureIncompleteReason,
-                                runId = runId,
-                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                            )
-                        }
+                        )
                         if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
                             logger.info(
                                 "Inspection capture incomplete for ${project.name}: " +
