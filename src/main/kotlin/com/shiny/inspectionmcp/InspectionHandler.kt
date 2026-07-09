@@ -1127,10 +1127,6 @@ class InspectionHandler : HttpRequestHandler() {
                     sendJsonResponse(context, formatJsonManually(result.first), result.second)
                 }
                 "/api/inspection/lifecycle/close" -> {
-                    responseHasSessionDrift(parameters)?.let {
-                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
-                        return true
-                    }
                     val result = closeLifecycleProject(parameters)
                     sendJsonResponse(context, formatJsonManually(result.first), result.second)
                 }
@@ -1692,18 +1688,22 @@ class InspectionHandler : HttpRequestHandler() {
         if (lease.closeToken != closeToken) {
             return lifecycleCloseSkipped("token_mismatch", "Close token did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
         }
+        if (!leasesByProjectInstance.remove(expectedProjectInstanceId, lease)) {
+            return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
+        }
         if (lease.sessionId != InspectionIdeSession.sessionId) {
-            leasesByProjectInstance.remove(expectedProjectInstanceId)
+            return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
+        }
+        val expectedSessionId = firstParameter(parameters, "session_id")
+        if (expectedSessionId != null && expectedSessionId != InspectionIdeSession.sessionId) {
             return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
         }
 
         val project = findOpenProjectByInstanceId(expectedProjectInstanceId)
             ?: run {
-                leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
                 return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
             }
         if (projectKey(project) != lease.projectKey) {
-            leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
             return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
         }
 
@@ -1718,7 +1718,6 @@ class InspectionHandler : HttpRequestHandler() {
                 closeAttempts,
             )
         }
-        leasesByProjectInstance.remove(expectedProjectInstanceId, lease)
         return mapOf(
             "status" to "closed",
             "project_instance_id" to expectedProjectInstanceId,

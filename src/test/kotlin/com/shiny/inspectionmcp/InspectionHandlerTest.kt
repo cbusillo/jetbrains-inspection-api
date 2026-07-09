@@ -42,7 +42,11 @@ import org.jetbrains.concurrency.rejectedPromise
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JFrame
 import javax.swing.JPanel
 
@@ -2084,18 +2088,33 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
-        processGetRequest(
+        val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
-        )
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns true
+        var closeCalls = 0
+        handler.forceCloseProject = { _, _ ->
+            closeCalls++
+            every { mockProjectManager.openProjects } returns emptyArray()
+            true
+        }
 
         val response = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=wrong"
+        )
+        val validResponse = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.FORBIDDEN, response.status())
         assertTrue(body.contains("\"status\": \"skipped\""))
         assertTrue(body.contains("\"reason\": \"token_mismatch\""))
+        assertEquals(HttpResponseStatus.OK, validResponse.status())
+        assertTrue(validResponse.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(1, closeCalls)
     }
 
     @Test
@@ -2133,6 +2152,124 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"closed\""))
         assertSame(worktreeProject, closedProject)
+    }
+
+    @Test
+    fun `test lifecycle close consumes close token before close work under concurrency`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns true
+        val enteredClose = CountDownLatch(1)
+        val releaseClose = CountDownLatch(1)
+        val closeCalls = AtomicInteger(0)
+        handler.forceCloseProject = { _, _ ->
+            closeCalls.incrementAndGet()
+            enteredClose.countDown()
+            if (releaseClose.await(5, TimeUnit.SECONDS)) {
+                every { mockProjectManager.openProjects } returns emptyArray()
+                true
+            } else {
+                false
+            }
+        }
+
+        val firstResponse = AtomicReference<FullHttpResponse>()
+        val firstFailure = AtomicReference<Throwable>()
+        val firstThread = Thread {
+            try {
+                firstResponse.set(
+                    processGetRequest(
+                        "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+                    )
+                )
+            } catch (t: Throwable) {
+                firstFailure.set(t)
+            }
+        }
+        firstThread.start()
+        assertTrue(enteredClose.await(5, TimeUnit.SECONDS))
+
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+        releaseClose.countDown()
+        firstThread.join(5_000)
+        firstFailure.get()?.let { throw it }
+        val first = firstResponse.get() ?: fail("first close response was not captured")
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+        assertEquals(1, closeCalls.get())
+    }
+
+    @Test
+    fun `test lifecycle close consumes stale-session lease without closing project`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        lifecycleLeases()[instanceId] = InspectionProjectLease(
+            closeToken = "stale-token",
+            leaseId = "test-lease",
+            projectKey = projectKey(mockProject),
+            projectInstanceId = instanceId,
+            basePath = "/repo/app",
+            sessionId = "stale-session",
+            claimedAtMs = 1L,
+        )
+        val closeCalls = AtomicInteger(0)
+        handler.forceCloseProject = { _, _ ->
+            closeCalls.incrementAndGet()
+            true
+        }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=stale-token"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=stale-token"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, first.status())
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"session_drift\""))
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+        assertEquals(0, closeCalls.get())
+    }
+
+    @Test
+    fun `test lifecycle close consumes valid token when request session id drifted`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        val closeCalls = AtomicInteger(0)
+        handler.forceCloseProject = { _, _ ->
+            closeCalls.incrementAndGet()
+            true
+        }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&session_id=stale-session"
+        )
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&session_id=stale-session"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, first.status())
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"session_drift\""))
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+        assertEquals(0, closeCalls.get())
     }
 
     @Test
@@ -2333,7 +2470,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close keeps lease when close fails after retries`() {
+    fun `test lifecycle close consumes token when close fails after retries`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -2362,10 +2499,10 @@ class InspectionHandlerTest {
         )
 
         assertEquals(HttpResponseStatus.CONFLICT, first.status())
-        assertEquals(HttpResponseStatus.CONFLICT, second.status())
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
-        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
-        assertEquals(listOf(true, false, false, true, false, false), saveModes)
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
+        assertEquals(listOf(true, false, false), saveModes)
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"closed_verified\": false"))
     }
 
@@ -2733,6 +2870,13 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
         }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun lifecycleLeases(): MutableMap<String, InspectionProjectLease> {
+        val field = InspectionHandler::class.java.getDeclaredField("leasesByProjectInstance")
+        field.isAccessible = true
+        return field.get(handler) as MutableMap<String, InspectionProjectLease>
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {
