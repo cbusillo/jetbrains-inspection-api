@@ -14,6 +14,7 @@ import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vfs.LocalFileSystem
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -1534,7 +1535,14 @@ class InspectionSnapshotStateTest {
         mockkStatic(FileEditorManager::class)
         every { FileEditorManager.getInstance(mockProject) } returns mockFileEditorManager
         every { mockFileEditorManager.selectedFiles } returns arrayOf(mockActiveFile)
+        every { mockFileEditorManager.openFiles } returns arrayOf(mockActiveFile)
         every { mockActiveFile.path } returns "/tmp/TestProject/src/app.js"
+        every { mockActiveFile.isValid } returns true
+        every { mockActiveFile.isInLocalFileSystem } returns true
+        val projectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+        every { projectFileIndex.isInContent(mockActiveFile) } returns true
 
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1564,6 +1572,16 @@ class InspectionSnapshotStateTest {
     @Test
     @DisplayName("Problems endpoint filters included stale findings by requested files")
     fun testProblemsEndpointFiltersIncludedStaleFindingsByFilesScope() {
+        val requestedFile = mockk<VirtualFile>()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src/App.kt") } returns requestedFile
+        every { requestedFile.path } returns "/tmp/TestProject/src/App.kt"
+        every { requestedFile.isValid } returns true
+        every { requestedFile.isDirectory } returns false
+        every { requestedFile.isInLocalFileSystem } returns true
+
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
             InspectionResultsSnapshot(
