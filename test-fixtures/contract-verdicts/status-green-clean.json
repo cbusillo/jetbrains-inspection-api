@@ -1,0 +1,42 @@
+{
+  "name": "status-green-clean",
+  "endpoint": "status",
+  "payload": {
+    "inspection_verdict": "GREEN",
+    "inspection_verdict_reason": "clean_confirmed",
+    "inspection_verdict_message": "Inspection worked and found no actionable findings for the selected scope/filter.",
+    "inspection_verdict_next_action": "No inspection action required for this scope/filter.",
+    "clean_inspection": true,
+    "has_inspection_results": true,
+    "capture_incomplete": false,
+    "snapshot_outcome": "clean_confirmed",
+    "inspection_proof": {
+      "status": "complete",
+      "capture_complete": true,
+      "inspection_completed": true,
+      "indexing_complete": true,
+      "session_fresh": true,
+      "results_fresh": true,
+      "snapshot_outcome": "clean_confirmed"
+    }
+  },
+  "expected": {
+    "verdict": "GREEN",
+    "reason": "clean_confirmed",
+    "mcp_contains": [
+      "VERDICT: GREEN reason=clean_confirmed",
+      "Inspection worked and found no actionable findings for the selected scope/filter."
+    ],
+    "helper_agent_result": {
+      "verdict": "GREEN",
+      "bucket": "clean",
+      "retry_policy": {
+        "retry": false,
+        "max_attempts": 0,
+        "wait_ms": 0
+      },
+      "next_action": "No inspection action required for this scope/filter.",
+      "agent_report": "JetBrains inspection passed for the selected scope."
+    }
+  }
+}

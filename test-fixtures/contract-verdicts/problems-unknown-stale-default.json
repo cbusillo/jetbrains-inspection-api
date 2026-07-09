@@ -1,0 +1,43 @@
+{
+  "name": "problems-unknown-stale-default",
+  "endpoint": "problems",
+  "payload": {
+    "status": "stale_results",
+    "inspection_verdict": "UNKNOWN",
+    "inspection_verdict_reason": "stale_results",
+    "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+    "inspection_verdict_next_action": "Rerun inspection; stale cached findings must not be treated as current.",
+    "results_may_be_stale": true,
+    "include_stale": false,
+    "snapshot_change_kind": "project_changed_since_inspection",
+    "snapshot_outcome": "problems_found",
+    "stale_reasons": ["project_changed_since_inspection"],
+    "cached_total_problems": 1,
+    "cached_problems_shown": 0
+  },
+  "expected": {
+    "verdict": "UNKNOWN",
+    "reason": "stale_results",
+    "mcp_contains": [
+      "VERDICT: UNKNOWN reason=stale_results",
+      "\"cached_total_problems\": 1",
+      "project_changed_since_inspection"
+    ],
+    "mcp_not_contains": [
+      "Cached warning",
+      "\"total_problems\"",
+      "\"problems\""
+    ],
+    "helper_agent_result": {
+      "verdict": "UNKNOWN",
+      "bucket": "stale_results",
+      "retry_policy": {
+        "retry": true,
+        "max_attempts": 1,
+        "wait_ms": 30000
+      },
+      "next_action": "Rerun inspection; stale cached findings must not be treated as current.",
+      "agent_report": "JetBrains inspection was inconclusive (stale_results: stale_results). Rerun inspection; stale cached findings must not be treated as current."
+    }
+  }
+}

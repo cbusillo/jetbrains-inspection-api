@@ -1,0 +1,49 @@
+{
+  "name": "status-unknown-proof-failed",
+  "endpoint": "status",
+  "payload": {
+    "inspection_verdict": "UNKNOWN",
+    "inspection_verdict_reason": "inspection_proof_failed",
+    "inspection_verdict_message": "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
+    "inspection_verdict_next_action": "Resolve the route/profile/scope proof failure, then trigger and wait for a fresh inspection before reporting GREEN or RED.",
+    "capture_incomplete": false,
+    "clean_inspection": true,
+    "has_inspection_results": true,
+    "snapshot_outcome": "clean_confirmed",
+    "proof_failures": ["profile_mismatch"],
+    "inspection_proof": {
+      "status": "complete",
+      "capture_complete": true,
+      "expected_profile": "Fable Contract Profile",
+      "indexing_complete": true,
+      "inspection_completed": true,
+      "results_fresh": true,
+      "session_fresh": true,
+      "snapshot_outcome": "clean_confirmed"
+    }
+  },
+  "expected": {
+    "verdict": "UNKNOWN",
+    "reason": "inspection_proof_failed",
+    "mcp_contains": [
+      "VERDICT: UNKNOWN reason=inspection_proof_failed",
+      "profile_mismatch"
+    ],
+    "mcp_not_contains": [
+      "\"total_problems\"",
+      "\"problems\"",
+      "VERDICT: GREEN"
+    ],
+    "helper_agent_result": {
+      "verdict": "UNKNOWN",
+      "bucket": "tool_bug",
+      "retry_policy": {
+        "retry": false,
+        "max_attempts": 0,
+        "wait_ms": 0
+      },
+      "next_action": "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN.",
+      "agent_report": "JetBrains inspection was inconclusive (tool_bug: inspection_proof_failed). Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+    }
+  }
+}

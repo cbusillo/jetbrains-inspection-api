@@ -1,0 +1,45 @@
+{
+  "name": "problems-unknown-capture-incomplete",
+  "endpoint": "problems",
+  "payload": {
+    "status": "capture_incomplete",
+    "inspection_verdict": "UNKNOWN",
+    "inspection_verdict_reason": "extractor_failure",
+    "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+    "inspection_verdict_next_action": "Treat this as a plugin/helper bug: include capture_diagnostic, update the plugin or helper, and rerun.",
+    "capture_incomplete": true,
+    "capture_incomplete_reason": "extractor_failure",
+    "total_problems": 0,
+    "problems_shown": 0,
+    "problems": [],
+    "capture_diagnostic": {
+      "exit_reason": "deadline",
+      "extraction_failure_count": 2
+    }
+  },
+  "expected": {
+    "verdict": "UNKNOWN",
+    "reason": "extractor_failure",
+    "mcp_contains": [
+      "VERDICT: UNKNOWN reason=extractor_failure",
+      "plugin/helper bug",
+      "capture_incomplete_reason"
+    ],
+    "mcp_not_contains": [
+      "capture_diagnostic",
+      "\"problems\"",
+      "\"total_problems\""
+    ],
+    "helper_agent_result": {
+      "verdict": "UNKNOWN",
+      "bucket": "tool_bug",
+      "retry_policy": {
+        "retry": false,
+        "max_attempts": 0,
+        "wait_ms": 0
+      },
+      "next_action": "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun.",
+      "agent_report": "JetBrains inspection was inconclusive (tool_bug: extractor_failure). Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
+    }
+  }
+}
