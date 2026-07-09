@@ -29,7 +29,14 @@ import javax.swing.JTree
 internal data class ProblemExtractionResult(
     val problems: List<Map<String, Any>>,
     val succeeded: Boolean,
+    val source: ProblemExtractionSource = ProblemExtractionSource.NONE,
 )
+
+internal enum class ProblemExtractionSource {
+    INSPECTION_RESULTS,
+    PROBLEMS_FALLBACK,
+    NONE,
+}
 
 class EnhancedTreeExtractor {
 
@@ -91,7 +98,11 @@ class EnhancedTreeExtractor {
         } catch (_: Exception) {
             false
         }
-        return ProblemExtractionResult(dedupeProblems(problems), succeeded)
+        return ProblemExtractionResult(
+            dedupeProblems(problems),
+            succeeded,
+            ProblemExtractionSource.INSPECTION_RESULTS,
+        )
     }
     
     fun extractAllProblems(project: Project): List<Map<String, Any>> {
@@ -101,6 +112,8 @@ class EnhancedTreeExtractor {
     internal fun extractAllProblemsWithStatus(project: Project): ProblemExtractionResult {
         val problems = mutableListOf<Map<String, Any>>()
         var succeeded = true
+        var primaryEmptySurfaceSucceeded: Boolean? = null
+        var fallbackAddedProblems = false
         
         try {
             val toolWindowManager = ToolWindowManager.getInstance(project)
@@ -110,7 +123,6 @@ class EnhancedTreeExtractor {
             val inspectionSearch = findToolWindowsContainingInspectionResults(toolWindowManager)
             succeeded = inspectionSearch.succeeded && succeeded
             val inspectionWindows = inspectionSearch.toolWindows
-            var primaryEmptySurfaceSucceeded: Boolean? = null
             if (inspectionWindows.isNotEmpty()) {
                 var extractedProblems = false
                 var extractedResultsSurface = false
@@ -128,7 +140,11 @@ class EnhancedTreeExtractor {
                     succeeded = extraction.succeeded && succeeded
                 }
                 if (problems.isNotEmpty()) {
-                    return ProblemExtractionResult(problems, succeeded || extractedProblems)
+                    return ProblemExtractionResult(
+                        problems,
+                        succeeded || extractedProblems,
+                        ProblemExtractionSource.INSPECTION_RESULTS,
+                    )
                 }
                 if (extractedResultsSurface) {
                     primaryEmptySurfaceSucceeded = succeeded || extractedProblems
@@ -146,6 +162,7 @@ class EnhancedTreeExtractor {
                 val extraction = extractFromToolWindow(fallback, problems, project, seen, acceptEmptyTreeSurface = false)
                 if (extraction.addedProblems || problems.size > beforeFallback) {
                     succeeded = extraction.succeeded
+                    fallbackAddedProblems = true
                     break
                 }
                 if (primaryEmptySurfaceSucceeded == null && !extraction.sawResultsSurface) {
@@ -160,7 +177,12 @@ class EnhancedTreeExtractor {
             succeeded = false
         }
         
-        return ProblemExtractionResult(problems, succeeded)
+        val source = when {
+            fallbackAddedProblems -> ProblemExtractionSource.PROBLEMS_FALLBACK
+            primaryEmptySurfaceSucceeded != null -> ProblemExtractionSource.INSPECTION_RESULTS
+            else -> ProblemExtractionSource.NONE
+        }
+        return ProblemExtractionResult(problems, succeeded, source)
     }
 
     private fun findToolWindowsContainingInspectionResults(toolWindowManager: ToolWindowManager): InspectionToolWindowSearch {
@@ -175,7 +197,10 @@ class EnhancedTreeExtractor {
             val directMatches = inspectionResultsToolWindowIds.mapNotNull { id ->
                 val toolWindow = toolWindowManager.getToolWindow(id) ?: return@mapNotNull null
                 val state = inspectToolWindowForResults(toolWindow)
-                if (state.isExtractable) {
+                if (
+                    state == InspectionToolWindowState.HAS_RESULTS_VIEW ||
+                    (id.acceptsCleanEmptyTreeSurface && state == InspectionToolWindowState.HAS_TREE)
+                ) {
                     InspectionToolWindowCandidate(
                         toolWindow,
                         acceptEmptyTreeSurface = id.acceptsCleanEmptyTreeSurface || state == InspectionToolWindowState.HAS_RESULTS_VIEW,
@@ -199,7 +224,7 @@ class EnhancedTreeExtractor {
             val state = inspectToolWindowForResults(toolWindow)
             val isKnownInspectionWindow = id in inspectionResultsToolWindowIds
             if (state == InspectionToolWindowState.HAS_RESULTS_VIEW ||
-                (isKnownInspectionWindow && state == InspectionToolWindowState.HAS_TREE)
+                (id.acceptsCleanEmptyTreeSurface && state == InspectionToolWindowState.HAS_TREE)
             ) {
                 matches.add(
                     InspectionToolWindowCandidate(

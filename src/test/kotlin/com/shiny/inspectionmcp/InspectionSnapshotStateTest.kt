@@ -13,6 +13,7 @@ import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.openapi.vcs.changes.ChangeListManager
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -27,12 +28,14 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.lang.reflect.InvocationTargetException
 
 class InspectionSnapshotStateTest {
 
@@ -94,6 +97,98 @@ class InspectionSnapshotStateTest {
     fun tearDown() {
         InspectionResultsStore.clear(snapshotKey())
         unmockkAll()
+    }
+
+    @Test
+    @DisplayName("Capture scope coverage only permits equal or narrower requests")
+    fun testCaptureScopeCoverageRelations() {
+        val wholeProject = InspectionCaptureScope(scopeParam = "whole_project")
+        val directory = InspectionCaptureScope(
+            scopeParam = "directory",
+            resolvedDirectory = "/tmp/TestProject/src",
+        )
+        val files = InspectionCaptureScope(
+            scopeParam = "files",
+            resolvedFiles = listOf(
+                "/tmp/TestProject/src/App.kt",
+                "/tmp/TestProject/src/Util.kt",
+            ),
+        )
+        val appFile = InspectionCaptureScope(
+            scopeParam = "files",
+            resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+        )
+        val otherFile = InspectionCaptureScope(
+            scopeParam = "files",
+            resolvedFiles = listOf("/tmp/TestProject/test/AppTest.kt"),
+        )
+
+        assertTrue(inspectionCaptureScopeCoversRequest(wholeProject, otherFile))
+        assertTrue(inspectionCaptureScopeCoversRequest(directory, appFile))
+        assertTrue(inspectionCaptureScopeCoversRequest(files, appFile))
+        assertFalse(inspectionCaptureScopeCoversRequest(files, wholeProject))
+        assertFalse(inspectionCaptureScopeCoversRequest(files, otherFile))
+        assertFalse(inspectionCaptureScopeCoversRequest(directory, otherFile))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint rejects a query broader than the captured scope")
+    fun testProblemsEndpointRejectsBroaderQueryScope() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf("src/App.kt"),
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+            ),
+        )
+
+        val response = getInspectionProblems(scope = "whole_project")
+
+        assertTrue(response.contains("\"status\": \"scope_mismatch\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"scope_mismatch\""))
+        assertFalse(response.contains("\"inspection_verdict\": \"GREEN\""))
+    }
+
+    @Test
+    @DisplayName("Empty changed-files query does not inherit whole-project findings")
+    fun testEmptyChangedFilesQueryReturnsNoMatchingFindings() {
+        val changeListManager = mockk<ChangeListManager>()
+        mockkStatic(ChangeListManager::class)
+        every { ChangeListManager.getInstance(mockProject) } returns changeListManager
+        every { changeListManager.allChanges } returns emptyList()
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(
+                        description = "Whole-project warning",
+                        file = "/tmp/TestProject/src/app.js",
+                    )
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = getInspectionProblems(scope = "changed_files")
+
+        assertTrue(response.contains("\"status\": \"results_available\""), response)
+        assertTrue(response.contains("\"total_problems\": 0"))
+        assertFalse(response.contains("Whole-project warning"))
+        assertTrue(response.contains("\"inspection_verdict\": \"GREEN\""))
     }
 
     @Test
@@ -514,17 +609,16 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Older run completion does not clear a newer run")
-    fun testOlderRunCannotFinishNewerRun() {
+    @DisplayName("Overlapping inspection runs are rejected for the same project")
+    fun testOverlappingInspectionRunsAreRejected() {
         val firstRun = beginInspectionRun()
-        val secondRun = beginInspectionRun()
+        val conflict = assertThrows(InvocationTargetException::class.java) {
+            beginInspectionRun()
+        }
+        assertTrue(conflict.cause is InspectionRunConflictException)
 
         finishInspectionRun(snapshotKey(), firstRun.runId)
-        val statusAfterOldFinish = buildInspectionStatus()
-
-        assertEquals(true, statusAfterOldFinish["inspection_in_progress"])
-        assertEquals(secondRun.runId, statusAfterOldFinish["inspection_run_id"])
-
+        val secondRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), secondRun.runId)
         val statusAfterCurrentFinish = buildInspectionStatus()
 
@@ -533,10 +627,10 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Clean snapshot is reconciled when live Problems view still has findings")
-    fun testCleanSnapshotReconcilesWithLiveProblems() {
+    @DisplayName("Generic Problems fallback does not override a clean run-specific snapshot")
+    fun testGenericProblemsFallbackDoesNotOverrideCleanSnapshot() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
+        val fallbackProblems = listOf(
             mapOf(
                 "description" to "Live warning",
                 "file" to "/tmp/TestProject/src/app.js",
@@ -545,6 +639,11 @@ class InspectionSnapshotStateTest {
                 "severity" to "weak_warning",
                 "inspectionType" to "JSUnresolvedReference",
             )
+        )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            fallbackProblems,
+            succeeded = true,
+            source = ProblemExtractionSource.PROBLEMS_FALLBACK,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -561,20 +660,55 @@ class InspectionSnapshotStateTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals(false, status["clean_inspection"])
+        assertEquals(true, status["clean_inspection"])
         assertEquals(true, status["has_inspection_results"])
-        assertEquals(1, status["total_problems"])
-        assertEquals("problems_found", status["snapshot_outcome"])
-        assertEquals("tool_window", status["results_source"])
-        assertEquals("RED", status["inspection_verdict"])
-        assertEquals("actionable_findings", status["inspection_verdict_reason"])
+        assertEquals(0, status["total_problems"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals("inspection_view", status["results_source"])
+        assertEquals("GREEN", status["inspection_verdict"])
+    }
+
+    @Test
+    @DisplayName("Generic Problems fallback does not promote an incomplete snapshot")
+    fun testGenericProblemsFallbackDoesNotPromoteIncompleteSnapshot() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = listOf(
+                mapOf(
+                    "description" to "Unrelated warning",
+                    "file" to "/tmp/TestProject/src/app.js",
+                    "severity" to "warning",
+                )
+            ),
+            succeeded = true,
+            source = ProblemExtractionSource.PROBLEMS_FALLBACK,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                captureIncompleteReason = CaptureIncompleteReason.VIEW_NOT_READY,
+            ),
+        )
+
+        val response = getInspectionProblems()
+
+        assertTrue(response.contains("\"status\": \"capture_incomplete\""))
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
+        assertFalse(response.contains("Unrelated warning"))
     }
 
     @Test
     @DisplayName("Scoped clean snapshot ignores unrelated live tool-window problems")
     fun testScopedCleanSnapshotIgnoresUnrelatedLiveProblems() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
+        val unrelatedProblems = listOf(
             mapOf(
                 "description" to "Unrelated warning",
                 "file" to "/tmp/TestProject/src/app.js",
@@ -583,6 +717,11 @@ class InspectionSnapshotStateTest {
                 "severity" to "weak_warning",
                 "inspectionType" to "JSUnresolvedReference",
             )
+        )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            unrelatedProblems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -597,6 +736,7 @@ class InspectionSnapshotStateTest {
                 captureScope = InspectionCaptureScope(
                     scopeParam = "files",
                     files = listOf("README.md"),
+                    resolvedFiles = listOf("/tmp/TestProject/README.md"),
                 ),
             ),
         )
@@ -614,7 +754,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Current-file clean snapshot stays bound to the captured file during reconciliation")
     fun testCurrentFileCleanSnapshotUsesCapturedFilePath() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
+        val unrelatedProblems = listOf(
             mapOf(
                 "description" to "Different editor tab warning",
                 "file" to "/tmp/TestProject/src/other.kt",
@@ -623,6 +763,11 @@ class InspectionSnapshotStateTest {
                 "severity" to "warning",
                 "inspectionType" to "DifferentFileInspection",
             )
+        )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            unrelatedProblems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -666,7 +811,7 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Current-file snapshots without a pinned file reconcile as whole-project results")
+    @DisplayName("Current-file snapshots without a pinned file cannot prove a result")
     fun testCurrentFileSnapshotWithoutPinnedFileDoesNotUseLaterActiveTab() {
         val extractor = mockk<EnhancedTreeExtractor>()
         every { extractor.extractAllProblems(mockProject) } returns listOf(
@@ -714,10 +859,10 @@ class InspectionSnapshotStateTest {
         val status = buildInspectionStatus()
 
         assertEquals(false, status["clean_inspection"])
-        assertEquals(true, status["has_inspection_results"])
-        assertEquals(1, status["total_problems"])
-        assertEquals("problems_found", status["snapshot_outcome"])
-        assertEquals("tool_window", status["results_source"])
+        assertEquals(false, status["has_inspection_results"])
+        assertEquals(true, status["capture_incomplete"])
+        assertEquals("scope_not_covered", status["capture_incomplete_reason"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
     }
 
     @Test
@@ -806,7 +951,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Problems endpoint returns live findings when clean snapshot is contradicted")
     fun testProblemsEndpointReconcilesCleanSnapshot() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
+        val liveProblems = listOf(
             mapOf(
                 "description" to "Live warning",
                 "file" to "/tmp/TestProject/src/app.js",
@@ -815,6 +960,11 @@ class InspectionSnapshotStateTest {
                 "severity" to "weak_warning",
                 "inspectionType" to "JSUnresolvedReference",
             )
+        )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            liveProblems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -830,11 +980,23 @@ class InspectionSnapshotStateTest {
         )
 
         val response = getInspectionProblems()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            emptyList(),
+            succeeded = false,
+            source = ProblemExtractionSource.NONE,
+        )
+        val repeatedResponse = getInspectionProblems()
 
         assertTrue(response.contains("\"status\": \"results_available\""))
         assertTrue(response.contains("\"total_problems\": 1"))
         assertTrue(response.contains("Live warning"))
         assertTrue(response.contains("\"method\": \"tool_window\""))
+        assertTrue(repeatedResponse.contains("\"status\": \"results_available\""))
+        assertTrue(repeatedResponse.contains("Live warning"))
+        assertEquals(
+            InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            InspectionResultsStore.getSnapshot(snapshotKey())?.outcome,
+        )
     }
 
     @Test
@@ -868,7 +1030,7 @@ class InspectionSnapshotStateTest {
     @DisplayName("Problems endpoint returns live findings when incomplete snapshot is contradicted")
     fun testProblemsEndpointReconcilesCaptureIncompleteSnapshot() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
+        val liveProblems = listOf(
             mapOf(
                 "description" to "Late warning",
                 "file" to "/tmp/TestProject/src/app.js",
@@ -877,6 +1039,11 @@ class InspectionSnapshotStateTest {
                 "severity" to "weak_warning",
                 "inspectionType" to "JSUnresolvedReference",
             )
+        )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            liveProblems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -971,8 +1138,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Wait reconciles current-run PSI churn without stale_results")
-    fun testWaitReconcilesCurrentRunPsiChurn() {
+    @DisplayName("Wait treats completed-run PSI changes as stale")
+    fun testWaitTreatsCompletedRunPsiChangesAsStale() {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
@@ -997,11 +1164,11 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
         val status = buildInspectionStatus()
 
-        assertTrue(response.contains("\"completion_reason\": \"results\""))
-        assertFalse(response.contains("\"completion_reason\": \"stale_results\""))
-        assertEquals(false, status["results_may_be_stale"])
-        assertEquals("fresh", status["snapshot_change_kind"])
-        assertEquals(8L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
+        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
         assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
     }
 
@@ -1043,8 +1210,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Wait reconciles same-run global context findings when live findings still match")
-    fun testWaitReconcilesSameRunGlobalContextFindingsWithLiveConfirmation() {
+    @DisplayName("Matching live findings do not refresh a completed run")
+    fun testMatchingLiveFindingsDoNotRefreshCompletedRun() {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
@@ -1069,11 +1236,11 @@ class InspectionSnapshotStateTest {
         val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
         val status = buildInspectionStatus()
 
-        assertTrue(response.contains("\"completion_reason\": \"results\""))
-        assertFalse(response.contains("\"completion_reason\": \"stale_results\""))
-        assertEquals(false, status["results_may_be_stale"])
-        assertEquals("fresh", status["snapshot_change_kind"])
-        assertEquals(8L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
+        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
+        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
         assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
     }
 
@@ -1475,9 +1642,13 @@ class InspectionSnapshotStateTest {
             )
         )
         var extractorCalls = 0
-        every { extractor.extractAllProblems(mockProject) } answers {
+        every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
             extractorCalls += 1
-            if (extractorCalls == 1) emptyList() else liveProblems
+            ProblemExtractionResult(
+                problems = if (extractorCalls == 1) emptyList() else liveProblems,
+                succeeded = true,
+                source = ProblemExtractionSource.INSPECTION_RESULTS,
+            )
         }
         enhancedTreeExtractorFactory = { extractor }
 
@@ -1500,8 +1671,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Wait keeps polling through a transient empty live view after a recent trigger")
-    fun testWaitKeepsPollingWhenRecentRunHasNoSnapshotYet() {
+    @DisplayName("Wait does not infer results from a live view without a run snapshot")
+    fun testWaitDoesNotInferResultsWithoutRunSnapshot() {
         val extractor = mockk<EnhancedTreeExtractor>()
         setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
         val liveProblems = listOf(
@@ -1523,9 +1694,9 @@ class InspectionSnapshotStateTest {
 
         val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
 
-        assertTrue(extractorCalls > 1)
-        assertTrue(response.contains("\"completion_reason\": \"results\""))
-        assertFalse(response.contains("\"completion_reason\": \"no_results\""))
+        assertEquals(0, extractorCalls)
+        assertTrue(response.contains("\"completion_reason\": \"no_results\""))
+        assertFalse(response.contains("\"completion_reason\": \"results\""))
     }
 
     @Test

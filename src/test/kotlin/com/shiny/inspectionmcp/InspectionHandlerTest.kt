@@ -524,7 +524,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test same run non-empty snapshot survives psi churn`() {
+    fun `test completed run snapshot becomes stale after psi change`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -557,15 +557,14 @@ class InspectionHandlerTest {
 
         val body = getFileInspectionProblems(listOf("src/Included.kt"))
 
-        assertTrue(body.contains("\"status\": \"results_available\""))
-        assertFalse(body.contains("\"status\": \"stale_results\""))
-        assertTrue(body.contains("\"total_problems\": 1"))
-        assertTrue(body.contains("included problem"))
+        assertTrue(body.contains("\"status\": \"stale_results\""))
+        assertTrue(body.contains("\"cached_total_problems\": 1"))
+        assertFalse(body.contains("included problem"))
         assertFalse(body.contains("excluded problem"))
     }
 
     @Test
-    fun `test expired inspection run no longer reports in progress`() {
+    fun `test long-running inspection remains serialized until worker finishes`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -589,13 +588,14 @@ class InspectionHandlerTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals(false, status["inspection_in_progress"])
+        assertEquals(true, status["inspection_in_progress"])
+        assertEquals(true, status["is_scanning"])
         assertEquals(true, status["inspection_run_expired"])
         assertEquals("capture_incomplete", status["snapshot_outcome"])
     }
 
     @Test
-    fun `test completed scoped run with empty extraction proves clean status without snapshot`() {
+    fun `test completed scoped run without snapshot remains unknown`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -613,11 +613,11 @@ class InspectionHandlerTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals(true, status["has_inspection_results"])
-        assertEquals(true, status["clean_inspection"])
+        assertEquals(false, status["has_inspection_results"])
+        assertEquals(false, status["clean_inspection"])
         assertEquals(0, status["total_problems"])
-        assertEquals(true, status["scoped_clean_extraction_succeeded"])
-        assertEquals(true, status["scoped_clean_matcher_available"])
+        assertFalse(status.containsKey("scoped_clean_extraction_succeeded"))
+        assertFalse(status.containsKey("scoped_clean_matcher_available"))
     }
 
     @Test
@@ -641,8 +641,8 @@ class InspectionHandlerTest {
 
         assertEquals(false, status["has_inspection_results"])
         assertEquals(false, status["clean_inspection"])
-        assertEquals(true, status["scoped_clean_matcher_available"])
-        assertEquals(false, status["scoped_clean_extraction_succeeded"])
+        assertFalse(status.containsKey("scoped_clean_matcher_available"))
+        assertFalse(status.containsKey("scoped_clean_extraction_succeeded"))
     }
 
     @Test
@@ -1101,6 +1101,23 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
         verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test concurrent trigger returns structured conflict`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(runId = 42L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        val response = processTriggerRequest("/api/inspection/trigger")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("\"error\": \"inspection_in_progress\""))
+        assertTrue(body.contains("\"status\": \"inspection_in_progress\""))
+        assertTrue(body.contains("\"inspection_run_id\": 42"))
     }
 
     @Test
