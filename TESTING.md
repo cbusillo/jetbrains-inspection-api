@@ -214,7 +214,9 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 The commit gate sync-checks `plugin.xml` against `gradle.properties`, requires
 Java 21, then runs plugin tests, core tests, MCP server tests, and `buildPlugin`.
 Code scanning is tracked through the required `Analyze (actions)` and
-`Analyze (python)` checks alongside `commit-gate`.
+`Analyze (python)` checks alongside `commit-gate`. `Analyze (java-kotlin)` also
+runs as a non-required signal so Kotlin and plugin upgrades can be validated
+before that check is considered stable enough to require.
 
 Version tags (`v*`) run `.github/workflows/release.yml`, which repeats the
 commit gate before publishing to the JetBrains Marketplace and creating the
