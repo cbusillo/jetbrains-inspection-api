@@ -203,12 +203,18 @@ state, Gradle caches, IDE sandboxes, or build output.
 
 ## CI
 
-GitHub Actions runs the commit gate on pull requests and pushes to `main` via
-`.github/workflows/ci.yml`:
+GitHub Actions runs workflow lint, shell lint, and the commit gate on pull
+requests and pushes to `main` via `.github/workflows/ci.yml`:
 
-- `./gradlew test`
-- `./gradlew :mcp-server-jvm:test`
-- `./gradlew buildPlugin`
+- `reviewdog/action-actionlint` on workflow files, using PR annotations for pull
+  requests and a GitHub check reporter for pushes
+- `shellcheck --severity=warning scripts/*.sh`
+- `./scripts/commit-gate.sh --ci`
+
+The commit gate sync-checks `plugin.xml` against `gradle.properties`, requires
+Java 21, then runs plugin tests, core tests, MCP server tests, and `buildPlugin`.
+Code scanning is tracked through the required `Analyze (actions)` and
+`Analyze (python)` checks alongside `commit-gate`.
 
 Version tags (`v*`) run `.github/workflows/release.yml`, which repeats the
 commit gate before publishing to the JetBrains Marketplace and creating the
