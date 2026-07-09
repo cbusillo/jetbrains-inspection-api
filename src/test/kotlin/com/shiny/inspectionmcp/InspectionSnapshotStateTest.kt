@@ -1322,6 +1322,44 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Problems endpoint ignores cached findings from other projects")
+    fun testProblemsEndpointIgnoresOtherProjectSnapshots() {
+        val otherProject = mockk<Project>()
+        every { otherProject.name } returns "OtherProject"
+        every { otherProject.basePath } returns "/tmp/OtherProject"
+        every { otherProject.projectFilePath } returns "/tmp/OtherProject/.idea/OtherProject.iml"
+        val otherProjectKey = projectKey(otherProject)
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        enhancedTreeExtractorFactory = { extractor }
+
+        try {
+            InspectionResultsStore.setSnapshot(
+                otherProjectKey,
+                InspectionResultsSnapshot(
+                    problems = listOf(
+                        staleProblem(description = "Other project warning", file = "/tmp/OtherProject/src/App.kt"),
+                    ),
+                    timestamp = System.currentTimeMillis(),
+                    projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                    outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                    source = "inspection_view",
+                ),
+            )
+
+            val response = json.parseToJsonElement(getInspectionProblems()).jsonObject
+
+            assertEquals("path:/tmp/TestProject", response.string("project_key"))
+            assertEquals("no_results", response.string("status"))
+            assertEquals("UNKNOWN", response.string("inspection_verdict"))
+            assertEquals(0, response.int("total_problems"))
+            assertEquals(0, (response["problems"] as JsonArray).size)
+        } finally {
+            InspectionResultsStore.clear(otherProjectKey)
+        }
+    }
+
+    @Test
     @DisplayName("Problems endpoint filters included stale findings by current file")
     fun testProblemsEndpointFiltersIncludedStaleFindingsByCurrentFile() {
         val mockFileEditorManager = mockk<FileEditorManager>()
@@ -1354,6 +1392,71 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("Old warning"))
         assertFalse(response.contains("Other warning"))
         assertFalse(response.contains("\"total_problems\":"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint filters included stale findings by requested files")
+    fun testProblemsEndpointFiltersIncludedStaleFindingsByFilesScope() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(description = "Requested file warning", file = "/tmp/TestProject/src/App.kt"),
+                    staleProblem(description = "Sibling file warning", file = "/tmp/TestProject/src/AppTest.kt"),
+                    staleProblem(description = "Other project warning", file = "/tmp/OtherProject/src/App.kt"),
+                ),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = json.parseToJsonElement(
+            getInspectionProblems(scope = "files", includeStale = true, files = listOf("src/App.kt"))
+        ).jsonObject
+        val problems = response["problems"] as JsonArray
+
+        assertEquals("stale_results", response.string("status"))
+        assertEquals("UNKNOWN", response.string("inspection_verdict"))
+        assertEquals("stale_results", response.string("inspection_verdict_reason"))
+        assertEquals(1, response.int("cached_total_problems"))
+        assertEquals(1, problems.size)
+        assertEquals("Requested file warning", problems.first().jsonObject.string("description"))
+        assertFalse(response.containsKey("total_problems"))
+    }
+
+    @Test
+    @DisplayName("Problems endpoint filters included stale findings by requested directory boundaries")
+    fun testProblemsEndpointFiltersIncludedStaleFindingsByDirectoryScope() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(description = "Directory warning", file = "/tmp/TestProject/src/App.kt"),
+                    staleProblem(description = "Nested directory warning", file = "/tmp/TestProject/src/nested/Feature.kt"),
+                    staleProblem(description = "Sibling prefix warning", file = "/tmp/TestProject/src-old/App.kt"),
+                ),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val response = json.parseToJsonElement(
+            getInspectionProblems(scope = "directory", includeStale = true, directoryParam = "src")
+        ).jsonObject
+        val descriptions = (response["problems"] as JsonArray).map { it.jsonObject.string("description") }
+
+        assertEquals("stale_results", response.string("status"))
+        assertEquals("UNKNOWN", response.string("inspection_verdict"))
+        assertEquals("stale_results", response.string("inspection_verdict_reason"))
+        assertEquals(2, response.int("cached_total_problems"))
+        assertEquals(listOf("Directory warning", "Nested directory warning"), descriptions)
+        assertFalse(response.containsKey("total_problems"))
     }
 
     @Test
@@ -3055,6 +3158,8 @@ class InspectionSnapshotStateTest {
         includeStale: Boolean = false,
         limit: Int = 100,
         offset: Int = 0,
+        directoryParam: String? = null,
+        files: List<String>? = null,
     ): String {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems",
@@ -3066,9 +3171,29 @@ class InspectionSnapshotStateTest {
             Int::class.javaPrimitiveType,
             Int::class.javaPrimitiveType,
             Boolean::class.javaPrimitiveType,
+            String::class.java,
+            List::class.java,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaObjectType,
         )
         method.isAccessible = true
-        return method.invoke(handler, mockProject, "all", scope, null, null, limit, offset, includeStale) as String
+        return method.invoke(
+            handler,
+            mockProject,
+            "all",
+            scope,
+            null,
+            null,
+            limit,
+            offset,
+            includeStale,
+            directoryParam,
+            files,
+            true,
+            null,
+            null,
+        ) as String
     }
 
     private fun staleProblem(
@@ -3153,6 +3278,8 @@ class InspectionSnapshotStateTest {
     }
 
     private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
+
+    private fun JsonObject.int(key: String): Int? = this[key]?.jsonPrimitive?.contentOrNull?.toIntOrNull()
 
     private fun snapshotKey(project: Project = mockProject): String {
         return projectKey(project)

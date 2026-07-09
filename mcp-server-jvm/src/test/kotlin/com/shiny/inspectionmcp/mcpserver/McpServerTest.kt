@@ -306,6 +306,23 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetProblemsProofFailureOverridesPluginRedVerdict() {
+        val response = """{"status":"results_available","total_problems":1,"problems_shown":1,"problems":[{"description":"Wrong scope warning"}],"proof_failures":["route_mismatch"],"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings"}"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=inspection_proof_failed"))
+            assertFalse(text.contains("VERDICT: RED"))
+            assertFalse(text.contains("Wrong scope warning"))
+            assertFalse(text.contains("\"problems\""))
+        }
+    }
+
+    @Test
     fun mcpRenderedVerdictsMatchSharedContractFixtures() {
         listOf(
             contractCase("problems-red-findings"),
