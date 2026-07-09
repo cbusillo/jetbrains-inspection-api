@@ -1026,8 +1026,8 @@ class InspectionHandlerTest {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "waitForInspection",
             String::class.java,
-            java.lang.Long::class.java,
-            java.lang.Long::class.java,
+            Long::class.javaObjectType,
+            Long::class.javaObjectType,
         )
         method.isAccessible = true
 
