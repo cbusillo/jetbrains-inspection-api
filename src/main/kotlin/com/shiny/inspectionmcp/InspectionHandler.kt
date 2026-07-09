@@ -32,11 +32,13 @@ import com.shiny.inspectionmcp.core.InspectionRouteIdentity
 import com.shiny.inspectionmcp.core.InspectionRouteProject
 import com.shiny.inspectionmcp.core.InspectionRouteSelector
 import com.shiny.inspectionmcp.core.effectiveProjectRoot
+import com.shiny.inspectionmcp.core.compileFilePatternRegex
 import com.shiny.inspectionmcp.core.normalizeProblemsScope
 import com.shiny.inspectionmcp.core.paginateProblems
 import com.shiny.inspectionmcp.core.projectRootFromIdeaMetadataPath
 import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
 import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
+import com.shiny.inspectionmcp.core.usesPatternFileSyntax
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
@@ -312,6 +314,77 @@ internal fun parseGitStatusPorcelainZ(output: String): Pair<Set<String>, Set<Str
         }
     }
     return Pair(staged, unstaged)
+}
+
+internal data class BoundedProcessOutput(
+    val exitCode: Int?,
+    val output: ByteArray,
+    val timedOut: Boolean,
+    val outputLimitExceeded: Boolean,
+)
+
+private fun destroyProcessTree(process: Process) {
+    runCatching {
+        process.descendants().use { descendants ->
+            descendants.forEach { descendant -> descendant.destroyForcibly() }
+        }
+    }
+    process.destroyForcibly()
+}
+
+internal fun collectBoundedProcessOutput(
+    process: Process,
+    timeoutMs: Long,
+    maxOutputBytes: Int,
+): BoundedProcessOutput {
+    val output = AtomicReference(ByteArray(0))
+    val readerFailure = AtomicReference<Throwable?>(null)
+    var interrupted = false
+    val reader = Thread.ofVirtual().start {
+        try {
+            output.set(process.inputStream.readNBytes(maxOutputBytes + 1))
+        } catch (error: Throwable) {
+            readerFailure.set(error)
+        }
+    }
+    val completed = try {
+        process.waitFor(timeoutMs, TimeUnit.MILLISECONDS)
+    } catch (_: InterruptedException) {
+        interrupted = true
+        false
+    }
+    if (!completed) {
+        destroyProcessTree(process)
+        try {
+            process.waitFor(1, TimeUnit.SECONDS)
+        } catch (_: InterruptedException) {
+            interrupted = true
+        }
+    }
+    try {
+        reader.join(1000L)
+    } catch (_: InterruptedException) {
+        interrupted = true
+    }
+    if (reader.isAlive) {
+        destroyProcessTree(process)
+        reader.interrupt()
+    }
+    if (interrupted) {
+        Thread.currentThread().interrupt()
+        throw InterruptedException("Interrupted while collecting process output.")
+    }
+    val captured = output.get()
+    val exceeded = captured.size > maxOutputBytes
+    if (readerFailure.get() != null && completed && !exceeded) {
+        throw readerFailure.get()!!
+    }
+    return BoundedProcessOutput(
+        exitCode = if (completed) runCatching { process.exitValue() }.getOrNull() else null,
+        output = if (exceeded) captured.copyOf(maxOutputBytes) else captured,
+        timedOut = !completed || reader.isAlive,
+        outputLimitExceeded = exceeded,
+    )
 }
 
 internal class BadRequestException(
@@ -1203,28 +1276,39 @@ class InspectionHandler : HttpRequestHandler() {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
-                    val severity = parameters["severity"]?.firstOrNull() ?: "all"
-                    val scope = parameters["scope"]?.firstOrNull() ?: "whole_project"
+                    val severity = parseSeverity(parameters)
+                    val scope = parameters["scope"]?.firstOrNull()?.trim().orEmpty().ifBlank { "whole_project" }
                     val problemTypeRaw = parameters["problem_type"]?.firstOrNull()
                     val filePatternRaw = parameters["file_pattern"]?.firstOrNull()
                     val problemType = normalizeOptionalFilter(problemTypeRaw)
                     val filePattern = normalizeOptionalFilter(filePatternRaw)
+                    validateFilePattern(filePattern)
                     val limit = parseIntParameter(parameters, "limit", defaultValue = 100, min = 1, max = 1000)
                     val offset = parseIntParameter(parameters, "offset", defaultValue = 0, min = 0)
-                    val includeStale = parameters["include_stale"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: false
+                    val includeStale = parseBooleanParameter(parameters, "include_stale", defaultValue = false)
                     val directory = parameters["dir"]?.firstOrNull()
                         ?: parameters["directory"]?.firstOrNull()
                         ?: parameters["path"]?.firstOrNull()
                     val filesList = requestedFiles(parameters)
-                    val includeUnversioned = parameters["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
-                    val changedFilesMode = parameters["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
+                    val includeUnversioned = parseBooleanParameter(parameters, "include_unversioned", defaultValue = true)
+                    val changedFilesMode = parseChangedFilesMode(parameters)
                     val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
                     val projectName = extractProjectSelector(urlDecoder, request)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
                             withCurrentProject(context, projectName, refreshProjectState = false) { project ->
+                                val validatedRequestScope = validateInspectionScopeRequest(
+                                    project = project,
+                                    scopeParam = scope,
+                                    directoryParam = directory,
+                                    files = filesList,
+                                    includeUnversioned = includeUnversioned,
+                                    changedFilesMode = changedFilesMode,
+                                    maxFiles = maxFiles,
+                                    allowLegacyProblemsScope = true,
+                                )
                                 val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
-                                    getInspectionProblems(
+                                    getInspectionProblemsInternal(
                                         project,
                                         severity,
                                         scope,
@@ -1238,13 +1322,15 @@ class InspectionHandler : HttpRequestHandler() {
                                         includeUnversioned,
                                         changedFilesMode,
                                         maxFiles,
+                                        validatedRequestScope,
                                     )
                                 }
                                 sendJsonResponse(context, result)
                             }
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
-                        } catch (_: Exception) {
+                        } catch (error: Exception) {
+                            logger.warn("Failed to process inspection problems request", error)
                             sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
                         }
                     }
@@ -1254,64 +1340,55 @@ class InspectionHandler : HttpRequestHandler() {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
-                    val scope = parameters["scope"]?.firstOrNull()
+                    val scope = parameters["scope"]?.firstOrNull()?.trim()
                     // Accept either `dir`, `directory`, or `path` for directory scoping
                     val directory = parameters["dir"]?.firstOrNull()
                         ?: parameters["directory"]?.firstOrNull()
                         ?: parameters["path"]?.firstOrNull()
                     val filesList = mutableListOf<String>()
                     filesList.addAll(requestedFiles(parameters))
-                    val includeUnversioned = parameters["include_unversioned"]?.firstOrNull()?.equals("true", ignoreCase = true) ?: true
-                    val changedFilesMode = parameters["changed_files_mode"]?.firstOrNull()?.lowercase()?.trim()
+                    val includeUnversioned = parseBooleanParameter(parameters, "include_unversioned", defaultValue = true)
+                    val changedFilesMode = parseChangedFilesMode(parameters)
                     val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
                     val profile = parameters["profile"]?.firstOrNull()
                     val projectName = extractProjectSelector(urlDecoder, request)
-                    withCurrentProject(context, projectName) { project ->
-                        val requestedCurrentFileScope = scope?.lowercase()?.trim() == "current_file"
-                        val resolvedCurrentFile = if (requestedCurrentFileScope) {
-                            resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
-                        } else {
-                            null
-                        }
-                        val captureScope = InspectionCaptureScope(
-                            scopeParam = if (requestedCurrentFileScope && resolvedCurrentFile == null) null else scope,
-                            directoryParam = directory,
-                            files = if (filesList.isEmpty()) null else filesList,
-                            resolvedCurrentFile = resolvedCurrentFile,
-                            includeUnversioned = includeUnversioned,
-                            changedFilesMode = changedFilesMode,
-                            maxFiles = maxFiles,
-                        )
-                        val runState = beginInspectionRun(project, captureScope)
+                    val triggerRequest = Runnable {
                         try {
-                            ApplicationManager.getApplication().executeOnPooledThread {
-                                triggerInspectionAsync(
-                                    project = project,
-                                    runId = runState.runId,
-                                    captureScope = captureScope,
-                                    profileName = profile
-                                )
-                            }
-                        } catch (e: Exception) {
-                            finishInspectionRun(projectKey(project), runState.runId)
-                            throw e
+                            startInspectionTrigger(
+                                context = context,
+                                projectName = projectName,
+                                scope = scope,
+                                directory = directory,
+                                files = filesList,
+                                includeUnversioned = includeUnversioned,
+                                changedFilesMode = changedFilesMode,
+                                maxFiles = maxFiles,
+                                profile = profile,
+                            )
+                        } catch (error: InspectionRunConflictException) {
+                            sendInspectionRunConflict(context, error)
+                        } catch (error: BadRequestException) {
+                            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+                        } catch (error: Exception) {
+                            logger.warn("Failed to process inspection trigger request", error)
+                            sendJsonResponse(
+                                context,
+                                """{"error": "Internal server error"}""",
+                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                            )
                         }
-                        val details = mutableMapOf<String, Any>(
-                            "status" to "triggered",
-                            "message" to "Inspection triggered. Wait 10-15 seconds then check status"
-                        )
-                        details["run_id"] = runState.runId
-                        details["session_id"] = InspectionIdeSession.sessionId
-                        details["project_key"] = projectKey(project)
-                        details["route"] = routeMetadata(project)
-                        if (!scope.isNullOrBlank()) details["scope"] = scope
-                        if (!directory.isNullOrBlank()) details["directory"] = directory
-                        if (filesList.isNotEmpty()) details["files_requested"] = filesList.size
-                        details["include_unversioned"] = includeUnversioned
-                        if (!changedFilesMode.isNullOrBlank()) details["changed_files_mode"] = changedFilesMode
-                        if (maxFiles != null) details["max_files"] = maxFiles
-                        if (!profile.isNullOrBlank()) details["profile"] = profile
-                        sendJsonResponse(context, formatJsonManually(details))
+                    }
+                    val requestedScope = scope?.lowercase()?.trim().orEmpty().ifBlank {
+                        when {
+                            !directory.isNullOrBlank() -> "directory"
+                            filesList.isNotEmpty() -> "files"
+                            else -> "whole_project"
+                        }
+                    }
+                    if (requestedScope == "changed_files") {
+                        ApplicationManager.getApplication().executeOnPooledThread(triggerRequest)
+                    } else {
+                        triggerRequest.run()
                     }
                 }
                 "/api/inspection/status" -> {
@@ -1352,27 +1429,90 @@ class InspectionHandler : HttpRequestHandler() {
             }
             return true
         } catch (error: InspectionRunConflictException) {
-            sendJsonResponse(
-                context,
-                formatJsonManually(
-                    mapOf(
-                        "error" to "inspection_in_progress",
-                        "status" to "inspection_in_progress",
-                        "inspection_in_progress" to true,
-                        "inspection_run_id" to error.runId,
-                        "message" to error.message,
-                    ),
-                ),
-                HttpResponseStatus.CONFLICT,
-            )
+            sendInspectionRunConflict(context, error)
             return true
         } catch (error: BadRequestException) {
             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
             return true
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            logger.warn("Failed to process inspection API request", error)
             sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
             return true
         }
+    }
+
+    private fun startInspectionTrigger(
+        context: ChannelHandlerContext,
+        projectName: String?,
+        scope: String?,
+        directory: String?,
+        files: List<String>,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?,
+        profile: String?,
+    ) {
+        withCurrentProject(context, projectName) { project ->
+            val captureScope = validateInspectionScopeRequest(
+                project = project,
+                scopeParam = scope,
+                directoryParam = directory,
+                files = files,
+                includeUnversioned = includeUnversioned,
+                changedFilesMode = changedFilesMode,
+                maxFiles = maxFiles,
+                allowLegacyProblemsScope = false,
+            )
+            val runState = beginInspectionRun(project, captureScope)
+            try {
+                ApplicationManager.getApplication().executeOnPooledThread {
+                    triggerInspectionAsync(
+                        project = project,
+                        runId = runState.runId,
+                        captureScope = captureScope,
+                        profileName = profile,
+                    )
+                }
+            } catch (error: Exception) {
+                finishInspectionRun(projectKey(project), runState.runId)
+                throw error
+            }
+            val details = mutableMapOf<String, Any>(
+                "status" to "triggered",
+                "message" to "Inspection triggered. Wait 10-15 seconds then check status",
+                "run_id" to runState.runId,
+                "session_id" to InspectionIdeSession.sessionId,
+                "project_key" to projectKey(project),
+                "route" to routeMetadata(project),
+                "scope" to captureScope.scopeParam.orEmpty().ifBlank { "whole_project" },
+                "include_unversioned" to includeUnversioned,
+            )
+            if (!directory.isNullOrBlank()) details["directory"] = directory
+            if (files.isNotEmpty()) details["files_requested"] = files.size
+            if (!changedFilesMode.isNullOrBlank()) details["changed_files_mode"] = changedFilesMode
+            if (maxFiles != null) details["max_files"] = maxFiles
+            if (!profile.isNullOrBlank()) details["profile"] = profile
+            sendJsonResponse(context, formatJsonManually(details))
+        }
+    }
+
+    private fun sendInspectionRunConflict(
+        context: ChannelHandlerContext,
+        error: InspectionRunConflictException,
+    ) {
+        sendJsonResponse(
+            context,
+            formatJsonManually(
+                mapOf(
+                    "error" to "inspection_in_progress",
+                    "status" to "inspection_in_progress",
+                    "inspection_in_progress" to true,
+                    "inspection_run_id" to error.runId,
+                    "message" to error.message,
+                ),
+            ),
+            HttpResponseStatus.CONFLICT,
+        )
     }
 
     private fun parseIntParameter(
@@ -1401,6 +1541,50 @@ class InspectionHandler : HttpRequestHandler() {
             throw BadRequestException(name, "Parameter '$name' must be at most $max.")
         }
         return value
+    }
+
+    private fun parseBooleanParameter(
+        parameters: Map<String, List<String>>,
+        name: String,
+        defaultValue: Boolean,
+    ): Boolean {
+        val raw = parameters[name]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return defaultValue
+        return when (raw.lowercase()) {
+            "true" -> true
+            "false" -> false
+            else -> throw BadRequestException(name, "Parameter '$name' must be 'true' or 'false'.")
+        }
+    }
+
+    private fun parseSeverity(parameters: Map<String, List<String>>): String {
+        val severity = parameters["severity"]?.firstOrNull()?.trim()?.lowercase().orEmpty().ifBlank { "all" }
+        if (severity !in setOf("all", "error", "warning", "weak_warning", "info", "grammar", "typo")) {
+            throw BadRequestException(
+                "severity",
+                "Parameter 'severity' must be one of: all, error, warning, weak_warning, info, grammar, typo.",
+            )
+        }
+        return severity
+    }
+
+    private fun parseChangedFilesMode(parameters: Map<String, List<String>>): String? {
+        val mode = parameters["changed_files_mode"]?.firstOrNull()?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        if (mode != null && mode !in setOf("all", "staged", "unstaged")) {
+            throw BadRequestException(
+                "changed_files_mode",
+                "Parameter 'changed_files_mode' must be one of: all, staged, unstaged.",
+            )
+        }
+        return mode
+    }
+
+    private fun validateFilePattern(filePattern: String?) {
+        if (filePattern != null && usesPatternFileSyntax(filePattern) && compileFilePatternRegex(filePattern) == null) {
+            throw BadRequestException(
+                "file_pattern",
+                "Parameter 'file_pattern' must be a valid regular expression, glob, or literal path fragment.",
+            )
+        }
     }
 
     private fun requestedFiles(parameters: Map<String, List<String>>): List<String> {
@@ -2089,7 +2273,7 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
     
-    private fun getInspectionProblems(
+    private fun getInspectionProblemsInternal(
         project: Project,
         severity: String = "all",
         scope: String = "whole_project",
@@ -2103,12 +2287,13 @@ class InspectionHandler : HttpRequestHandler() {
         includeUnversioned: Boolean = true,
         changedFilesMode: String? = null,
         maxFiles: Int? = null,
+        validatedRequestScope: InspectionCaptureScope? = null,
     ): String {
-        return try {
+        return run {
             val requestedScope = scope.trim().takeIf { it.isNotEmpty() } ?: "whole_project"
             val normalizedScope = normalizeProblemsScope(scope)
             val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
-            val requestedCaptureScope = resolveCaptureScopeEvidence(
+            val requestedCaptureScope = validatedRequestScope ?: resolveCaptureScopeEvidence(
                 project,
                 InspectionCaptureScope(
                     scopeParam = requestedScope,
@@ -2146,6 +2331,7 @@ class InspectionHandler : HttpRequestHandler() {
                     includeUnversioned = includeUnversioned,
                     changedFilesMode = changedFilesMode,
                     maxFiles = maxFiles,
+                    resolvedScope = requestedCaptureScope,
                 )
                 val scopedCachedProblems = filterProblemsForScope(cachedProblems, scopeProblemMatcher)
                 val filteredCachedProblems = filterProblems(
@@ -2295,6 +2481,7 @@ class InspectionHandler : HttpRequestHandler() {
                     includeUnversioned = includeUnversioned,
                     changedFilesMode = changedFilesMode,
                     maxFiles = maxFiles,
+                    resolvedScope = requestedCaptureScope,
                 )
                 val scopedProblems = filterProblemsForScope(problems, scopeProblemMatcher)
 
@@ -2377,9 +2564,39 @@ class InspectionHandler : HttpRequestHandler() {
                 addInspectionVerdict(response)
                 formatJsonManually(response)
             }
-        } catch (_: Exception) {
-            """{"error": "Failed to get inspection problems"}"""
         }
+    }
+
+    private fun getInspectionProblems(
+        project: Project,
+        severity: String = "all",
+        scope: String = "whole_project",
+        problemType: String? = null,
+        filePattern: String? = null,
+        limit: Int = 100,
+        offset: Int = 0,
+        includeStale: Boolean = false,
+        directoryParam: String? = null,
+        files: List<String>? = null,
+        includeUnversioned: Boolean = true,
+        changedFilesMode: String? = null,
+        maxFiles: Int? = null,
+    ): String {
+        return getInspectionProblemsInternal(
+            project = project,
+            severity = severity,
+            scope = scope,
+            problemType = problemType,
+            filePattern = filePattern,
+            limit = limit,
+            offset = offset,
+            includeStale = includeStale,
+            directoryParam = directoryParam,
+            files = files,
+            includeUnversioned = includeUnversioned,
+            changedFilesMode = changedFilesMode,
+            maxFiles = maxFiles,
+        )
     }
 
     @Suppress("unused")
@@ -2393,7 +2610,7 @@ class InspectionHandler : HttpRequestHandler() {
         offset: Int = 0,
         includeStale: Boolean = false,
     ): String {
-        return getInspectionProblems(
+        return getInspectionProblemsInternal(
             project = project,
             severity = severity,
             scope = scope,
@@ -2433,12 +2650,8 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun getInspectionStatus(project: Project): String {
-        return try {
-            val status = buildInspectionStatus(project)
-            formatJsonManually(status)
-        } catch (_: Exception) {
-            """{"error": "Failed to get status"}"""
-        }
+        val status = buildInspectionStatus(project)
+        return formatJsonManually(status)
     }
 
     private fun buildInspectionStatus(project: Project): MutableMap<String, Any> {
@@ -2603,6 +2816,7 @@ class InspectionHandler : HttpRequestHandler() {
                 includeUnversioned = captureScope.includeUnversioned,
                 changedFilesMode = captureScope.changedFilesMode,
                 maxFiles = captureScope.maxFiles,
+                resolvedScope = captureScope,
             )
         }
         val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
@@ -2652,6 +2866,7 @@ class InspectionHandler : HttpRequestHandler() {
                 includeUnversioned = captureScope.includeUnversioned,
                 changedFilesMode = captureScope.changedFilesMode,
                 maxFiles = captureScope.maxFiles,
+                resolvedScope = captureScope,
             )
         }
         val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
@@ -2676,15 +2891,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (normalizedScope != "current_file") {
             return null
         }
-        return try {
-            FileEditorManager
-                .getInstance(project)
-                .selectedFiles
-                .firstOrNull()
-                ?.path
-        } catch (_: Exception) {
-            null
-        }
+        return resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
     }
 
     private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
@@ -3125,12 +3332,10 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             val changedFilesScopeFiles = if (captureScope.scopeParam?.lowercase()?.trim() == "changed_files") {
-                resolveChangedFilesScopeFiles(
-                    project = project,
-                    includeUnversioned = captureScope.includeUnversioned,
-                    changedFilesMode = captureScope.changedFilesMode,
-                    maxFiles = captureScope.maxFiles,
-                )
+                captureScope.resolvedFiles.orEmpty().map { path ->
+                    LocalFileSystem.getInstance().findFileByPath(path)
+                        ?: throw IllegalStateException("Validated changed file '$path' is no longer available.")
+                }
             } else {
                 null
             }
@@ -3192,6 +3397,7 @@ class InspectionHandler : HttpRequestHandler() {
                 changedFilesMode = captureScope.changedFilesMode,
                 maxFiles = captureScope.maxFiles,
                 resolvedChangedFiles = changedFilesScopeFiles,
+                resolvedScope = effectiveCaptureScope,
             )
             
             val profile = if (requestedProfileName != null) {
@@ -4137,73 +4343,61 @@ class InspectionHandler : HttpRequestHandler() {
         maxFiles: Int?,
         resolvedChangedFiles: List<VirtualFile>? = null,
     ): AnalysisScope {
-        return try {
-            val scopeLower = scopeParam?.lowercase()?.trim()
+        val scopeLower = scopeParam?.lowercase()?.trim().orEmpty().ifBlank { "whole_project" }
 
-            if (scopeLower == "files" && !files.isNullOrEmpty()) {
-                val base = project.basePath
-                val resolved = files.mapNotNull { p ->
-                    val absolute = try {
-                        val path = Paths.get(p)
-                        if (path.isAbsolute) p else if (!base.isNullOrBlank()) Paths.get(base, p).normalize().toString() else p
-                    } catch (_: Exception) { p }
-                    LocalFileSystem.getInstance().findFileByPath(absolute)
-                }.toSet()
-                if (resolved.size == 1) {
-                    psiFileForScope(project, resolved.first())?.let { return AnalysisScope(it) }
-                }
-                return if (resolved.isEmpty()) AnalysisScope(project) else AnalysisScope(project, resolved)
+        if (scopeLower == "files") {
+            if (files.isNullOrEmpty()) {
+                throw BadRequestException("files", "Parameter 'files' requires at least one file path when scope=files.")
             }
-
-            if (scopeLower == "changed_files") {
-                val limited = resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
-                    project = project,
-                    includeUnversioned = includeUnversioned,
-                    changedFilesMode = changedFilesMode,
-                    maxFiles = maxFiles,
-                )
-                if (limited.size == 1) {
-                    psiFileForScope(project, limited.first())?.let { return AnalysisScope(it) }
-                }
-                return if (limited.isEmpty()) AnalysisScope(project) else AnalysisScope(project, limited.toSet())
+            val resolved = resolveRequestedFilesStrict(project, files).toSet()
+            if (resolved.size == 1) {
+                psiFileForScope(project, resolved.first())?.let { return AnalysisScope(it) }
             }
-
-            // 1) Explicit current file
-            if (scopeLower == "current_file") {
-                val vf = resolvedCurrentFile?.let { LocalFileSystem.getInstance().findFileByPath(it) }
-                if (vf != null) {
-                    val psiFile = PsiManager.getInstance(project).findFile(vf)
-                    if (psiFile != null) return AnalysisScope(psiFile)
-                    return AnalysisScope(project, setOf(vf))
-                }
-                // Fallback: no valid active editor file (e.g., TabPreviewDiffVirtualFile) → whole project
-            }
-
-            // 2) Directory scoping: `scope=directory` with `dir=...` or any non-empty directoryParam
-            val dirPath = directoryParam?.trim()
-            if ((scopeLower == "directory" || !dirPath.isNullOrBlank())) {
-                val base = project.basePath
-                val absolute = when {
-                    dirPath.isNullOrBlank() -> null
-                    Paths.get(dirPath).isAbsolute -> dirPath
-                    !base.isNullOrBlank() -> Paths.get(base, dirPath).normalize().toString()
-                    else -> dirPath
-                }
-                if (!absolute.isNullOrBlank()) {
-                    val vfs = LocalFileSystem.getInstance().findFileByPath(absolute)
-                    if (vfs != null && vfs.isDirectory) {
-                        val psiDir = PsiManager.getInstance(project).findDirectory(vfs)
-                        if (psiDir != null) return AnalysisScope(psiDir)
-                        return AnalysisScope(project, setOf(vfs))
-                    }
-                }
-                return AnalysisScope(project)
-            }
-
-            AnalysisScope(project)
-        } catch (_: Exception) {
-            AnalysisScope(project)
+            return AnalysisScope(project, resolved)
         }
+
+        if (scopeLower == "changed_files") {
+            val limited = resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
+                project = project,
+                includeUnversioned = includeUnversioned,
+                changedFilesMode = changedFilesMode,
+                maxFiles = maxFiles,
+            )
+            if (limited.isEmpty()) {
+                throw BadRequestException("scope", "scope=changed_files resolved to no files.")
+            }
+            if (limited.size == 1) {
+                psiFileForScope(project, limited.first())?.let { return AnalysisScope(it) }
+            }
+            return AnalysisScope(project, limited.toSet())
+        }
+
+        if (scopeLower == "current_file") {
+            val vf = resolvedCurrentFile?.let { LocalFileSystem.getInstance().findFileByPath(it) }
+                ?: throw BadRequestException(
+                    "scope",
+                    "scope=current_file requires a valid selected project file in the active editor.",
+                )
+            val psiFile = PsiManager.getInstance(project).findFile(vf)
+            if (psiFile != null) {
+                return AnalysisScope(psiFile)
+            }
+            return AnalysisScope(project, setOf(vf))
+        }
+
+        if (scopeLower == "directory") {
+            val vfs = resolveRequestedDirectoryStrict(project, directoryParam)
+            val psiDir = PsiManager.getInstance(project).findDirectory(vfs)
+            if (psiDir != null) {
+                return AnalysisScope(psiDir)
+            }
+            return AnalysisScope(project, setOf(vfs))
+        }
+
+        if (scopeLower != "whole_project") {
+            throw BadRequestException("scope", "Unsupported inspection scope '$scopeLower'.")
+        }
+        return AnalysisScope(project)
     }
 
     private fun psiFileForScope(project: Project, file: VirtualFile): com.intellij.psi.PsiFile? {
@@ -4265,6 +4459,146 @@ class InspectionHandler : HttpRequestHandler() {
             }
             localFileSystem.findFileByPath(absolute)
         }.distinct()
+    }
+
+    private fun validateInspectionScopeRequest(
+        project: Project,
+        scopeParam: String?,
+        directoryParam: String?,
+        files: List<String>,
+        includeUnversioned: Boolean,
+        changedFilesMode: String?,
+        maxFiles: Int?,
+        allowLegacyProblemsScope: Boolean,
+    ): InspectionCaptureScope {
+        val requestedScope = scopeParam?.trim()?.lowercase().orEmpty()
+        val hasDirectoryTarget = !directoryParam.isNullOrBlank()
+        val hasFileTargets = files.isNotEmpty()
+        val conflictingTargets = when {
+            hasDirectoryTarget && hasFileTargets -> true
+            requestedScope in setOf("whole_project", "current_file", "changed_files") &&
+                (hasDirectoryTarget || hasFileTargets) -> true
+            requestedScope == "directory" && hasFileTargets -> true
+            requestedScope == "files" && hasDirectoryTarget -> true
+            else -> false
+        }
+        if (conflictingTargets) {
+            throw BadRequestException(
+                "scope",
+                "Scope targeting parameters conflict. Use only the directory or files arguments required by the selected scope.",
+            )
+        }
+        val effectiveScope = when {
+            requestedScope.isBlank() && hasDirectoryTarget -> "directory"
+            requestedScope.isBlank() && hasFileTargets -> "files"
+            requestedScope.isBlank() -> "whole_project"
+            else -> requestedScope
+        }
+        val supportedScopes = setOf("whole_project", "current_file", "directory", "files", "changed_files")
+        if (effectiveScope !in supportedScopes) {
+            if (allowLegacyProblemsScope) {
+                return InspectionCaptureScope(scopeParam = scopeParam)
+            }
+            throw BadRequestException(
+                "scope",
+                "Parameter 'scope' must be one of: whole_project, current_file, directory, files, changed_files.",
+            )
+        }
+
+        val baseScope = InspectionCaptureScope(
+            scopeParam = effectiveScope,
+            directoryParam = directoryParam,
+            files = files.takeIf { it.isNotEmpty() },
+            includeUnversioned = includeUnversioned,
+            changedFilesMode = changedFilesMode,
+            maxFiles = maxFiles,
+        )
+        return when (effectiveScope) {
+            "files" -> {
+                if (files.isEmpty()) {
+                    throw BadRequestException("files", "Parameter 'files' requires at least one file path when scope=files.")
+                }
+                val resolvedFiles = resolveRequestedFilesStrict(project, files)
+                baseScope.copy(resolvedFiles = resolvedFiles.mapNotNull { normalizeFileSystemPath(it.path) })
+            }
+            "directory" -> {
+                val resolvedDirectory = resolveRequestedDirectoryStrict(project, directoryParam)
+                baseScope.copy(resolvedDirectory = normalizeFileSystemPath(resolvedDirectory.path))
+            }
+            "current_file" -> {
+                val currentFile = resolveActiveEditorFile(project)
+                    ?: throw BadRequestException(
+                        "scope",
+                        "scope=current_file requires a valid selected project file in the active editor.",
+                    )
+                baseScope.copy(
+                    resolvedCurrentFile = normalizeFileSystemPath(currentFile.path),
+                    resolvedFiles = listOfNotNull(normalizeFileSystemPath(currentFile.path)),
+                )
+            }
+            "changed_files" -> {
+                val changedFiles = resolveChangedFilesScopeFiles(
+                    project = project,
+                    includeUnversioned = includeUnversioned,
+                    changedFilesMode = changedFilesMode,
+                    maxFiles = maxFiles,
+                )
+                baseScope.copy(resolvedFiles = changedFiles.mapNotNull { normalizeFileSystemPath(it.path) })
+            }
+            else -> baseScope
+        }
+    }
+
+    private fun resolveRequestedFilesStrict(project: Project, files: List<String>): List<VirtualFile> {
+        val localFileSystem = LocalFileSystem.getInstance()
+        val basePath = project.basePath
+        return files.map { rawPath ->
+            val absolutePath = try {
+                val path = Paths.get(rawPath)
+                if (path.isAbsolute) {
+                    path.normalize().toString()
+                } else if (!basePath.isNullOrBlank()) {
+                    Paths.get(basePath, rawPath).normalize().toString()
+                } else {
+                    throw BadRequestException("files", "Relative file '$rawPath' requires a project base path.")
+                }
+            } catch (error: BadRequestException) {
+                throw error
+            } catch (_: Exception) {
+                throw BadRequestException("files", "File path '$rawPath' is invalid.")
+            }
+            val file = localFileSystem.findFileByPath(absolutePath)
+                ?: throw BadRequestException("files", "File '$rawPath' does not exist or is not available to the IDE.")
+            if (!file.isValid || file.isDirectory || !file.isInLocalFileSystem) {
+                throw BadRequestException("files", "File '$rawPath' must resolve to a valid local file.")
+            }
+            file
+        }.distinct()
+    }
+
+    private fun resolveRequestedDirectoryStrict(project: Project, directoryParam: String?): VirtualFile {
+        val rawDirectory = directoryParam?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw BadRequestException("dir", "Parameter 'dir' is required when scope=directory.")
+        val absolutePath = try {
+            val path = Paths.get(rawDirectory)
+            if (path.isAbsolute) {
+                path.normalize().toString()
+            } else {
+                val basePath = project.basePath
+                    ?: throw BadRequestException("dir", "Relative directory '$rawDirectory' requires a project base path.")
+                Paths.get(basePath, rawDirectory).normalize().toString()
+            }
+        } catch (error: BadRequestException) {
+            throw error
+        } catch (_: Exception) {
+            throw BadRequestException("dir", "Directory path '$rawDirectory' is invalid.")
+        }
+        val directory = LocalFileSystem.getInstance().findFileByPath(absolutePath)
+            ?: throw BadRequestException("dir", "Directory '$rawDirectory' does not exist or is not available to the IDE.")
+        if (!directory.isValid || !directory.isDirectory || !directory.isInLocalFileSystem) {
+            throw BadRequestException("dir", "Directory '$rawDirectory' must resolve to a valid local directory.")
+        }
+        return directory
     }
 
     private fun resolveCaptureScopeEvidence(
@@ -4347,25 +4681,17 @@ class InspectionHandler : HttpRequestHandler() {
         val mode = changedFilesMode?.lowercase()?.trim()
         if (!mode.isNullOrBlank() && mode != "all") {
             val gitSets = computeGitStagingSets(project)
-            if (gitSets != null) {
-                val (stagedSet, unstagedSet) = gitSets
-                val basePath = project.basePath
-                if (!basePath.isNullOrBlank()) {
-                    fun relativePath(path: String): String {
-                        val relative = try {
-                            Paths.get(basePath).relativize(Paths.get(path)).toString()
-                        } catch (_: Exception) {
-                            path
-                        }
-                        return relative.replace('\\', '/')
-                    }
-                    changeFiles.retainAll { vf ->
-                        when (mode) {
-                            "staged" -> stagedSet.contains(relativePath(vf.path))
-                            "unstaged" -> unstagedSet.contains(relativePath(vf.path))
-                            else -> true
-                        }
-                    }
+                ?: throw BadRequestException(
+                    "changed_files_mode",
+                    "changed_files_mode=$mode requires a Git worktree with readable status data.",
+                )
+            val (stagedSet, unstagedSet) = gitSets
+            changeFiles.retainAll { file ->
+                val normalizedPath = normalizeFileSystemPath(file.path)
+                when (mode) {
+                    "staged" -> normalizedPath != null && stagedSet.contains(normalizedPath)
+                    "unstaged" -> normalizedPath != null && unstagedSet.contains(normalizedPath)
+                    else -> false
                 }
             }
         }
@@ -4394,8 +4720,10 @@ class InspectionHandler : HttpRequestHandler() {
         changedFilesMode: String?,
         maxFiles: Int?,
         resolvedChangedFiles: List<VirtualFile>? = null,
+        resolvedScope: InspectionCaptureScope? = null,
     ): ((Map<String, Any>) -> Boolean)? {
-        val scopeLower = scopeParam?.lowercase()?.trim()
+        val scopeLower = resolvedScope?.scopeParam?.lowercase()?.trim()
+            ?: scopeParam?.lowercase()?.trim()
 
         fun normalizeProblemPath(problem: Map<String, Any>): String? {
             return normalizeFileSystemPath(problem["file"] as? String)
@@ -4416,7 +4744,14 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
-        if (scopeLower == "files" && !files.isNullOrEmpty()) {
+        if (scopeLower == "files") {
+            val resolvedEvidence = resolvedScope?.resolvedFiles?.mapNotNull(::normalizeFileSystemPath)?.toSet()
+            if (resolvedEvidence != null) {
+                return exactFileMatcher(resolvedEvidence)
+            }
+            if (files.isNullOrEmpty()) {
+                return exactFileMatcher(emptySet())
+            }
             val base = project.basePath
             val resolved = files.mapNotNull { rawPath ->
                 val absolute = try {
@@ -4431,6 +4766,9 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         if (scopeLower == "changed_files") {
+            resolvedScope?.resolvedFiles?.let { paths ->
+                return exactFileMatcher(paths.mapNotNull(::normalizeFileSystemPath).toSet())
+            }
             val limited = resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
                 project = project,
                 includeUnversioned = includeUnversioned,
@@ -4442,10 +4780,11 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         if (scopeLower == "current_file") {
-            return resolvedCurrentFile?.let { exactFileMatcher(setOf(it)) }
+            val currentFile = resolvedScope?.resolvedCurrentFile ?: resolvedCurrentFile
+            return exactFileMatcher(listOfNotNull(currentFile).mapNotNull(::normalizeFileSystemPath).toSet())
         }
 
-        val dirPath = directoryParam?.trim()
+        val dirPath = resolvedScope?.resolvedDirectory ?: directoryParam?.trim()
         if (scopeLower == "directory" || !dirPath.isNullOrBlank()) {
             val base = project.basePath
             val absolute = when {
@@ -4462,37 +4801,76 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun computeGitStagingSets(project: Project): Pair<Set<String>, Set<String>>? {
         val basePath = project.basePath ?: return null
-        val gitDir = Paths.get(basePath, ".git").toFile()
-        if (!gitDir.exists()) return null
-        return try {
-            val pb = ProcessBuilder("git", "status", "--porcelain", "-z")
-            pb.directory(File(basePath))
-            pb.redirectErrorStream(true)
-            val proc = pb.start()
-            val bytes = proc.inputStream.readAllBytes()
-            proc.waitFor(2, TimeUnit.SECONDS)
-            val out = bytes.toString(Charsets.UTF_8)
-            parseGitStatusPorcelainZ(out)
-        } catch (_: Exception) {
-            null
+        val gitRoot = runBoundedGitCommand(basePath, listOf("rev-parse", "--show-toplevel"))
+            .toString(Charsets.UTF_8)
+            .trim()
+            .let(::normalizeFileSystemPath)
+            ?: throw BadRequestException(
+                "changed_files_mode",
+                "Git did not return a valid worktree root for changed_files_mode.",
+            )
+        val output = runBoundedGitCommand(gitRoot, listOf("status", "--porcelain", "-z"))
+            .toString(Charsets.UTF_8)
+        val (stagedRelative, unstagedRelative) = parseGitStatusPorcelainZ(output)
+        fun absolutePaths(relativePaths: Set<String>): Set<String> {
+            return relativePaths.mapNotNull { relativePath ->
+                normalizeFileSystemPath(Paths.get(gitRoot, relativePath).normalize().toString())
+            }.toSet()
         }
+        return absolutePaths(stagedRelative) to absolutePaths(unstagedRelative)
+    }
+
+    private fun runBoundedGitCommand(directory: String, arguments: List<String>): ByteArray {
+        val process = try {
+            ProcessBuilder(listOf("git") + arguments)
+                .directory(File(directory))
+                .redirectErrorStream(true)
+                .start()
+        } catch (_: Exception) {
+            throw BadRequestException(
+                "changed_files_mode",
+                "Unable to start Git classification for changed_files_mode.",
+            )
+        }
+        val result = try {
+            collectBoundedProcessOutput(process, timeoutMs = 2000L, maxOutputBytes = 1_048_576)
+        } catch (error: InterruptedException) {
+            destroyProcessTree(process)
+            throw error
+        } catch (_: Exception) {
+            destroyProcessTree(process)
+            throw BadRequestException(
+                "changed_files_mode",
+                "Unable to read Git classification for changed_files_mode.",
+            )
+        }
+        if (result.timedOut) {
+            throw BadRequestException(
+                "changed_files_mode",
+                "Git classification timed out after 2000 ms.",
+            )
+        }
+        if (result.outputLimitExceeded) {
+            throw BadRequestException(
+                "changed_files_mode",
+                "Git classification exceeded the 1048576-byte output limit.",
+            )
+        }
+        if (result.exitCode != 0) {
+            throw BadRequestException(
+                "changed_files_mode",
+                "Git classification failed with exit code ${result.exitCode}.",
+            )
+        }
+        return result.output
     }
 
     private fun resolveActiveEditorFile(project: Project): VirtualFile? {
-        return try {
-            val fem = FileEditorManager.getInstance(project)
-            val candidates = buildList {
-                addAll(runCatching { fem.selectedFiles.asList() }.getOrNull() ?: emptyList())
-                addAll(runCatching { fem.openFiles.asList() }.getOrNull() ?: emptyList())
-            }
-            val index = ProjectFileIndex.getInstance(project)
-            candidates.firstOrNull { vf ->
-                try {
-                    vf.isValid && vf.isInLocalFileSystem && index.isInContent(vf)
-                } catch (_: Exception) { false }
-            }
-        } catch (_: Exception) {
-            null
+        val fileEditorManager = FileEditorManager.getInstance(project)
+        val candidates = fileEditorManager.selectedFiles.asList()
+        val projectFileIndex = ProjectFileIndex.getInstance(project)
+        return candidates.firstOrNull { file ->
+            file.isValid && file.isInLocalFileSystem && projectFileIndex.isInContent(file)
         }
     }
     

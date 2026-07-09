@@ -346,7 +346,12 @@ For stale responses, the same scope filters are applied before cached counts and
 optional cached findings are returned. A scoped `include_stale=true` response is
 still `UNKNOWN`/`stale_results`; it is diagnostic data, not current proof.
 
-Invalid `limit` or `offset` values return HTTP 400 with `error`, `parameter`, and `message` fields.
+Invalid `limit`, `offset`, `severity`, boolean, `changed_files_mode`, or pattern
+values return HTTP 400 with `error`, `parameter`, and `message` fields. Explicit
+`files`, `directory`, `current_file`, and `changed_files` scopes are resolved
+before filtering; missing or invalid targets return HTTP 400 instead of widening
+to whole-project findings. An empty valid changed-file set matches zero findings.
+Unexpected endpoint failures return HTTP 500 with a generic error body.
 
 **Examples**:
 ```bash
@@ -385,9 +390,16 @@ curl "http://127.0.0.1:63340/api/inspection/problems?include_stale=true"
 - `file` (repeatable, optional): File path when `scope=files`. Can be repeated multiple times.
 - `files` (optional): Comma or newline‑separated list of file paths when `scope=files`.
 - `include_unversioned` (optional): `true|false` when `scope=changed_files` (default `true`).
-- `changed_files_mode` (optional): `all|staged|unstaged` (best‑effort; falls back to `all`).
+- `changed_files_mode` (optional): `all|staged|unstaged`. Staged/unstaged Git classification is bounded; timeout, nonzero exit, unavailable Git metadata, or excess output returns HTTP 400 instead of widening to `all`.
 - `max_files` (optional): Positive integer to cap files inspected for responsiveness. Invalid values return HTTP 400 with `error`, `parameter`, and `message` fields.
 - `profile` (optional): Name of inspection profile to use. If an explicitly requested profile is missing or cannot be verified, the result is `UNKNOWN`/`capture_incomplete` rather than silently falling back to another profile.
+
+Targeted trigger scopes fail closed. Every requested file must resolve to a valid
+local file, directory scopes must resolve to a directory, and `current_file`
+requires a valid selected project file. Unsupported scopes and malformed boolean
+or mode values return HTTP 400 before an inspection run is created. A valid empty
+`changed_files` scope completes as an exact clean empty inspection without
+running a whole-project analysis.
 
 Only one inspection may run for a project at a time. A concurrent trigger returns
 HTTP 409 with `error: "inspection_in_progress"`; wait for that run to finish or

@@ -8,6 +8,7 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.ProjectFileIndex
+import java.lang.reflect.InvocationTargetException
 
 class InspectionScopeResolutionTest {
 
@@ -58,8 +59,33 @@ class InspectionScopeResolutionTest {
     }
 
     @Test
-    @DisplayName("buildAnalysisScope current_file falls back when no valid editor file")
-    fun testCurrentFileFallbackToProject() {
+    @DisplayName("resolveActiveEditorFile does not substitute an unrelated open file")
+    fun testResolveActiveEditorFileRejectsUnrelatedOpenFile() {
+        val project = mockProject()
+        val preview = mockVf("/virtual/TabPreviewDiffVirtualFile", inLocal = false)
+        val unrelatedOpenFile = mockVf("/workspace/src/Other.kt")
+
+        mockkStatic(FileEditorManager::class)
+        val fileEditorManager = mockk<FileEditorManager>()
+        every { FileEditorManager.getInstance(project) } returns fileEditorManager
+        every { fileEditorManager.selectedFiles } returns arrayOf(preview)
+        every { fileEditorManager.openFiles } returns arrayOf(preview, unrelatedOpenFile)
+
+        mockkStatic(ProjectFileIndex::class)
+        val projectFileIndex = mockk<ProjectFileIndex>()
+        every { ProjectFileIndex.getInstance(project) } returns projectFileIndex
+        every { projectFileIndex.isInContent(preview) } returns false
+        every { projectFileIndex.isInContent(unrelatedOpenFile) } returns true
+
+        val method = InspectionHandler::class.java.getDeclaredMethod("resolveActiveEditorFile", Project::class.java)
+        method.isAccessible = true
+
+        assertNull(method.invoke(InspectionHandler(), project))
+    }
+
+    @Test
+    @DisplayName("buildAnalysisScope current_file rejects a missing editor file")
+    fun testCurrentFileRejectsMissingEditorFile() {
         val project = mockProject()
 
         mockkStatic(FileEditorManager::class)
@@ -86,21 +112,20 @@ class InspectionScopeResolutionTest {
             List::class.java,
         )
         method.isAccessible = true
-        val scope = method.invoke(
-            handler,
-            project,
-            "current_file",
-            null,
-            null,
-            null,
-            true,
-            null,
-            null,
-            null,
-        )
-
-        assertNotNull(scope)
-        // We can't easily introspect AnalysisScope internals here, but ensuring no exception
-        // and a non-null return value covers the fallback path logic.
+        val error = assertThrows(InvocationTargetException::class.java) {
+            method.invoke(
+                handler,
+                project,
+                "current_file",
+                null,
+                null,
+                null,
+                true,
+                null,
+                null,
+                null,
+            )
+        }
+        assertTrue(error.cause is BadRequestException)
     }
 }

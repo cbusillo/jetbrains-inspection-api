@@ -14,6 +14,8 @@ import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.vcs.changes.ChangeListManager
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
@@ -176,7 +178,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"scope\": \"changed_files\""))
-        verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+        verify(exactly = 2) { mockApplication.executeOnPooledThread(any<Runnable>()) }
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
         val status = buildInspectionStatus()
         assertEquals("clean_confirmed", status["snapshot_outcome"])
@@ -418,6 +420,7 @@ class InspectionHandlerTest {
     fun `test problems endpoint applies requested files scope to cached snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockLocalFile("/tmp/TestProject/src/Included.kt")
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
         InspectionResultsStore.setSnapshot(
@@ -494,6 +497,15 @@ class InspectionHandlerTest {
     fun `test problems endpoint does not refresh project state before reading snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val includedFile = mockk<VirtualFile>()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src/Included.kt") } returns includedFile
+        every { includedFile.path } returns "/tmp/TestProject/src/Included.kt"
+        every { includedFile.isValid } returns true
+        every { includedFile.isDirectory } returns false
+        every { includedFile.isInLocalFileSystem } returns true
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
         InspectionResultsStore.setSnapshot(
@@ -527,6 +539,7 @@ class InspectionHandlerTest {
     fun `test completed run snapshot becomes stale after psi change`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockLocalFile("/tmp/TestProject/src/Included.kt")
         mockInspectionPrerequisites(mockProject)
         setInspectionRunState(projectKey(mockProject), InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false))
         val snapshotProblems = listOf(
@@ -1118,6 +1131,151 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"error\": \"inspection_in_progress\""))
         assertTrue(body.contains("\"status\": \"inspection_in_progress\""))
         assertTrue(body.contains("\"inspection_run_id\": 42"))
+    }
+
+    @Test
+    fun `test trigger rejects unsupported scope before scheduling`() {
+        val response = processTriggerRequest("/api/inspection/trigger?scope=workspace")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"parameter\": \"scope\""))
+        verify(exactly = 0) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test trigger rejects conflicting targeting parameters before scheduling`() {
+        listOf(
+            "/api/inspection/trigger?scope=whole_project&dir=src",
+            "/api/inspection/trigger?dir=src&file=src/App.kt",
+            "/api/inspection/trigger?scope=directory&dir=src&file=src/App.kt",
+        ).forEach { uri ->
+            val response = processTriggerRequest(uri)
+            val body = response.content().toString(Charsets.UTF_8)
+
+            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status(), uri)
+            assertTrue(body.contains("\"parameter\": \"scope\""), body)
+        }
+        verify(exactly = 0) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test trigger rejects missing files before scheduling`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src/Missing.kt") } returns null
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=files&file=src/Missing.kt")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"parameter\": \"files\""))
+        verify(exactly = 0) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test trigger rejects missing directory before scheduling`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/missing") } returns null
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=directory&dir=missing")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"parameter\": \"dir\""))
+        verify(exactly = 0) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test problems rejects invalid filters`() {
+        listOf(
+            "/api/inspection/problems?severity=fatal" to "severity",
+            "/api/inspection/problems?file_pattern=(" to "file_pattern",
+            "/api/inspection/problems?changed_files_mode=index" to "changed_files_mode",
+            "/api/inspection/problems?include_stale=yes" to "include_stale",
+        ).forEach { (uri, parameter) ->
+            val response = processGetRequest(uri)
+            val body = response.content().toString(Charsets.UTF_8)
+
+            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status(), uri)
+            assertTrue(body.contains("\"parameter\": \"$parameter\""), body)
+        }
+    }
+
+    @Test
+    fun `test problems rejects unresolved targeted scopes`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        runPooledTasksInline()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(any()) } returns null
+        val fileEditorManager = mockk<com.intellij.openapi.fileEditor.FileEditorManager>()
+        mockkStatic(com.intellij.openapi.fileEditor.FileEditorManager::class)
+        every { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(mockProject) } returns fileEditorManager
+        every { fileEditorManager.selectedFiles } returns emptyArray()
+        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
+        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
+        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+
+        listOf(
+            "/api/inspection/problems?scope=files&file=src/Missing.kt" to "files",
+            "/api/inspection/problems?scope=directory&dir=missing" to "dir",
+            "/api/inspection/problems?scope=current_file" to "scope",
+        ).forEach { (uri, parameter) ->
+            val response = processGetRequest(uri)
+            val body = response.content().toString(Charsets.UTF_8)
+
+            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status(), uri)
+            assertTrue(body.contains("\"parameter\": \"$parameter\""), body)
+        }
+    }
+
+    @Test
+    fun `test staged changed files rejects unavailable Git classification`() {
+        every { mockProject.basePath } returns "/tmp/NotAGitWorktree"
+        runPooledTasksInline()
+        val changeListManager = mockk<ChangeListManager>()
+        mockkStatic(ChangeListManager::class)
+        every { ChangeListManager.getInstance(mockProject) } returns changeListManager
+        every { changeListManager.allChanges } returns emptyList()
+
+        val response = processGetRequest(
+            "/api/inspection/problems?scope=changed_files&changed_files_mode=staged&include_unversioned=false"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"parameter\": \"changed_files_mode\""), body)
+        assertFalse(body.contains("\"status\": \"results_available\""))
+    }
+
+    @Test
+    fun `test status runtime failure returns HTTP 500`() {
+        mockkStatic(ToolWindowManager::class)
+        every { ToolWindowManager.getInstance(mockProject) } throws IllegalStateException("boom")
+
+        val response = processGetRequest("/api/inspection/status")
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertTrue(response.content().toString(Charsets.UTF_8).contains("Internal server error"))
+    }
+
+    @Test
+    fun `test problems runtime failure returns HTTP 500`() {
+        runPooledTasksInline()
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } throws
+            IllegalStateException("boom")
+
+        val response = processGetRequest("/api/inspection/problems")
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertTrue(response.content().toString(Charsets.UTF_8).contains("Internal server error"))
     }
 
     @Test
@@ -2936,6 +3094,19 @@ class InspectionHandlerTest {
             succeeded = false,
         )
         enhancedTreeExtractorFactory = { extractor }
+    }
+
+    private fun mockLocalFile(path: String): VirtualFile {
+        val file = mockk<VirtualFile>()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(path) } returns file
+        every { file.path } returns path
+        every { file.isValid } returns true
+        every { file.isDirectory } returns false
+        every { file.isInLocalFileSystem } returns true
+        return file
     }
 
     private fun getFileInspectionProblems(files: List<String>): String {
