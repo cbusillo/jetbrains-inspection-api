@@ -392,6 +392,23 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionTriggerReturnsExistingRunForConflict() {
+        val response = """{"error":"inspection_in_progress","status":"inspection_in_progress","inspection_in_progress":true,"inspection_run_id":42}"""
+        MockIdeServer(mapOf("/api/inspection/trigger" to MockResponse(response, 409))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertFalse(result.isError())
+            assertTrue(text.contains("\"status\": \"inspection_in_progress\""))
+            assertTrue(text.contains("\"inspection_run_id\": 42"))
+            assertTrue(text.contains("inspection_wait"))
+        }
+    }
+
+    @Test
     fun inspectionTriggerSupportsAliasesAndOptions() {
         MockIdeServer().use { server ->
             server.start()

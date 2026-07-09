@@ -886,6 +886,16 @@ internal class ToolExecutor(
             val response = httpClient.send(request, HttpResponse.BodyHandlers.ofString())
             val status = response.statusCode()
             val body = response.body()
+            if (status == HttpURLConnection.HTTP_CONFLICT) {
+                val conflict = runCatching { json.parseToJsonElement(body) }.getOrNull()
+                val conflictStatus = (conflict as? JsonObject)
+                    ?.get("status")
+                    ?.jsonPrimitive
+                    ?.contentOrNull
+                if (conflictStatus == "inspection_in_progress") {
+                    return conflict
+                }
+            }
             if (status != HttpURLConnection.HTTP_OK && status != HttpURLConnection.HTTP_ACCEPTED) {
                 val responseSummary = summarizeErrorBody(body)
                 val detailSuffix = if (responseSummary != null) {

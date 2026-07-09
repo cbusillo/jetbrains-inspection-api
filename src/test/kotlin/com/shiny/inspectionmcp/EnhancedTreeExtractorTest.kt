@@ -481,6 +481,7 @@ class EnhancedTreeExtractorTest {
         assertEquals(1, result.problems.size)
         assertEquals("Fallback warning", result.problems[0]["description"])
         assertEquals("problems_view", result.problems[0]["source"])
+        assertEquals(ProblemExtractionSource.PROBLEMS_FALLBACK, result.source)
     }
 
     @Test
@@ -869,6 +870,7 @@ class EnhancedTreeExtractorTest {
         assertEquals(1, result.problems.size)
         assertEquals("Fallback warning", result.problems[0]["description"])
         assertEquals("FallbackInspection", result.problems[0]["inspectionType"])
+        assertEquals(ProblemExtractionSource.INSPECTION_RESULTS, result.source)
     }
 
     @Test
@@ -907,6 +909,7 @@ class EnhancedTreeExtractorTest {
         assertEquals(1, result.problems.size)
         assertEquals("Fallback warning", result.problems[0]["description"])
         assertEquals("FallbackInspection", result.problems[0]["inspectionType"])
+        assertEquals(ProblemExtractionSource.INSPECTION_RESULTS, result.source)
     }
 
     @Test
