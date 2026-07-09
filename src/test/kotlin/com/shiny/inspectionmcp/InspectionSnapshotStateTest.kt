@@ -17,6 +17,13 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkAll
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -24,8 +31,12 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import java.nio.file.Files
+import java.nio.file.Path
 
 class InspectionSnapshotStateTest {
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     private lateinit var handler: InspectionHandler
     private lateinit var mockProject: Project
@@ -302,6 +313,27 @@ class InspectionSnapshotStateTest {
         assertEquals("inspection_view", snapshot.source)
         assertEquals(CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE, snapshot.captureIncompleteReason)
         assertEquals(diagnostic, snapshot.captureDiagnostic)
+    }
+
+    @Test
+    @DisplayName("Plugin HTTP verdict payloads match shared contract fixtures")
+    fun testPluginHttpVerdictPayloadsMatchContractFixtures() {
+        val cases = listOf(
+            contractCase("status-green-clean") to pluginStatusGreenClean(),
+            contractCase("problems-red-findings") to pluginProblemsRedFindings(),
+            contractCase("problems-unknown-capture-incomplete") to pluginProblemsUnknownCaptureIncomplete(),
+            contractCase("problems-unknown-stale-default") to pluginProblemsUnknownStaleDefault(),
+            contractCase("status-unknown-proof-failed") to pluginStatusUnknownProofFailed(),
+        )
+
+        cases.forEach { (contract, actual) ->
+            val expectedPayload = contract.payload
+
+            assertJsonContains(expectedPayload, actual, contract.name)
+            assertEquals(expectedPayload.string("inspection_verdict"), actual.string("inspection_verdict"), contract.name)
+            assertEquals(expectedPayload.string("inspection_verdict_reason"), actual.string("inspection_verdict_reason"), contract.name)
+            assertRequiredHelperFields(actual, contract.name)
+        }
     }
 
     @Test
@@ -2911,6 +2943,109 @@ class InspectionSnapshotStateTest {
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
     }
 
+    private fun pluginStatusGreenClean(): JsonObject {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+            ),
+        )
+        return buildInspectionStatus().toJsonObject()
+    }
+
+    private fun pluginProblemsRedFindings(): JsonObject {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    staleProblem(
+                        description = "Unresolved reference: missingSymbol",
+                        file = "/tmp/TestProject/src/App.kt",
+                        line = 4,
+                        column = 9,
+                        severity = "error",
+                        inspectionType = "UnresolvedReference",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+        return json.parseToJsonElement(getInspectionProblems()).jsonObject
+    }
+
+    private fun pluginProblemsUnknownCaptureIncomplete(): JsonObject {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "tool_window",
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "deadline",
+                    "extraction_failure_count" to 2,
+                    "last_extraction_cycle_succeeded" to false,
+                ),
+                captureIncompleteReason = CaptureIncompleteReason.EXTRACTOR_FAILURE,
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+        return json.parseToJsonElement(getInspectionProblems()).jsonObject
+    }
+
+    private fun pluginProblemsUnknownStaleDefault(): JsonObject {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem(description = "Cached warning", file = "/tmp/TestProject/src/App.kt")),
+                timestamp = System.currentTimeMillis() - 16000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+        return json.parseToJsonElement(getInspectionProblems(includeStale = false)).jsonObject
+    }
+
+    private fun pluginStatusUnknownProofFailed(): JsonObject {
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 7L
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureDiagnostic = mapOf(
+                    "profile_missing" to true,
+                    "profile_requested" to "Fable Contract Profile",
+                ),
+            ),
+        )
+        return buildInspectionStatus().toJsonObject()
+    }
+
     private fun getInspectionProblems(): String {
         return getInspectionProblems(includeStale = false)
     }
@@ -2939,14 +3074,18 @@ class InspectionSnapshotStateTest {
     private fun staleProblem(
         description: String = "Old warning",
         file: String = "/tmp/TestProject/src/app.js",
+        line: Int = 12,
+        column: Int = 4,
+        severity: String = "weak_warning",
+        inspectionType: String = "JSUnresolvedReference",
     ): Map<String, Any> {
         return mapOf(
             "description" to description,
             "file" to file,
-            "line" to 12,
-            "column" to 4,
-            "severity" to "weak_warning",
-            "inspectionType" to "JSUnresolvedReference",
+            "line" to line,
+            "column" to column,
+            "severity" to severity,
+            "inspectionType" to inspectionType,
         )
     }
 
@@ -2960,6 +3099,60 @@ class InspectionSnapshotStateTest {
         method.isAccessible = true
         return method.invoke(handler, "TestProject", timeoutMs, pollMs) as String
     }
+
+    private fun contractCase(name: String): ContractCase {
+        val path = contractFixturePath(name)
+        val root = json.parseToJsonElement(Files.readString(path)).jsonObject
+        return ContractCase(
+            name = root.string("name") ?: name,
+            payload = root["payload"]?.jsonObject ?: error("Missing payload in $name"),
+            expected = root["expected"]?.jsonObject ?: error("Missing expected in $name"),
+        )
+    }
+
+    private fun contractFixturePath(name: String): Path {
+        val relative = Path.of("test-fixtures/contract-verdicts/$name.json")
+        return generateSequence(Path.of("").toAbsolutePath()) { current -> current.parent }
+            .map { root -> root.resolve(relative) }
+            .firstOrNull { Files.exists(it) }
+            ?: error("Missing contract fixture: $relative")
+    }
+
+    private fun assertRequiredHelperFields(payload: JsonObject, context: String) {
+        listOf(
+            "inspection_verdict",
+            "inspection_verdict_reason",
+            "inspection_verdict_message",
+            "inspection_verdict_next_action",
+        ).forEach { field ->
+            assertTrue(!payload.string(field).isNullOrBlank(), "$context missing $field")
+        }
+    }
+
+    private data class ContractCase(
+        val name: String,
+        val payload: JsonObject,
+        val expected: JsonObject,
+    )
+
+    private fun Map<String, Any>.toJsonObject(): JsonObject {
+        return json.parseToJsonElement(com.shiny.inspectionmcp.core.formatJsonManually(this)).jsonObject
+    }
+
+    private fun assertJsonContains(expected: JsonElement, actual: JsonElement?, context: String) {
+        when (expected) {
+            is JsonObject -> {
+                assertTrue(actual is JsonObject, "$context expected JSON object")
+                expected.forEach { (key, expectedValue) ->
+                    assertJsonContains(expectedValue, (actual as JsonObject)[key], "$context.$key")
+                }
+            }
+            is JsonArray -> assertEquals(expected, actual, context)
+            else -> assertEquals(expected, actual, context)
+        }
+    }
+
+    private fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
     private fun snapshotKey(project: Project = mockProject): String {
         return projectKey(project)

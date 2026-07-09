@@ -1,7 +1,9 @@
 package com.shiny.inspectionmcp.mcpserver
 
 import com.sun.net.httpserver.HttpServer
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -300,6 +302,41 @@ class McpServerTest {
             assertTrue(text.contains("VERDICT: UNKNOWN"))
             assertTrue(text.contains("reason=stale_results"))
             assertFalse(text.contains("VERDICT: RED"))
+        }
+    }
+
+    @Test
+    fun mcpRenderedVerdictsMatchSharedContractFixtures() {
+        listOf(
+            contractCase("problems-red-findings"),
+            contractCase("problems-unknown-capture-incomplete"),
+            contractCase("problems-unknown-stale-default"),
+            contractCase("status-green-clean"),
+            contractCase("status-unknown-proof-failed"),
+        ).forEach { contract ->
+            val path = "/api/inspection/${contract.endpoint}"
+            MockIdeServer(mapOf(path to MockResponse(contract.payloadText))).use { server ->
+                server.start()
+                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+                val tool = when (contract.endpoint) {
+                    "problems" -> "inspection_get_problems"
+                    "status" -> "inspection_get_status"
+                    else -> error("Unsupported contract endpoint: ${contract.endpoint}")
+                }
+
+                val result = executor.handleToolCall(buildToolCall(tool, buildJsonObject { }))
+                val text = result.firstText()
+
+                assertFalse(result.isError(), contract.name)
+                assertTrue(text.contains("VERDICT: ${contract.expected.string("verdict")} reason=${contract.expected.string("reason")}"), contract.name)
+                contract.expected.stringArray("mcp_contains").forEach { expectedText ->
+                    assertTrue(text.contains(expectedText), "${contract.name} missing $expectedText in:\n$text")
+                }
+                contract.expected.stringArray("mcp_not_contains").forEach { forbiddenText ->
+                    assertFalse(text.contains(forbiddenText), "${contract.name} leaked $forbiddenText in:\n$text")
+                }
+                assertFixtureSatisfiesHelperContract(contract)
+            }
         }
     }
 
@@ -1371,6 +1408,104 @@ private fun buildToolCall(name: String, args: JsonObject): JsonObject {
     }
 }
 
+private data class ContractCase(
+    val name: String,
+    val endpoint: String,
+    val payload: JsonObject,
+    val payloadText: String,
+    val expected: JsonObject,
+)
+
+private fun contractCase(name: String): ContractCase {
+    val path = contractFixturePath(name)
+    val root = Json.parseToJsonElement(Files.readString(path)).jsonObject
+    val payload = root["payload"]?.jsonObject ?: error("Missing payload in $name")
+    return ContractCase(
+        name = root.string("name") ?: name,
+        endpoint = root.string("endpoint") ?: error("Missing endpoint in $name"),
+        payload = payload,
+        payloadText = Json.encodeToString(JsonElement.serializer(), payload),
+        expected = root["expected"]?.jsonObject ?: error("Missing expected in $name"),
+    )
+}
+
+private fun contractFixturePath(name: String): Path {
+    val relative = Path.of("test-fixtures/contract-verdicts/$name.json")
+    return generateSequence(Path.of("").toAbsolutePath()) { current -> current.parent }
+        .map { root -> root.resolve(relative) }
+        .firstOrNull { Files.exists(it) }
+        ?: error("Missing contract fixture: $relative")
+}
+
+private fun assertFixtureSatisfiesHelperContract(contract: ContractCase) {
+    val helper = contract.expected["helper_agent_result"]?.jsonObject
+        ?: error("${contract.name} missing helper_agent_result")
+    val retryPolicy = helper["retry_policy"]?.jsonObject
+        ?: error("${contract.name} missing helper retry_policy")
+
+    val helperContract = expectedHelperContract(contract)
+    assertEquals(helperContract.verdict, helper.string("verdict"), "${contract.name} helper verdict")
+    assertEquals(helperContract.bucket, helper.string("bucket"), "${contract.name} helper bucket")
+    assertEquals(helperContract.retry, retryPolicy["retry"]?.jsonPrimitive?.booleanOrNull, "${contract.name} helper retry")
+    assertEquals(helperContract.maxAttempts, retryPolicy["max_attempts"]?.jsonPrimitive?.intOrNull, "${contract.name} helper max_attempts")
+    assertEquals(helperContract.waitMs, retryPolicy["wait_ms"]?.jsonPrimitive?.intOrNull, "${contract.name} helper wait_ms")
+    assertEquals(helperContract.nextAction, helper.string("next_action"), "${contract.name} helper next_action")
+    assertEquals(helperContract.agentReport, helper.string("agent_report"), "${contract.name} helper agent_report")
+    listOf(
+        "inspection_verdict",
+        "inspection_verdict_reason",
+        "inspection_verdict_message",
+        "inspection_verdict_next_action",
+    ).forEach { field ->
+        assertTrue(!contract.payload.string(field).isNullOrBlank(), "${contract.name} missing $field")
+    }
+}
+
+private data class HelperContract(
+    val verdict: String,
+    val bucket: String,
+    val retry: Boolean,
+    val maxAttempts: Int,
+    val waitMs: Int,
+    val nextAction: String,
+    val agentReport: String,
+)
+
+private fun expectedHelperContract(contract: ContractCase): HelperContract {
+    val verdict = contract.expected.string("verdict") ?: "UNKNOWN"
+    val reason = contract.expected.string("reason") ?: "unknown"
+    val bucket = when {
+        verdict == "GREEN" -> "clean"
+        verdict == "RED" -> "actionable_findings"
+        reason == "stale_results" -> "stale_results"
+        reason in setOf("extractor_failure", "inspection_proof_failed") -> "tool_bug"
+        else -> "unknown"
+    }
+    val retry = verdict == "UNKNOWN" && bucket == "stale_results"
+    val nextAction = when {
+        verdict == "GREEN" -> "No inspection action required for this scope/filter."
+        verdict == "RED" -> "Fix the reported findings, then rerun inspection."
+        reason == "extractor_failure" -> "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
+        reason == "stale_results" -> "Rerun inspection; stale cached findings must not be treated as current."
+        reason == "inspection_proof_failed" -> "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+        else -> "Do not report GREEN or RED. Rerun inspection and include helper diagnostics if it remains UNKNOWN."
+    }
+    val agentReport = when (verdict) {
+        "GREEN" -> "JetBrains inspection passed for the selected scope."
+        "RED" -> "JetBrains inspection found ${contract.payload["total_problems"]?.jsonPrimitive?.intOrNull ?: 0} actionable finding(s)."
+        else -> "JetBrains inspection was inconclusive ($bucket: $reason). $nextAction"
+    }
+    return HelperContract(
+        verdict = verdict,
+        bucket = bucket,
+        retry = retry,
+        maxAttempts = if (retry) 1 else 0,
+        waitMs = if (retry) 30000 else 0,
+        nextAction = nextAction,
+        agentReport = agentReport,
+    )
+}
+
 private fun JsonObject.firstText(): String {
     val content = this["content"]?.jsonArray?.firstOrNull()?.jsonObject ?: return ""
     return content["text"]?.jsonPrimitive?.content ?: ""
@@ -1382,4 +1517,8 @@ private fun JsonObject.isError(): Boolean {
 
 private fun JsonObject.string(field: String): String? {
     return this[field]?.jsonPrimitive?.contentOrNull
+}
+
+private fun JsonObject.stringArray(field: String): List<String> {
+    return this[field]?.jsonArray?.mapNotNull { item -> item.jsonPrimitive.contentOrNull } ?: emptyList()
 }

@@ -1,0 +1,49 @@
+{
+  "name": "problems-red-findings",
+  "endpoint": "problems",
+  "payload": {
+    "status": "results_available",
+    "inspection_verdict": "RED",
+    "inspection_verdict_reason": "actionable_findings",
+    "inspection_verdict_message": "Inspection worked and returned actionable findings for the selected scope/filter.",
+    "inspection_verdict_next_action": "Fix the reported findings, then rerun inspection.",
+    "total_problems": 1,
+    "problems_shown": 1,
+    "pagination": {
+      "limit": 100,
+      "offset": 0,
+      "has_more": false,
+      "next_offset": null
+    },
+    "problems": [
+      {
+        "description": "Unresolved reference: missingSymbol",
+        "file": "/tmp/TestProject/src/App.kt",
+        "line": 4,
+        "column": 9,
+        "severity": "error",
+        "inspectionType": "UnresolvedReference"
+      }
+    ]
+  },
+  "expected": {
+    "verdict": "RED",
+    "reason": "actionable_findings",
+    "mcp_contains": [
+      "VERDICT: RED reason=actionable_findings",
+      "Unresolved reference: missingSymbol",
+      "\"total_problems\": 1"
+    ],
+    "helper_agent_result": {
+      "verdict": "RED",
+      "bucket": "actionable_findings",
+      "retry_policy": {
+        "retry": false,
+        "max_attempts": 0,
+        "wait_ms": 0
+      },
+      "next_action": "Fix the reported findings, then rerun inspection.",
+      "agent_report": "JetBrains inspection found 1 actionable finding(s)."
+    }
+  }
+}
