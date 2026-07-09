@@ -124,6 +124,187 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Capture snapshot builder preserves findings metadata from the production capture path")
+    fun testCaptureSnapshotBuilderPreservesFindingsMetadata() {
+        val captureScope = InspectionCaptureScope(
+            scopeParam = "files",
+            files = listOf("src/App.kt"),
+            maxFiles = 10,
+        )
+        val projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0)
+        val problems = listOf(
+            mapOf(
+                "description" to "warning",
+                "file" to "/tmp/TestProject/src/App.kt",
+                "line" to 4,
+            )
+        )
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = problems,
+                bestSource = "tool_window",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = projectState,
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "ignored when findings exist",
+                captureScope = captureScope,
+                captureDiagnostic = mapOf("exit_reason" to "timeout"),
+                runId = 42L,
+                triggerTimeMs = 1000L,
+                viewReadyOk = true,
+            )
+        )
+
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(problems, snapshot.problems)
+        assertEquals("tool_window", snapshot.source)
+        assertEquals(captureScope, snapshot.captureScope)
+        assertEquals(projectState, snapshot.projectState)
+        assertEquals(42L, snapshot.runId)
+        assertEquals(1000L, snapshot.triggerTimeMs)
+        assertEquals(null, snapshot.captureDiagnostic)
+        assertEquals(null, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    @DisplayName("Capture snapshot builder keeps clean proof diagnostics from settled empty views")
+    fun testCaptureSnapshotBuilderKeepsCleanProofDiagnostics() {
+        val captureScope = InspectionCaptureScope(scopeParam = "whole_project")
+        val projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0)
+        val diagnostic = mapOf(
+            "exit_reason" to "settled",
+            "view_ready_ok" to true,
+            "observed_inspection_view" to true,
+            "observed_settled_empty_inspection_view" to true,
+            "successful_extraction_count" to 3,
+        )
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "tool_window",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = projectState,
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = captureScope,
+                captureDiagnostic = diagnostic,
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+                viewReadyOk = true,
+            )
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
+        assertEquals(emptyList<Map<String, Any>>(), snapshot.problems)
+        assertEquals("inspection_view", snapshot.source)
+        assertEquals(captureScope, snapshot.captureScope)
+        assertEquals(diagnostic, snapshot.captureDiagnostic)
+        assertEquals(null, snapshot.captureIncompleteReason)
+        assertEquals(runState.runId, snapshot.runId)
+
+        InspectionResultsStore.setSnapshot(snapshotKey(), snapshot)
+        val status = buildInspectionStatus()
+
+        assertEquals("GREEN", status["inspection_verdict"])
+        assertEquals("clean_confirmed", status["inspection_verdict_reason"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals(diagnostic, status["capture_diagnostic"])
+        @Suppress("UNCHECKED_CAST")
+        val proof = status["inspection_proof"] as Map<String, Any?>
+        assertEquals("complete", proof["status"])
+        assertEquals(true, proof["capture_complete"])
+    }
+
+    @Test
+    @DisplayName("Capture snapshot builder preserves incomplete reason and diagnostic proof")
+    fun testCaptureSnapshotBuilderPreservesIncompleteReason() {
+        val captureScope = InspectionCaptureScope(scopeParam = "current_file", resolvedCurrentFile = "src/App.kt")
+        val projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0)
+        val diagnostic = mapOf(
+            "exit_reason" to "deadline",
+            "view_ready_ok" to false,
+            "observed_inspection_view" to false,
+            "successful_extraction_count" to 0,
+            "extraction_failure_count" to 2,
+            "last_extraction_cycle_succeeded" to false,
+        )
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = projectState,
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "Inspection finished without trustworthy results.",
+                captureScope = captureScope,
+                captureDiagnostic = diagnostic,
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+                viewReadyOk = false,
+            )
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals("tool_window", snapshot.source)
+        assertEquals("Inspection finished without trustworthy results.", snapshot.note)
+        assertEquals(captureScope, snapshot.captureScope)
+        assertEquals(diagnostic, snapshot.captureDiagnostic)
+        assertEquals(CaptureIncompleteReason.EXTRACTOR_FAILURE, snapshot.captureIncompleteReason)
+        assertEquals(runState.runId, snapshot.runId)
+
+        InspectionResultsStore.setSnapshot(snapshotKey(), snapshot)
+        val status = buildInspectionStatus()
+
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("extractor_failure", status["inspection_verdict_reason"])
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("extractor_failure", status["capture_incomplete_reason"])
+        assertEquals(diagnostic, status["capture_diagnostic"])
+        assertEquals(false, status["clean_inspection"])
+        assertEquals(false, status["has_inspection_results"])
+    }
+
+    @Test
+    @DisplayName("Capture snapshot builder marks incomplete ready views as inspection view source")
+    fun testCaptureSnapshotBuilderKeepsReadyIncompleteSource() {
+        val diagnostic = mapOf(
+            "exit_reason" to "deadline",
+            "view_ready_ok" to true,
+            "observed_inspection_view" to true,
+            "inspection_view_updating" to true,
+            "unreadable_problem_state_observation_count" to 1,
+        )
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "tool_window",
+                snapshotTimeMs = 1234L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "Inspection view was still updating.",
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+                captureDiagnostic = diagnostic,
+                runId = 45L,
+                triggerTimeMs = 1000L,
+                viewReadyOk = true,
+            )
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals("inspection_view", snapshot.source)
+        assertEquals(CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE, snapshot.captureIncompleteReason)
+        assertEquals(diagnostic, snapshot.captureDiagnostic)
+    }
+
+    @Test
     @DisplayName("Confirmed clean snapshot is the only zero-problem state reported as clean")
     fun testCleanSnapshotRequiresConfirmedOutcome() {
         InspectionResultsStore.setSnapshot(
