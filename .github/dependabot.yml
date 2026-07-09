@@ -13,15 +13,6 @@ updates:
     patterns:
       - "*"
     multi-ecosystem-group: tooling
-    # Remove after CodeQL 2.26+ Java/Kotlin analysis passes on Kotlin 2.4.x.
-    # Tracking: https://github.com/cbusillo/jetbrains-inspection-api/issues/174
-    ignore:
-      - dependency-name: >-
-          org.jetbrains.kotlin.jvm:org.jetbrains.kotlin.jvm.gradle.plugin
-        versions: [">= 2.4.0"]
-      - dependency-name: >-
-          org.jetbrains.kotlin.plugin.serialization:org.jetbrains.kotlin.plugin.serialization.gradle.plugin
-        versions: [">= 2.4.0"]
     groups:
       all-security-updates:
         applies-to: security-updates
