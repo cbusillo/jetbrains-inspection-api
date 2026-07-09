@@ -43,7 +43,9 @@ Use this when validating one MCP server against multiple JetBrains IDEs.
 Expected behavior:
 
 - `inspection_list_projects` shows live IDE sessions with project paths and keys.
-- Calls with `project_path` route to the IDE containing that project.
+- Calls with `project_key` or path selectors (`project_path`, `worktree_path`,
+  or `cwd`) route to the IDE containing that project. Prefer these selectors
+  over `project` when duplicate project names are possible.
 - If an IDE restarts on a new port, the MCP router rediscovers it.
 - If an IDE restarts during a trigger/wait/problems flow, the MCP response asks
   for a fresh trigger instead of silently using stale state.
@@ -51,7 +53,8 @@ Expected behavior:
 
 ## Helper lifecycle smoke
 
-Use this when validating worktree readiness inspection behavior from the external helper.
+Use this when validating worktree readiness inspection behavior from the
+external helper.
 For release, merge-readiness, or dogfood-exit validation, prefer the repeatable
 matrix runner first:
 
@@ -103,12 +106,13 @@ behavior and you need to prove a real IDE finding reaches agents as `RED`:
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
-The command copies the selected `test-fixtures/inspection-red-lane*` fixture to a
-disposable project under
-`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper `inspect-closeout`
-with `scope=whole_project`, and passes only when the structured helper JSON
-reports `VERDICT=RED`, reports `total_problems > 0`, and closes the helper-owned
-project. The helper may exit non-zero because `RED` is not readiness-clean.
+The command copies the selected `test-fixtures/inspection-red-lane*` fixture to
+a disposable project under
+`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper
+`inspect-closeout` with `scope=whole_project`, and passes only when the
+structured helper JSON reports `VERDICT=RED`, reports `total_problems > 0`, and
+closes the helper-owned project. The helper may exit non-zero because `RED` is
+not readiness-clean.
 
 ## Fast-path scopes (manual)
 

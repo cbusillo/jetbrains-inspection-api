@@ -7,7 +7,7 @@ including IDE-only inspections such as PyCharm’s Odoo plugin checks.
 ## Features
 
 - **Real-time HTTP API access** to inspection results
-- **Scope-based filtering** (whole project, current file, or specific files)
+- **Scope-based inspection and filtering** (whole project, current file, directory, changed files, or specific files)
 - **Severity filtering** (error, warning, weak_warning, info, or all)
 - **File/path filtering** for targeted inspection analysis
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
@@ -97,10 +97,10 @@ inspection_get_problems()
 # Get problems with severity filtering
 inspection_get_problems(severity="error")
 
-# Get problems for currently open files only
+# Get problems for the selected editor file
 inspection_get_problems(scope="current_file")
 
-# Specify which project to inspect (v1.10.5+)
+# Specify which project to inspect
 inspection_get_problems(project="MyProject")
 
 # Prefer a project path/key when multiple IDEs or duplicate project names are open
@@ -111,7 +111,11 @@ inspection_get_problems(project_key="path:/Users/me/Developer/MyProject")
 inspection_get_problems(project="odoo-ai", severity="error")
 ```
 
-Note: in MCP auto mode, the router prefers `project_key`, `project_path`, the MCP process working directory, then a unique `project` name. Blank or omitted selectors fall back to the focused/active open project only when unambiguous.
+Note: in MCP auto mode, the router prefers `project_key`, then path selectors
+(`project_path`, `worktree_path`, `cwd`), then a unique `project` name. Blank or
+omitted selectors follow the last triggered project when possible, then the MCP
+process working directory or the focused/active open project only when
+unambiguous.
 
 ### Direct HTTP API
 These examples use the `63340` port from the setup example above. If you
@@ -136,7 +140,7 @@ curl "http://127.0.0.1:63340/api/inspection/problems?scope=current_file"
 # Get only error-level problems
 curl "http://127.0.0.1:63340/api/inspection/problems?severity=error"
 
-# Specify which project to inspect (v1.10.5+)
+# Specify which project to inspect
 curl "http://127.0.0.1:63340/api/inspection/problems?project=MyProject"
 
 # Trigger inspection for specific project
@@ -201,7 +205,7 @@ Typical response (truncated):
     "ide": {
       "name": "IntelliJ IDEA Ultimate",
       "product_code": "IU",
-      "plugin_version": "1.10.5",
+      "plugin_version": "1.13.16",
       "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
@@ -212,7 +216,7 @@ Typical response (truncated):
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
-- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
+- `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale; `current_run_psi_churn` is a fresh-run PSI tick that the plugin attempts to reconcile before returning results.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
@@ -252,7 +256,7 @@ routing state.
       "name": "IntelliJ IDEA Ultimate",
       "version": "2025.1.1",
       "product_code": "IU",
-      "plugin_version": "1.10.5",
+      "plugin_version": "1.13.16",
       "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
@@ -320,8 +324,11 @@ readiness inspection.
 **URL**: `GET /api/inspection/problems`
 
 **Parameters**:
-- `scope` (optional): `whole_project` (default) | `current_file` | custom path filter
-  - `files`, `directory`, `changed_files` are treated as `whole_project` (trigger-only scopes); use `file_pattern` for filtering.
+- `scope` (optional): `whole_project` (default) | `current_file` | `files` | `directory` | `changed_files` | custom path filter.
+  - For `files`, pass one or more `file=...` values or a comma/newline-separated `files=...` value. Relative paths resolve from the project root and match exact files.
+  - For `directory`, pass `dir`, `directory`, or `path`. Relative directories resolve from the project root and match that directory boundary, not same-prefix siblings.
+  - For `changed_files`, the plugin resolves the current VCS changed-file set using `include_unversioned`, `changed_files_mode`, and `max_files`.
+  - Unknown/custom scope text remains a legacy path-substring filter; prefer the explicit scopes above or `file_pattern` for new clients.
 - `severity` (optional): `error` | `warning` | `weak_warning` | `info` | `grammar` | `typo` | `all` (default)
 - `problem_type` (optional): Filter by inspection type (e.g., `PyUnresolvedReferencesInspection`, `SpellCheck`, `Unused`).
   Use `all` or leave blank to disable the filter.
@@ -334,6 +341,10 @@ readiness inspection.
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
 - `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
 - `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
+
+For stale responses, the same scope filters are applied before cached counts and
+optional cached findings are returned. A scoped `include_stale=true` response is
+still `UNKNOWN`/`stale_results`; it is diagnostic data, not current proof.
 
 Invalid `limit` or `offset` values return HTTP 400 with `error`, `parameter`, and `message` fields.
 
@@ -369,7 +380,7 @@ curl "http://127.0.0.1:63340/api/inspection/problems?include_stale=true"
   - `current_file` (inspect the currently selected editor file)
   - `directory` (requires `dir`, `directory`, or `path`)
   - `files` (inspect only the provided file list)
-  - `changed_files` (inspect the files changed in VCS
+  - `changed_files` (inspect the files changed in VCS)
 - `dir` | `directory` | `path` (optional): Directory to inspect. Relative paths resolve from the project root; absolute paths are accepted.
 - `file` (repeatable, optional): File path when `scope=files`. Can be repeated multiple times.
 - `files` (optional): Comma or newline‑separated list of file paths when `scope=files`.
@@ -482,7 +493,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - `is_scanning: true` → Inspection running, wait
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
 - `snapshot_change_kind: "current_run_psi_churn"` → The latest run's snapshot saw a PSI modification-count tick after capture; the plugin keeps waiting instead of treating the snapshot as stale cached data.
-- `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `current_run_psi_churn`, and `timeout`; profile configuration bucket is `profile_resolution_error`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
+- `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `current_run_psi_churn`, `timeout`, and `inspection_trigger_empty_model`; profile configuration bucket is `profile_resolution_error`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
 - `clean_inspection: true` → Inspection complete; `inspection_verdict` is `GREEN` for the selected scope/filter
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`
 - If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
@@ -512,7 +523,8 @@ envelope for agent workflows.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run.
-- `/api/inspection/status` and `/api/inspection/problems` refresh project state before evaluating cached snapshots.
+- `/api/inspection/status` refreshes project state before evaluating cached snapshots.
+- `/api/inspection/problems` reads the current snapshot without forcing a refresh first, so immediately fetched just-completed results are not made stale by an unrelated refresh tick.
 - If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"`. By default, the response includes cached metadata such as `cached_total_problems` and withholds `problems`; `include_stale=true` returns cached findings for diagnostics while keeping `status: "stale_results"`.
 - Fresh snapshots are tied to inspection run metadata. A PSI modification-count change immediately after the same run's capture is classified as `current_run_psi_churn` and reconciled against the live IDE problem tree instead of being reported as stale cached data.
 
@@ -523,10 +535,10 @@ The bundled JVM MCP (Model Context Protocol) server provides integration for any
 ### Tools Provided
 - **`inspection_list_projects()`** - Lists discovered JetBrains IDE sessions and open projects for routing/disambiguation
 - **`inspection_trigger(scope?, dir?)`** - Triggers an inspection (whole project by default; supports `scope=current_file` or `scope=directory&dir=...`)
-  - Also supports `scope=files` with `file=...` (repeat) or `files=[...]`, and `scope=changed_files` with `include_unversioned` and `max_files`.
+  - Also supports `scope=files` with `files=[...]`, and `scope=changed_files` with `include_unversioned`, `changed_files_mode`, and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_wait(timeout_ms?, poll_ms?)`** - Long-poll until results or timeout
-- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. `include_stale` returns cached stale findings for diagnostics only.
+- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. The MCP wrapper forwards `whole_project`, `current_file`, or legacy path-substring `scope` values plus `file_pattern`; it does not currently expose HTTP-only `file`, `files`, `dir`, `directory`, `changed_files_mode`, or `max_files` problem-filter parameters. `include_stale` returns cached stale findings for diagnostics only.
 
 ### Requirements
 - **Java 21+** (or the IDE's bundled runtime)
