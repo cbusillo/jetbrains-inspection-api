@@ -11,27 +11,41 @@ cd "$ROOT"
 
 usage() {
   cat <<'USAGE'
-Usage: ./scripts/release.sh [--major|--minor|--patch]
-                           [--no-push] [--remote <name>]
-                           [--yes] [--allow-non-default-branch]
+Usage:
+  ./scripts/release.sh [prepare] [--major|--minor|--patch]
+                       [--no-push] [--remote <name>] [--yes]
+  ./scripts/release.sh tag vX.Y.Z [--no-push] [--remote <name>]
 
-Bumps pluginVersion, runs tests + commit gate, commits, and tags vX.Y.Z.
-By default it pushes commit + tag and enforces the default branch.
-If no bump flag is provided, an interactive picker is shown.
-Use --no-push to keep it local, --allow-non-default-branch to bypass branch check,
-and --yes to skip the IDE restart confirmation.
+prepare (default): creates release/vX.Y.Z from the current remote default
+branch, updates versions, runs release validation, commits, pushes the task
+branch, and opens a pull request. It never commits or pushes directly to the
+protected default branch and never creates a release tag.
+
+tag: after the release pull request is merged, validates that the clean local
+default branch exactly matches the remote default branch and vX.Y.Z matches
+pluginVersion and plugin.xml, then creates and pushes the release tag.
 USAGE
 }
 
+MODE="prepare"
+if [ "${1:-}" = "prepare" ] || [ "${1:-}" = "tag" ]; then
+  MODE="$1"
+  shift
+fi
+
 BUMP=""
+TAG=""
 PUSH=1
 REMOTE="origin"
-ALLOW_NON_DEFAULT_BRANCH=0
 ASSUME_YES=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --major|--minor|--patch)
+      if [ "$MODE" != "prepare" ]; then
+        echo "ERROR: Version bump flags are only valid in prepare mode." >&2
+        exit 1
+      fi
       if [ -n "$BUMP" ]; then
         echo "ERROR: Only one of --major/--minor/--patch is allowed." >&2
         exit 1
@@ -49,24 +63,94 @@ while [ $# -gt 0 ]; do
       fi
       REMOTE="$1"
       ;;
-    --allow-non-default-branch)
-      ALLOW_NON_DEFAULT_BRANCH=1
-      ;;
     --yes)
+      if [ "$MODE" != "prepare" ]; then
+        echo "ERROR: --yes is only valid in prepare mode." >&2
+        exit 1
+      fi
       ASSUME_YES=1
       ;;
     -h|--help)
       usage
       exit 0
       ;;
+    v*)
+      if [ "$MODE" != "tag" ] || [ -n "$TAG" ]; then
+        echo "ERROR: Unexpected release tag argument: $1" >&2
+        exit 1
+      fi
+      TAG="$1"
+      ;;
     *)
       echo "ERROR: Unknown argument: $1" >&2
-      usage
+      usage >&2
       exit 1
       ;;
   esac
   shift
 done
+
+detect_default_branch() {
+  local remote="$1"
+  local head_ref=""
+  local remote_prefix="${remote}/"
+
+  if git remote get-url "$remote" >/dev/null 2>&1; then
+    head_ref=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
+    if [ -z "$head_ref" ]; then
+      head_ref=$(git remote show "$remote" 2>/dev/null | awk '/HEAD branch/ {print $NF; exit}' || true)
+    fi
+  fi
+
+  if [ -n "$head_ref" ]; then
+    echo "${head_ref#"$remote_prefix"}"
+    return 0
+  fi
+
+  echo "main"
+}
+
+require_remote() {
+  if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
+    echo "ERROR: Remote '$REMOTE' not found." >&2
+    exit 1
+  fi
+}
+
+require_clean_tree() {
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "ERROR: Working tree is dirty. Commit or remove local changes first." >&2
+    exit 1
+  fi
+}
+
+require_synced_default_branch() {
+  local current_branch="$1"
+  local default_branch="$2"
+  local remote_default="$REMOTE/$default_branch"
+
+  if [ "$current_branch" != "$default_branch" ]; then
+    echo "ERROR: Run this command from the local $default_branch branch." >&2
+    exit 1
+  fi
+  if [ "$(git rev-parse HEAD)" != "$(git rev-parse "$remote_default")" ]; then
+    echo "ERROR: Local $default_branch must exactly match $remote_default." >&2
+    exit 1
+  fi
+}
+
+read_plugin_version() {
+  python3 - <<'PY'
+from pathlib import Path
+import re
+
+text = Path("gradle.properties").read_text(encoding="utf-8")
+match = re.search(r"^\s*pluginVersion\s*=\s*(.+?)\s*$", text, re.M)
+if not match:
+    raise SystemExit(1)
+print(match.group(1).strip())
+PY
+}
 
 choose_bump_prompt() {
   local reply=""
@@ -80,10 +164,7 @@ choose_bump_prompt() {
 }
 
 choose_bump_osascript() {
-  if [[ "$OSTYPE" != "darwin"* ]]; then
-    return 1
-  fi
-  if ! command -v osascript >/dev/null 2>&1; then
+  if [[ "$OSTYPE" != "darwin"* ]] || ! command -v osascript >/dev/null 2>&1; then
     return 1
   fi
   osascript <<'APPLESCRIPT'
@@ -109,7 +190,10 @@ end if
 APPLESCRIPT
 }
 
-if [ -z "$BUMP" ]; then
+resolve_bump() {
+  if [ -n "$BUMP" ]; then
+    return
+  fi
   BUMP=$(choose_bump_osascript || true)
   if [ -z "$BUMP" ]; then
     if [ -t 0 ] || [ -r /dev/tty ]; then
@@ -125,133 +209,207 @@ if [ -z "$BUMP" ]; then
     exit 1
   fi
   case "$BUMP" in
-    major|minor|patch)
-      ;;
+    major|minor|patch) ;;
     *)
       echo "ERROR: Invalid selection: $BUMP" >&2
       exit 1
       ;;
   esac
-fi
-
-BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
-if [ -z "$BRANCH" ]; then
-  echo "ERROR: Unable to determine current branch." >&2
-  exit 1
-fi
-
-detect_default_branch() {
-  local remote="$1"
-  local head_ref=""
-  local remote_prefix="${remote}/"
-
-  if git remote get-url "$remote" >/dev/null 2>&1; then
-    head_ref=$(git symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)
-    if [ -z "$head_ref" ]; then
-      head_ref=$(git remote show "$remote" 2>/dev/null | awk '/HEAD branch/ {print $NF; exit}' || true)
-    fi
-  fi
-
-  if [ -n "$head_ref" ]; then
-    head_ref=${head_ref#"$remote_prefix"}
-    echo "$head_ref"
-    return 0
-  fi
-
-  echo "main"
 }
 
-DEFAULT_BRANCH=$(detect_default_branch "$REMOTE")
+next_version() {
+  local current_version="$1"
+  local major minor patch
+  if ! [[ "$current_version" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    echo "ERROR: pluginVersion must be in X.Y.Z format (got $current_version)." >&2
+    exit 1
+  fi
+  IFS='.' read -r major minor patch <<< "$current_version"
+  case "$BUMP" in
+    major)
+      major=$((major + 1))
+      minor=0
+      patch=0
+      ;;
+    minor)
+      minor=$((minor + 1))
+      patch=0
+      ;;
+    patch)
+      patch=$((patch + 1))
+      ;;
+  esac
+  echo "${major}.${minor}.${patch}"
+}
 
-if [ "$ALLOW_NON_DEFAULT_BRANCH" -ne 1 ] && [ "$BRANCH" != "$DEFAULT_BRANCH" ]; then
-  echo "ERROR: Release must be run from $DEFAULT_BRANCH. Use --allow-non-default-branch to override." >&2
-  exit 1
-fi
-
-if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "ERROR: Working tree is dirty. Commit or stash changes first." >&2
-  exit 1
-fi
-
-CURRENT_VERSION=$(python3 - <<'PY'
-from pathlib import Path
-import re
-
-text = Path("gradle.properties").read_text(encoding="utf-8")
-match = re.search(r"^\s*pluginVersion\s*=\s*(.+?)\s*$", text, re.M)
-if not match:
-    raise SystemExit(1)
-print(match.group(1).strip())
-PY
-)
-
-if ! [[ "$CURRENT_VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-  echo "ERROR: pluginVersion must be in X.Y.Z format (got $CURRENT_VERSION)." >&2
-  exit 1
-fi
-
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-case "$BUMP" in
-  major)
-    MAJOR=$((MAJOR + 1))
-    MINOR=0
-    PATCH=0
-    ;;
-  minor)
-    MINOR=$((MINOR + 1))
-    PATCH=0
-    ;;
-  patch)
-    PATCH=$((PATCH + 1))
-    ;;
-esac
-
-NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
-
-python3 - <<'PY' "$NEW_VERSION"
+update_plugin_version() {
+  local version="$1"
+  python3 - "$version" <<'PY'
 from pathlib import Path
 import re
 import sys
 
-new_version = sys.argv[1]
-path = Path("gradle.properties")
-text = path.read_text(encoding="utf-8")
-updated, count = re.subn(r"^\s*pluginVersion\s*=\s*.+$", f"pluginVersion={new_version}", text, flags=re.M)
+version = sys.argv[1]
+properties_path = Path("gradle.properties")
+text = properties_path.read_text(encoding="utf-8")
+updated, count = re.subn(
+    r"^\s*pluginVersion\s*=\s*.+$",
+    f"pluginVersion={version}",
+    text,
+    flags=re.M,
+)
 if count != 1:
     raise SystemExit("ERROR: Failed to update pluginVersion in gradle.properties")
-path.write_text(updated, encoding="utf-8")
+properties_path.write_text(updated, encoding="utf-8")
+
+plugin_xml_path = Path("src/main/resources/META-INF/plugin.xml")
+plugin_xml = plugin_xml_path.read_text(encoding="utf-8")
+updated_xml, xml_count = re.subn(
+    r"<version>[^<]*</version>",
+    f"<version>{version}</version>",
+    plugin_xml,
+    count=1,
+)
+if xml_count != 1:
+    raise SystemExit("ERROR: Failed to update version in plugin.xml")
+plugin_xml_path.write_text(updated_xml, encoding="utf-8")
 PY
+}
 
-./scripts/test-all.sh
+run_release_validation() {
+  local version="$1"
+  ./scripts/test-all.sh
 
-if [ "$ASSUME_YES" -ne 1 ]; then
-  echo ""
-  echo "This will stop any running IDE instance for the automated test."
-  read -r -p "Continue with ./scripts/test-automated.sh? [y/N] " reply
-  case "$reply" in
-    [Yy]*)
-      ;;
-    *)
-      echo "Aborted before automated IDE test."
+  if [ "$ASSUME_YES" -ne 1 ]; then
+    echo ""
+    echo "This will stop any running IDE instance for the automated test."
+    read -r -p "Continue with ./scripts/test-automated.sh? [y/N] " reply
+    case "$reply" in
+      [Yy]*) ;;
+      *)
+        echo "Aborted before automated IDE test."
+        exit 1
+        ;;
+    esac
+  fi
+
+  ./scripts/test-automated.sh
+  ./scripts/commit-gate.sh
+  ./scripts/release-compatibility-gate.sh
+  ./scripts/validate-release-version.sh --tag "v$version" >/dev/null
+}
+
+open_release_pr() {
+  local branch="$1"
+  local version="$2"
+  local body_file
+  body_file=$(mktemp)
+  trap 'rm -f "$body_file"' RETURN
+  cat > "$body_file" <<EOF
+## Summary
+
+- prepare release v$version
+- validate plugin metadata and compatibility gates
+
+## Validation
+
+- \`./scripts/test-all.sh\`
+- \`./scripts/test-automated.sh\`
+- \`./scripts/commit-gate.sh\`
+- \`./scripts/release-compatibility-gate.sh\`
+EOF
+  gh pr create \
+    --base "$DEFAULT_BRANCH" \
+    --head "$branch" \
+    --title "Release v$version" \
+    --body-file "$body_file"
+  rm -f "$body_file"
+  trap - RETURN
+}
+
+prepare_release() {
+  local branch current_version new_version release_branch
+  branch=$(git branch --show-current)
+  require_remote
+  require_clean_tree
+  git fetch "$REMOTE" "$DEFAULT_BRANCH" --tags
+  require_synced_default_branch "$branch" "$DEFAULT_BRANCH"
+  if [ "$PUSH" -eq 1 ]; then
+    if ! command -v gh >/dev/null 2>&1; then
+      echo "ERROR: gh is required to open the release pull request." >&2
       exit 1
-      ;;
-  esac
-fi
+    fi
+    if ! gh auth status >/dev/null 2>&1; then
+      echo "ERROR: gh is not authenticated; authenticate before preparing a release." >&2
+      exit 1
+    fi
+  fi
+  resolve_bump
 
-./scripts/test-automated.sh
-./scripts/commit-gate.sh
+  current_version=$(read_plugin_version) || {
+    echo "ERROR: pluginVersion not found in gradle.properties." >&2
+    exit 1
+  }
+  new_version=$(next_version "$current_version")
+  release_branch="release/v${new_version}"
 
-git add gradle.properties src/main/resources/META-INF/plugin.xml
-git commit -m "Bump version to ${NEW_VERSION}"
-git tag "v${NEW_VERSION}"
-
-if [ "$PUSH" -eq 1 ]; then
-  if ! git remote get-url "$REMOTE" >/dev/null 2>&1; then
-    echo "ERROR: Remote '$REMOTE' not found." >&2
+  if git show-ref --verify --quiet "refs/heads/$release_branch" ||
+    git ls-remote --exit-code --heads "$REMOTE" "$release_branch" >/dev/null 2>&1; then
+    echo "ERROR: Release branch $release_branch already exists." >&2
     exit 1
   fi
-  git push "$REMOTE" HEAD
-  git push "$REMOTE" "v${NEW_VERSION}"
-fi
 
-echo "Release prepared: v${NEW_VERSION}"
+  git switch -c "$release_branch" "$REMOTE/$DEFAULT_BRANCH"
+  update_plugin_version "$new_version"
+  run_release_validation "$new_version"
+
+  git add gradle.properties src/main/resources/META-INF/plugin.xml
+  git commit -m "Bump version to ${new_version}"
+
+  if [ "$PUSH" -eq 1 ]; then
+    git push -u "$REMOTE" "$release_branch"
+    open_release_pr "$release_branch" "$new_version"
+  else
+    echo "Release branch prepared locally: $release_branch"
+    echo "Push it and open a pull request into $DEFAULT_BRANCH before tagging."
+  fi
+
+  echo "Release preparation complete for v${new_version}; no tag was created."
+}
+
+tag_release() {
+  local branch
+  if [ -z "$TAG" ]; then
+    echo "ERROR: tag mode requires vX.Y.Z." >&2
+    exit 1
+  fi
+
+  branch=$(git branch --show-current)
+  require_remote
+  require_clean_tree
+  git fetch "$REMOTE" "$DEFAULT_BRANCH" --tags
+  require_synced_default_branch "$branch" "$DEFAULT_BRANCH"
+  ./scripts/validate-release-version.sh --tag "$TAG" >/dev/null
+
+  if git show-ref --verify --quiet "refs/tags/$TAG" ||
+    git ls-remote --exit-code --tags "$REMOTE" "refs/tags/$TAG" >/dev/null 2>&1; then
+    echo "ERROR: Release tag $TAG already exists." >&2
+    exit 1
+  fi
+
+  git tag -a "$TAG" -m "Release $TAG"
+  if [ "$PUSH" -eq 1 ]; then
+    git push "$REMOTE" "$TAG"
+    echo "Release tag pushed: $TAG"
+  else
+    echo "Release tag created locally: $TAG"
+  fi
+}
+
+require_remote
+DEFAULT_BRANCH=$(detect_default_branch "$REMOTE")
+
+case "$MODE" in
+  prepare) prepare_release ;;
+  tag) tag_release ;;
+esac

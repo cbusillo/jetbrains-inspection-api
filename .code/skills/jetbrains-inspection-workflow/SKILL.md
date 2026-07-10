@@ -150,16 +150,20 @@ details and use this checklist:
 
 1. Confirm the working tree is clean before release scripts, because release
    automation expects that.
-2. Bump `gradle.properties` (`pluginVersion`) if the release script is not doing
-   it for the task.
-3. Run `./scripts/test-all.sh` or `./scripts/commit-gate.sh`.
+2. Prepare releases through `./scripts/release.sh --patch|--minor|--major`; it
+   creates a release task branch and PR rather than writing to the protected
+   default branch.
+3. Run `./scripts/test-all.sh`, `./scripts/commit-gate.sh`, and
+   `./scripts/release-compatibility-gate.sh` when validating release changes.
 4. Build the plugin zip with
    `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`.
-5. Prefer `./scripts/release.sh --patch|--minor|--major` when it fits the task.
+5. After the release PR merges and local `main` exactly matches remote `main`,
+   use `./scripts/release.sh tag vX.Y.Z` to validate and push the tag.
 
-Tag pushes run `.github/workflows/release.yml`, which runs the CI commit gate,
-builds the plugin zip, publishes to JetBrains Marketplace, and uploads the zip
-from `build/distributions/` to the GitHub Release.
+Tag pushes run `.github/workflows/release.yml`, which validates tag and plugin
+versions, proves the tag points at the current default-branch commit, runs the
+CI commit gate plus plugin structure/compatibility checks, creates the GitHub
+Release, and then publishes to JetBrains Marketplace.
 
 ## Documentation Split
 

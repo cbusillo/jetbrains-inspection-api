@@ -656,7 +656,15 @@ Release notes live on GitHub Releases:
 
 - https://github.com/cbusillo/jetbrains-inspection-api/releases
 
-Release publishing is tag-based. Bump `pluginVersion`, then tag, and push the tag. The GitHub Actions release workflow will publish to the JetBrains Marketplace (requires `PUBLISH_TOKEN` in GitHub Secrets) and create the GitHub Release.
+Release publishing is tag-based, but release preparation must go through a pull
+request. `scripts/release.sh` creates a `release/vX.Y.Z` task branch, runs the
+full release gates, pushes that branch, and opens a PR into the protected
+default branch. After the PR merges, its separate `tag` mode verifies that the
+tag, `pluginVersion`, and `plugin.xml` versions match before pushing the tag.
+The tag-triggered GitHub Actions workflow also proves the tag points at the
+current default-branch commit, repeats the version check, runs plugin structure
+and compatibility verification, creates the GitHub Release, and then publishes
+to JetBrains Marketplace (requires `PUBLISH_TOKEN`).
 
 Before publishing a compatibility-range update, capture release evidence for the
 target IDE line:
@@ -665,6 +673,7 @@ target IDE line:
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
+./scripts/release-compatibility-gate.sh
 ./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm 2026.2 EAP" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
@@ -687,11 +696,19 @@ config directory for the installed-IDE scenario.
 Shortcut:
 
 ```bash
+# Prepare, validate, push, and open the release PR
 ./scripts/release.sh --patch
+
+# After that PR merges and local main is updated
+./scripts/release.sh tag v1.13.17
 ```
 
-The release script pushes commit + tag by default; use `--no-push` to keep it local.
-It enforces the default branch unless you pass `--allow-non-default-branch`, and it runs both test suites (the IDE test will prompt before stopping your IDE unless you pass `--yes`).
+Prepare mode never commits or pushes directly to `main` and never creates a
+tag. Use `--no-push` to keep the release branch local. It runs the comprehensive
+test suite, automated IDE test, commit gate, and release compatibility gate; the
+IDE test prompts before stopping your IDE unless you pass `--yes`. Tag mode
+requires a clean local default branch that exactly matches the remote default
+branch and refuses existing or version-mismatched tags.
 
 ## License
 

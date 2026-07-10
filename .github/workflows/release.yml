@@ -18,6 +18,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Validate release version
+        run: ./scripts/validate-release-version.sh --tag "$GITHUB_REF_NAME"
+
+      - name: Verify tag commit is current default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch origin "$DEFAULT_BRANCH"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$DEFAULT_BRANCH")"
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -53,6 +63,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Validate release version
+        id: release_version
+        run: |
+          version="$(./scripts/validate-release-version.sh --tag "$GITHUB_REF_NAME")"
+          echo "tag_name=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag commit is current default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          git fetch origin "$DEFAULT_BRANCH"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$DEFAULT_BRANCH")"
+
       - name: Set up JDK 21
         uses: actions/setup-java@v5
         with:
@@ -62,8 +86,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build plugin
-        run: ./gradlew buildPlugin
+      - name: Run release compatibility gate
+        run: ./scripts/release-compatibility-gate.sh
+
+      - name: Generate release notes
+        run: |
+          scripts/generate-release-notes.sh \
+            --version "${{ steps.release_version.outputs.version }}" \
+            --output release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
 
       - name: Verify Marketplace token
         env:
@@ -74,33 +106,18 @@ jobs:
             exit 1
           fi
 
-      - name: Publish to JetBrains Marketplace
-        env:
-          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
-        run: ./gradlew publishPlugin
-
-      - name: Get version
-        id: get_version
-        run: |
-          tag_name="${GITHUB_REF#refs/tags/}"
-          echo "TAG_NAME=$tag_name" >> "$GITHUB_OUTPUT"
-          echo "VERSION=${tag_name#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Generate release notes
-        run: |
-          scripts/generate-release-notes.sh \
-            --version "${{ steps.get_version.outputs.VERSION }}" \
-            --output release-notes.md
-        env:
-          GH_TOKEN: ${{ github.token }}
-
-      - name: Create Release
+      - name: Create GitHub Release
         id: create_release
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.get_version.outputs.TAG_NAME }}
-          name: Release ${{ steps.get_version.outputs.TAG_NAME }}
+          tag_name: ${{ steps.release_version.outputs.tag_name }}
+          name: Release ${{ steps.release_version.outputs.tag_name }}
           body_path: release-notes.md
           draft: false
           prerelease: false
           files: ./build/distributions/*.zip
+
+      - name: Publish to JetBrains Marketplace
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+        run: ./gradlew publishPlugin
