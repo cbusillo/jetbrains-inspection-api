@@ -33,6 +33,9 @@ import java.time.Duration
 
 private const val SERVER_NAME = "jetbrains-inspection-mcp"
 private const val DEFAULT_PROTOCOL_VERSION = "2024-11-05"
+private const val DEFAULT_WAIT_TIMEOUT_MS = 180_000
+private const val MIN_WAIT_TIMEOUT_MS = 1_000
+private const val MAX_WAIT_TIMEOUT_MS = 300_000
 
 private val json = Json {
     ignoreUnknownKeys = true
@@ -44,6 +47,11 @@ private val prettyJson = Json {
     prettyPrintIndent = "  "
     explicitNulls = false
 }
+
+private data class PinnedInspectionTarget(
+    val projectKey: String,
+    val sessionId: String,
+)
 
 private object VersionAnchor
 
@@ -181,7 +189,7 @@ internal class ToolExecutor(
     private val httpClientFactory: () -> HttpClient = ::buildHttpClient,
 ) {
     private val pinnedSessionsByProject = java.util.concurrent.ConcurrentHashMap<String, String>()
-    private var latestTriggeredProjectKey: String? = null
+    private var latestTriggeredTarget: PinnedInspectionTarget? = null
 
     companion object {
         fun auto(httpClientFactory: () -> HttpClient = ::buildHttpClient): ToolExecutor {
@@ -291,7 +299,7 @@ internal class ToolExecutor(
             }
 
             val (result, target) = routeAndGet(autoPinnedArgs(args), "problems", params)
-            ensurePinnedSessionStillValid("inspection_get_problems", target)
+            ensurePinnedSessionStillValid("inspection_get_problems", target, result)
 
             val guidance = buildProblemsGuidance(result)
             val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
@@ -329,8 +337,8 @@ internal class ToolExecutor(
                 ?.let { params += "max_files" to it.toString() }
             args.string("profile")?.let { params += "profile" to it }
 
-            val (result, target) = routeAndGet(args, "trigger", params)
-            pinTriggeredSession(target)
+            val (result, target) = routeAndGet(autoPinnedArgs(args), "trigger", params)
+            pinTriggeredSession(target, result)
 
             val text = prettyJson.encodeToString(JsonElement.serializer(), result) +
                 "\n\nUse inspection_wait (preferred) or poll inspection_get_status before fetching problems." +
@@ -346,7 +354,7 @@ internal class ToolExecutor(
             val params = mutableListOf<Pair<String, String>>()
 
             val (result, target) = routeAndGet(autoPinnedArgs(args), "status", params)
-            ensurePinnedSessionStillValid("inspection_get_status", target)
+            ensurePinnedSessionStillValid("inspection_get_status", target, result)
 
             val guidance = buildStatusGuidance(result)
             val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
@@ -361,14 +369,15 @@ internal class ToolExecutor(
             val params = mutableListOf<Pair<String, String>>()
             val timeoutProvided = args["timeout_ms"] != null
             val pollProvided = args["poll_ms"] != null
-            val timeoutMs = args.int("timeout_ms") ?: 180000
+            val timeoutMs = (args.int("timeout_ms") ?: DEFAULT_WAIT_TIMEOUT_MS)
+                .coerceIn(MIN_WAIT_TIMEOUT_MS, MAX_WAIT_TIMEOUT_MS)
             val pollMs = args.int("poll_ms") ?: 1000
-            if (timeoutProvided || timeoutMs != 180000) params += "timeout_ms" to timeoutMs.toString()
+            if (timeoutProvided || timeoutMs != DEFAULT_WAIT_TIMEOUT_MS) params += "timeout_ms" to timeoutMs.toString()
             if (pollProvided || pollMs != 1000) params += "poll_ms" to pollMs.toString()
 
             val requestTimeoutSeconds = ((timeoutMs + 5000) / 1000).toLong().coerceAtLeast(15L)
             val (result, target) = routeAndGet(autoPinnedArgs(args), "wait", params, requestTimeoutSeconds)
-            ensurePinnedSessionStillValid("inspection_wait", target)
+            ensurePinnedSessionStillValid("inspection_wait", target, result)
 
             val guidance = buildWaitGuidance(result)
             val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
@@ -401,29 +410,44 @@ internal class ToolExecutor(
     }
 
     private fun List<Pair<String, String>>.withRoutingSelector(args: JsonObject, target: InspectionTarget): List<Pair<String, String>> {
+        val routedParams = args.string("session_id")
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?.let { sessionId -> this + ("session_id" to sessionId) }
+            ?: this
         val routedProjectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
         if (!routedProjectKey.isNullOrBlank()) {
-            return this + ("project_key" to routedProjectKey)
+            return routedParams + ("project_key" to routedProjectKey)
         }
-        args.routingSelector()?.let { (name, value) -> return this + (name to value) }
-        return this
+        args.routingSelector()?.let { (name, value) -> return routedParams + (name to value) }
+        return routedParams
     }
 
-    private fun pinTriggeredSession(target: InspectionTarget) {
-        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull ?: return
-        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull ?: return
+    private fun pinTriggeredSession(target: InspectionTarget, result: JsonElement) {
+        val resultObject = result as? JsonObject
+        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
+            ?: resultObject?.get("project_key")?.jsonPrimitive?.contentOrNull
+            ?: return
+        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull
+            ?: resultObject?.get("session_id")?.jsonPrimitive?.contentOrNull
+            ?: return
         pinnedSessionsByProject[projectKey] = sessionId
-        latestTriggeredProjectKey = projectKey
+        latestTriggeredTarget = PinnedInspectionTarget(projectKey, sessionId)
     }
 
-    private fun ensurePinnedSessionStillValid(toolName: String, target: InspectionTarget) {
-        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull ?: return
-        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull ?: return
+    private fun ensurePinnedSessionStillValid(toolName: String, target: InspectionTarget, result: JsonElement) {
+        val resultObject = result as? JsonObject
+        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
+            ?: resultObject?.get("project_key")?.jsonPrimitive?.contentOrNull
+            ?: return
+        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull
+            ?: resultObject?.get("session_id")?.jsonPrimitive?.contentOrNull
+            ?: return
         val pinnedSessionId = pinnedSessionsByProject[projectKey] ?: return
         if (pinnedSessionId != sessionId) {
             pinnedSessionsByProject.remove(projectKey)
-            if (latestTriggeredProjectKey == projectKey) {
-                latestTriggeredProjectKey = null
+            if (latestTriggeredTarget?.projectKey == projectKey) {
+                latestTriggeredTarget = null
             }
             throw RuntimeException(
                 "The JetBrains IDE session for project $projectKey restarted before $toolName completed. Re-trigger inspection for this project."
@@ -432,13 +456,14 @@ internal class ToolExecutor(
     }
 
     private fun autoPinnedArgs(args: JsonObject): JsonObject {
-        if (!targetResolver.autoRouting || args.routingSelector() != null) {
+        if (args.routingSelector() != null) {
             return args
         }
-        val projectKey = latestTriggeredProjectKey ?: return args
+        val pinnedTarget = latestTriggeredTarget ?: return args
         return buildJsonObject {
             args.forEach { (key, value) -> put(key, value) }
-            put("project_key", JsonPrimitive(projectKey))
+            put("project_key", JsonPrimitive(pinnedTarget.projectKey))
+            put("session_id", JsonPrimitive(pinnedTarget.sessionId))
         }
     }
 
@@ -834,6 +859,8 @@ internal class ToolExecutor(
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
             "timeout" ->
                 "Wait for indexing/scanning to settle or rerun with a larger timeout."
+            "profile_resolution_error" ->
+                "Verify the requested inspection profile exists and is loaded in the target project, then rerun inspection."
             else ->
                 "Retry once, preferably with a narrower scope; if it repeats, report the reason and capture_diagnostic."
         }
@@ -1032,7 +1059,10 @@ internal class ToolExecutor(
             put("type", JsonPrimitive("object"))
             put("properties", buildJsonObject {
                 routingProperties()
-                put("project", stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted falls back to cwd or focused project when unambiguous."))
+                put(
+                    "project",
+                    stringProp("Project name. In auto mode, prefer project_path or project_key; blank/omitted follows the last triggered project, then cwd or the focused project when unambiguous.")
+                )
                 put(
                     "scope",
                     enumProp(
@@ -1059,7 +1089,12 @@ internal class ToolExecutor(
                     enumProp("changed_files only: all | staged | unstaged", listOf("all", "staged", "unstaged"))
                 )
                 put("max_files", intProp("Positive cap for scope=changed_files only; ignored for other scopes", minimum = 1))
-                put("profile", stringProp("Inspection profile name"))
+                put(
+                    "profile",
+                    stringProp(
+                        "Exact inspection profile name. Omit to use the project's current profile; after the asynchronous trigger, a missing or unverifiable profile is reported as UNKNOWN with reason=profile_resolution_error by status, wait, or problems."
+                    )
+                )
             })
         }
     }
@@ -1088,7 +1123,12 @@ internal class ToolExecutor(
                 )
                 put(
                     "timeout_ms",
-                    intProp("Max wait ms", defaultValue = 180000)
+                    intProp(
+                        "Wait timeout in milliseconds",
+                        defaultValue = DEFAULT_WAIT_TIMEOUT_MS,
+                        minimum = MIN_WAIT_TIMEOUT_MS,
+                        maximum = MAX_WAIT_TIMEOUT_MS,
+                    )
                 )
                 put(
                     "poll_ms",
@@ -1107,7 +1147,9 @@ internal class ToolExecutor(
 
     private fun kotlinx.serialization.json.JsonObjectBuilder.routingProperties() {
         put("project_key", stringProp("Exact project key from inspection_list_projects; preferred when disambiguating"))
-        put("project_path", stringProp("Project root/workspace path; preferred when available"))
+        put("project_path", stringProp("Exact project root or reported project_file_path from inspection_list_projects"))
+        put("worktree_path", stringProp("Exact project/worktree root from inspection_list_projects"))
+        put("cwd", stringProp("Working directory nested within the target project; the deepest containing open project wins"))
         put("ide", stringProp("Optional IDE name/product hint for rare ambiguity cases"))
     }
 

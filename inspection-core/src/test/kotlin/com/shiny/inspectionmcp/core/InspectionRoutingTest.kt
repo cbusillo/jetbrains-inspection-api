@@ -26,12 +26,78 @@ class InspectionRoutingTest {
 
         val candidates = scoreInspectionRouteCandidates(
             identities = listOf(identity),
-            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree/module/src"),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree"),
             defaultCwd = null,
         )
 
         assertEquals("path:/tmp/worktree", candidates.first().project.projectKey)
-        assertEquals(930, candidates.first().score)
+        assertEquals(950, candidates.first().score)
+    }
+
+    @Test
+    fun explicitProjectAndWorktreePathsDoNotMatchNestedDirectories() {
+        val identity = identity(project("path:/tmp/worktree", "repo", "/tmp/worktree"))
+
+        val projectPathCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(projectPath = "/tmp/worktree/module/src"),
+            defaultCwd = null,
+        )
+        val worktreePathCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree/module/src"),
+            defaultCwd = null,
+        )
+
+        assertTrue(projectPathCandidates.isEmpty())
+        assertTrue(worktreePathCandidates.isEmpty())
+    }
+
+    @Test
+    fun invalidExplicitPathsDoNotMatchPathlessProjects() {
+        val identity = identity(
+            project(
+                projectKey = "name:pathless",
+                name = "pathless",
+                basePath = null,
+                projectFilePath = null,
+            )
+        )
+
+        val projectPathCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(projectPath = "not-a-path"),
+            defaultCwd = null,
+        )
+        val worktreePathCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(worktreePath = "not-a-path"),
+            defaultCwd = null,
+        )
+
+        assertTrue(projectPathCandidates.isEmpty())
+        assertTrue(worktreePathCandidates.isEmpty())
+    }
+
+    @Test
+    fun projectPathMatchesReportedProjectFilePath() {
+        val identity = identity(
+            project(
+                projectKey = "path:/tmp/worktree",
+                name = "repo",
+                basePath = "/tmp/worktree",
+                projectFilePath = "/tmp/worktree/.idea/misc.xml",
+            )
+        )
+
+        val candidates = scoreInspectionRouteCandidates(
+            identities = listOf(identity),
+            selector = InspectionRouteSelector(projectPath = "/tmp/worktree/.idea/misc.xml"),
+            defaultCwd = null,
+        )
+
+        assertEquals("path:/tmp/worktree", candidates.first().project.projectKey)
+        assertEquals(950, candidates.first().score)
     }
 
     @Test
@@ -114,7 +180,7 @@ class InspectionRoutingTest {
     }
 
     @Test
-    fun nestedPathMatchesProjectFileRootWhenBasePathIsMissing() {
+    fun nestedCwdMatchesProjectFileRootWhenBasePathIsMissing() {
         val project = project(
             projectKey = "file:/tmp/worktree/.idea/misc.xml",
             name = "repo",
@@ -125,16 +191,16 @@ class InspectionRoutingTest {
 
         val candidates = scoreInspectionRouteCandidates(
             identities = listOf(identity),
-            selector = InspectionRouteSelector(worktreePath = "/tmp/worktree/src/main"),
+            selector = InspectionRouteSelector(cwd = "/tmp/worktree/src/main"),
             defaultCwd = null,
         )
 
         assertEquals("file:/tmp/worktree/.idea/misc.xml", candidates.first().project.projectKey)
-        assertEquals(930, candidates.first().score)
+        assertTrue(candidates.first().score >= 700)
     }
 
     @Test
-    fun nestedPathPrefersDerivedProjectFileRootOverContainingBasePath() {
+    fun nestedCwdPrefersDerivedProjectFileRootOverContainingBasePath() {
         val parent = project(
             projectKey = "path:/tmp/repo",
             name = "repo",
@@ -151,12 +217,12 @@ class InspectionRoutingTest {
 
         val candidates = scoreInspectionRouteCandidates(
             identities = listOf(identity),
-            selector = InspectionRouteSelector(worktreePath = "/tmp/repo/packages/app/src/main"),
+            selector = InspectionRouteSelector(cwd = "/tmp/repo/packages/app/src/main"),
             defaultCwd = null,
         )
 
         assertEquals("file:/tmp/repo/packages/app/.idea/misc.xml", candidates.first().project.projectKey)
-        assertEquals(930, candidates.first().score)
+        assertTrue(candidates.first().score >= 700)
     }
 
     @Test
@@ -186,6 +252,26 @@ class InspectionRoutingTest {
         )
 
         assertEquals("path:/tmp/repo/packages/app", candidates.first().project.projectKey)
+    }
+
+    @Test
+    fun explicitCwdPrecedesProjectNameButDefaultCwdDoesNot() {
+        val cwdProject = identity(project("path:/tmp/cwd", "cwd-project", "/tmp/cwd"))
+        val namedProject = identity(project("path:/tmp/named", "named-project", "/tmp/named"))
+
+        val explicitCwdCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(cwdProject, namedProject),
+            selector = InspectionRouteSelector(project = "named-project", cwd = "/tmp/cwd/src"),
+            defaultCwd = null,
+        )
+        val defaultCwdCandidates = scoreInspectionRouteCandidates(
+            identities = listOf(cwdProject, namedProject),
+            selector = InspectionRouteSelector(project = "named-project"),
+            defaultCwd = "/tmp/cwd/src",
+        )
+
+        assertEquals("path:/tmp/cwd", explicitCwdCandidates.first().project.projectKey)
+        assertEquals("path:/tmp/named", defaultCwdCandidates.first().project.projectKey)
     }
 
     private fun identity(vararg projects: InspectionRouteProject): InspectionRouteIdentity {

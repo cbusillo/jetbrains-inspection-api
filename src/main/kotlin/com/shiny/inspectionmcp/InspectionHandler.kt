@@ -57,6 +57,9 @@ import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JTree
 import javax.swing.tree.TreeNode
 
+private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
+private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
+
 internal fun normalizeOptionalFilter(raw: String?): String? {
     val trimmed = raw?.trim() ?: return null
     if (trimmed.isBlank()) {
@@ -1752,6 +1755,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "reason" to "open_schedule_failed",
                 "message" to "JetBrains IDE declined or failed to schedule opening the requested project path.",
                 "worktree_path" to target.path.toString(),
+                "project_root" to target.projectRoot.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
             ) to HttpResponseStatus.CONFLICT
         }
@@ -1761,6 +1765,7 @@ class InspectionHandler : HttpRequestHandler() {
             "opened" to false,
             "opening_scheduled" to true,
             "worktree_path" to target.path.toString(),
+            "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
     }
@@ -1854,6 +1859,7 @@ class InspectionHandler : HttpRequestHandler() {
             "opening_scheduled" to false,
             "reason" to "already_opening",
             "worktree_path" to target.path.toString(),
+            "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.OK
     }
@@ -1866,6 +1872,7 @@ class InspectionHandler : HttpRequestHandler() {
             "reason" to "open_state_unknown",
             "message" to "The IDE accepted the lifecycle open request but did not report the project before the guard timeout.",
             "worktree_path" to target.path.toString(),
+            "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.CONFLICT
     }
@@ -2116,7 +2123,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (duplicateBest) {
             throw BadRequestException(
                 "project",
-                "Multiple open projects matched this request. Retry with project_path or project_key.",
+                "Multiple open projects matched this request. Retry with an exact project_path, worktree_path, or project_key; use cwd for a nested directory.",
             )
         }
         val project = resolveProjectFromRouteProject(selected.project) ?: return null
@@ -3116,7 +3123,8 @@ class InspectionHandler : HttpRequestHandler() {
             return response
         }
 
-        response["error"] = "Requested project '$projectName' is not open in the IDE."
+        val displayProjectName = displayProjectSelector(projectName)
+        response["error"] = "Requested project '$displayProjectName' is not open in the IDE."
 
         val openProjectNames = ProjectManager.getInstance().openProjects
             .filter { project -> !project.isDefault && !project.isDisposed && project.isInitialized }
@@ -3126,13 +3134,13 @@ class InspectionHandler : HttpRequestHandler() {
 
         if (openProjectNames.isNotEmpty()) {
             response["open_projects"] = openProjectNames.take(5)
-            val suggestedOpenProjects = suggestOpenProjects(projectName, openProjectNames)
+            val suggestedOpenProjects = suggestOpenProjects(displayProjectName, openProjectNames)
             if (suggestedOpenProjects.isNotEmpty()) {
                 response["suggested_open_projects"] = suggestedOpenProjects
             }
         }
 
-        val suggestedRecentProjects = suggestRecentProjects(projectName, openProjectNames)
+        val suggestedRecentProjects = suggestRecentProjects(displayProjectName, openProjectNames)
         if (suggestedRecentProjects.isNotEmpty()) {
             response["suggested_recent_projects"] = suggestedRecentProjects.map { suggestion ->
                 mapOf(
@@ -4924,6 +4932,20 @@ class InspectionHandler : HttpRequestHandler() {
         val projectManager = ProjectManager.getInstance()
         val openProjects = projectManager.openProjects
         val trimmed = projectName.trim()
+        if (trimmed.startsWith(EXACT_PROJECT_PATH_SELECTOR_PREFIX)) {
+            return resolveExactPathSelector(
+                openProjects,
+                trimmed.removePrefix(EXACT_PROJECT_PATH_SELECTOR_PREFIX),
+                includeProjectFilePath = true,
+            )
+        }
+        if (trimmed.startsWith(EXACT_WORKTREE_PATH_SELECTOR_PREFIX)) {
+            return resolveExactPathSelector(
+                openProjects,
+                trimmed.removePrefix(EXACT_WORKTREE_PATH_SELECTOR_PREFIX),
+                includeProjectFilePath = false,
+            )
+        }
         if (trimmed.contains(':') && !looksLikePath(trimmed)) {
             openProjects.firstOrNull { project ->
                 isUsableProject(project) && projectInstanceId(project) == trimmed
@@ -4960,6 +4982,31 @@ class InspectionHandler : HttpRequestHandler() {
             "project",
             "Multiple open projects matched this request. Retry with project_path or project_key.",
         )
+    }
+
+    private fun resolveExactPathSelector(
+        openProjects: Array<Project>,
+        selectorPath: String,
+        includeProjectFilePath: Boolean,
+    ): Project? {
+        val normalizedSelector = normalizeProjectPath(selectorPath) ?: return null
+        val matches = openProjects.filter { project ->
+            if (!isUsableProject(project)) {
+                false
+            } else {
+                val projectRoot = normalizeProjectPath(project.basePath)
+                    ?: projectRootFromProjectFilePath(project.projectFilePath)
+                projectRoot == normalizedSelector ||
+                    (includeProjectFilePath && normalizeProjectPath(project.projectFilePath) == normalizedSelector)
+            }
+        }
+        if (matches.size > 1) {
+            throw BadRequestException(
+                "project",
+                "Multiple open projects matched this exact path. Retry with project_key.",
+            )
+        }
+        return matches.firstOrNull()
     }
 
     private fun projectMatches(project: Project, projectName: String, pathHint: String?): Boolean {
@@ -5026,20 +5073,32 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun extractProjectSelector(urlDecoder: QueryStringDecoder, request: FullHttpRequest): String? {
-        val queryValue = extractProjectQueryParameter(urlDecoder, request)
-        return normalizeProjectSelector(queryValue)
+        val queryParameter = extractProjectQueryParameterEntry(urlDecoder, request) ?: return null
+        val selector = normalizeProjectSelector(queryParameter.second) ?: return null
+        return when (queryParameter.first) {
+            "project_path" -> EXACT_PROJECT_PATH_SELECTOR_PREFIX + selector
+            "worktree_path" -> EXACT_WORKTREE_PATH_SELECTOR_PREFIX + selector
+            else -> selector
+        }
     }
 
     private fun extractProjectQueryParameter(
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
     ): String? {
+        return extractProjectQueryParameterEntry(urlDecoder, request)?.second
+    }
+
+    private fun extractProjectQueryParameterEntry(
+        urlDecoder: QueryStringDecoder,
+        request: FullHttpRequest,
+    ): Pair<String, String>? {
         for (parameterName in listOf("project_instance_id", "project_key", "project_path", "worktree_path", "cwd", "project")) {
             val parameterValues = urlDecoder.parameters()[parameterName]
             if (parameterValues != null) {
                 val firstNonBlankValue = parameterValues.firstOrNull { value -> value.trim().isNotEmpty() }
                 if (firstNonBlankValue != null) {
-                    return firstNonBlankValue
+                    return parameterName to firstNonBlankValue
                 }
             }
         }
@@ -5061,11 +5120,17 @@ class InspectionHandler : HttpRequestHandler() {
             val encodedValue = nameAndValue.getOrElse(1) { "" }
             val decodedValue = QueryStringDecoder.decodeComponent(encodedValue)
             if (decodedValue.trim().isNotEmpty()) {
-                return decodedValue
+                return decodedName to decodedValue
             }
         }
 
         return null
+    }
+
+    private fun displayProjectSelector(projectName: String): String {
+        return projectName
+            .removePrefix(EXACT_PROJECT_PATH_SELECTOR_PREFIX)
+            .removePrefix(EXACT_WORKTREE_PATH_SELECTOR_PREFIX)
     }
 
     @Suppress("UnstableApiUsage")

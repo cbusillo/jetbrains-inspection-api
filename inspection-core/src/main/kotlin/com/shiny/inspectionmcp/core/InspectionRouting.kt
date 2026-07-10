@@ -46,11 +46,15 @@ fun scoreInspectionRouteCandidates(
     defaultCwd: String? = System.getProperty("user.dir"),
 ): List<InspectionRouteCandidate> {
     val explicitProjectKey = selector.projectKey?.trim()?.takeIf { it.isNotEmpty() }
+    val hasExplicitProjectPath = !selector.projectPath.isNullOrBlank()
     val explicitProjectPath = normalizeRoutePath(selector.projectPath)
-        ?: normalizeRoutePath(selector.worktreePath)
+    val hasExplicitWorktreePath = !selector.worktreePath.isNullOrBlank()
+    val explicitWorktreePath = normalizeRoutePath(selector.worktreePath)
     val projectSelector = selector.project?.trim()?.takeIf { it.isNotEmpty() }
     val projectSelectorPath = normalizeRoutePath(projectSelector)
-    val cwd = normalizeRoutePath(selector.cwd) ?: normalizeRoutePath(defaultCwd)
+    val hasExplicitCwd = !selector.cwd.isNullOrBlank()
+    val explicitCwd = normalizeRoutePath(selector.cwd)
+    val defaultRouteCwd = normalizeRoutePath(defaultCwd)
     val ideSelector = selector.ide?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
     val totalProjects = identities.sumOf { it.projects.size }
 
@@ -63,10 +67,15 @@ fun scoreInspectionRouteCandidates(
             val score = scoreProject(
                 project = project,
                 explicitProjectKey = explicitProjectKey,
+                hasExplicitProjectPath = hasExplicitProjectPath,
                 explicitProjectPath = explicitProjectPath,
+                hasExplicitWorktreePath = hasExplicitWorktreePath,
+                explicitWorktreePath = explicitWorktreePath,
+                hasExplicitCwd = hasExplicitCwd,
+                explicitCwd = explicitCwd,
                 projectSelector = projectSelector,
                 projectSelectorPath = projectSelectorPath,
-                cwd = cwd,
+                defaultCwd = defaultRouteCwd,
                 onlyProject = totalProjects == 1,
             )
             if (score > 0) {
@@ -105,10 +114,15 @@ fun routePathContains(path: String, basePath: String): Boolean {
 private fun scoreProject(
     project: InspectionRouteProject,
     explicitProjectKey: String?,
+    hasExplicitProjectPath: Boolean,
     explicitProjectPath: String?,
+    hasExplicitWorktreePath: Boolean,
+    explicitWorktreePath: String?,
+    hasExplicitCwd: Boolean,
+    explicitCwd: String?,
     projectSelector: String?,
     projectSelectorPath: String?,
-    cwd: String?,
+    defaultCwd: String?,
     onlyProject: Boolean,
 ): Int {
     val projectKey = project.projectKey
@@ -119,11 +133,19 @@ private fun scoreProject(
     if (explicitProjectKey != null) {
         return if (projectKey == explicitProjectKey) 1000 else 0
     }
-    if (explicitProjectPath != null) {
-        return when {
-            explicitProjectPath == basePath || explicitProjectPath == projectFilePath -> 950
-            basePath != null && routePathContains(explicitProjectPath, basePath) -> 930
-            else -> 0
+    if (hasExplicitProjectPath) {
+        return if (explicitProjectPath != null &&
+            (explicitProjectPath == basePath || explicitProjectPath == projectFilePath)
+        ) 950 else 0
+    }
+    if (hasExplicitWorktreePath) {
+        return if (explicitWorktreePath != null && explicitWorktreePath == basePath) 950 else 0
+    }
+    if (hasExplicitCwd) {
+        return if (explicitCwd != null && basePath != null && routePathContains(explicitCwd, basePath)) {
+            700 + normalizedRoutePathLength(basePath).coerceAtMost(100)
+        } else {
+            0
         }
     }
     if (projectSelectorPath != null) {
@@ -138,7 +160,7 @@ private fun scoreProject(
         if (projectName.equals(projectSelector, ignoreCase = true)) return 790
         return 0
     }
-    if (cwd != null && basePath != null && routePathContains(cwd, basePath)) {
+    if (defaultCwd != null && basePath != null && routePathContains(defaultCwd, basePath)) {
         return 700 + normalizedRoutePathLength(basePath).coerceAtMost(100)
     }
     if (project.focused) {
