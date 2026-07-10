@@ -111,11 +111,12 @@ inspection_get_problems(project_key="path:/Users/me/Developer/MyProject")
 inspection_get_problems(project="odoo-ai", severity="error")
 ```
 
-Note: in MCP auto mode, the router prefers `project_key`, then path selectors
-(`project_path`, `worktree_path`, `cwd`), then a unique `project` name. Blank or
-omitted selectors follow the last triggered project when possible, then the MCP
-process working directory or the focused/active open project only when
-unambiguous.
+Note: in MCP auto mode, the router prefers `project_key`, then an exact
+`project_path` or `worktree_path`, then a containing `cwd`, then a unique
+`project` name. Use `inspection_list_projects` to discover exact roots and keys;
+use `cwd` when starting from a nested directory. Blank or omitted selectors
+follow the last triggered project when possible, then the MCP process working
+directory or the focused/active open project only when unambiguous.
 
 ### Direct HTTP API
 These examples use the `63340` port from the setup example above. If you
@@ -232,9 +233,10 @@ routing state.
 
 **Parameters**:
 - `project_key` (optional): Stable project key from `/identity`, `/route`, or response metadata.
-- `project_path` (optional): Project root or nested path within the project.
-- `worktree_path` (optional): Alias for path-based project/worktree selection.
-- `cwd` (optional): Current working directory used by script/skill clients.
+- `project_path` (optional): Exact project root or reported `project_file_path`.
+- `worktree_path` (optional): Exact project/worktree root.
+- `cwd` (optional): Current or nested working directory; the deepest containing
+  open project wins.
 - `project` (optional): Project name; use `project_key` or path selectors when names are duplicated.
 - `ide` (optional): IDE name or product-code substring, useful when multiple IDEs are open.
 - `session_id` (optional): Expected IDE session. A mismatch returns HTTP 409 with `session_drift: true`.
@@ -305,8 +307,13 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
 - `GET /api/inspection/lifecycle/open`: accepts `project_path` or
   `worktree_path`, returns immediately after scheduling an IDE open when the
   exact path is not already open, and uses the worktree directory name as the
-  project frame name. Helpers must poll `/route` or `/list` until the exact
-  path appears before inspecting.
+  project frame name. Scheduling a new open requires the current `session_id`
+  from `/identity`, the registry, or a prior `/route` response. Omitting it
+  returns HTTP 400 with `reason: "missing_session_id"`; a stale value returns
+  HTTP 409 with `session_drift: true`. Scheduled/opening responses include
+  `project_root`; helpers must poll `/route` with that exact `project_path` or
+  `worktree_path` and the same session until it appears before inspecting. An
+  already-open exact project can be returned without scheduling a new open.
 - `GET /api/inspection/lifecycle/claim`: resolves the same selectors as
   `/route`, verifies optional `project_instance_id`, and returns a one-use
   `close_token` tied to the current `session_id` and project instance.
@@ -517,7 +524,9 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - If all three are false and `time_since_last_trigger_ms` is old, there was no recent inspection. Trigger one first.
 
 ### Wait Response Notes
-`/api/inspection/wait` always includes `wait_completed`, `timed_out`, `completion_reason`, `wait_ms`, `timeout_ms`, and `poll_ms`.
+`/api/inspection/wait` always includes `wait_completed`, `timed_out`,
+`completion_reason`, `wait_ms`, `timeout_ms`, and `poll_ms`. `timeout_ms`
+defaults to 180,000 and is bounded to 1,000–300,000 milliseconds.
 
 Common completion reasons:
 - `results`: inspection completed and problems are ready to fetch.
@@ -557,6 +566,19 @@ The bundled JVM MCP (Model Context Protocol) server provides integration for any
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_wait(timeout_ms?, poll_ms?)`** - Long-poll until results or timeout
 - **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. The MCP wrapper forwards `whole_project`, `current_file`, or legacy path-substring `scope` values plus `file_pattern`; it does not currently expose HTTP-only `file`, `files`, `dir`, `directory`, `changed_files_mode`, or `max_files` problem-filter parameters. `include_stale` returns cached stale findings for diagnostics only.
+
+All four routed inspection tools accept `project_key`, `project_path`,
+`worktree_path`, `cwd`, `project`, and `ide`. Prefer the exact key or root from
+`inspection_list_projects`; use `cwd` for nested-directory containment. A
+selector-less trigger, wait, status, or problems call stays pinned to the last
+successfully triggered project while that IDE session remains valid.
+
+`inspection_trigger(profile=...)` expects the exact inspection profile name.
+Omit it to use the target project's current profile. The trigger acknowledges
+scheduling immediately; if the requested profile cannot be resolved, the
+subsequent status, wait, or problems result is `UNKNOWN` with
+`reason=profile_resolution_error`. Verify that the profile exists and is loaded
+in the target project before rerunning.
 
 ### Requirements
 - **Java 21+** (or the IDE's bundled runtime)

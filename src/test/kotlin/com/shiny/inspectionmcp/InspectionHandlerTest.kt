@@ -1342,12 +1342,24 @@ class InspectionHandlerTest {
         )
         every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
 
-        val response = processGetRequest("/api/inspection/route?worktree_path=/repo/packages/app/src")
+        val response = processGetRequest("/api/inspection/route?cwd=/repo/packages/app/src")
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"Child\""))
         assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
+    fun `test route endpoint requires exact worktree path`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val response = processGetRequest("/api/inspection/route?worktree_path=/repo/app/src")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"no_project\""))
     }
 
     @Test
@@ -1613,6 +1625,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"opening\""))
+        assertTrue(body.contains("\"project_root\": \"$tempDir\""))
         assertTrue(body.contains("\"opening_scheduled\": true"))
         assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
     }
@@ -2888,7 +2901,7 @@ class InspectionHandlerTest {
         every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
 
         val response = processGetRequest(
-            "/api/inspection/route?worktree_path=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
+            "/api/inspection/route?cwd=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
@@ -2899,7 +2912,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test trigger endpoint prefers nested project file root over containing parent`() {
+    fun `test trigger endpoint cwd prefers nested project file root over containing parent`() {
         val tempDir = Files.createTempDirectory("inspection-trigger-file-root-nested")
         val nestedPath = tempDir.resolve("packages/app")
         val parentProject = mockProject(
@@ -2922,7 +2935,7 @@ class InspectionHandlerTest {
         mockInspectionPrerequisites(childProject)
 
         val response = processTriggerRequest(
-            "/api/inspection/trigger?worktree_path=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
+            "/api/inspection/trigger?cwd=${java.net.URLEncoder.encode(nestedPath.resolve("src/main").toString(), "UTF-8") }"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
@@ -2930,6 +2943,19 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"project_name\": \"Child\""))
         assertTrue(body.contains("\"base_path\": \"$nestedPath\""))
         assertFalse(body.contains("Multiple open projects matched this request"))
+    }
+
+    @Test
+    fun `test direct status endpoint requires exact worktree path`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+
+        val response = processGetRequest("/api/inspection/status?worktree_path=/repo/app/src")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
+        assertTrue(body.contains("\"status\": \"no_project\""))
+        assertTrue(body.contains("Requested project '/repo/app/src' is not open"))
     }
 
     @Test

@@ -79,6 +79,30 @@ class McpServerTest {
         )
         val trigger = tools?.first { it.jsonObject["name"]?.jsonPrimitive?.content == "inspection_trigger" }?.jsonObject
         assertTrue(trigger?.string("description")?.contains("inspection_wait") == true)
+
+        val routedToolNames = setOf(
+            "inspection_get_problems",
+            "inspection_trigger",
+            "inspection_get_status",
+            "inspection_wait",
+        )
+        val expectedSelectors = setOf("project_key", "project_path", "worktree_path", "cwd", "project", "ide")
+        tools.orEmpty()
+            .map(JsonElement::jsonObject)
+            .filter { tool -> tool.string("name") in routedToolNames }
+            .forEach { tool ->
+                val properties = tool["inputSchema"]?.jsonObject?.get("properties")?.jsonObject
+                assertTrue(properties != null)
+                assertTrue(properties!!.keys.containsAll(expectedSelectors), tool.string("name"))
+            }
+
+        val wait = tools?.first { it.jsonObject["name"]?.jsonPrimitive?.content == "inspection_wait" }?.jsonObject
+        val timeout = wait?.get("inputSchema")?.jsonObject
+            ?.get("properties")?.jsonObject
+            ?.get("timeout_ms")?.jsonObject
+        assertEquals(180000, timeout?.get("default")?.jsonPrimitive?.intOrNull)
+        assertEquals(1000, timeout?.get("minimum")?.jsonPrimitive?.intOrNull)
+        assertEquals(300000, timeout?.get("maximum")?.jsonPrimitive?.intOrNull)
     }
 
     @Test
@@ -598,6 +622,21 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusProvidesProfileResolutionGuidance() {
+        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"profile_resolution_error","has_inspection_results":false,"clean_inspection":false}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertTrue(text.contains("requested inspection profile exists and is loaded"))
+            assertFalse(text.contains("narrower scope"))
+        }
+    }
+
+    @Test
     fun inspectionGetStatusHandlesNoRecentInspection() {
         val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":120000}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
@@ -656,6 +695,23 @@ class McpServerTest {
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("timeout_ms=180000"))
             assertTrue(query.contains("poll_ms=500"))
+        }
+    }
+
+    @Test
+    fun inspectionWaitClampsTimeoutToAdvertisedMaximum() {
+        MockIdeServer().use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+            val args = buildJsonObject {
+                put("timeout_ms", JsonPrimitive(600000))
+            }
+
+            executor.handleToolCall(buildToolCall("inspection_wait", args))
+
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("timeout_ms=300000"))
+            assertFalse(query.contains("timeout_ms=600000"))
         }
     }
 
@@ -983,17 +1039,66 @@ class McpServerTest {
                         buildJsonObject { put("project_path", JsonPrimitive("/tmp/first")) },
                     )
                 )
+                val retrigger = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
                 val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
                 val problems = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
 
                 assertFalse(trigger.isError())
+                assertFalse(retrigger.isError())
                 assertFalse(wait.isError())
                 assertFalse(problems.isError())
+                assertTrue(retrigger.firstText().contains("project_key=path:/tmp/first"))
                 assertTrue(wait.firstText().contains("project_key=path:/tmp/first"))
                 assertTrue(problems.firstText().contains("project_key=path:/tmp/first"))
+                assertFalse(retrigger.firstText().contains("cwd-project"))
                 assertFalse(wait.firstText().contains("cwd-project"))
                 assertFalse(problems.firstText().contains("cwd-project"))
             }
+        }
+    }
+
+    @Test
+    fun autoRoutingPinIncludesIdeSessionWhenProjectKeysAreDuplicated() {
+        MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/shared", identitySessionId = "first").use { first ->
+            MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/shared", identitySessionId = "second").use { second ->
+                first.start()
+                val executor = autoExecutor(first, second)
+
+                val trigger = executor.handleToolCall(
+                    buildToolCall(
+                        "inspection_trigger",
+                        buildJsonObject { put("project_path", JsonPrimitive("/tmp/shared")) },
+                    )
+                )
+                second.start()
+                val status = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+
+                assertFalse(trigger.isError())
+                assertFalse(status.isError())
+                assertTrue(first.lastQuery.get()?.contains("session_id=first-${first.port}") == true)
+            }
+        }
+    }
+
+    @Test
+    fun fixedRoutingKeepsSelectorFreeFollowUpsOnTriggeredProject() {
+        MockIdeServer(identityProjectName = "fixed", identityBasePath = "/tmp/fixed", identitySessionId = "fixed").use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val trigger = executor.handleToolCall(
+                buildToolCall(
+                    "inspection_trigger",
+                    buildJsonObject { put("project_path", JsonPrimitive("/tmp/fixed")) },
+                )
+            )
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+
+            assertFalse(trigger.isError())
+            assertFalse(wait.isError())
+            val query = server.lastQuery.get() ?: ""
+            assertTrue(query.contains("project_key=path%3A%2Ftmp%2Ffixed"))
+            assertTrue(query.contains("session_id=fixed-${server.port}"))
         }
     }
 
@@ -1016,7 +1121,7 @@ class McpServerTest {
 
                 assertFalse(trigger.isError())
                 assertTrue(status.isError())
-                assertTrue(status.firstText().contains("restarted before inspection_get_status completed"))
+                assertTrue(status.firstText().contains("pinned JetBrains IDE session is no longer available"))
                 assertTrue(status.firstText().contains("Re-trigger inspection"))
             }
         }
@@ -1181,7 +1286,7 @@ class McpServerTest {
     }
 
     @Test
-    fun autoRoutingMatchesNestedProjectPath() {
+    fun autoRoutingRequiresExactProjectPathButAllowsNestedCwd() {
         MockIdeServer().use { server ->
             server.start()
             val resolver = AutoTargetResolver(
@@ -1190,10 +1295,17 @@ class McpServerTest {
                 scanPorts = listOf(server.port),
             )
 
+            val projectPathFailure = runCatching {
+                resolver.resolve(
+                    buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api/src/main")) },
+                )
+            }.exceptionOrNull()
             val target = resolver.resolve(
-                buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api/src/main")) },
+                buildJsonObject { put("cwd", JsonPrimitive("/tmp/jetbrains-inspection-api/src/main")) },
             )
 
+            assertNotNull(projectPathFailure)
+            assertTrue(projectPathFailure?.message?.contains("No open JetBrains project matched") == true)
             assertEquals(server.port.toString(), target.idePort)
         }
     }
@@ -1216,7 +1328,7 @@ class McpServerTest {
                 )
 
                 val target = resolver.resolve(
-                    buildJsonObject { put("worktree_path", JsonPrimitive("/tmp/repo/packages/app/src/main")) },
+                    buildJsonObject { put("cwd", JsonPrimitive("/tmp/repo/packages/app/src/main")) },
                 )
 
                 assertEquals(child.port.toString(), target.idePort)
@@ -1366,7 +1478,9 @@ private class MockIdeServer(
             "/api/inspection/problems" to MockResponse(
                 """{"status":"results_available","total_problems":2,"problems_shown":2,"problems":[]}"""
             ),
-            "/api/inspection/trigger" to MockResponse("""{"status":"triggered","message":"Inspection triggered"}"""),
+            "/api/inspection/trigger" to MockResponse(
+                """{"status":"triggered","message":"Inspection triggered","project_key":"${identityProjectKey()}","session_id":"${identitySessionId}-${port}"}"""
+            ),
             "/api/inspection/wait" to MockResponse("""{"wait_completed":true,"completion_reason":"results"}"""),
             "/api/inspection/identity" to MockResponse(identityBody()),
         )
@@ -1397,7 +1511,7 @@ private class MockIdeServer(
     }
 
     private fun identityBody(): String {
-        val projectKey = identityBasePath?.let { "path:$it" } ?: "file:$identityProjectFilePath"
+        val projectKey = identityProjectKey()
         val basePathJson = identityBasePath?.let { "\"$it\"" } ?: "null"
         val projectFilePathJson = identityProjectFilePath?.let { "\"$it\"" } ?: "null"
         return """
@@ -1419,6 +1533,10 @@ private class MockIdeServer(
               }]
             }
         """.trimIndent()
+    }
+
+    private fun identityProjectKey(): String {
+        return identityBasePath?.let { "path:$it" } ?: "file:$identityProjectFilePath"
     }
 }
 

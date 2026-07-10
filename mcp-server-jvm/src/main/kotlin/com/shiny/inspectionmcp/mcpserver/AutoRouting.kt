@@ -89,6 +89,12 @@ internal class AutoTargetResolver(
                 "No JetBrains IDE inspection plugin instances were discovered. Open an IDE with the plugin installed, or set IDE_PORT for fixed-port mode."
             )
         }
+        val pinnedSessionId = args.string("session_id")?.trim()?.takeIf { it.isNotEmpty() }
+        if (pinnedSessionId != null && identities.none { identity -> identity.string("session_id") == pinnedSessionId }) {
+            throw RuntimeException(
+                "The pinned JetBrains IDE session is no longer available. Re-trigger inspection for the intended project."
+            )
+        }
 
         var candidates = scoreCandidates(args, identities)
         if (candidates.isEmpty()) {
@@ -105,7 +111,7 @@ internal class AutoTargetResolver(
         val best = if (hasPathSelector(args)) deepestUniqueCandidates(sameScore) else sameScore
         if (best.size > 1) {
             throw RuntimeException(
-                "Multiple JetBrains projects matched this request. Retry with project_path or project_key.\n\n${formatCandidateProjects(best)}"
+                "Multiple JetBrains projects matched this request. Retry with an exact project_path, worktree_path, or project_key; use cwd for a nested directory.\n\n${formatCandidateProjects(best)}"
             )
         }
 
@@ -222,8 +228,16 @@ internal class AutoTargetResolver(
     }
 
     private fun scoreCandidates(args: JsonObject, identities: List<JsonObject>): List<RouteCandidate> {
-        val identityBySession = identities.associateBy { identity -> identity.string("session_id") ?: "port:${identity.port()}" }
-        val projectsByRouteKey = identities.associate { identity ->
+        val pinnedSessionId = args.string("session_id")?.trim()?.takeIf { it.isNotEmpty() }
+        val eligibleIdentities = if (pinnedSessionId == null) {
+            identities
+        } else {
+            identities.filter { identity -> identity.string("session_id") == pinnedSessionId }
+        }
+        val identityBySession = eligibleIdentities.associateBy { identity ->
+            identity.string("session_id") ?: "port:${identity.port()}"
+        }
+        val projectsByRouteKey = eligibleIdentities.associate { identity ->
             val sessionKey = identity.string("session_id") ?: "port:${identity.port()}"
             sessionKey to projectsForIdentity(identity).associateBy { project ->
                 routeProjectKey(project.string("project_key"), project.string("name"), project.string("base_path"))
@@ -231,7 +245,7 @@ internal class AutoTargetResolver(
         }
 
         return scoreInspectionRouteCandidates(
-            identities = identities.map(::toRouteIdentity),
+            identities = eligibleIdentities.map(::toRouteIdentity),
             selector = InspectionRouteSelector(
                 projectKey = args.string("project_key"),
                 projectPath = args.string("project_path"),
