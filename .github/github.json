@@ -76,11 +76,15 @@
     "Dependency Graph",
     "Release"
   ],
-  "requiredStatusChecks": [
-    "commit-gate",
-    "Analyze (actions)",
-    "Analyze (python)"
-  ],
+  "requiredStatusChecks": ["commit-gate"],
+  "codeScanningMergeProtection": {
+    "ruleset": "Require code scanning results",
+    "target": "defaultBranch",
+    "tool": "CodeQL",
+    "alertsThreshold": "errors",
+    "securityAlertsThreshold": "high_or_higher",
+    "dependabotDefaultSetupException": true
+  },
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],
