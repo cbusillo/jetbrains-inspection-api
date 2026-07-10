@@ -79,7 +79,6 @@
   "requiredStatusChecks": ["commit-gate"],
   "codeScanningMergeProtection": {
     "ruleset": "Require code scanning results",
-    "target": "defaultBranch",
     "tool": "CodeQL",
     "alertsThreshold": "errors",
     "securityAlertsThreshold": "high_or_higher",
