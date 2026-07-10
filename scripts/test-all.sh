@@ -176,15 +176,27 @@ fi
 
 print_result $RED_LANE_SCRIPT_RESULT "Red-lane smoke script contract"
 
+# Step 4c: Release Script Contract Tests
+print_section "4c. Release Script Contract Tests"
+
+echo "Running release workflow contract tests..."
+if ./scripts/test-release-contracts.sh; then
+  RELEASE_CONTRACT_RESULT=0
+else
+  RELEASE_CONTRACT_RESULT=1
+fi
+
+print_result $RELEASE_CONTRACT_RESULT "Release workflow contracts"
+
 # Step 5: Coverage Verification
 print_section "5. Coverage Verification"
 
-echo "Checking plugin test coverage..."
+echo "Plugin JaCoCo verification (0% minimum; report-only signal)"
 if ./gradlew jacocoTestCoverageVerification; then
   PLUGIN_COVERAGE_RESULT=0
 else
   PLUGIN_COVERAGE_RESULT=1
-  echo -e "${YELLOW}WARNING: Coverage is below 80% threshold${NC}"
+  echo -e "${YELLOW}WARNING: Plugin JaCoCo verification failed; the configured minimum is 0% because IntelliJ classloader isolation makes plugin coverage report-only.${NC}"
 fi
 
 # Step 6: Core Coverage Verification
@@ -195,7 +207,7 @@ if ./gradlew :inspection-core:jacocoTestCoverageVerification; then
   CORE_COVERAGE_RESULT=0
 else
   CORE_COVERAGE_RESULT=1
-  echo -e "${YELLOW}WARNING: Core coverage is below 85% threshold${NC}"
+  echo -e "${YELLOW}WARNING: Core coverage is below the configured 85% threshold${NC}"
 fi
 
 # Step 7: MCP Coverage Verification
@@ -206,7 +218,7 @@ if ./gradlew :mcp-server-jvm:jacocoTestCoverageVerification; then
   MCP_COVERAGE_RESULT=0
 else
   MCP_COVERAGE_RESULT=1
-  echo -e "${YELLOW}WARNING: MCP coverage is below 80% threshold${NC}"
+  echo -e "${YELLOW}WARNING: MCP coverage is below the configured 85% threshold${NC}"
 fi
 
 # Summary
@@ -218,7 +230,8 @@ print_result $CORE_TEST_RESULT "  Core tests"
 print_result $MCP_TEST_RESULT "  MCP server tests"
 print_result $BUILD_RESULT "  Plugin build"
 print_result $RED_LANE_SCRIPT_RESULT "  Red-lane smoke script contract"
-print_result $PLUGIN_COVERAGE_RESULT "  Plugin coverage threshold"
+print_result $RELEASE_CONTRACT_RESULT "  Release workflow contracts"
+print_result $PLUGIN_COVERAGE_RESULT "  Plugin JaCoCo report-only verification"
 print_result $CORE_COVERAGE_RESULT "  Core coverage threshold"
 print_result $MCP_COVERAGE_RESULT "  MCP coverage threshold"
 

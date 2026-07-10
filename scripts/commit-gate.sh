@@ -58,6 +58,12 @@ if [ "$CI_MODE" -eq 0 ]; then
     git add src/main/resources/META-INF/plugin.xml
 fi
 
+for variable in $(git rev-parse --local-env-vars); do
+    unset "$variable"
+done
+
+./scripts/test-release-contracts.sh
+
 java_major() {
     local java_bin="$1/bin/java"
     if [ ! -x "$java_bin" ]; then

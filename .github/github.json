@@ -16,6 +16,7 @@
         "./gradlew :test",
         "./gradlew :inspection-core:test",
         "./gradlew :mcp-server-jvm:test",
+        "./scripts/test-release-contracts.sh",
         "./gradlew buildPlugin"
       ],
       "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml",
@@ -30,6 +31,8 @@
       "plugin": "./gradlew buildPlugin",
       "verifyPluginStructure": "./gradlew verifyPluginStructure",
       "verifyPluginCompatibility": "./gradlew verifyPlugin",
+      "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
+      "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
@@ -49,10 +52,13 @@
     },
     "releaseCompatibility": {
       "jetbrainsBuildRange": "251-262.*",
-      "requiredFor262": [
+      "automatedTagGate": [
         "qualityGate.build.buildPlugin",
         "qualityGate.build.verifyPluginStructure",
         "qualityGate.build.verifyPluginCompatibility",
+        "qualityGate.build.releaseCompatibilityGate"
+      ],
+      "manualEvidenceFor262": [
         "qualityGate.manualSmoke.redLaneDogfoodIntelliJ",
         "qualityGate.manualSmoke.redLaneDogfoodPyCharm",
         "qualityGate.manualSmoke.redLaneDogfoodWebStorm",

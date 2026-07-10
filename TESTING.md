@@ -211,16 +211,32 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 - `shellcheck --severity=warning scripts/*.sh`
 - `./scripts/commit-gate.sh --ci`
 
-The commit gate sync-checks `plugin.xml` against `gradle.properties`, requires
-Java 21, then runs plugin tests, core tests, MCP server tests, and `buildPlugin`.
+The commit gate sync-checks `plugin.xml` against `gradle.properties`, runs the
+fast release/workflow contract tests, requires Java 21, then runs plugin tests,
+core tests, MCP server tests, and `buildPlugin`.
 Code scanning is tracked through the required `Analyze (actions)` and
 `Analyze (python)` checks alongside `commit-gate`. `Analyze (java-kotlin)` also
 runs as a non-required signal so Kotlin and plugin upgrades can be validated
 before that check is considered stable enough to require.
 
-Version tags (`v*`) run `.github/workflows/release.yml`, which repeats the
-commit gate before publishing to the JetBrains Marketplace and creating the
-GitHub Release.
+Version tags (`v*`) run `.github/workflows/release.yml`, which rejects tag,
+`pluginVersion`, or `plugin.xml` mismatches before publication, repeats the
+commit gate, runs `buildPlugin`, `verifyPluginStructure`, and `verifyPlugin`,
+creates the GitHub Release, then publishes to JetBrains Marketplace. The
+workflow also rejects tags that do not point at the current default-branch
+commit.
+
+`./scripts/test-all.sh` reports the configured JaCoCo contracts accurately:
+plugin coverage is a 0% minimum report-only signal because IntelliJ classloader
+isolation prevents reliable plugin instrumentation, while `inspection-core`
+and `mcp-server-jvm` each enforce 85% minimum coverage.
+
+Release preparation is a two-phase protected-branch flow:
+
+1. `./scripts/release.sh --patch|--minor|--major` creates and validates a
+   `release/vX.Y.Z` branch, pushes it, and opens a PR into the default branch.
+2. After that PR merges, update local `main` and run
+   `./scripts/release.sh tag vX.Y.Z` to validate and push the release tag.
 
 ## 2026.2 compatibility release gates
 
