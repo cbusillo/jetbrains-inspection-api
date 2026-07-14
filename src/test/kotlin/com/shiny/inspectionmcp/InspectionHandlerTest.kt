@@ -136,6 +136,7 @@ class InspectionHandlerTest {
     fun setup() {
         handler = InspectionHandler()
         handler.trustProjectPath = {}
+        handler.refreshProjectRoot = {}
         handler.inspectionRunExpirationMs = 300000L
         handler.inspectionProcessRunner = { task, _ -> task.run() }
         handler.inspectionIndicatorFactory = { mockk(relaxed = true) }
@@ -901,6 +902,23 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"TestProject\""))
+        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+    }
+
+    @Test
+    fun `test inspection refreshes only the selected project root`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        mockInspectionPrerequisites(mockProject)
+        val refreshedProjectRoots = mutableListOf<String>()
+        handler.refreshProjectRoot = { path -> refreshedProjectRoots += path }
+        val method = InspectionHandler::class.java.getDeclaredMethod("syncProjectState", Project::class.java)
+        method.isAccessible = true
+
+        method.invoke(handler, mockProject)
+
+        assertEquals(listOf("/tmp/TestProject"), refreshedProjectRoots)
         verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
     }
 
@@ -1853,6 +1871,49 @@ class InspectionHandlerTest {
             "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=owned-lease"
         )
         val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, openResponse.status())
+        assertEquals(HttpResponseStatus.OK, claimResponse.status())
+        assertTrue(claimBody.contains("\"status\": \"claimed\""))
+        assertTrue(claimBody.contains("\"ownership_proven\": true"))
+        assertTrue(claimBody.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle claim succeeds before project open call returns`() {
+        val tempDir = Files.createTempDirectory("inspection-open-claim-race")
+        val openedProject = mockProject(
+            name = "OwnedDuringOpen",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        val scheduled = AtomicReference<Runnable?>()
+        val beforeInitComplete = CountDownLatch(1)
+        val allowOpenReturn = CountDownLatch(1)
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled.set(firstArg<Runnable>())
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
+            beforeInitComplete.countDown()
+            assertTrue(allowOpenReturn.await(5, TimeUnit.SECONDS))
+            openedProject
+        }
+
+        val openResponse = processGetRequest(lifecycleOpenUri(tempDir, "race-lease"))
+        val openThread = Thread { scheduled.get()?.run() }
+        openThread.start()
+        assertTrue(beforeInitComplete.await(5, TimeUnit.SECONDS))
+        val instanceId = projectInstanceId(openedProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=race-lease"
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+        allowOpenReturn.countDown()
+        openThread.join(5_000)
 
         assertEquals(HttpResponseStatus.OK, openResponse.status())
         assertEquals(HttpResponseStatus.OK, claimResponse.status())

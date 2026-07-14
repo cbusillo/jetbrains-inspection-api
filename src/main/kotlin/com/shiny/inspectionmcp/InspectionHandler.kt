@@ -24,7 +24,6 @@ import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
-import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiDocumentManager
@@ -1004,6 +1003,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
+    internal var refreshProjectRoot: (String) -> Unit = { path ->
+        LocalFileSystem.getInstance()
+            .refreshAndFindFileByPath(path)
+            ?.refresh(false, true)
+    }
     internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, beforeInit ->
         val openPath = canonicalTrustPath(path)
         ProjectManagerEx.getInstanceEx().openProject(
@@ -1865,14 +1869,9 @@ class InspectionHandler : HttpRequestHandler() {
                     val initializedProject = AtomicReference<Project?>()
                     trustProjectPath(target.openPath)
                     opened = openProjectPath(target.openPath) { project ->
-                        initializedProject.compareAndSet(null, project)
-                    }
-                    if (
-                        requestedLeaseId != null &&
-                        opened != null &&
-                        initializedProject.get() === opened
-                    ) {
-                        registerLifecycleOpenOwnership(opened, requestedLeaseId, target.key)
+                        if (initializedProject.compareAndSet(null, project) && requestedLeaseId != null) {
+                            registerLifecycleOpenOwnership(project, requestedLeaseId, target.key)
+                        }
                     }
                     if (opened != null) {
                         keepOpeningGuard = true
@@ -4646,7 +4645,9 @@ class InspectionHandler : HttpRequestHandler() {
         val refreshTask = Runnable {
             FileDocumentManager.getInstance().saveAllDocuments()
             PsiDocumentManager.getInstance(project).commitAllDocuments()
-            VirtualFileManager.getInstance().syncRefresh()
+            val projectRootPath = project.basePath
+                ?: project.projectFilePath?.let(::projectRootFromProjectFilePath)
+            projectRootPath?.let(refreshProjectRoot)
             PsiDocumentManager.getInstance(project).commitAllDocuments()
         }
         if (application.isDispatchThread) {
