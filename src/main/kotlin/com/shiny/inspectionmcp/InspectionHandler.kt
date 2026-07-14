@@ -13,6 +13,9 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.util.ProgressIndicatorBase
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
@@ -52,6 +55,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.UUID
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JTree
@@ -271,6 +275,12 @@ internal data class InspectionRunState(
         captureScope = null,
     )
 }
+
+internal data class InspectionRunControl(
+    val runId: Long,
+    val indicator: ProgressIndicator,
+    val cancellationRequested: AtomicBoolean = AtomicBoolean(false),
+)
 
 private data class InspectionProof(
     val summary: Map<String, Any?>,
@@ -960,6 +970,7 @@ class InspectionHandler : HttpRequestHandler() {
     
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
+    private val inspectionRunControlsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunControl>()
     private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
     private val openingProjectRequests = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenRequest>()
     private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
@@ -976,6 +987,12 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunExpirationMs: Long = 300000L
+    internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
+        ProgressManager.getInstance().runProcess(task, indicator)
+    }
+    internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
+        ApplicationManager.getApplication().executeOnPooledThread(task)
+    }
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
@@ -1283,8 +1300,28 @@ class InspectionHandler : HttpRequestHandler() {
                     sendJsonResponse(context, formatJsonManually(result.first), result.second)
                 }
                 "/api/inspection/lifecycle/close" -> {
-                    val result = closeLifecycleProject(parameters)
-                    sendJsonResponse(context, formatJsonManually(result.first), result.second)
+                    val scheduled = runCatching {
+                        lifecycleCloseExecutor(Runnable {
+                            processLifecycleCloseRequest(parameters, context)
+                        })
+                    }.isSuccess
+                    if (!scheduled) {
+                        sendJsonResponse(
+                            context,
+                            """{"error": "Internal server error"}""",
+                            HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                        )
+                    }
+                }
+                "/api/inspection/cancel" -> {
+                    responseHasSessionDrift(parameters)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
+                        buildInspectionCancellationResponse(parameters)
+                    }
+                    sendJsonResponse(context, result)
                 }
                 "/api/inspection/problems" -> {
                     responseHasSessionDrift(parameters)?.let {
@@ -1478,7 +1515,13 @@ class InspectionHandler : HttpRequestHandler() {
                 maxFiles = maxFiles,
                 allowLegacyProblemsScope = false,
             )
+            val key = projectKey(project)
             val runState = beginInspectionRun(project, captureScope)
+            val runControl = InspectionRunControl(
+                runId = runState.runId,
+                indicator = ProgressIndicatorBase(),
+            )
+            inspectionRunControlsByProject[key] = runControl
             try {
                 ApplicationManager.getApplication().executeOnPooledThread {
                     triggerInspectionAsync(
@@ -1486,10 +1529,12 @@ class InspectionHandler : HttpRequestHandler() {
                         runId = runState.runId,
                         captureScope = captureScope,
                         profileName = profile,
+                        control = runControl,
                     )
                 }
             } catch (error: Exception) {
-                finishInspectionRun(projectKey(project), runState.runId)
+                inspectionRunControlsByProject.remove(key, runControl)
+                finishInspectionRun(key, runState.runId)
                 throw error
             }
             val details = mutableMapOf<String, Any>(
@@ -1497,7 +1542,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "message" to "Inspection triggered. Wait 10-15 seconds then check status",
                 "run_id" to runState.runId,
                 "session_id" to InspectionIdeSession.sessionId,
-                "project_key" to projectKey(project),
+                "project_key" to key,
                 "route" to routeMetadata(project),
                 "scope" to captureScope.scopeParam.orEmpty().ifBlank { "whole_project" },
                 "include_unversioned" to includeUnversioned,
@@ -2018,6 +2063,91 @@ class InspectionHandler : HttpRequestHandler() {
         return projectCandidatePaths(project)
             .mapNotNull { path -> runCatching { canonicalLifecycleOpenKey(Paths.get(path)) }.getOrNull() }
             .toSet()
+    }
+
+    private fun processLifecycleCloseRequest(
+        parameters: Map<String, List<String>>,
+        context: ChannelHandlerContext,
+    ) {
+        try {
+            val result = closeLifecycleProject(parameters)
+            sendJsonResponse(context, formatJsonManually(result.first), result.second)
+        } catch (error: BadRequestException) {
+            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+        } catch (error: Exception) {
+            logger.warn("Failed to process lifecycle close request", error)
+            sendJsonResponse(
+                context,
+                """{"error": "Internal server error"}""",
+                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+            )
+        }
+    }
+
+    private fun buildInspectionCancellationResponse(parameters: Map<String, List<String>>): String {
+        val resolved = resolveInspectionRoute(parameters)
+            ?: return formatJsonManually(buildMissingProjectResponse(routeProjectSelector(parameters)))
+        val key = projectKey(resolved.project)
+        val runState = inspectionRunStatesByProject[key]
+        val rawExpectedRunId = firstParameter(parameters, "inspection_run_id")
+            ?: throw BadRequestException("inspection_run_id", "Parameter 'inspection_run_id' is required.")
+        val expectedRunId = rawExpectedRunId.toLongOrNull()?.takeIf { it > 0 }
+            ?: throw BadRequestException("inspection_run_id", "Parameter 'inspection_run_id' must be a positive integer.")
+        if (runState?.inProgress != true) {
+            return formatJsonManually(
+                mapOf(
+                    "status" to "not_running",
+                    "inspection_in_progress" to false,
+                    "inspection_cancellation_requested" to false,
+                    "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(resolved),
+                )
+            )
+        }
+        if (expectedRunId != runState.runId) {
+            return formatJsonManually(
+                mapOf(
+                    "status" to "run_changed",
+                    "inspection_in_progress" to true,
+                    "inspection_cancellation_requested" to false,
+                    "expected_inspection_run_id" to expectedRunId,
+                    "inspection_run_id" to runState.runId,
+                    "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(resolved),
+                )
+            )
+        }
+
+        val control = inspectionRunControlsByProject[key]
+        if (control == null || control.runId != runState.runId) {
+            return formatJsonManually(
+                mapOf(
+                    "status" to "cancellation_unavailable",
+                    "inspection_in_progress" to true,
+                    "inspection_cancellation_requested" to false,
+                    "inspection_run_id" to runState.runId,
+                    "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(resolved),
+                )
+            )
+        }
+
+        control.cancellationRequested.set(true)
+        control.indicator.cancel()
+        return formatJsonManually(
+            mapOf(
+                "status" to "cancel_requested",
+                "inspection_in_progress" to true,
+                "inspection_cancellation_requested" to true,
+                "inspection_run_id" to runState.runId,
+                "project_key" to key,
+                "session_id" to InspectionIdeSession.sessionId,
+                "route" to routeMetadata(resolved),
+            )
+        )
     }
 
     private fun closeLifecycleProject(parameters: Map<String, List<String>>): Pair<Map<String, Any?>, HttpResponseStatus> {
@@ -2841,6 +2971,9 @@ class InspectionHandler : HttpRequestHandler() {
         status["time_since_last_trigger_ms"] = timeSinceLastTrigger
         if (runState != null) {
             status["inspection_run_id"] = runState.runId
+            val runControl = inspectionRunControlsByProject[key]
+            status["inspection_cancellation_requested"] =
+                runControl?.runId == runState.runId && runControl.cancellationRequested.get()
             if (runState.inProgress && timeSinceLastTrigger >= inspectionRunExpirationMs) {
                 status["inspection_run_expired"] = true
             }
@@ -3352,6 +3485,32 @@ class InspectionHandler : HttpRequestHandler() {
         runId: Long,
         captureScope: InspectionCaptureScope,
         profileName: String? = null,
+        control: InspectionRunControl,
+    ) {
+        val key = projectKey(project)
+        if (!isCurrentInspectionRun(key, runId)) {
+            inspectionRunControlsByProject.remove(key, control)
+            return
+        }
+        try {
+            inspectionProcessRunner(
+                Runnable {
+                    runInspectionUnderProgress(project, runId, captureScope, profileName)
+                },
+                control.indicator,
+            )
+        } finally {
+            if (inspectionRunStatesByProject[key]?.inProgress != true) {
+                inspectionRunControlsByProject.remove(key, control)
+            }
+        }
+    }
+
+    private fun runInspectionUnderProgress(
+        project: Project,
+        runId: Long,
+        captureScope: InspectionCaptureScope,
+        profileName: String? = null,
     ) {
         val key = projectKey(project)
         var captureScheduled = false
@@ -3359,12 +3518,14 @@ class InspectionHandler : HttpRequestHandler() {
             if (!isCurrentInspectionRun(key, runId)) {
                 return
             }
+            checkInspectionRunCancellation(key, runId)
             resultsStore.clear(key)
 
             clearPriorInspectionResults(project)
             
             syncProjectState(project)
             waitForSmartMode(project)
+            checkInspectionRunCancellation(key, runId)
             val inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
@@ -3515,15 +3676,9 @@ class InspectionHandler : HttpRequestHandler() {
             globalContext.setExternalProfile(profile)
             globalContext.currentScope = scope
             
-            com.intellij.openapi.progress.ProgressManager.getInstance().runProcessWithProgressSynchronously(
-                {
-                    @Suppress("UnstableApiUsage")
-                    globalContext.performInspectionsWithProgress(scope, false, false)
-                },
-                "Running Code Inspection",
-                true,
-                project
-            )
+            @Suppress("UnstableApiUsage")
+            globalContext.performInspectionsWithProgress(scope, false, false)
+            ProgressManager.checkCanceled()
 
             try {
                 @Suppress("UnstableApiUsage")
@@ -3534,8 +3689,9 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (_: Exception) {
                     null
                 }
-                ApplicationManager.getApplication().executeOnPooledThread {
+                run {
                     try {
+                        checkInspectionRunCancellation(key, runId)
                         val extractor = enhancedTreeExtractorFactory()
                         var extractedFromContextSucceeded = false
                         val contextExtraction = try {
@@ -3554,6 +3710,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 project,
                                 targetToolShortNames,
                                 fallbackScopeFiles,
+                                cancellationCheck = { checkInspectionRunCancellation(key, runId) },
                             ).also {
                                 extractedFromContextSucceeded = true
                             }
@@ -3686,6 +3843,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var viewReadyOk = false
 
                         while (System.currentTimeMillis() < deadlineMs) {
+                            checkInspectionRunCancellation(key, runId)
                             if (!isCurrentInspectionRun(key, runId)) {
                                 captureExitReason = "superseded"
                                 break
@@ -4238,6 +4396,14 @@ class InspectionHandler : HttpRequestHandler() {
         return inspectionRunStatesByProject[key]?.runId == runId
     }
 
+    private fun checkInspectionRunCancellation(key: String, runId: Long) {
+        ProgressManager.checkCanceled()
+        val control = inspectionRunControlsByProject[key]
+        if (control?.runId == runId && control.cancellationRequested.get()) {
+            throw com.intellij.openapi.progress.ProcessCanceledException()
+        }
+    }
+
     private fun finishInspectionRun(key: String, runId: Long) {
         inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
             if (state.runId == runId) {
@@ -4245,6 +4411,9 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 state
             }
+        }
+        inspectionRunControlsByProject.computeIfPresent(key) { _, control ->
+            if (control.runId == runId) null else control
         }
     }
 
@@ -5213,13 +5382,16 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         targetToolShortNames: Set<String> = emptySet(),
         fallbackScopeFiles: List<com.intellij.psi.PsiFile> = emptyList(),
+        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
     ): InspectionModelExtraction {
+        cancellationCheck()
         val app = ApplicationManager.getApplication()
         val presentationHolder = AtomicReference<InspectionModelExtraction>()
         val presentationTask = Runnable {
+            cancellationCheck()
             presentationHolder.set(
                 app.runReadAction<InspectionModelExtraction, Exception> {
-                    extractProblemsFromContext(globalContext, project, targetToolShortNames)
+                    extractProblemsFromContext(globalContext, project, targetToolShortNames, cancellationCheck)
                 }
             )
         }
@@ -5228,6 +5400,7 @@ class InspectionHandler : HttpRequestHandler() {
         } else {
             app.invokeAndWait(presentationTask)
         }
+        cancellationCheck()
         val presentationExtraction = presentationHolder.get() ?: return InspectionModelExtraction(
             problems = emptyList(),
             problemDescriptorCount = 0,
@@ -5253,6 +5426,7 @@ class InspectionHandler : HttpRequestHandler() {
             project = project,
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
+            cancellationCheck = cancellationCheck,
         )
     }
 
@@ -5261,7 +5435,9 @@ class InspectionHandler : HttpRequestHandler() {
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
         targetToolShortNames: Set<String> = emptySet(),
+        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
     ): InspectionModelExtraction {
+        cancellationCheck()
         val problems = mutableListOf<Map<String, Any>>()
         val seen = LinkedHashSet<String>()
         val targetToolStates = linkedMapOf<String, MutableMap<String, Any?>>()
@@ -5284,12 +5460,14 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         for (toolGroup in tools) {
+            cancellationCheck()
             val scopeStates = try {
                 toolGroup.tools
             } catch (_: Exception) {
                 emptyList()
             }
             for (state in scopeStates) {
+                cancellationCheck()
                 val stateEnabled = try {
                     state.isEnabled
                 } catch (_: Exception) {
@@ -5335,6 +5513,7 @@ class InspectionHandler : HttpRequestHandler() {
                     continue
                 }
 
+                cancellationCheck()
                 try {
                     presentation.updateContent()
                 } catch (e: Exception) {
@@ -5362,6 +5541,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
 
                 for (descriptor in descriptors) {
+                    cancellationCheck()
                     val map = buildProblemMap(descriptor, wrapper, project) ?: continue
                     val key = listOf(
                         map["severity"],
@@ -5379,6 +5559,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         for (shortName in targetToolShortNames) {
+            cancellationCheck()
             targetToolStates.getOrPut(shortName) {
                 linkedMapOf(
                     "short_name" to shortName,
@@ -5406,7 +5587,9 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
     ): InspectionModelExtraction {
+        cancellationCheck()
         val targetStates = base.targetToolStates.associate { state ->
             val mutableState = state.toMutableMap()
             mutableState["short_name"]?.toString().orEmpty() to mutableState
@@ -5415,6 +5598,7 @@ class InspectionHandler : HttpRequestHandler() {
         val fallbackProblems = mutableListOf<Map<String, Any>>()
         var fallbackDescriptorCount = 0
         for (toolShortName in targetToolShortNames) {
+            cancellationCheck()
             val state = targetStates.getOrPut(toolShortName) {
                 linkedMapOf("short_name" to toolShortName, "present" to false, "enabled" to false)
             }
@@ -5425,6 +5609,7 @@ class InspectionHandler : HttpRequestHandler() {
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
                     targetToolState = state,
+                    cancellationCheck = cancellationCheck,
                 )
             } else {
                 emptyList()
@@ -5432,6 +5617,7 @@ class InspectionHandler : HttpRequestHandler() {
             state["inspection_engine_descriptor_count"] = fallbackDescriptors.size
             fallbackDescriptorCount += fallbackDescriptors.size
             for ((descriptor, wrapper) in fallbackDescriptors) {
+                cancellationCheck()
                 val map = buildProblemMap(descriptor, wrapper, project) ?: continue
                 if (baseKeys.add(problemKey(map))) {
                     fallbackProblems += map
@@ -5482,12 +5668,15 @@ class InspectionHandler : HttpRequestHandler() {
         toolShortName: String,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         targetToolState: MutableMap<String, Any?>,
+        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
     ): List<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>> {
+        cancellationCheck()
         val descriptors = mutableListOf<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>>()
         val errors = mutableListOf<String>()
         targetToolState["inspection_engine_file_count"] = fallbackScopeFiles.size
         ApplicationManager.getApplication().runReadAction<Unit, Exception> {
             for (psiFile in fallbackScopeFiles) {
+                cancellationCheck()
                 try {
                     val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
                         project,
@@ -5500,6 +5689,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
                     descriptors += InspectionEngine.runInspectionOnFile(psiFile, batchWrapper, globalContext).map { it to batchWrapper }
+                    cancellationCheck()
                 } catch (e: Exception) {
                     rethrowIfCanceled(e)
                     errors += formatModelUnreadableReason("inspection_engine:${psiFile.virtualFile?.path}", e)

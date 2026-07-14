@@ -13,6 +13,7 @@ import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -121,6 +122,10 @@ class InspectionHandlerTest {
             disassembly.contains("com/intellij/ide/impl/OpenProjectTask.\"<init>\""),
             "The full OpenProjectTask constructor is binary-incompatible when JetBrains adds task properties.",
         )
+        assertFalse(
+            disassembly.contains("runProcessWithProgressSynchronously"),
+            "Agent-triggered inspections must not block lifecycle requests behind a modal progress task.",
+        )
     }
     
     @BeforeEach
@@ -128,6 +133,8 @@ class InspectionHandlerTest {
         handler = InspectionHandler()
         handler.trustProjectPath = {}
         handler.inspectionRunExpirationMs = 300000L
+        handler.inspectionProcessRunner = { task, _ -> task.run() }
+        handler.lifecycleCloseExecutor = { task -> task.run() }
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
         mockProject = mockk<Project>()
@@ -663,6 +670,101 @@ class InspectionHandlerTest {
         assertEquals(true, status["is_scanning"])
         assertEquals(true, status["inspection_run_expired"])
         assertEquals("capture_incomplete", status["snapshot_outcome"])
+    }
+
+    @Test
+    fun `test cancellation endpoint cancels the active inspection indicator`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 7L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 7L, indicator = indicator))
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"cancel_requested\""))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        verify(exactly = 1) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation endpoint requires the inspection run id`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 7L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 7L, indicator = indicator))
+
+        val response = processGetRequest("/api/inspection/cancel?worktree_path=/tmp/TestProject")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("Parameter 'inspection_run_id' is required."))
+        verify(exactly = 0) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation endpoint refuses to cancel a newer inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 8L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 8L, indicator = indicator))
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+        verify(exactly = 0) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test queued inspection can be cancelled before its worker starts`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val queuedTasks = mutableListOf<Runnable>()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            queuedTasks += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+
+        val triggerResponse = processTriggerRequest("/api/inspection/trigger")
+        val cancelResponse = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=1",
+        )
+        val cancelBody = cancelResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, triggerResponse.status())
+        assertTrue(triggerResponse.content().toString(Charsets.UTF_8).contains("\"run_id\": 1"))
+        assertEquals(1, queuedTasks.size)
+        assertEquals(HttpResponseStatus.OK, cancelResponse.status())
+        assertTrue(cancelBody.contains("\"status\": \"cancel_requested\""))
+        assertTrue(cancelBody.contains("\"inspection_run_id\": 1"))
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            queuedTasks.single().run()
+        }
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
     }
 
     @Test
@@ -2517,6 +2619,49 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close releases the HTTP event loop before close work`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+
+        val scheduled = AtomicReference<Runnable?>()
+        handler.lifecycleCloseExecutor = { task -> scheduled.set(task) }
+        every { mockApplication.isDispatchThread } returns true
+        var closed = false
+        handler.forceCloseProject = { _, _ ->
+            closed = true
+            true
+        }
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
+        val uri = "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        val urlDecoder = QueryStringDecoder(uri)
+        val request = mockk<FullHttpRequest>()
+        val context = mockk<ChannelHandlerContext>()
+        val responses = mutableListOf<FullHttpResponse>()
+        every { request.uri() } returns uri
+        every { context.writeAndFlush(any()) } answers {
+            responses.add(firstArg())
+            mockk(relaxed = true)
+        }
+
+        assertTrue(handler.process(urlDecoder, request, context))
+        assertTrue(responses.isEmpty())
+        assertNotNull(scheduled.get())
+
+        scheduled.get()?.run()
+
+        assertEquals(1, responses.size)
+        assertEquals(HttpResponseStatus.OK, responses.single().status())
+        assertTrue(responses.single().content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+    }
+
+    @Test
     fun `test lifecycle close uses claimed project instance even when route selectors drift`() {
         val mainProject = mockProject(
             name = "Main",
@@ -3408,6 +3553,14 @@ class InspectionHandlerTest {
         @Suppress("UNCHECKED_CAST")
         val states = field.get(handler) as MutableMap<String, InspectionRunState>
         states[projectKey] = state
+    }
+
+    private fun setInspectionRunControl(projectKey: String, control: InspectionRunControl) {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunControlsByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val controls = field.get(handler) as MutableMap<String, InspectionRunControl>
+        controls[projectKey] = control
     }
 
     private fun mockProject(name: String, basePath: String?, projectFilePath: String): Project {

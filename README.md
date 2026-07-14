@@ -206,7 +206,7 @@ Typical response (truncated):
     "ide": {
       "name": "IntelliJ IDEA Ultimate",
       "product_code": "IU",
-      "plugin_version": "1.13.16",
+      "plugin_version": "1.13.17",
       "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
@@ -258,7 +258,7 @@ routing state.
       "name": "IntelliJ IDEA Ultimate",
       "version": "2025.1.1",
       "product_code": "IU",
-      "plugin_version": "1.13.16",
+      "plugin_version": "1.13.17",
       "plugin_build_fingerprint": "abc123def456-clean"
     }
   },
@@ -330,7 +330,15 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   original `lease_id` for an additional binding check. It closes the project
   only when all supplied values still match the lease-bound plugin claim.
   Token or supplied lease mismatch, session drift, or route ambiguity returns a
-  skipped/error response and leaves the project open.
+  skipped/error response and leaves the project open. Close work runs off the
+  built-in HTTP server event loop so a slow IDE close cannot block identity,
+  route, or status requests from other agents.
+- `GET /api/inspection/cancel`: accepts the normal route selectors plus the
+  required `inspection_run_id` and requests cancellation only when that exact
+  run is still active for the project. It returns `cancel_requested`,
+  `not_running`, `run_changed`, or `cancellation_unavailable`; callers should
+  poll `/status` until `inspection_in_progress` is false before closing a
+  helper-owned project.
 
 The plugin checks again on the IDE event thread immediately before opening and
 binds ownership only when that request's `beforeInit` project is the same object
@@ -339,6 +347,10 @@ being claimed or closed during the asynchronous scheduling window. The
 contract lets script helpers preserve projects that were already open before
 automation started while cleaning up helper-opened worktrees after readiness
 inspection.
+
+Agent-triggered inspections use a non-modal progress indicator. Long-running
+inspection work therefore remains cancellable without blocking lifecycle opens,
+closes, or the IDE built-in HTTP server event loop.
 
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`
@@ -549,6 +561,11 @@ Common completion reasons:
 - `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings. Wait responses expose cached counts as `cached_total_problems`, not `total_problems`.
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.
+
+When a bounded wait times out while `inspection_in_progress` is true, automation
+may call `/api/inspection/cancel` and wait briefly for cancellation to settle.
+This keeps a stalled inspection from holding the project and HTTP lifecycle
+queue indefinitely.
 
 For agent-facing reports from the plugin API, use `inspection_verdict` and the
 companion `inspection_verdict_reason`, `inspection_verdict_message`, and
