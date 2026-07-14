@@ -3410,16 +3410,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (status["inspection_in_progress"] == true) {
             return false
         }
-        val snapshotBacked = status.containsKey("snapshot_run_id") ||
-            status["has_inspection_results"] == true ||
-            status["clean_inspection"] == true ||
-            status["capture_incomplete"] == true ||
-            status["results_may_be_stale"] == true ||
-            status["inspection_triggered"] == true
-        if (!snapshotBacked) {
-            return false
-        }
-        val snapshotRunId = (status["snapshot_run_id"] as? Number)?.toLong()
+        val snapshotRunId = (status["snapshot_run_id"] as? Number)?.toLong() ?: return false
         return snapshotRunId != expectedRunId
     }
 

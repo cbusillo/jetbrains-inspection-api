@@ -1006,6 +1006,33 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test wait endpoint keeps accepted run while its snapshot is pending`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"completion_reason\": \"timeout\""))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertFalse(body.contains("\"status\": \"run_changed\""))
+    }
+
+    @Test
     fun `test problems endpoint refuses a replacement inspection run`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
