@@ -948,6 +948,46 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test wait endpoint refuses a snapshot from an older run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                runId = 6L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertTrue(body.contains("\"snapshot_run_id\": 6"))
+    }
+
+    @Test
     fun `test problems endpoint refuses a replacement inspection run`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"

@@ -3278,6 +3278,9 @@ class InspectionHandler : HttpRequestHandler() {
             if (expectedRunId != null && inspectionRunId(status) != expectedRunId) {
                 return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId)
             }
+            if (expectedRunId != null && waitSnapshotRunChanged(status, expectedRunId)) {
+                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId)
+            }
             val hasResults = status["has_inspection_results"] as? Boolean ?: false
             val inspectionTriggered = status["inspection_triggered"] as? Boolean ?: false
             val cleanInspection = status["clean_inspection"] as? Boolean ?: false
@@ -3402,6 +3405,23 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun inspectionRunId(status: Map<String, Any>): Long? {
         return (status["inspection_run_id"] as? Number)?.toLong()
+    }
+
+    private fun waitSnapshotRunChanged(status: Map<String, Any>, expectedRunId: Long): Boolean {
+        if (status["inspection_in_progress"] == true) {
+            return false
+        }
+        val snapshotBacked = status.containsKey("snapshot_run_id") ||
+            status["has_inspection_results"] == true ||
+            status["clean_inspection"] == true ||
+            status["capture_incomplete"] == true ||
+            status["results_may_be_stale"] == true ||
+            status["inspection_triggered"] == true
+        if (!snapshotBacked) {
+            return false
+        }
+        val snapshotRunId = (status["snapshot_run_id"] as? Number)?.toLong()
+        return snapshotRunId != expectedRunId
     }
 
     private fun formatWaitRunChanged(
