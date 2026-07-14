@@ -745,6 +745,28 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test cancellation endpoint detects a completed replacement run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 8L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"inspection_in_progress\": false"))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+    }
+
+    @Test
     fun `test queued inspection can be cancelled before its worker starts`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -770,6 +792,33 @@ class InspectionHandlerTest {
             queuedTasks.single().run()
         }
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test indicator creation failure releases inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        handler.inspectionIndicatorFactory = { throw IllegalStateException("indicator failed") }
+
+        val response = processTriggerRequest("/api/inspection/trigger")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertEquals(false, state?.inProgress)
+    }
+
+    @Test
+    fun `test runner setup failure releases inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        handler.inspectionProcessRunner = { _, _ -> throw IllegalStateException("runner failed") }
+
+        val response = processTriggerRequest("/api/inspection/trigger")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertEquals(false, state?.inProgress)
     }
 
     @Test
@@ -896,6 +945,33 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
         assertTrue(body.contains("\"inspection_run_id\": 8"))
         assertTrue(body.contains("\"timed_out\": false"))
+    }
+
+    @Test
+    fun `test problems endpoint refuses a replacement inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 8L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?severity=all&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
     }
 
     @Test
@@ -3206,6 +3282,44 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close preserves token when verification throws`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        handler.forceCloseProject = { _, _ -> true }
+        handler.closeVerificationSleep = { throw IllegalStateException("verification failed") }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, first.status())
+
+        var closed = false
+        handler.forceCloseProject = { _, _ ->
+            closed = true
+            true
+        }
+        handler.closeVerificationSleep = {}
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
+
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+    }
+
+    @Test
     fun `test trigger endpoint honors project instance id over duplicate path keys`() {
         val mainProject = mockProject(
             name = "Main",
@@ -3698,6 +3812,14 @@ class InspectionHandlerTest {
         @Suppress("UNCHECKED_CAST")
         val states = field.get(handler) as MutableMap<String, InspectionRunState>
         states[projectKey] = state
+    }
+
+    private fun inspectionRunState(projectKey: String): InspectionRunState? {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val states = field.get(handler) as Map<String, InspectionRunState>
+        return states[projectKey]
     }
 
     private fun setInspectionRunControl(projectKey: String, control: InspectionRunControl) {

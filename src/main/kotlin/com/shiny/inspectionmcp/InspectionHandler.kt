@@ -1353,6 +1353,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val includeUnversioned = parseBooleanParameter(parameters, "include_unversioned", defaultValue = true)
                     val changedFilesMode = parseChangedFilesMode(parameters)
                     val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
+                    val expectedRunId = parseOptionalPositiveLongParameter(parameters, "inspection_run_id")
                     val projectName = extractProjectSelector(urlDecoder, request)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
@@ -1383,6 +1384,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         changedFilesMode,
                                         maxFiles,
                                         validatedRequestScope,
+                                        expectedRunId,
                                     )
                                 }
                                 sendJsonResponse(context, result)
@@ -1472,13 +1474,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
-                    val expectedRunId = firstParameter(parameters, "inspection_run_id")?.let { rawRunId ->
-                        rawRunId.toLongOrNull()?.takeIf { it > 0 }
-                            ?: throw BadRequestException(
-                                "inspection_run_id",
-                                "Parameter 'inspection_run_id' must be a positive integer.",
-                            )
-                    }
+                    val expectedRunId = parseOptionalPositiveLongParameter(parameters, "inspection_run_id")
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
                             val result = waitForInspection(projectName, timeoutMs, pollMs, expectedRunId)
@@ -1532,10 +1528,15 @@ class InspectionHandler : HttpRequestHandler() {
             )
             val key = projectKey(project)
             val runState = beginInspectionRun(project, captureScope)
-            val runControl = InspectionRunControl(
-                runId = runState.runId,
-                indicator = inspectionIndicatorFactory(project),
-            )
+            val runControl = try {
+                InspectionRunControl(
+                    runId = runState.runId,
+                    indicator = inspectionIndicatorFactory(project),
+                )
+            } catch (error: Throwable) {
+                finishInspectionRun(key, runState.runId)
+                throw error
+            }
             inspectionRunControlsByProject[key] = runControl
             try {
                 ApplicationManager.getApplication().executeOnPooledThread {
@@ -1547,7 +1548,8 @@ class InspectionHandler : HttpRequestHandler() {
                         control = runControl,
                     )
                 }
-            } catch (error: Exception) {
+            } catch (error: Throwable) {
+                runCatching { runControl.indicator.cancel() }
                 inspectionRunControlsByProject.remove(key, runControl)
                 finishInspectionRun(key, runState.runId)
                 throw error
@@ -1616,6 +1618,15 @@ class InspectionHandler : HttpRequestHandler() {
             throw BadRequestException(name, "Parameter '$name' must be at most $max.")
         }
         return value
+    }
+
+    private fun parseOptionalPositiveLongParameter(
+        parameters: Map<String, List<String>>,
+        name: String,
+    ): Long? {
+        val raw = parameters[name]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        return raw.toLongOrNull()?.takeIf { it > 0 }
+            ?: throw BadRequestException(name, "Parameter '$name' must be a positive integer.")
     }
 
     private fun parseBooleanParameter(
@@ -2122,28 +2133,16 @@ class InspectionHandler : HttpRequestHandler() {
         val resolved = resolveInspectionRoute(parameters)
             ?: return formatJsonManually(buildMissingProjectResponse(routeProjectSelector(parameters)))
         val key = projectKey(resolved.project)
-        val runState = inspectionRunStatesByProject[key]
         val rawExpectedRunId = firstParameter(parameters, "inspection_run_id")
             ?: throw BadRequestException("inspection_run_id", "Parameter 'inspection_run_id' is required.")
         val expectedRunId = rawExpectedRunId.toLongOrNull()?.takeIf { it > 0 }
             ?: throw BadRequestException("inspection_run_id", "Parameter 'inspection_run_id' must be a positive integer.")
-        if (runState?.inProgress != true) {
-            return formatJsonManually(
-                mapOf(
-                    "status" to "not_running",
-                    "inspection_in_progress" to false,
-                    "inspection_cancellation_requested" to false,
-                    "project_key" to key,
-                    "session_id" to InspectionIdeSession.sessionId,
-                    "route" to routeMetadata(resolved),
-                )
-            )
-        }
-        if (expectedRunId != runState.runId) {
+        val runState = inspectionRunStatesByProject[key]
+        if (runState != null && expectedRunId != runState.runId) {
             return formatJsonManually(
                 mapOf(
                     "status" to "run_changed",
-                    "inspection_in_progress" to true,
+                    "inspection_in_progress" to runState.inProgress,
                     "inspection_cancellation_requested" to false,
                     "expected_inspection_run_id" to expectedRunId,
                     "inspection_run_id" to runState.runId,
@@ -2151,6 +2150,19 @@ class InspectionHandler : HttpRequestHandler() {
                     "session_id" to InspectionIdeSession.sessionId,
                     "route" to routeMetadata(resolved),
                 )
+            )
+        }
+        if (runState?.inProgress != true) {
+            return formatJsonManually(
+                mapOf(
+                    "status" to "not_running",
+                    "inspection_in_progress" to false,
+                    "inspection_cancellation_requested" to false,
+                    "inspection_run_id" to runState?.runId,
+                    "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(resolved),
+                ).filterValues { it != null }
             )
         }
 
@@ -2201,69 +2213,80 @@ class InspectionHandler : HttpRequestHandler() {
         if (!leasesByProjectInstance.remove(expectedProjectInstanceId, lease)) {
             return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
         }
-        if (lease.sessionId != InspectionIdeSession.sessionId) {
-            return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
-        }
-        val expectedSessionId = firstParameter(parameters, "session_id")
-        if (expectedSessionId != null && expectedSessionId != InspectionIdeSession.sessionId) {
-            return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
-        }
-
-        val project = findOpenProjectByInstanceId(expectedProjectInstanceId)
-            ?: run {
-                lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
-                return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
+        try {
+            if (lease.sessionId != InspectionIdeSession.sessionId) {
+                return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
             }
-        if (project !== lease.project) {
-            lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
-            return lifecycleCloseSkipped(
-                "project_instance_reused",
-                "Claimed project instance no longer refers to the exact project that was opened by this lease.",
-                HttpResponseStatus.CONFLICT,
-            )
-        }
-        if (projectKey(project) != lease.projectKey) {
-            return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
-        }
-        if (isInspectionInProgress(project)) {
-            leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
-            val runState = inspectionRunStatesByProject[projectKey(project)]
-            return lifecycleCloseSkipped(
-                "inspection_in_progress",
-                "An inspection is still running for the claimed project; leaving it open for a later cleanup retry.",
-                HttpResponseStatus.CONFLICT,
-                details = mapOf(
-                    "project_instance_id" to expectedProjectInstanceId,
-                    "project_key" to lease.projectKey,
-                    "lease_id" to lease.leaseId,
-                    "inspection_run_id" to runState?.runId,
-                    "inspection_in_progress" to true,
-                ),
-            )
-        }
+            val expectedSessionId = firstParameter(parameters, "session_id")
+            if (expectedSessionId != null && expectedSessionId != InspectionIdeSession.sessionId) {
+                return lifecycleCloseSkipped("session_drift", "IDE session changed before cleanup; leaving the project open.", HttpResponseStatus.CONFLICT)
+            }
 
-        val closeAttempts = closeClaimedProject(project, expectedProjectInstanceId)
-        val closed = closeAttempts.any { attempt -> attempt.closedVerified }
+            val project = findOpenProjectByInstanceId(expectedProjectInstanceId)
+                ?: run {
+                    removeLifecycleOpenOwnership(expectedProjectInstanceId, lease.project)
+                    return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
+                }
+            if (project !== lease.project) {
+                removeLifecycleOpenOwnership(expectedProjectInstanceId, lease.project)
+                return lifecycleCloseSkipped(
+                    "project_instance_reused",
+                    "Claimed project instance no longer refers to the exact project that was opened by this lease.",
+                    HttpResponseStatus.CONFLICT,
+                )
+            }
+            if (projectKey(project) != lease.projectKey) {
+                return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
+            }
+            if (isInspectionInProgress(project)) {
+                leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
+                val runState = inspectionRunStatesByProject[projectKey(project)]
+                return lifecycleCloseSkipped(
+                    "inspection_in_progress",
+                    "An inspection is still running for the claimed project; leaving it open for a later cleanup retry.",
+                    HttpResponseStatus.CONFLICT,
+                    details = mapOf(
+                        "project_instance_id" to expectedProjectInstanceId,
+                        "project_key" to lease.projectKey,
+                        "lease_id" to lease.leaseId,
+                        "inspection_run_id" to runState?.runId,
+                        "inspection_in_progress" to true,
+                    ),
+                )
+            }
 
-        if (!closed) {
+            val closeAttempts = closeClaimedProject(project, expectedProjectInstanceId)
+            val closed = closeAttempts.any { attempt -> attempt.closedVerified }
+
+            if (!closed) {
+                leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
+                return lifecycleCloseSkipped(
+                    "close_failed",
+                    "JetBrains IDE declined or failed to close the claimed project.",
+                    HttpResponseStatus.CONFLICT,
+                    closeAttempts,
+                )
+            }
+            removeLifecycleOpenOwnership(expectedProjectInstanceId, lease.project)
+            return mapOf(
+                "status" to "closed",
+                "project_instance_id" to expectedProjectInstanceId,
+                "project_key" to lease.projectKey,
+                "lease_id" to lease.leaseId,
+                "session_id" to InspectionIdeSession.sessionId,
+                "closed_at_ms" to System.currentTimeMillis(),
+                "close_attempts" to closeAttemptPayload(closeAttempts),
+            ) to HttpResponseStatus.OK
+        } catch (error: Throwable) {
             leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
-            return lifecycleCloseSkipped(
-                "close_failed",
-                "JetBrains IDE declined or failed to close the claimed project.",
-                HttpResponseStatus.CONFLICT,
-                closeAttempts,
-            )
+            throw error
         }
-        lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
-        return mapOf(
-            "status" to "closed",
-            "project_instance_id" to expectedProjectInstanceId,
-            "project_key" to lease.projectKey,
-            "lease_id" to lease.leaseId,
-            "session_id" to InspectionIdeSession.sessionId,
-            "closed_at_ms" to System.currentTimeMillis(),
-            "close_attempts" to closeAttemptPayload(closeAttempts),
-        ) to HttpResponseStatus.OK
+    }
+
+    private fun removeLifecycleOpenOwnership(projectInstanceId: String, project: Project) {
+        lifecycleOpenOwnershipByProjectInstance[projectInstanceId]
+            ?.takeIf { ownership -> ownership.project === project }
+            ?.let { ownership -> lifecycleOpenOwnershipByProjectInstance.remove(projectInstanceId, ownership) }
     }
 
     private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {
@@ -2559,6 +2582,7 @@ class InspectionHandler : HttpRequestHandler() {
         changedFilesMode: String? = null,
         maxFiles: Int? = null,
         validatedRequestScope: InspectionCaptureScope? = null,
+        expectedInspectionRunId: Long? = null,
     ): String {
         return run {
             val requestedScope = scope.trim().takeIf { it.isNotEmpty() } ?: "whole_project"
@@ -2580,6 +2604,16 @@ class InspectionHandler : HttpRequestHandler() {
             var snapshot = resultsStore.getSnapshot(key)
             val hasSnapshot = snapshot != null
             val runState = inspectionRunStatesByProject[key]
+            if (expectedInspectionRunId != null && runState?.runId != expectedInspectionRunId) {
+                return@run formatInspectionRunChangedResponse(project, expectedInspectionRunId, runState, snapshot)
+            }
+            if (
+                expectedInspectionRunId != null &&
+                snapshot?.runId != null &&
+                snapshot.runId != expectedInspectionRunId
+            ) {
+                return@run formatInspectionRunChangedResponse(project, expectedInspectionRunId, runState, snapshot)
+            }
             var staleness = resolveSnapshotStaleness(project, snapshot)
             if (staleness.changeKind == "current_run_psi_churn") {
                 val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
@@ -2836,6 +2870,27 @@ class InspectionHandler : HttpRequestHandler() {
                 formatJsonManually(response)
             }
         }
+    }
+
+    private fun formatInspectionRunChangedResponse(
+        project: Project,
+        expectedRunId: Long,
+        runState: InspectionRunState?,
+        snapshot: InspectionResultsSnapshot?,
+    ): String {
+        val response = mutableMapOf<String, Any>(
+            "status" to "run_changed",
+            "inspection_in_progress" to (runState?.inProgress == true),
+            "expected_inspection_run_id" to expectedRunId,
+            "project_key" to projectKey(project),
+            "session_id" to InspectionIdeSession.sessionId,
+            "route" to routeMetadata(project),
+            "message" to "A different inspection run or snapshot replaced the run accepted by this request.",
+        )
+        runState?.runId?.let { response["inspection_run_id"] = it }
+        snapshot?.runId?.let { response["snapshot_run_id"] = it }
+        addStatusInspectionVerdict(response)
+        return formatJsonManually(response)
     }
 
     private fun getInspectionProblems(
@@ -3590,13 +3645,21 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionRunControlsByProject.remove(key, control)
             return
         }
+        val taskStarted = AtomicBoolean(false)
         try {
             inspectionProcessRunner(
                 Runnable {
+                    taskStarted.set(true)
                     runInspectionUnderProgress(project, runId, captureScope, profileName)
                 },
                 control.indicator,
             )
+        } catch (error: Throwable) {
+            if (!taskStarted.get()) {
+                runCatching { control.indicator.cancel() }
+                finishInspectionRun(key, runId)
+            }
+            throw error
         } finally {
             if (inspectionRunStatesByProject[key]?.inProgress != true) {
                 inspectionRunControlsByProject.remove(key, control)
@@ -4494,7 +4557,8 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun isCurrentInspectionRun(key: String, runId: Long): Boolean {
-        return inspectionRunStatesByProject[key]?.runId == runId
+        val state = inspectionRunStatesByProject[key]
+        return state?.runId == runId && state.inProgress
     }
 
     private fun checkInspectionRunCancellation(key: String, runId: Long) {
