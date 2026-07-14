@@ -15,7 +15,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
-import com.intellij.openapi.progress.util.ProgressIndicatorBase
+import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
@@ -990,6 +990,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
         ProgressManager.getInstance().runProcess(task, indicator)
     }
+    internal var inspectionIndicatorFactory: (Project) -> ProgressIndicator = { project ->
+        ProgressWindow(false, true, project).apply {
+            setDelayInMillis(Int.MAX_VALUE)
+        }
+    }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
@@ -1519,7 +1524,7 @@ class InspectionHandler : HttpRequestHandler() {
             val runState = beginInspectionRun(project, captureScope)
             val runControl = InspectionRunControl(
                 runId = runState.runId,
-                indicator = ProgressIndicatorBase(),
+                indicator = inspectionIndicatorFactory(project),
             )
             inspectionRunControlsByProject[key] = runControl
             try {
@@ -4310,7 +4315,8 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                             throw e
-                        } catch (_: Exception) {
+                        } catch (error: Exception) {
+                            logger.warn("Inspection result capture failed for ${project.name}", error)
                             if (isCurrentInspectionRun(key, runId)) {
                                 resultsStore.setSnapshot(
                                     key,
@@ -4322,7 +4328,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         source = "inspection_view",
                                         note = "Inspection failed before results could be captured.",
                                         captureScope = effectiveCaptureScope,
-                                        captureDiagnostic = mapOf("exit_reason" to "helper_plugin_error"),
+                                        captureDiagnostic = captureFailureDiagnostic(error),
                                         captureIncompleteReason = CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
                                         runId = runId,
                                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
@@ -4336,13 +4342,15 @@ class InspectionHandler : HttpRequestHandler() {
                 captureScheduled = true
             } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                 throw e
-            } catch (_: Exception) {
-                publishCaptureFailureIfCurrent(key, runId, project, captureScope)
+            } catch (error: Exception) {
+                logger.warn("Inspection setup or capture scheduling failed for ${project.name}", error)
+                publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
             throw e
-        } catch (_: Exception) {
-            publishCaptureFailureIfCurrent(key, runId, project, captureScope)
+        } catch (error: Exception) {
+            logger.warn("Inspection execution failed for ${project.name}", error)
+            publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
         } finally {
             if (!captureScheduled) {
                 finishInspectionRun(key, runId)
@@ -4422,6 +4430,7 @@ class InspectionHandler : HttpRequestHandler() {
         runId: Long,
         project: Project,
         captureScope: InspectionCaptureScope,
+        error: Exception? = null,
     ) {
         if (!isCurrentInspectionRun(key, runId)) {
             return
@@ -4436,12 +4445,23 @@ class InspectionHandler : HttpRequestHandler() {
                 source = "inspection_view",
                 note = "Inspection failed before results could be captured.",
                 captureScope = captureScope,
-                captureDiagnostic = mapOf("exit_reason" to "helper_plugin_error"),
+                captureDiagnostic = captureFailureDiagnostic(error),
                 captureIncompleteReason = CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
                 runId = runId,
                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
             )
         )
+    }
+
+    private fun captureFailureDiagnostic(error: Exception?): Map<String, Any> {
+        val diagnostic = mutableMapOf<String, Any>("exit_reason" to "helper_plugin_error")
+        if (error != null) {
+            diagnostic["exception_type"] = error.javaClass.name
+            error.message?.takeIf { it.isNotBlank() }?.let { message ->
+                diagnostic["exception_message"] = message.take(1000)
+            }
+        }
+        return diagnostic
     }
 
     private fun syncProjectState(project: Project) {

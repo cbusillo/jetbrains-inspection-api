@@ -126,6 +126,10 @@ class InspectionHandlerTest {
             disassembly.contains("runProcessWithProgressSynchronously"),
             "Agent-triggered inspections must not block lifecycle requests behind a modal progress task.",
         )
+        assertTrue(
+            disassembly.contains("com/intellij/openapi/progress/util/ProgressWindow"),
+            "JetBrains global inspections require a non-modal ProgressWindow indicator.",
+        )
     }
     
     @BeforeEach
@@ -134,6 +138,7 @@ class InspectionHandlerTest {
         handler.trustProjectPath = {}
         handler.inspectionRunExpirationMs = 300000L
         handler.inspectionProcessRunner = { task, _ -> task.run() }
+        handler.inspectionIndicatorFactory = { mockk(relaxed = true) }
         handler.lifecycleCloseExecutor = { task -> task.run() }
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
@@ -765,6 +770,22 @@ class InspectionHandlerTest {
             queuedTasks.single().run()
         }
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test capture failure diagnostic preserves exception details`() {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "captureFailureDiagnostic",
+            Exception::class.java,
+        )
+        method.isAccessible = true
+
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = method.invoke(handler, IllegalStateException("capture exploded")) as Map<String, Any>
+
+        assertEquals("helper_plugin_error", diagnostic["exit_reason"])
+        assertEquals(IllegalStateException::class.java.name, diagnostic["exception_type"])
+        assertEquals("capture exploded", diagnostic["exception_message"])
     }
 
     @Test
