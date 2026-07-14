@@ -84,7 +84,13 @@ missing inspection plugin. The
 plugin-side lifecycle open endpoint schedules project opening asynchronously and
 uses the worktree directory name as the frame project name so cloned worktrees
 with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
-PyCharm, and WebStorm.
+PyCharm, and WebStorm. Current builds advertise the `lease_bound_v1` ownership
+protocol: the helper persists a lease before open, passes that `lease_id`, and
+accepts cleanup authority only from a later claim with
+`ownership_proven=true`. Scheduling, path/session matching, or a close-token
+field without that proof is not sufficient to close a project. Regression tests
+must cover a user project appearing between open acceptance and IDE-thread
+execution, and must prove that such a project receives no close token.
 
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
 session drift, route ambiguity, wrong-worktree routes, and cleanup failures as

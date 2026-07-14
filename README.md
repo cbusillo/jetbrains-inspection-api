@@ -314,18 +314,31 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `project_root`; helpers must poll `/route` with that exact `project_path` or
   `worktree_path` and the same session until it appears before inspecting. An
   already-open exact project can be returned without scheduling a new open.
+  Helpers that may later close the project also pass their pre-persisted
+  `lease_id`. Identity and endpoint responses advertise
+  `lifecycle_ownership_protocol: "lease_bound_v1"`; an
+  `ownership_registered: true` open response records only the pending request,
+  not ownership of the eventual project instance.
 - `GET /api/inspection/lifecycle/claim`: resolves the same selectors as
-  `/route`, verifies optional `project_instance_id`, and returns a one-use
-  `close_token` tied to the current `session_id` and project instance.
+  `/route` and verifies optional `project_instance_id`. It returns a one-use
+  `close_token` only when the supplied `lease_id` is bound to the exact project
+  created by that lifecycle open. The authoritative response includes
+  `ownership_proven: true`; preexisting, coalesced, mismatched, and untracked
+  projects return `status: "not_owned"` without a close token.
 - `GET /api/inspection/lifecycle/close`: requires `project_key`,
-  `project_instance_id`, `session_id`, and `close_token`. It closes the project
-  only when all values still match the plugin-side claim. Token mismatch,
-  session drift, or route ambiguity returns a skipped/error response and leaves
-  the project open.
+  `project_instance_id`, `session_id`, and `close_token`, and accepts the
+  original `lease_id` for an additional binding check. It closes the project
+  only when all supplied values still match the lease-bound plugin claim.
+  Token or supplied lease mismatch, session drift, or route ambiguity returns a
+  skipped/error response and leaves the project open.
 
-This contract lets script helpers preserve projects that were already open
-before automation started while cleaning up helper-opened worktrees after
-readiness inspection.
+The plugin checks again on the IDE event thread immediately before opening and
+binds ownership only when that request's `beforeInit` project is the same object
+returned by the open call. This prevents a user-opened same-path project from
+being claimed or closed during the asynchronous scheduling window. The
+contract lets script helpers preserve projects that were already open before
+automation started while cleaning up helper-opened worktrees after readiness
+inspection.
 
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`

@@ -59,6 +59,10 @@ import javax.swing.tree.TreeNode
 
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
+internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
+
+internal fun lifecycleOpenProjectTask(openPath: Path, onBeforeInit: (Project) -> Unit): OpenProjectTask =
+    OpenProjectTaskCompat.build(openPath, onBeforeInit)
 
 internal fun normalizeOptionalFilter(raw: String?): String? {
     val trimmed = raw?.trim() ?: return null
@@ -275,7 +279,7 @@ private data class InspectionProof(
 
 internal data class InspectionProjectLease(
     val closeToken: String,
-    val leaseId: String?,
+    val leaseId: String,
     val projectKey: String,
     val projectInstanceId: String,
     val basePath: String?,
@@ -937,6 +941,15 @@ class InspectionHandler : HttpRequestHandler() {
         val key: String,
     )
 
+    private data class LifecycleOpenRequest(
+        val leaseId: String?,
+    )
+
+    internal data class LifecycleOpenOwnership(
+        val leaseId: String,
+        val targetKey: String,
+    )
+
     private data class LifecycleCloseAttempt(
         val attempt: Int,
         val save: Boolean,
@@ -948,7 +961,8 @@ class InspectionHandler : HttpRequestHandler() {
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
     private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
-    private val openingProjectPaths = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val openingProjectRequests = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenRequest>()
+    private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
     private val unresolvedLifecycleOpenProjects = java.util.concurrent.ConcurrentHashMap<String, Project>()
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
@@ -965,13 +979,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
-    internal var openProjectPath: (Path) -> Project? = { path ->
+    internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, beforeInit ->
         val openPath = canonicalTrustPath(path)
         ProjectManagerEx.getInstanceEx().openProject(
             openPath,
-            OpenProjectTask.build()
-                .withForceOpenInNewFrame(true)
-                .withProjectName(openPath.fileName?.toString() ?: openPath.toString()),
+            lifecycleOpenProjectTask(openPath, beforeInit),
         )
     }
 
@@ -1653,10 +1665,35 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
 
+        val requestedLeaseId = firstParameter(parameters, "lease_id")
+        val ownership = lifecycleOpenOwnershipByProjectInstance[actualProjectInstanceId]
+        val ownershipProven = requestedLeaseId != null &&
+            requestedLeaseId == ownership?.leaseId &&
+            lifecycleOpenKeys(resolved.project).contains(ownership.targetKey)
+        if (!ownershipProven) {
+            return formatJsonManually(
+                mapOf(
+                    "status" to "not_owned",
+                    "ownership_proven" to false,
+                    "reason" to when {
+                        ownership == null -> "project_preexisted"
+                        requestedLeaseId != ownership.leaseId -> "lease_mismatch"
+                        else -> "route_mismatch"
+                    },
+                    "lease_id" to requestedLeaseId,
+                    "project_instance_id" to actualProjectInstanceId,
+                    "project_key" to (resolved.projectIdentity["project_key"] as? String ?: projectKey(resolved.project)),
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(resolved),
+                    "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
+                ).filterValues { value -> value != null }
+            )
+        }
+
         val closeToken = UUID.randomUUID().toString()
         val lease = InspectionProjectLease(
             closeToken = closeToken,
-            leaseId = firstParameter(parameters, "lease_id"),
+            leaseId = requestedLeaseId,
             projectKey = resolved.projectIdentity["project_key"] as? String ?: projectKey(resolved.project),
             projectInstanceId = actualProjectInstanceId,
             basePath = resolved.projectIdentity["base_path"] as? String,
@@ -1668,6 +1705,7 @@ class InspectionHandler : HttpRequestHandler() {
         return formatJsonManually(
             mapOf(
                 "status" to "claimed",
+                "ownership_proven" to true,
                 "close_token" to closeToken,
                 "lease_id" to lease.leaseId,
                 "project_instance_id" to actualProjectInstanceId,
@@ -1675,7 +1713,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "session_id" to InspectionIdeSession.sessionId,
                 "route" to routeMetadata(resolved),
                 "claimed_at_ms" to lease.claimedAtMs,
-            ).filterValues { value -> value != null }
+                "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
+            )
         )
     }
 
@@ -1717,7 +1756,11 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to target.path.toString(),
             "session_id" to InspectionIdeSession.sessionId,
         ) to HttpResponseStatus.BAD_REQUEST
-        if (!openingProjectPaths.add(target.key)) {
+        val requestedLeaseId = firstParameter(parameters, "lease_id")
+        val request = LifecycleOpenRequest(leaseId = requestedLeaseId)
+        val existingRequest = openingProjectRequests.putIfAbsent(target.key, request)
+        if (existingRequest != null) {
+            val sameLease = requestedLeaseId != null && requestedLeaseId == existingRequest.leaseId
             return mapOf(
                 "status" to "opening",
                 "opened" to false,
@@ -1725,6 +1768,9 @@ class InspectionHandler : HttpRequestHandler() {
                 "reason" to "already_opening",
                 "worktree_path" to target.path.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
+                "ownership_registered" to sameLease,
+                "lease_id" to requestedLeaseId,
+                "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
             ) to HttpResponseStatus.OK
         }
         unresolvedLifecycleOpenProjects.remove(target.key)
@@ -1734,21 +1780,39 @@ class InspectionHandler : HttpRequestHandler() {
                 var opened: Project? = null
                 var keepOpeningGuard = false
                 try {
+                    val preexistingProject = findOpenProjectForLifecycleOpen(target.projectRoot.toString())
+                    if (preexistingProject != null) {
+                        opened = preexistingProject
+                        return@invokeLater
+                    }
+                    val initializedProject = AtomicReference<Project?>()
                     trustProjectPath(target.openPath)
-                    opened = openProjectPath(target.openPath)
+                    opened = openProjectPath(target.openPath) { project ->
+                        initializedProject.compareAndSet(null, project)
+                    }
+                    if (
+                        requestedLeaseId != null &&
+                        opened != null &&
+                        initializedProject.get() === opened
+                    ) {
+                        lifecycleOpenOwnershipByProjectInstance[projectInstanceId(opened)] = LifecycleOpenOwnership(
+                            leaseId = requestedLeaseId,
+                            targetKey = target.key,
+                        )
+                    }
                     if (opened != null) {
                         keepOpeningGuard = true
-                        releaseLifecycleOpenGuardWhenUsable(target.key, opened)
+                        releaseLifecycleOpenGuardWhenUsable(target.key, opened, request)
                     }
                 } finally {
                     if (!keepOpeningGuard) {
-                        openingProjectPaths.remove(target.key)
+                        openingProjectRequests.remove(target.key, request)
                     }
                 }
             }
         }.isSuccess
         if (!scheduled) {
-            openingProjectPaths.remove(target.key)
+            openingProjectRequests.remove(target.key, request)
             return mapOf(
                 "status" to "failed",
                 "opened" to false,
@@ -1757,6 +1821,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "worktree_path" to target.path.toString(),
                 "project_root" to target.projectRoot.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
+                "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
             ) to HttpResponseStatus.CONFLICT
         }
 
@@ -1767,17 +1832,20 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to target.path.toString(),
             "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
+            "ownership_registered" to (requestedLeaseId != null),
+            "lease_id" to requestedLeaseId,
+            "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
         ) to HttpResponseStatus.OK
     }
 
-    private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project) {
+    private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project, request: LifecycleOpenRequest) {
         if (project.isDisposed) {
-            openingProjectPaths.remove(key)
+            openingProjectRequests.remove(key, request)
             unresolvedLifecycleOpenProjects.remove(key)
             return
         }
         if (isLifecycleOpenProjectUsable(key, project)) {
-            openingProjectPaths.remove(key)
+            openingProjectRequests.remove(key, request)
             unresolvedLifecycleOpenProjects.remove(key)
             return
         }
@@ -1788,7 +1856,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val startedAtMs = lifecycleOpenGuardNow()
                     val deadlineMs = startedAtMs + lifecycleOpenGuardTimeoutMs
                     var observedOpenProject = false
-                    while (openingProjectPaths.contains(key)) {
+                    while (openingProjectRequests.containsKey(key)) {
                         val nowMs = lifecycleOpenGuardNow()
                         val lifecycleComplete = runCatching {
                             ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
@@ -1809,7 +1877,7 @@ class InspectionHandler : HttpRequestHandler() {
                         lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                     }
                 } finally {
-                    openingProjectPaths.remove(key)
+                    openingProjectRequests.remove(key, request)
                     if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
                         unresolvedLifecycleOpenProjects[key] = project
                     }
@@ -1817,7 +1885,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }.isSuccess
         if (!submitted) {
-            openingProjectPaths.remove(key)
+            openingProjectRequests.remove(key, request)
             if (isUnresolvedLifecycleOpenActive(project)) {
                 unresolvedLifecycleOpenProjects[key] = project
             }
@@ -1962,6 +2030,10 @@ class InspectionHandler : HttpRequestHandler() {
         if (lease.closeToken != closeToken) {
             return lifecycleCloseSkipped("token_mismatch", "Close token did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
         }
+        val expectedLeaseId = firstParameter(parameters, "lease_id")
+        if (expectedLeaseId != null && expectedLeaseId != lease.leaseId) {
+            return lifecycleCloseSkipped("lease_mismatch", "Lease id did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
+        }
         if (!leasesByProjectInstance.remove(expectedProjectInstanceId, lease)) {
             return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
         }
@@ -1975,6 +2047,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         val project = findOpenProjectByInstanceId(expectedProjectInstanceId)
             ?: run {
+                lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
                 return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
             }
         if (projectKey(project) != lease.projectKey) {
@@ -1992,6 +2065,7 @@ class InspectionHandler : HttpRequestHandler() {
                 closeAttempts,
             )
         }
+        lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
         return mapOf(
             "status" to "closed",
             "project_instance_id" to expectedProjectInstanceId,
@@ -2000,7 +2074,7 @@ class InspectionHandler : HttpRequestHandler() {
             "session_id" to InspectionIdeSession.sessionId,
             "closed_at_ms" to System.currentTimeMillis(),
             "close_attempts" to closeAttemptPayload(closeAttempts),
-        ).filterValues { value -> value != null } to HttpResponseStatus.OK
+        ) to HttpResponseStatus.OK
     }
 
     private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {

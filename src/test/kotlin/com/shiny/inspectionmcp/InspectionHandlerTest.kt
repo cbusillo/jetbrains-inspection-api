@@ -64,6 +64,64 @@ class InspectionHandlerTest {
     private lateinit var mockProfileManager: InspectionProjectProfileManager
     private lateinit var mockProfile: InspectionProfileImpl
     private lateinit var mockApplication: Application
+
+    @Test
+    fun `lifecycle open task uses binary stable builder callback`() {
+        val initializedProject = mockk<Project>()
+        val capturedProject = AtomicReference<Project?>()
+        val task = lifecycleOpenProjectTask(Paths.get("/tmp/issue-206")) { project ->
+            capturedProject.set(project)
+        }
+
+        assertTrue(task.forceOpenInNewFrame)
+        assertEquals("issue-206", task.projectName)
+        task.beforeInit?.invoke(initializedProject)
+        assertSame(initializedProject, capturedProject.get())
+    }
+
+    @Test
+    fun `inspection handler avoids binary fragile OpenProjectTask copy`() {
+        val resourceName = InspectionHandler::class.java.name.replace('.', '/') + ".class"
+        val classResource = requireNotNull(InspectionHandler::class.java.classLoader.getResource(resourceName))
+        val classPath = when (classResource.protocol) {
+            "jar" -> Paths.get(java.net.URI.create(classResource.toExternalForm().substringAfter("jar:").substringBefore("!/"))).toString()
+            "file" -> {
+                var root = Paths.get(classResource.toURI())
+                repeat(resourceName.split('/').size) {
+                    root = requireNotNull(root.parent)
+                }
+                root.toString()
+            }
+            else -> error("Unsupported InspectionHandler class resource: $classResource")
+        }
+        val javap = sequenceOf(System.getenv("JAVA_HOME"), System.getProperty("java.home"))
+            .filterNotNull()
+            .map { home -> Paths.get(home, "bin", "javap") }
+            .firstOrNull(Files::isExecutable)
+        assertNotNull(javap, "javap must be available from the test JDK")
+        val process = ProcessBuilder(
+            requireNotNull(javap).toString(),
+            "-classpath",
+            classPath,
+            "-c",
+            "-p",
+            InspectionHandler::class.java.name,
+            "com.shiny.inspectionmcp.InspectionHandlerKt",
+            OpenProjectTaskCompat::class.java.name,
+        ).redirectErrorStream(true).start()
+        val disassembly = process.inputStream.bufferedReader().use { it.readText() }
+
+        assertTrue(process.waitFor(30, TimeUnit.SECONDS), "javap did not finish")
+        assertEquals(0, process.exitValue(), disassembly)
+        assertFalse(
+            disassembly.contains("com/intellij/ide/impl/OpenProjectTask.copy\$default"),
+            "OpenProjectTask.copy\$default is binary-incompatible when JetBrains adds task properties.",
+        )
+        assertFalse(
+            disassembly.contains("com/intellij/ide/impl/OpenProjectTask.\"<init>\""),
+            "The full OpenProjectTask constructor is binary-incompatible when JetBrains adds task properties.",
+        )
+    }
     
     @BeforeEach
     fun setup() {
@@ -1379,6 +1437,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
 
         val response = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
@@ -1387,8 +1446,28 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"claimed\""))
+        assertTrue(body.contains("\"ownership_proven\": true"))
         assertTrue(body.contains("\"close_token\""))
         assertTrue(body.contains("\"lease_id\": \"test-lease\""))
+        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
+    }
+
+    @Test
+    fun `test lifecycle claim does not authorize close for preexisting project`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"not_owned\""))
+        assertTrue(body.contains("\"ownership_proven\": false"))
+        assertTrue(body.contains("\"reason\": \"project_preexisted\""))
+        assertFalse(body.contains("\"close_token\""))
     }
 
     @Test
@@ -1433,8 +1512,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1445,8 +1525,111 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"status\": \"opening\""))
         assertTrue(body.contains("\"opened\": false"))
         assertTrue(body.contains("\"opening_scheduled\": true"))
+        assertTrue(body.contains("\"ownership_registered\": true"))
+        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
         assertTrue(body.contains(tempDir.toString()))
         assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open binds fresh project to lease for claim`() {
+        val tempDir = Files.createTempDirectory("inspection-open-owned")
+        val openedProject = mockProject(
+            name = "Owned",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
+            openedProject
+        }
+
+        val openResponse = processGetRequest(lifecycleOpenUri(tempDir, "owned-lease"))
+        val instanceId = projectInstanceId(openedProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=owned-lease"
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, openResponse.status())
+        assertEquals(HttpResponseStatus.OK, claimResponse.status())
+        assertTrue(claimBody.contains("\"status\": \"claimed\""))
+        assertTrue(claimBody.contains("\"ownership_proven\": true"))
+        assertTrue(claimBody.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle open race with user project never grants ownership`() {
+        val tempDir = Files.createTempDirectory("inspection-open-user-race")
+        val userProject = mockProject(
+            name = "UserOwned",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        val scheduled = mutableListOf<Runnable>()
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.openProjectPath = { _, _ -> error("scheduled open must not run after a user project appears") }
+
+        val openResponse = processGetRequest(lifecycleOpenUri(tempDir, "raced-lease"))
+        openProjects = arrayOf(userProject)
+        scheduled.single().run()
+        val instanceId = projectInstanceId(userProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=raced-lease"
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, openResponse.status())
+        assertTrue(openResponse.content().toString(Charsets.UTF_8).contains("\"ownership_registered\": true"))
+        assertEquals(HttpResponseStatus.OK, claimResponse.status())
+        assertTrue(claimBody.contains("\"status\": \"not_owned\""))
+        assertTrue(claimBody.contains("\"ownership_proven\": false"))
+        assertFalse(claimBody.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle open requires before init project identity for ownership`() {
+        val tempDir = Files.createTempDirectory("inspection-open-coalesced")
+        val initializedProject = mockProject(
+            name = "Initialized",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/initialized.xml").toString(),
+        )
+        val returnedProject = mockProject(
+            name = "Returned",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(initializedProject)
+            openProjects = arrayOf(returnedProject)
+            returnedProject
+        }
+
+        processGetRequest(lifecycleOpenUri(tempDir, "coalesced-lease"))
+        val instanceId = projectInstanceId(returnedProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=coalesced-lease"
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertTrue(claimBody.contains("\"status\": \"not_owned\""))
+        assertFalse(claimBody.contains("\"close_token\""))
     }
 
     @Test
@@ -1468,9 +1651,10 @@ class InspectionHandlerTest {
             events += "trust"
             trustedPath = path
         }
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             events += "open"
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1497,8 +1681,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1527,8 +1712,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1556,8 +1742,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1585,8 +1772,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1615,8 +1803,9 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(openedProject)
             openedProject
         }
 
@@ -1657,8 +1846,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             firstArg<Runnable>().run()
         }
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
+            beforeInit(mockProject)
             mockProject
         }
 
@@ -1685,13 +1875,15 @@ class InspectionHandlerTest {
             firstArg<Runnable>().run()
         }
         var openedPath: Path? = null
-        handler.openProjectPath = { path: Path ->
+        handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
-            mockProject(
+            val openedProject = mockProject(
                 name = "Feature",
                 basePath = linkedWorktree.toString(),
                 projectFilePath = linkedWorktree.resolve(".idea/misc.xml").toString(),
             )
+            beforeInit(openedProject)
+            openedProject
         }
 
         val response = processGetRequest(lifecycleOpenUri(linkedWorktree))
@@ -1773,7 +1965,7 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = { null }
+        handler.openProjectPath = { _, _ -> null }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         val second = processGetRequest(lifecycleOpenUri(tempDir))
@@ -1806,8 +1998,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -1845,8 +2038,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -1889,8 +2083,9 @@ class InspectionHandlerTest {
         handler.lifecycleOpenGuardSleep = {
             openProjects[0] = null
         }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -1936,7 +2131,10 @@ class InspectionHandlerTest {
                 scheduledAfterRetry = scheduled.size
             }
         }
-        handler.openProjectPath = { initializingProject }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(initializingProject)
+            initializingProject
+        }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
@@ -1982,7 +2180,10 @@ class InspectionHandlerTest {
         handler.lifecycleOpenGuardTimeoutMs = 400
         handler.lifecycleOpenGuardNow = { nowMs }
         handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
-        handler.openProjectPath = { initializingProject }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(initializingProject)
+            initializingProject
+        }
 
         processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
@@ -2013,7 +2214,10 @@ class InspectionHandlerTest {
             scheduled += firstArg<Runnable>()
         }
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } throws RejectedExecutionException("pool stopped")
-        handler.openProjectPath = { initializingProject }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(initializingProject)
+            initializingProject
+        }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
@@ -2052,8 +2256,9 @@ class InspectionHandlerTest {
         handler.lifecycleOpenGuardTimeoutMs = 400
         handler.lifecycleOpenGuardNow = { nowMs }
         handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -2103,8 +2308,9 @@ class InspectionHandlerTest {
             retryBeforeTimeoutBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
             nowMs = 1_400L
         }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -2140,8 +2346,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = {
+        handler.openProjectPath = { _, beforeInit ->
             openProjects[0] = initializingProject
+            beforeInit(initializingProject)
             initializingProject
         }
 
@@ -2172,7 +2379,10 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
-        handler.openProjectPath = { mockProject }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(mockProject)
+            mockProject
+        }
 
         val first = processGetRequest(lifecycleOpenUri(tempDir))
         val second = processGetRequest(lifecycleOpenUri(symlink))
@@ -2276,6 +2486,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2319,6 +2530,7 @@ class InspectionHandlerTest {
         )
         every { mockProjectManager.openProjects } returns arrayOf(mainProject, worktreeProject)
         val instanceId = projectInstanceId(worktreeProject)
+        registerLifecycleOpenOwnership(worktreeProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/worktree&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2347,6 +2559,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2436,6 +2649,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2465,6 +2679,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2489,6 +2704,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2520,6 +2736,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2559,6 +2776,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2592,6 +2810,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2637,6 +2856,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -2662,6 +2882,7 @@ class InspectionHandlerTest {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
         val claim = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
         ).content().toString(Charsets.UTF_8)
@@ -3056,14 +3277,15 @@ class InspectionHandlerTest {
         return processGetRequest(uri)
     }
 
-    private fun lifecycleOpenUri(path: Path): String {
-        return lifecycleOpenUri(path.toString())
+    private fun lifecycleOpenUri(path: Path, leaseId: String = "test-open-lease"): String {
+        return lifecycleOpenUri(path.toString(), leaseId)
     }
 
-    private fun lifecycleOpenUri(path: String): String {
+    private fun lifecycleOpenUri(path: String, leaseId: String = "test-open-lease"): String {
         val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
         val encodedSession = java.net.URLEncoder.encode(InspectionIdeSession.sessionId, "UTF-8")
-        return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession"
+        val encodedLeaseId = java.net.URLEncoder.encode(leaseId, "UTF-8")
+        return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession&lease_id=$encodedLeaseId"
     }
 
     private fun runPooledTasksInline() {
@@ -3078,6 +3300,15 @@ class InspectionHandlerTest {
         val field = InspectionHandler::class.java.getDeclaredField("leasesByProjectInstance")
         field.isAccessible = true
         return field.get(handler) as MutableMap<String, InspectionProjectLease>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun registerLifecycleOpenOwnership(project: Project, leaseId: String = "test-lease") {
+        val field = InspectionHandler::class.java.getDeclaredField("lifecycleOpenOwnershipByProjectInstance")
+        field.isAccessible = true
+        val ownership = field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
+        val targetKey = Paths.get(requireNotNull(project.basePath)).normalize().toAbsolutePath().toString()
+        ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey)
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {
