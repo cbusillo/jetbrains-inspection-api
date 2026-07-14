@@ -871,6 +871,34 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test wait endpoint refuses a replacement inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 8L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+        assertTrue(body.contains("\"timed_out\": false"))
+    }
+
+    @Test
     fun `test problems endpoint executes on pooled thread`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -1590,6 +1618,36 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"status\": \"not_owned\""))
         assertTrue(body.contains("\"ownership_proven\": false"))
         assertTrue(body.contains("\"reason\": \"project_preexisted\""))
+        assertFalse(body.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle claim rejects ownership bound to another project object`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val otherProject = mockProject(
+            name = "OtherProject",
+            basePath = "/repo/app",
+            projectFilePath = "/repo/app/.idea/misc.xml",
+        )
+        val field = InspectionHandler::class.java.getDeclaredField("lifecycleOpenOwnershipByProjectInstance")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val ownership = field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
+        ownership[projectInstanceId(mockProject)] = InspectionHandler.LifecycleOpenOwnership(
+            leaseId = "test-lease",
+            targetKey = Paths.get("/repo/app").normalize().toAbsolutePath().toString(),
+            project = otherProject,
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=${projectInstanceId(mockProject)}&lease_id=test-lease"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"not_owned\""))
+        assertTrue(body.contains("\"reason\": \"project_instance_reused\""))
         assertFalse(body.contains("\"close_token\""))
     }
 
@@ -2683,6 +2741,64 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close preserves claim while inspection is running`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        val closeCalls = AtomicInteger(0)
+        handler.forceCloseProject = { _, _ ->
+            closeCalls.incrementAndGet()
+            true
+        }
+
+        val blocked = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, blocked.status())
+        assertTrue(blocked.content().toString(Charsets.UTF_8).contains("\"reason\": \"inspection_in_progress\""))
+        assertTrue(blocked.content().toString(Charsets.UTF_8).contains("\"inspection_run_id\": 7"))
+        assertEquals(0, closeCalls.get())
+
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        every { mockProjectManager.openProjects } answers {
+            if (closeCalls.get() == 0) arrayOf(mockProject) else emptyArray()
+        }
+        every { mockApplication.isDispatchThread } returns true
+
+        val closed = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+        )
+
+        assertEquals(HttpResponseStatus.OK, closed.status())
+        assertTrue(closed.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(1, closeCalls.get())
+    }
+
+    @Test
     fun `test lifecycle close uses claimed project instance even when route selectors drift`() {
         val mainProject = mockProject(
             name = "Main",
@@ -2790,6 +2906,7 @@ class InspectionHandlerTest {
             basePath = "/repo/app",
             sessionId = "stale-session",
             claimedAtMs = 1L,
+            project = mockProject,
         )
         val closeCalls = AtomicInteger(0)
         handler.forceCloseProject = { _, _ ->
@@ -3044,7 +3161,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close consumes token when close fails after retries`() {
+    fun `test lifecycle close preserves token when close fails after retries`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -3069,6 +3186,13 @@ class InspectionHandlerTest {
         val first = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
         )
+        var closed = false
+        handler.forceCloseProject = { _, save ->
+            saveModes.add(save)
+            closed = true
+            true
+        }
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
         val second = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
         )
@@ -3076,8 +3200,8 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.CONFLICT, first.status())
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
         assertEquals(HttpResponseStatus.OK, second.status())
-        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
-        assertEquals(listOf(true, false, false), saveModes)
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(listOf(true, false, false, true), saveModes)
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"closed_verified\": false"))
     }
 
@@ -3474,7 +3598,7 @@ class InspectionHandlerTest {
         field.isAccessible = true
         val ownership = field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
         val targetKey = Paths.get(requireNotNull(project.basePath)).normalize().toAbsolutePath().toString()
-        ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey)
+        ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey, project)
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {

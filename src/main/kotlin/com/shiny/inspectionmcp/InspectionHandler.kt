@@ -21,6 +21,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ex.ProjectManagerEx
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
@@ -295,6 +296,7 @@ internal data class InspectionProjectLease(
     val basePath: String?,
     val sessionId: String,
     val claimedAtMs: Long,
+    val project: Project,
 )
 
 internal fun parseGitStatusPorcelainZ(output: String): Pair<Set<String>, Set<String>> {
@@ -958,6 +960,7 @@ class InspectionHandler : HttpRequestHandler() {
     internal data class LifecycleOpenOwnership(
         val leaseId: String,
         val targetKey: String,
+        val project: Project,
     )
 
     private data class LifecycleCloseAttempt(
@@ -1469,9 +1472,16 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
+                    val expectedRunId = firstParameter(parameters, "inspection_run_id")?.let { rawRunId ->
+                        rawRunId.toLongOrNull()?.takeIf { it > 0 }
+                            ?: throw BadRequestException(
+                                "inspection_run_id",
+                                "Parameter 'inspection_run_id' must be a positive integer.",
+                            )
+                    }
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            val result = waitForInspection(projectName, timeoutMs, pollMs)
+                            val result = waitForInspection(projectName, timeoutMs, pollMs, expectedRunId)
                             sendJsonResponse(context, result)
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
@@ -1717,9 +1727,13 @@ class InspectionHandler : HttpRequestHandler() {
 
         val requestedLeaseId = firstParameter(parameters, "lease_id")
         val ownership = lifecycleOpenOwnershipByProjectInstance[actualProjectInstanceId]
+        val exactOwnership = ownership?.takeIf { it.project === resolved.project }
+        if (ownership != null && exactOwnership == null) {
+            lifecycleOpenOwnershipByProjectInstance.remove(actualProjectInstanceId, ownership)
+        }
         val ownershipProven = requestedLeaseId != null &&
-            requestedLeaseId == ownership?.leaseId &&
-            lifecycleOpenKeys(resolved.project).contains(ownership.targetKey)
+            requestedLeaseId == exactOwnership?.leaseId &&
+            lifecycleOpenKeys(resolved.project).contains(exactOwnership.targetKey)
         if (!ownershipProven) {
             return formatJsonManually(
                 mapOf(
@@ -1727,7 +1741,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "ownership_proven" to false,
                     "reason" to when {
                         ownership == null -> "project_preexisted"
-                        requestedLeaseId != ownership.leaseId -> "lease_mismatch"
+                        exactOwnership == null -> "project_instance_reused"
+                        requestedLeaseId != exactOwnership.leaseId -> "lease_mismatch"
                         else -> "route_mismatch"
                     },
                     "lease_id" to requestedLeaseId,
@@ -1749,6 +1764,7 @@ class InspectionHandler : HttpRequestHandler() {
             basePath = resolved.projectIdentity["base_path"] as? String,
             sessionId = InspectionIdeSession.sessionId,
             claimedAtMs = System.currentTimeMillis(),
+            project = resolved.project,
         )
         leasesByProjectInstance[actualProjectInstanceId] = lease
 
@@ -1845,10 +1861,7 @@ class InspectionHandler : HttpRequestHandler() {
                         opened != null &&
                         initializedProject.get() === opened
                     ) {
-                        lifecycleOpenOwnershipByProjectInstance[projectInstanceId(opened)] = LifecycleOpenOwnership(
-                            leaseId = requestedLeaseId,
-                            targetKey = target.key,
-                        )
+                        registerLifecycleOpenOwnership(opened, requestedLeaseId, target.key)
                     }
                     if (opened != null) {
                         keepOpeningGuard = true
@@ -2070,6 +2083,22 @@ class InspectionHandler : HttpRequestHandler() {
             .toSet()
     }
 
+    private fun registerLifecycleOpenOwnership(project: Project, leaseId: String, targetKey: String) {
+        val instanceId = projectInstanceId(project)
+        val ownership = LifecycleOpenOwnership(
+            leaseId = leaseId,
+            targetKey = targetKey,
+            project = project,
+        )
+        lifecycleOpenOwnershipByProjectInstance[instanceId] = ownership
+        Disposer.register(project) {
+            lifecycleOpenOwnershipByProjectInstance.remove(instanceId, ownership)
+            leasesByProjectInstance[instanceId]?.takeIf { it.project === project }?.let { lease ->
+                leasesByProjectInstance.remove(instanceId, lease)
+            }
+        }
+    }
+
     private fun processLifecycleCloseRequest(
         parameters: Map<String, List<String>>,
         context: ChannelHandlerContext,
@@ -2185,14 +2214,39 @@ class InspectionHandler : HttpRequestHandler() {
                 lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
                 return lifecycleCloseSkipped("route_missing", "Claimed project is no longer open; cleanup is already complete.")
             }
+        if (project !== lease.project) {
+            lifecycleOpenOwnershipByProjectInstance.remove(expectedProjectInstanceId)
+            return lifecycleCloseSkipped(
+                "project_instance_reused",
+                "Claimed project instance no longer refers to the exact project that was opened by this lease.",
+                HttpResponseStatus.CONFLICT,
+            )
+        }
         if (projectKey(project) != lease.projectKey) {
             return lifecycleCloseSkipped("project_mismatch", "Claimed project key no longer matches the lifecycle claim.", HttpResponseStatus.CONFLICT)
+        }
+        if (isInspectionInProgress(project)) {
+            leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
+            val runState = inspectionRunStatesByProject[projectKey(project)]
+            return lifecycleCloseSkipped(
+                "inspection_in_progress",
+                "An inspection is still running for the claimed project; leaving it open for a later cleanup retry.",
+                HttpResponseStatus.CONFLICT,
+                details = mapOf(
+                    "project_instance_id" to expectedProjectInstanceId,
+                    "project_key" to lease.projectKey,
+                    "lease_id" to lease.leaseId,
+                    "inspection_run_id" to runState?.runId,
+                    "inspection_in_progress" to true,
+                ),
+            )
         }
 
         val closeAttempts = closeClaimedProject(project, expectedProjectInstanceId)
         val closed = closeAttempts.any { attempt -> attempt.closedVerified }
 
         if (!closed) {
+            leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
             return lifecycleCloseSkipped(
                 "close_failed",
                 "JetBrains IDE declined or failed to close the claimed project.",
@@ -2283,6 +2337,7 @@ class InspectionHandler : HttpRequestHandler() {
         message: String,
         status: HttpResponseStatus = HttpResponseStatus.OK,
         closeAttempts: List<LifecycleCloseAttempt> = emptyList(),
+        details: Map<String, Any?> = emptyMap(),
     ): Pair<Map<String, Any?>, HttpResponseStatus> {
         return mapOf(
             "status" to "skipped",
@@ -2291,7 +2346,7 @@ class InspectionHandler : HttpRequestHandler() {
             "message" to message,
             "session_id" to InspectionIdeSession.sessionId,
             "close_attempts" to closeAttemptPayload(closeAttempts).takeIf { it.isNotEmpty() },
-        ) to status
+        ) + details to status
     }
 
     private fun findOpenProjectByInstanceId(projectInstanceId: String): Project? {
@@ -3113,7 +3168,17 @@ class InspectionHandler : HttpRequestHandler() {
         return resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
     }
 
+    @Suppress("unused")
     private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
+        return waitForInspection(projectName, timeoutMsRaw, pollMsRaw, null)
+    }
+
+    private fun waitForInspection(
+        projectName: String?,
+        timeoutMsRaw: Long?,
+        pollMsRaw: Long?,
+        expectedRunId: Long?,
+    ): String {
         val timeoutMs = (timeoutMsRaw ?: 180000L).coerceIn(1000L, 300000L)
         val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
         val start = System.currentTimeMillis()
@@ -3155,6 +3220,9 @@ class InspectionHandler : HttpRequestHandler() {
         var status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
 
         while (true) {
+            if (expectedRunId != null && inspectionRunId(status) != expectedRunId) {
+                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId)
+            }
             val hasResults = status["has_inspection_results"] as? Boolean ?: false
             val inspectionTriggered = status["inspection_triggered"] as? Boolean ?: false
             val cleanInspection = status["clean_inspection"] as? Boolean ?: false
@@ -3275,6 +3343,31 @@ class InspectionHandler : HttpRequestHandler() {
 
             status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
         }
+    }
+
+    private fun inspectionRunId(status: Map<String, Any>): Long? {
+        return (status["inspection_run_id"] as? Number)?.toLong()
+    }
+
+    private fun formatWaitRunChanged(
+        status: MutableMap<String, Any>,
+        startMs: Long,
+        timeoutMs: Long,
+        pollMs: Long,
+        expectedRunId: Long,
+    ): String {
+        val response = status.toMutableMap()
+        response["status"] = "run_changed"
+        response["wait_completed"] = false
+        response["timed_out"] = false
+        response["completion_reason"] = "run_changed"
+        response["expected_inspection_run_id"] = expectedRunId
+        response["wait_ms"] = System.currentTimeMillis() - startMs
+        response["timeout_ms"] = timeoutMs
+        response["poll_ms"] = pollMs
+        response["message"] = "A different inspection run replaced the run accepted by this request; no cancellation or cleanup authority is implied."
+        addStatusInspectionVerdict(response)
+        return formatJsonManually(response)
     }
 
     private fun formatWaitResponse(
