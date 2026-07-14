@@ -75,6 +75,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "plugin_build_short_commit" to buildInfo.shortCommit,
         "plugin_build_dirty" to buildInfo.dirty,
         "plugin_build_time" to buildInfo.time,
+        "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
         "open_projects" to openProjectIdentities(),
     )
 }
