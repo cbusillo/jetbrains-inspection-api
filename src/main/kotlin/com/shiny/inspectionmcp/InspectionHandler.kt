@@ -24,6 +24,7 @@ import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vfs.VirtualFileManager
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiDocumentManager
@@ -110,6 +111,10 @@ internal enum class CaptureIncompleteReason(val apiValue: String) {
 internal data class InspectionProjectStateSnapshot(
     val psiModificationCount: Long,
     val unsavedProjectDocuments: Int,
+)
+
+internal data class InspectionProjectContentEpoch(
+    val vfsModificationCount: Long,
 )
 
 internal data class InspectionCaptureScope(
@@ -240,6 +245,15 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
     val reconciled: Boolean,
+)
+
+private data class InspectionProblemIdentity(
+    val severity: String?,
+    val inspectionType: String?,
+    val file: String?,
+    val line: Long?,
+    val column: Long?,
+    val description: String?,
 )
 
 private data class InspectionVerdict(
@@ -996,6 +1010,9 @@ class InspectionHandler : HttpRequestHandler() {
         ProgressWindow(false, true, project).apply {
             setDelayInMillis(Int.MAX_VALUE)
         }
+    }
+    internal var projectContentEpochProvider: () -> InspectionProjectContentEpoch = {
+        captureProjectContentEpoch()
     }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
@@ -3200,11 +3217,16 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         val liveExtraction = try {
-            enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
+            ApplicationManager.getApplication().runReadAction<ProblemExtractionResult, Exception> {
+                enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
+            }
         } catch (_: Exception) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
-        if (liveExtraction.source == ProblemExtractionSource.PROBLEMS_FALLBACK) {
+        if (
+            !liveExtraction.succeeded ||
+            liveExtraction.source != ProblemExtractionSource.INSPECTION_RESULTS
+        ) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
         val liveProblems = liveExtraction.problems
@@ -3222,12 +3244,73 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val compatibleLiveProblems = filterProblemsForScope(liveProblems, captureScopeMatcher)
-        val compatibleSnapshotProblems = filterProblemsForScope(snapshot.problems, captureScopeMatcher)
-        if (compatibleLiveProblems != compatibleSnapshotProblems) {
+        if (inspectionProblemIdentityCounts(compatibleLiveProblems) != inspectionProblemIdentityCounts(snapshot.problems)) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
 
         return CurrentRunPsiChurnReconciliation(snapshot, true)
+    }
+
+    private fun publishInspectionSnapshot(
+        project: Project,
+        runId: Long,
+        snapshot: InspectionResultsSnapshot,
+        captureEndState: InspectionProjectStateSnapshot,
+        projectStateChangedDuringCapture: Boolean,
+        inspectionInputContentEpoch: InspectionProjectContentEpoch?,
+    ) {
+        val key = projectKey(project)
+        if (!isCurrentInspectionRun(key, runId)) {
+            return
+        }
+
+        val snapshotToPublish = if (
+            projectStateChangedDuringCapture &&
+            isWholeProjectCaptureScope(snapshot.captureScope) &&
+            captureEndState.unsavedProjectDocuments == 0 &&
+            inspectionInputContentEpoch != null &&
+            captureProjectState(project) == captureEndState
+        ) {
+            val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
+            if (
+                reconciliation.reconciled &&
+                projectContentEpochProvider() == inspectionInputContentEpoch &&
+                captureProjectState(project) == captureEndState
+            ) {
+                snapshot.copy(projectState = captureEndState)
+            } else {
+                snapshot
+            }
+        } else {
+            snapshot
+        }
+
+        if (isCurrentInspectionRun(key, runId)) {
+            resultsStore.setSnapshot(key, snapshotToPublish)
+        }
+    }
+
+    private fun isWholeProjectCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
+        val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        return scope == "whole_project" || scope == "all"
+    }
+
+    private fun inspectionProblemIdentityCounts(
+        problems: List<Map<String, Any>>,
+    ): Map<InspectionProblemIdentity, Int> {
+        return problems
+            .map { problem ->
+                InspectionProblemIdentity(
+                    severity = problem["severity"] as? String,
+                    inspectionType = problem["inspectionType"] as? String,
+                    file = normalizeFileSystemPath(problem["file"] as? String),
+                    line = (problem["line"] as? Number)?.toLong(),
+                    column = (problem["column"] as? Number)?.toLong(),
+                    description = problem["description"] as? String,
+                )
+            }
+            .groupingBy { identity -> identity }
+            .eachCount()
     }
 
     private fun SnapshotStaleness.asUnverifiedCurrentRunPsiChurn(): SnapshotStaleness {
@@ -3722,6 +3805,11 @@ class InspectionHandler : HttpRequestHandler() {
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
             val inspectionInputState = captureStableProjectState(project)
+            val inspectionInputContentEpoch = if (isWholeProjectCaptureScope(captureScope)) {
+                projectContentEpochProvider()
+            } else {
+                null
+            }
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
@@ -4500,9 +4588,14 @@ class InspectionHandler : HttpRequestHandler() {
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
                         }
-                            if (isCurrentInspectionRun(key, runId)) {
-                                resultsStore.setSnapshot(key, snapshot)
-                            }
+                        publishInspectionSnapshot(
+                            project = project,
+                            runId = runId,
+                            snapshot = snapshot,
+                            captureEndState = captureEndState,
+                            projectStateChangedDuringCapture = projectStateChangedDuringCapture,
+                            inspectionInputContentEpoch = inspectionInputContentEpoch,
+                        )
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                             throw e
                         } catch (error: Exception) {
@@ -4731,6 +4824,12 @@ class InspectionHandler : HttpRequestHandler() {
         return InspectionProjectStateSnapshot(
             psiModificationCount = PsiModificationTracker.getInstance(project).modificationCount,
             unsavedProjectDocuments = countProjectUnsavedDocuments(project)
+        )
+    }
+
+    private fun captureProjectContentEpoch(): InspectionProjectContentEpoch {
+        return InspectionProjectContentEpoch(
+            vfsModificationCount = VirtualFileManager.getInstance().modificationCount,
         )
     }
 

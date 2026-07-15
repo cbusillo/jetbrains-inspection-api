@@ -49,6 +49,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JFrame
 import javax.swing.JPanel
@@ -195,6 +196,7 @@ class InspectionHandlerTest {
         
         mockkStatic(VirtualFileManager::class)
         every { VirtualFileManager.getInstance() } returns mockVirtualFileManager
+        every { mockVirtualFileManager.modificationCount } returns 0L
         
         every { InspectionManager.getInstance(mockProject) } returns mockInspectionManager
         every { mockInspectionManager.createNewGlobalContext() } returns mockGlobalContext
@@ -645,6 +647,284 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"cached_total_problems\": 1"))
         assertFalse(body.contains("included problem"))
         assertFalse(body.contains("excluded problem"))
+    }
+
+    @Test
+    fun `test final publication reconciles verified psi churn without absorbing later edits`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiModificationCount = AtomicLong(11L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            psiModificationCount.get()
+        }
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputContentEpoch = projectContentEpoch()
+        handler.projectContentEpochProvider = { inputContentEpoch }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "line" to 4,
+                "column" to 7,
+                "severity" to "warning",
+                "inspectionType" to "CurrentRunInspection",
+                "description" to "current run finding",
+                "source" to "inspection_context",
+            ),
+        )
+        val liveProblems = snapshotProblems.map { problem ->
+            problem + mapOf(
+                "source" to "enhanced_tree_extractor",
+                "locationKnown" to true,
+            )
+        }
+        val extractionCount = AtomicInteger()
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
+            if (extractionCount.getAndIncrement() == 0) {
+                assertNull(InspectionResultsStore.getSnapshot(key))
+            }
+            ProblemExtractionResult(
+                problems = liveProblems,
+                succeeded = true,
+                source = ProblemExtractionSource.INSPECTION_RESULTS,
+            )
+        }
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputContentEpoch = inputContentEpoch,
+        )
+        val reconciledSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        verify(exactly = 1) {
+            mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
+        }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+        psiModificationCount.set(12L)
+        val editedStatus = buildInspectionStatus()
+
+        assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
+        assertEquals(false, completedStatus["results_may_be_stale"])
+        assertEquals(true, completedStatus["has_inspection_results"])
+        assertEquals(true, editedStatus["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test final publication keeps fail closed baseline for unsaved capture state`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputContentEpoch = projectContentEpoch()
+        handler.projectContentEpochProvider = { inputContentEpoch }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 1),
+            projectStateChangedDuringCapture = true,
+            inspectionInputContentEpoch = inputContentEpoch,
+        )
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertEquals(true, completedStatus["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", completedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test final publication rejects saved content changes during inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputContentEpoch = projectContentEpoch(vfsModificationCount = 1L)
+        handler.projectContentEpochProvider = { projectContentEpoch(vfsModificationCount = 2L) }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputContentEpoch = inputContentEpoch,
+        )
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertEquals(true, completedStatus["results_may_be_stale"])
+    }
+
+    @Test
+    fun `test final publication does not promote a narrow capture scope`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputContentEpoch = projectContentEpoch()
+        handler.projectContentEpochProvider = { inputContentEpoch }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(
+                scopeParam = "files",
+                files = listOf("src/Included.kt"),
+                resolvedFiles = listOf("/tmp/TestProject/src/Included.kt"),
+            ),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputContentEpoch = inputContentEpoch,
+        )
+
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @Test
+    fun `test final publication requires authoritative live extraction`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputContentEpoch = projectContentEpoch()
+        handler.projectContentEpochProvider = { inputContentEpoch }
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = false,
+            source = ProblemExtractionSource.NONE,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputContentEpoch = inputContentEpoch,
+        )
+
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @Test
+    fun `test project content epoch reads the JetBrains VFS change counter`() {
+        every { mockVirtualFileManager.modificationCount } returns 42L
+
+        val epoch = handler.projectContentEpochProvider()
+
+        assertEquals(42L, epoch.vfsModificationCount)
     }
 
     @Test
@@ -3918,12 +4198,47 @@ class InspectionHandlerTest {
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
     }
 
+    private fun publishInspectionSnapshot(
+        runId: Long,
+        snapshot: InspectionResultsSnapshot,
+        captureEndState: InspectionProjectStateSnapshot,
+        projectStateChangedDuringCapture: Boolean,
+        inspectionInputContentEpoch: InspectionProjectContentEpoch?,
+    ) {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "publishInspectionSnapshot",
+            Project::class.java,
+            Long::class.javaPrimitiveType,
+            InspectionResultsSnapshot::class.java,
+            InspectionProjectStateSnapshot::class.java,
+            Boolean::class.javaPrimitiveType,
+            InspectionProjectContentEpoch::class.java,
+        )
+        method.isAccessible = true
+        method.invoke(
+            handler,
+            mockProject,
+            runId,
+            snapshot,
+            captureEndState,
+            projectStateChangedDuringCapture,
+            inspectionInputContentEpoch,
+        )
+    }
+
+    private fun projectContentEpoch(vfsModificationCount: Long = 1L): InspectionProjectContentEpoch {
+        return InspectionProjectContentEpoch(
+            vfsModificationCount = vfsModificationCount,
+        )
+    }
+
     private fun mockExtractor(problems: List<Map<String, Any>>) {
         val extractor = mockk<EnhancedTreeExtractor>()
         every { extractor.extractAllProblems(mockProject) } returns problems
         every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
             problems = problems,
             succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
     }
