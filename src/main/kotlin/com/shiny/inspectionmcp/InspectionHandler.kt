@@ -2,7 +2,9 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
+import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
@@ -12,24 +14,38 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
+import com.intellij.openapi.roots.CompilerModuleExtension
+import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.project.DumbService
+import com.intellij.openapi.util.JDOMUtil
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.project.ex.ProjectManagerEx
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.newvfs.BulkFileListener
+import com.intellij.openapi.vfs.newvfs.events.VFileEvent
+import com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent
+import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiManager
+import com.intellij.psi.search.scope.packageSet.NamedScopeManager
+import com.intellij.psi.search.scope.packageSet.NamedScopesHolder
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.packageDependencies.DependencyValidationManager
+import com.intellij.profile.ProfileChangeAdapter
 import com.shiny.inspectionmcp.core.filterProblems
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.InspectionRouteIdentity
@@ -47,6 +63,7 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import com.intellij.openapi.diagnostic.Logger
+import org.jdom.Element
 import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
 import java.awt.Container
@@ -54,6 +71,7 @@ import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -113,9 +131,24 @@ internal data class InspectionProjectStateSnapshot(
     val unsavedProjectDocuments: Int,
 )
 
-internal data class InspectionProjectContentEpoch(
-    val vfsModificationCount: Long,
+internal data class InspectionProjectInputsFingerprint(
+    val rootPaths: List<String>,
+    val excludedRootPaths: List<String>,
+    val projectSdkName: String?,
+    val projectSdkTypeName: String?,
+    val projectSdkVersion: String?,
+    val projectSdkHomePath: String?,
+    val requestedProfileName: String?,
+    val resolvedProfileName: String?,
+    val profileToolStates: List<String>,
+    val namedScopeDefinitions: List<String>,
+    val profileConfigurationHash: String,
 )
+
+internal interface InspectionProjectContentTracker : AutoCloseable {
+    fun hasChanges(): Boolean
+    fun runIfUnchanged(action: () -> Unit): Boolean
+}
 
 internal data class InspectionCaptureScope(
     val scopeParam: String? = null,
@@ -255,6 +288,175 @@ private data class InspectionProblemIdentity(
     val column: Long?,
     val description: String?,
 )
+
+internal fun isTrackedInspectionInputPath(
+    projectBasePath: String?,
+    rootPaths: List<String>,
+    eventPath: String,
+    excludedRootPaths: List<String> = emptyList(),
+): Boolean {
+    val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get) ?: return false
+    val normalizedRoots = rootPaths.mapNotNull { rootPath ->
+        normalizeFileSystemPath(rootPath)?.let(Paths::get)
+    }
+    val normalizedExcludedRoots = excludedRootPaths.mapNotNull { rootPath ->
+        normalizeFileSystemPath(rootPath)?.let(Paths::get)
+    }
+    val normalizedProjectBasePath = normalizeFileSystemPath(projectBasePath)?.let(Paths::get)
+    return isTrackedInspectionInputPath(
+        normalizedProjectBasePath,
+        normalizedRoots,
+        normalizedExcludedRoots,
+        normalizedEventPath,
+    )
+}
+
+internal fun localInspectionRootPath(file: VirtualFile): String? {
+    val path = file.path
+    return when {
+        "!/" in path -> path.substringBefore("!/")
+        file.isInLocalFileSystem -> path
+        else -> null
+    }
+}
+
+internal fun inspectionEventPaths(event: VFileEvent): List<String> {
+    return when (event) {
+        is VFileMoveEvent -> listOf(event.oldPath, event.newPath)
+        is VFilePropertyChangeEvent -> if (event.isRename) {
+            listOf(event.oldPath, event.newPath)
+        } else {
+            listOf(event.path)
+        }
+        else -> listOf(event.path)
+    }.distinct()
+}
+
+private fun isTrackedInspectionInputPath(
+    projectBasePath: Path?,
+    rootPaths: List<Path>,
+    excludedRootPaths: List<Path>,
+    eventPath: Path,
+): Boolean {
+    if (rootPaths.none { rootPath -> eventPath == rootPath || eventPath.startsWith(rootPath) }) {
+        return false
+    }
+    if (excludedRootPaths.any { rootPath -> eventPath == rootPath || eventPath.startsWith(rootPath) }) {
+        return false
+    }
+    if (eventPath.any { pathSegment -> pathSegment.toString() == ".git" }) {
+        return false
+    }
+    if (projectBasePath == null || (eventPath != projectBasePath && !eventPath.startsWith(projectBasePath))) {
+        return true
+    }
+
+    val relativePath = projectBasePath.relativize(eventPath)
+    if (relativePath.nameCount == 0) {
+        return true
+    }
+    val relativePathText = relativePath.joinToString("/")
+    return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
+}
+
+private class MessageBusInspectionProjectContentTracker(
+    project: Project,
+    projectBasePath: String?,
+    rootPaths: List<String>,
+    excludedRootPaths: List<String>,
+) : InspectionProjectContentTracker {
+    private val changed = AtomicBoolean(false)
+    private val closed = AtomicBoolean(false)
+    private val changeLock = Any()
+    private val disposable = Disposable { closed.set(true) }
+    private val normalizedProjectBasePath = normalizeFileSystemPath(projectBasePath)?.let(Paths::get)
+    private val normalizedRootPaths = rootPaths.mapNotNull { rootPath ->
+        normalizeFileSystemPath(rootPath)?.let(Paths::get)
+    }
+    private val normalizedExcludedRootPaths = excludedRootPaths.mapNotNull { rootPath ->
+        normalizeFileSystemPath(rootPath)?.let(Paths::get)
+    }
+
+    init {
+        Disposer.register(project, disposable)
+        ApplicationManager.getApplication().messageBus.connect(disposable).subscribe(
+            VirtualFileManager.VFS_CHANGES,
+            object : BulkFileListener {
+                override fun before(events: List<VFileEvent>) {
+                    recordChanges(events)
+                }
+
+                override fun after(events: List<VFileEvent>) {
+                    recordChanges(events)
+                }
+            },
+        )
+        project.messageBus.connect(disposable).subscribe(
+            ProfileChangeAdapter.TOPIC,
+            object : ProfileChangeAdapter {
+                override fun profileChanged(profile: InspectionProfile) {
+                    markChanged()
+                }
+
+                override fun profileActivated(oldProfile: InspectionProfile?, profile: InspectionProfile?) {
+                    markChanged()
+                }
+
+                override fun profilesInitialized() {
+                    markChanged()
+                }
+            },
+        )
+        val scopeListener = NamedScopesHolder.ScopeListener(::markChanged)
+        DependencyValidationManager.getInstance(project).addScopeListener(scopeListener, disposable)
+        NamedScopeManager.getInstance(project).addScopeListener(scopeListener, disposable)
+    }
+
+    override fun hasChanges(): Boolean = changed.get()
+
+    override fun runIfUnchanged(action: () -> Unit): Boolean {
+        synchronized(changeLock) {
+            if (changed.get()) {
+                return false
+            }
+            action()
+            return true
+        }
+    }
+
+    override fun close() {
+        if (closed.compareAndSet(false, true)) {
+            Disposer.dispose(disposable)
+        }
+    }
+
+    private fun recordChanges(events: List<VFileEvent>) {
+        if (changed.get()) {
+            return
+        }
+        if (events.any { event ->
+                inspectionEventPaths(event).any { eventPath ->
+                    val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get)
+                    normalizedEventPath != null &&
+                        isTrackedInspectionInputPath(
+                            normalizedProjectBasePath,
+                            normalizedRootPaths,
+                            normalizedExcludedRootPaths,
+                            normalizedEventPath,
+                        )
+                }
+            }
+        ) {
+            markChanged()
+        }
+    }
+
+    private fun markChanged() {
+        synchronized(changeLock) {
+            changed.set(true)
+        }
+    }
+}
 
 private data class InspectionVerdict(
     val verdict: String,
@@ -1011,9 +1213,14 @@ class InspectionHandler : HttpRequestHandler() {
             setDelayInMillis(Int.MAX_VALUE)
         }
     }
-    internal var projectContentEpochProvider: () -> InspectionProjectContentEpoch = {
-        captureProjectContentEpoch()
-    }
+    internal var projectInputsFingerprintProvider:
+        (Project, String?) -> InspectionProjectInputsFingerprint? = { project, profileName ->
+            captureInspectionProjectInputs(project, profileName)
+        }
+    internal var projectContentTrackerFactory:
+        (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
+            createProjectContentTracker(project, fingerprint)
+        }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
@@ -3216,10 +3423,21 @@ class InspectionHandler : HttpRequestHandler() {
             return CurrentRunPsiChurnReconciliation(null, false)
         }
 
-        val liveExtraction = try {
-            ApplicationManager.getApplication().runReadAction<ProblemExtractionResult, Exception> {
-                enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
+        return try {
+            ApplicationManager.getApplication().runReadAction<CurrentRunPsiChurnReconciliation, Exception> {
+                reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
             }
+        } catch (_: Exception) {
+            CurrentRunPsiChurnReconciliation(snapshot, false)
+        }
+    }
+
+    private fun reconcileCurrentRunPsiChurnUnderReadAction(
+        project: Project,
+        snapshot: InspectionResultsSnapshot,
+    ): CurrentRunPsiChurnReconciliation {
+        val liveExtraction = try {
+            enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
         } catch (_: Exception) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
@@ -3257,37 +3475,145 @@ class InspectionHandler : HttpRequestHandler() {
         snapshot: InspectionResultsSnapshot,
         captureEndState: InspectionProjectStateSnapshot,
         projectStateChangedDuringCapture: Boolean,
-        inspectionInputContentEpoch: InspectionProjectContentEpoch?,
+        inspectionInputFingerprint: InspectionProjectInputsFingerprint?,
+        projectContentTracker: InspectionProjectContentTracker?,
     ) {
         val key = projectKey(project)
         if (!isCurrentInspectionRun(key, runId)) {
             return
         }
 
-        val snapshotToPublish = if (
-            projectStateChangedDuringCapture &&
-            isWholeProjectCaptureScope(snapshot.captureScope) &&
+        val wholeProjectCapture = isWholeProjectCaptureScope(snapshot.captureScope)
+        val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
+        val canAttemptReconciliation = projectStateChangedDuringCapture &&
+            wholeProjectCapture &&
             captureEndState.unsavedProjectDocuments == 0 &&
-            inspectionInputContentEpoch != null &&
-            captureProjectState(project) == captureEndState
-        ) {
-            val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
-            if (
-                reconciliation.reconciled &&
-                projectContentEpochProvider() == inspectionInputContentEpoch &&
-                captureProjectState(project) == captureEndState
-            ) {
-                snapshot.copy(projectState = captureEndState)
-            } else {
-                snapshot
+            hasInputValidation
+        val requiresStableInputValidation = wholeProjectCapture && !projectStateChangedDuringCapture
+        if (!canAttemptReconciliation && !requiresStableInputValidation) {
+            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                resultsStore.setSnapshot(key, snapshot)
             }
-        } else {
-            snapshot
+            return
+        }
+        if (!hasInputValidation) {
+            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                resultsStore.setSnapshot(
+                    key,
+                    inspectionInputValidationFailureSnapshot(snapshot, "validation_unavailable"),
+                )
+            }
+            return
         }
 
-        if (isCurrentInspectionRun(key, runId)) {
-            resultsStore.setSnapshot(key, snapshotToPublish)
+        val inputFingerprint = requireNotNull(inspectionInputFingerprint)
+        val contentTracker = requireNotNull(projectContentTracker)
+
+        try {
+            ApplicationManager.getApplication().runReadAction<Unit, Exception> {
+                val contentChangedBeforeVerification = contentTracker.hasChanges()
+                val stateStableBeforeVerification = captureProjectState(project) == captureEndState
+                val reconciliation = if (
+                    canAttemptReconciliation &&
+                    !project.isDisposed &&
+                    !contentChangedBeforeVerification &&
+                    stateStableBeforeVerification &&
+                    isCurrentInspectionRun(key, runId)
+                ) {
+                    reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
+                } else {
+                    CurrentRunPsiChurnReconciliation(snapshot, false)
+                }
+                val currentFingerprint = if (
+                    !project.isDisposed &&
+                    !contentChangedBeforeVerification &&
+                    stateStableBeforeVerification &&
+                    isCurrentInspectionRun(key, runId) &&
+                    (!projectStateChangedDuringCapture || reconciliation.reconciled)
+                ) {
+                    projectInputsFingerprintProvider(project, inputFingerprint.requestedProfileName)
+                } else {
+                    null
+                }
+                val contentChangedAfterVerification = contentTracker.hasChanges()
+                val stateStableAfterVerification = captureProjectState(project) == captureEndState
+                val inputsMatched = currentFingerprint == inputFingerprint
+                val finalValidationPassed =
+                    !contentChangedAfterVerification &&
+                    stateStableAfterVerification &&
+                    inputsMatched &&
+                    !project.isDisposed &&
+                    isCurrentInspectionRun(key, runId)
+                val shouldReconcile = reconciliation.reconciled && finalValidationPassed
+                val shouldPublishUnchangedSnapshot =
+                    !projectStateChangedDuringCapture && finalValidationPassed
+                logger.info(
+                    "Inspection snapshot validation for ${project.name}: " +
+                        "liveFindingsMatched=${reconciliation.reconciled}, " +
+                        "contentChangedBefore=$contentChangedBeforeVerification, " +
+                        "contentChangedAfter=$contentChangedAfterVerification, " +
+                        "stateStableBefore=$stateStableBeforeVerification, " +
+                        "stateStableAfter=$stateStableAfterVerification, " +
+                        "inputsMatched=$inputsMatched, " +
+                        "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
+                        "promoted=$shouldReconcile"
+                )
+                val snapshotToPublish = if (shouldReconcile) {
+                    snapshot.copy(projectState = captureEndState)
+                } else if (shouldPublishUnchangedSnapshot || projectStateChangedDuringCapture) {
+                    snapshot
+                } else {
+                    inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                }
+                if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                    val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
+                    val publishedWithStableTracker = if (publicationRequiresStableTracker) {
+                        contentTracker.runIfUnchanged {
+                            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                                resultsStore.setSnapshot(key, snapshotToPublish)
+                            }
+                        }
+                    } else {
+                        resultsStore.setSnapshot(key, snapshotToPublish)
+                        true
+                    }
+                    if (!publishedWithStableTracker && !project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                        val fallbackSnapshot = if (projectStateChangedDuringCapture) {
+                            snapshot
+                        } else {
+                            inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                        }
+                        resultsStore.setSnapshot(key, fallbackSnapshot)
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            logger.warn("Inspection snapshot validation failed for ${project.name}", error)
+            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                val snapshotToPublish = if (projectStateChangedDuringCapture) {
+                    snapshot
+                } else {
+                    inspectionInputValidationFailureSnapshot(snapshot, "validation_failed")
+                }
+                resultsStore.setSnapshot(key, snapshotToPublish)
+            }
         }
+    }
+
+    private fun inspectionInputValidationFailureSnapshot(
+        snapshot: InspectionResultsSnapshot,
+        failure: String,
+    ): InspectionResultsSnapshot {
+        return snapshot.copy(
+            problems = emptyList(),
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "inspection_input_validation",
+            note = "Project files or inspection inputs changed while results were being finalized.",
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                "final_input_validation" to failure,
+            ),
+            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+        )
     }
 
     private fun isWholeProjectCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
@@ -3792,6 +4118,8 @@ class InspectionHandler : HttpRequestHandler() {
     ) {
         val key = projectKey(project)
         var captureScheduled = false
+        var projectContentTracker: InspectionProjectContentTracker? = null
+        var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
                 return
@@ -3805,30 +4133,26 @@ class InspectionHandler : HttpRequestHandler() {
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
             val inspectionInputState = captureStableProjectState(project)
-            val inspectionInputContentEpoch = if (isWholeProjectCaptureScope(captureScope)) {
-                projectContentEpochProvider()
-            } else {
-                null
-            }
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
             val requestedProfileName = profileName?.trim()?.takeIf { it.isNotEmpty() }
+            val preflightProfile = resolveInspectionProfile(profileManager, requestedProfileName)
             val profileNames = try {
-                profileManager.profiles.map { it.name }.sorted()
+                (profileManager.profiles.map { it.name } + listOfNotNull(preflightProfile?.name))
+                    .distinct()
+                    .sorted()
             } catch (_: Exception) {
                 null
             }
-            val requestedProfileMissing = requestedProfileName != null &&
-                profileNames != null &&
-                requestedProfileName !in profileNames
-            val requestedProfileUnverified = requestedProfileName != null && profileNames == null
+            val requestedProfileMissing = requestedProfileName != null && preflightProfile == null
+            val requestedProfileUnverified = requestedProfileName == null && preflightProfile == null
             if (requestedProfileMissing || requestedProfileUnverified) {
-                val exitReason = if (requestedProfileMissing) "profile_missing" else "profile_list_unreadable"
+                val exitReason = if (requestedProfileMissing) "profile_missing" else "current_profile_unavailable"
                 val note = if (requestedProfileMissing) {
                     "Requested inspection profile '$requestedProfileName' was not found."
                 } else {
-                    "Requested inspection profile '$requestedProfileName' could not be verified."
+                    "The current inspection profile could not be resolved."
                 }
                 resultsStore.setSnapshot(
                     key,
@@ -3926,10 +4250,90 @@ class InspectionHandler : HttpRequestHandler() {
                 resolvedScope = effectiveCaptureScope,
             )
             
-            val profile = if (requestedProfileName != null) {
-                profileManager.getProfile(requestedProfileName)
-            } else {
-                profileManager.currentProfile
+            var profile = resolveInspectionProfile(profileManager, requestedProfileName)
+            if (profile == null) {
+                resultsStore.setSnapshot(
+                    key,
+                    InspectionResultsSnapshot(
+                        problems = emptyList(),
+                        timestamp = System.currentTimeMillis(),
+                        projectState = inspectionInputState,
+                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                        source = "profile_resolution",
+                        note = if (requestedProfileName != null) {
+                            "Requested inspection profile '$requestedProfileName' was no longer available."
+                        } else {
+                            "The current inspection profile was unavailable."
+                        },
+                        captureScope = effectiveCaptureScope,
+                        captureDiagnostic = mapOf(
+                            "profile_requested" to requestedProfileName,
+                            "profile_missing" to true,
+                            "exit_reason" to "profile_disappeared",
+                        ),
+                        captureIncompleteReason = CaptureIncompleteReason.PROFILE_RESOLUTION_ERROR,
+                        runId = runId,
+                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                    ),
+                )
+                return
+            }
+            if (isWholeProjectCaptureScope(effectiveCaptureScope)) {
+                val initialFingerprint = captureInspectionProjectInputs(
+                    project = project,
+                    selectedProfile = profile,
+                    profileName = requestedProfileName,
+                )
+                val tracker = initialFingerprint?.let { fingerprint ->
+                    projectContentTrackerFactory(project, fingerprint)
+                }
+                val confirmedProfile = if (tracker != null) {
+                    resolveInspectionProfile(profileManager, requestedProfileName)
+                } else {
+                    null
+                }
+                val confirmedFingerprint = confirmedProfile?.let { resolvedProfile ->
+                    captureInspectionProjectInputs(
+                        project = project,
+                        selectedProfile = resolvedProfile,
+                        profileName = requestedProfileName,
+                    )
+                }
+                val trackerChangedDuringPreflight = tracker?.hasChanges() ?: true
+                if (
+                    tracker != null &&
+                    !trackerChangedDuringPreflight &&
+                    initialFingerprint == confirmedFingerprint
+                ) {
+                    projectContentTracker = tracker
+                    inspectionInputFingerprint = confirmedFingerprint
+                    profile = requireNotNull(confirmedProfile)
+                } else {
+                    tracker?.close()
+                    resultsStore.setSnapshot(
+                        key,
+                        InspectionResultsSnapshot(
+                            problems = emptyList(),
+                            timestamp = System.currentTimeMillis(),
+                            projectState = inspectionInputState,
+                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                            source = "inspection_input_validation",
+                            note = "Project inspection inputs could not be captured consistently before inspection.",
+                            captureScope = effectiveCaptureScope,
+                            captureDiagnostic = mapOf(
+                                "initial_fingerprint_available" to (initialFingerprint != null),
+                                "tracker_available" to (tracker != null),
+                                "tracker_changed" to trackerChangedDuringPreflight,
+                                "confirmed_profile_available" to (confirmedProfile != null),
+                                "fingerprints_matched" to (initialFingerprint == confirmedFingerprint),
+                            ),
+                            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+                            runId = runId,
+                            triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                        ),
+                    )
+                    return
+                }
             }
             val resolvedProfileName = try {
                 profile.name
@@ -4594,7 +4998,8 @@ class InspectionHandler : HttpRequestHandler() {
                             snapshot = snapshot,
                             captureEndState = captureEndState,
                             projectStateChangedDuringCapture = projectStateChangedDuringCapture,
-                            inspectionInputContentEpoch = inspectionInputContentEpoch,
+                            inspectionInputFingerprint = inspectionInputFingerprint,
+                            projectContentTracker = projectContentTracker,
                         )
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                             throw e
@@ -4635,6 +5040,7 @@ class InspectionHandler : HttpRequestHandler() {
             logger.warn("Inspection execution failed for ${project.name}", error)
             publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
         } finally {
+            projectContentTracker?.close()
             if (!captureScheduled) {
                 finishInspectionRun(key, runId)
             }
@@ -4827,10 +5233,157 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    private fun captureProjectContentEpoch(): InspectionProjectContentEpoch {
-        return InspectionProjectContentEpoch(
-            vfsModificationCount = VirtualFileManager.getInstance().modificationCount,
-        )
+    private fun captureInspectionProjectInputs(
+        project: Project,
+        profileName: String?,
+    ): InspectionProjectInputsFingerprint? {
+        val profileManager =
+            com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
+        val selectedProfile = resolveInspectionProfile(profileManager, profileName) ?: return null
+        return captureInspectionProjectInputs(project, selectedProfile, profileName)
+    }
+
+    private fun resolveInspectionProfile(
+        profileManager: com.intellij.profile.codeInspection.InspectionProjectProfileManager,
+        profileName: String?,
+    ): InspectionProfileImpl? {
+        return try {
+            if (profileName != null) {
+                profileManager.getProfile(profileName, false)
+            } else {
+                profileManager.currentProfile
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun captureInspectionProjectInputs(
+        project: Project,
+        selectedProfile: InspectionProfileImpl,
+        profileName: String?,
+    ): InspectionProjectInputsFingerprint? {
+        if (project.isDisposed) {
+            return null
+        }
+        return try {
+            ApplicationManager.getApplication().runReadAction<InspectionProjectInputsFingerprint?, Exception> {
+                if (project.isDisposed) {
+                    return@runReadAction null
+                }
+                val rootManager = ProjectRootManager.getInstance(project)
+                val orderEntries = rootManager.orderEntries().recursively()
+                val rootPaths = buildList {
+                    project.basePath?.let(::add)
+                    addAll(rootManager.contentRoots.mapNotNull(::localInspectionRootPath))
+                    addAll(rootManager.contentSourceRoots.mapNotNull(::localInspectionRootPath))
+                    addAll(orderEntries.classes().roots.mapNotNull(::localInspectionRootPath))
+                    addAll(orderEntries.sources().roots.mapNotNull(::localInspectionRootPath))
+                }.mapNotNull(::normalizeFileSystemPath).distinct().sorted()
+                val excludedRootPaths = ModuleManager.getInstance(project).modules
+                    .flatMap { module ->
+                        val moduleRootManager = ModuleRootManager.getInstance(module)
+                        buildList {
+                            addAll(moduleRootManager.excludeRoots.mapNotNull(::localInspectionRootPath))
+                            val compilerModuleExtension = CompilerModuleExtension.getInstance(module)
+                            compilerModuleExtension?.compilerOutputPath
+                                ?.let(::localInspectionRootPath)
+                                ?.let(::add)
+                            compilerModuleExtension?.compilerOutputPathForTests
+                                ?.let(::localInspectionRootPath)
+                                ?.let(::add)
+                        }
+                    }
+                    .mapNotNull(::normalizeFileSystemPath)
+                    .distinct()
+                    .sorted()
+                val sdk = rootManager.projectSdk
+                selectedProfile.initInspectionTools(project)
+                val resolvedProfileName = runCatching { selectedProfile.name }.getOrNull()
+                val toolStates = runCatching { selectedProfile.allTools }
+                    .getOrElse { return@runReadAction null }
+                val profileToolStates = toolStates.map { state ->
+                        listOf(
+                            state.tool.shortName,
+                            state.scopeName,
+                            state.isEnabled,
+                            state.level.name,
+                            state.editorAttributesExternalName,
+                            inspectionToolConfigurationHash(state),
+                        ).joinToString("|")
+                    }
+                    .sorted()
+                val namedScopeDefinitions = toolStates
+                    .mapNotNull { state -> state.scopeName }
+                    .distinct()
+                    .sorted()
+                    .map { scopeName ->
+                        val scope = NamedScopesHolder.getScope(project, scopeName)
+                        listOf(
+                            scopeName,
+                            scope?.scopeId ?: "<missing>",
+                            scope?.value?.text ?: "<missing>",
+                        ).joinToString("\u0000")
+                    }
+                val profileConfigurationHash = runCatching {
+                    inspectionProfileConfigurationHash(selectedProfile)
+                }.getOrElse { return@runReadAction null }
+                InspectionProjectInputsFingerprint(
+                    rootPaths = rootPaths,
+                    excludedRootPaths = excludedRootPaths,
+                    projectSdkName = runCatching { sdk?.name }.getOrNull(),
+                    projectSdkTypeName = runCatching { sdk?.sdkType?.name }.getOrNull(),
+                    projectSdkVersion = runCatching { sdk?.versionString }.getOrNull(),
+                    projectSdkHomePath = runCatching { sdk?.homePath }.getOrNull()?.let(::normalizeFileSystemPath),
+                    requestedProfileName = profileName,
+                    resolvedProfileName = resolvedProfileName,
+                    profileToolStates = profileToolStates,
+                    namedScopeDefinitions = namedScopeDefinitions,
+                    profileConfigurationHash = profileConfigurationHash,
+                )
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun inspectionProfileConfigurationHash(profile: InspectionProfileImpl): String {
+        val profileElement = Element("profile")
+        profile.writeExternal(profileElement)
+        return sha256(JDOMUtil.writeElement(profileElement))
+    }
+
+    private fun inspectionToolConfigurationHash(
+        state: com.intellij.codeInspection.ex.ScopeToolState,
+    ): String {
+        val toolElement = Element("tool")
+        com.intellij.codeInspection.ex.ScopeToolState.tryWriteSettings(state.tool.tool, toolElement)
+        return sha256(JDOMUtil.writeElement(toolElement))
+    }
+
+    private fun sha256(value: String): String {
+        return MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+    }
+
+    private fun createProjectContentTracker(
+        project: Project,
+        fingerprint: InspectionProjectInputsFingerprint,
+    ): InspectionProjectContentTracker? {
+        if (project.isDisposed || fingerprint.rootPaths.isEmpty()) {
+            return null
+        }
+        return try {
+            MessageBusInspectionProjectContentTracker(
+                project = project,
+                projectBasePath = project.basePath,
+                rootPaths = fingerprint.rootPaths,
+                excludedRootPaths = fingerprint.excludedRootPaths,
+            )
+        } catch (_: Exception) {
+            null
+        }
     }
 
     private fun captureStableProjectState(project: Project): InspectionProjectStateSnapshot {
