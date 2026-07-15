@@ -4385,7 +4385,7 @@ class InspectionHandler : HttpRequestHandler() {
                             val fallbackScopeFiles = scopedPsiFilesForInspectionEngine(
                                 project,
                                 effectiveCaptureScope.scopeParam,
-                                effectiveCaptureScope.directoryParam,
+                                effectiveCaptureScope.resolvedDirectory ?: effectiveCaptureScope.directoryParam,
                                 effectiveCaptureScope.files,
                                 effectiveCaptureScope.resolvedCurrentFile,
                                 resolvedChangedFiles = changedFilesScopeFiles,
@@ -5467,7 +5467,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val resolved = resolveRequestedFilesStrict(project, files).toSet()
             if (resolved.size == 1) {
-                psiFileForScope(project, resolved.first())?.let { return AnalysisScope(it) }
+                analysisScopeForFile(project, resolved.first())?.let { return it }
             }
             return AnalysisScope(project, resolved)
         }
@@ -5483,7 +5483,7 @@ class InspectionHandler : HttpRequestHandler() {
                 throw BadRequestException("scope", "scope=changed_files resolved to no files.")
             }
             if (limited.size == 1) {
-                psiFileForScope(project, limited.first())?.let { return AnalysisScope(it) }
+                analysisScopeForFile(project, limited.first())?.let { return it }
             }
             return AnalysisScope(project, limited.toSet())
         }
@@ -5494,19 +5494,13 @@ class InspectionHandler : HttpRequestHandler() {
                     "scope",
                     "scope=current_file requires a valid selected project file in the active editor.",
                 )
-            val psiFile = PsiManager.getInstance(project).findFile(vf)
-            if (psiFile != null) {
-                return AnalysisScope(psiFile)
-            }
+            analysisScopeForFile(project, vf)?.let { return it }
             return AnalysisScope(project, setOf(vf))
         }
 
         if (scopeLower == "directory") {
             val vfs = resolveRequestedDirectoryStrict(project, directoryParam)
-            val psiDir = PsiManager.getInstance(project).findDirectory(vfs)
-            if (psiDir != null) {
-                return AnalysisScope(psiDir)
-            }
+            analysisScopeForDirectory(project, vfs)?.let { return it }
             return AnalysisScope(project, setOf(vfs))
         }
 
@@ -5516,11 +5510,22 @@ class InspectionHandler : HttpRequestHandler() {
         return AnalysisScope(project)
     }
 
-    private fun psiFileForScope(project: Project, file: VirtualFile): com.intellij.psi.PsiFile? {
+    private fun analysisScopeForFile(project: Project, file: VirtualFile): AnalysisScope? {
         val app = ApplicationManager.getApplication()
         return try {
-            app.runReadAction<com.intellij.psi.PsiFile?, Exception> {
-                PsiManager.getInstance(project).findFile(file)
+            app.runReadAction<AnalysisScope?, Exception> {
+                PsiManager.getInstance(project).findFile(file)?.let(::AnalysisScope)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun analysisScopeForDirectory(project: Project, directory: VirtualFile): AnalysisScope? {
+        val app = ApplicationManager.getApplication()
+        return try {
+            app.runReadAction<AnalysisScope?, Exception> {
+                PsiManager.getInstance(project).findDirectory(directory)?.let(::AnalysisScope)
             }
         } catch (_: Exception) {
             null
@@ -5982,11 +5987,17 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun resolveActiveEditorFile(project: Project): VirtualFile? {
-        val fileEditorManager = FileEditorManager.getInstance(project)
-        val candidates = fileEditorManager.selectedFiles.asList()
-        val projectFileIndex = ProjectFileIndex.getInstance(project)
-        return candidates.firstOrNull { file ->
-            file.isValid && file.isInLocalFileSystem && projectFileIndex.isInContent(file)
+        val app = ApplicationManager.getApplication()
+        return try {
+            app.runReadAction<VirtualFile?, Exception> {
+                val fileEditorManager = FileEditorManager.getInstance(project)
+                val projectFileIndex = ProjectFileIndex.getInstance(project)
+                fileEditorManager.selectedFiles.firstOrNull { file ->
+                    file.isValid && file.isInLocalFileSystem && projectFileIndex.isInContent(file)
+                }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
     
@@ -6597,7 +6608,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
-        if (scopeLower != null && scopeLower !in setOf("whole_project", "all")) {
+        if (scopeLower != null && scopeLower !in setOf("whole_project", "all", "directory")) {
             return emptyList()
         }
         val files = mutableListOf<com.intellij.psi.PsiFile>()
@@ -6613,6 +6624,9 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 LocalFileSystem.getInstance().findFileByPath(absolute)
             }
+        if (scopeLower == "directory" && sourceRoot == null) {
+            return emptyList()
+        }
         ApplicationManager.getApplication().runReadAction<Unit, Exception> {
             val index = ProjectFileIndex.getInstance(project)
             val psiManager = PsiManager.getInstance(project)

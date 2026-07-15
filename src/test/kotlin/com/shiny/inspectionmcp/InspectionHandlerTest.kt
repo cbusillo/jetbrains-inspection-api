@@ -12,12 +12,15 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.vfs.VirtualFileVisitor
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.ToolWindow
@@ -29,7 +32,10 @@ import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentManager
@@ -2273,6 +2279,159 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
         assertTrue(body.contains("\"parameter\": \"dir\""))
         verify(exactly = 0) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test targeted analysis scopes are built under read actions`() {
+        val directory = mockk<VirtualFile>()
+        val currentFile = mockk<VirtualFile>()
+        val psiDirectory = mockk<PsiDirectory>()
+        val psiFile = mockk<PsiFile>()
+        val psiManager = mockk<PsiManager>()
+        mockkStatic(PsiManager::class)
+        every { PsiManager.getInstance(mockProject) } returns psiManager
+        val insideReadAction = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            insideReadAction.set(true)
+            try {
+                firstArg<ThrowableComputable<Any, Exception>>().compute()
+            } finally {
+                insideReadAction.set(false)
+            }
+        }
+        every { psiManager.findDirectory(directory) } answers {
+            assertTrue(insideReadAction.get())
+            psiDirectory
+        }
+        every { psiManager.findFile(currentFile) } answers {
+            assertTrue(insideReadAction.get())
+            psiFile
+        }
+        every { psiDirectory.project } answers {
+            assertTrue(insideReadAction.get())
+            mockProject
+        }
+        every { psiFile.project } answers {
+            assertTrue(insideReadAction.get())
+            mockProject
+        }
+
+        assertNotNull(invokeTargetedAnalysisScopeResolver("analysisScopeForDirectory", directory))
+        assertNotNull(invokeTargetedAnalysisScopeResolver("analysisScopeForFile", currentFile))
+
+        verify(exactly = 2) { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) }
+    }
+
+    @Test
+    fun `test active editor scope resolution uses a read action`() {
+        val currentFile = mockk<VirtualFile>()
+        val fileEditorManager = mockk<FileEditorManager>()
+        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
+        val insideReadAction = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            insideReadAction.set(true)
+            try {
+                firstArg<ThrowableComputable<Any, Exception>>().compute()
+            } finally {
+                insideReadAction.set(false)
+            }
+        }
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } answers {
+            assertTrue(insideReadAction.get())
+            fileEditorManager
+        }
+        every { fileEditorManager.selectedFiles } answers {
+            assertTrue(insideReadAction.get())
+            arrayOf(currentFile)
+        }
+        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
+        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } answers {
+            assertTrue(insideReadAction.get())
+            projectFileIndex
+        }
+        every { currentFile.isValid } returns true
+        every { currentFile.isInLocalFileSystem } returns true
+        every { projectFileIndex.isInContent(currentFile) } answers {
+            assertTrue(insideReadAction.get())
+            true
+        }
+
+        assertSame(currentFile, invokeActiveEditorFileResolver())
+
+        verify(exactly = 1) { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) }
+    }
+
+    @Test
+    fun `test directory scope supplies files to inspection engine fallback`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val directory = mockk<VirtualFile>()
+        val pythonFile = mockk<VirtualFile>()
+        val nonSourcePythonFile = mockk<VirtualFile>()
+        val javascriptFile = mockk<VirtualFile>()
+        val psiFile = mockk<PsiFile>()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src") } returns directory
+        every { directory.isDirectory } returns true
+        every { pythonFile.isDirectory } returns false
+        every { pythonFile.extension } returns "py"
+        every { nonSourcePythonFile.isDirectory } returns false
+        every { nonSourcePythonFile.extension } returns "py"
+        every { javascriptFile.isDirectory } returns false
+        every { javascriptFile.extension } returns "js"
+
+        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
+        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
+        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+        every { projectFileIndex.isInSourceContent(pythonFile) } returns true
+        every { projectFileIndex.isInSourceContent(nonSourcePythonFile) } returns false
+        every { projectFileIndex.isInSourceContent(javascriptFile) } returns true
+
+        val psiManager = mockk<PsiManager>()
+        mockkStatic(PsiManager::class)
+        every { PsiManager.getInstance(mockProject) } returns psiManager
+        every { psiManager.findFile(pythonFile) } returns psiFile
+
+        mockkStatic(VfsUtilCore::class)
+        every {
+            VfsUtilCore.visitChildrenRecursively(directory, any<VirtualFileVisitor<Any>>())
+        } answers {
+            val visitor = secondArg<VirtualFileVisitor<Any>>()
+            visitor.visitFile(directory)
+            visitor.visitFile(pythonFile)
+            visitor.visitFile(nonSourcePythonFile)
+            visitor.visitFile(javascriptFile)
+            VirtualFileVisitor.CONTINUE
+        }
+
+        assertEquals(listOf(psiFile), invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY"))
+        verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
+        verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
+        verify(exactly = 1) {
+            VfsUtilCore.visitChildrenRecursively(directory, any<VirtualFileVisitor<Any>>())
+        }
+        verify(exactly = 0) { psiManager.findFile(nonSourcePythonFile) }
+        verify(exactly = 0) { psiManager.findFile(javascriptFile) }
+    }
+
+    @Test
+    fun `test directory scope fallback fails closed when root disappears`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src") } returns null
+
+        mockkStatic(VfsUtilCore::class)
+
+        assertTrue(invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY").isEmpty())
+        verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
+        verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
+        verify(exactly = 0) {
+            VfsUtilCore.visitChildrenRecursively(any<VirtualFile>(), any<VirtualFileVisitor<Any>>())
+        }
     }
 
     @Test
@@ -4577,6 +4736,56 @@ class InspectionHandlerTest {
         method.isAccessible = true
         @Suppress("UNCHECKED_CAST")
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
+    }
+
+    private fun invokeTargetedAnalysisScopeResolver(methodName: String, virtualFile: VirtualFile): Any? {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            methodName,
+            Project::class.java,
+            VirtualFile::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject, virtualFile)
+    }
+
+    private fun invokeActiveEditorFileResolver(): VirtualFile? {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "resolveActiveEditorFile",
+            Project::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject) as? VirtualFile
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun invokeScopedPsiFilesForInspectionEngine(
+        scopeParam: String,
+        directoryParam: String?,
+        ideProductCode: String?,
+    ): List<PsiFile> {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "scopedPsiFilesForInspectionEngine",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            List::class.java,
+            String::class.java,
+            List::class.java,
+            List::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(
+            handler,
+            mockProject,
+            scopeParam,
+            directoryParam,
+            null,
+            null,
+            null,
+            emptyList<Map<String, Any?>>(),
+            ideProductCode,
+        ) as List<PsiFile>
     }
 
     private fun publishInspectionSnapshot(
