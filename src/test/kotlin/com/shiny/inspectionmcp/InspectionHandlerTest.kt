@@ -943,6 +943,7 @@ class InspectionHandlerTest {
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
         setInspectionRunState(
             projectKey(mockProject),
             InspectionRunState(
@@ -972,6 +973,7 @@ class InspectionHandlerTest {
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
         val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
         setInspectionRunState(
             key,
             InspectionRunState(
@@ -1011,6 +1013,7 @@ class InspectionHandlerTest {
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
         setInspectionRunState(
             projectKey(mockProject),
             InspectionRunState(
@@ -1057,6 +1060,56 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"status\": \"run_changed\""))
         assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
         assertTrue(body.contains("\"inspection_run_id\": 8"))
+    }
+
+    @Test
+    fun `test problems endpoint keeps active run while prior snapshot remains`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Old.kt",
+                        "severity" to "warning",
+                        "description" to "old run finding",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis() - 10_000,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = 6L,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?severity=all&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"inspection_in_progress\""))
+        assertTrue(body.contains("\"inspection_in_progress\": true"))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertTrue(body.contains("\"snapshot_run_id\": 6"))
+        assertFalse(body.contains("old run finding"))
+        assertFalse(body.contains("\"status\": \"run_changed\""))
     }
 
     @Test

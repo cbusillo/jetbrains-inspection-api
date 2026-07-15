@@ -2608,6 +2608,30 @@ class InspectionHandler : HttpRequestHandler() {
             }
             if (
                 expectedInspectionRunId != null &&
+                runState?.inProgress == true &&
+                snapshot?.runId != null &&
+                snapshot.runId != expectedInspectionRunId
+            ) {
+                val response = mutableMapOf<String, Any?>(
+                    "status" to "inspection_in_progress",
+                    "project" to project.name,
+                    "project_key" to key,
+                    "session_id" to InspectionIdeSession.sessionId,
+                    "route" to routeMetadata(project),
+                    "inspection_in_progress" to true,
+                    "inspection_run_id" to runState.runId,
+                    "snapshot_run_id" to snapshot.runId,
+                    "message" to "The accepted inspection is still running; the available snapshot belongs to an earlier run.",
+                    "total_problems" to 0,
+                    "problems_shown" to 0,
+                    "problems" to emptyList<Map<String, Any>>(),
+                )
+                addInspectionVerdict(response)
+                return@run formatJsonManually(response.filterValues { it != null })
+            }
+            if (
+                expectedInspectionRunId != null &&
+                runState?.inProgress != true &&
                 snapshot?.runId != null &&
                 snapshot.runId != expectedInspectionRunId
             ) {
