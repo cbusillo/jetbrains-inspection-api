@@ -451,24 +451,18 @@ class InspectionHandlerTest {
     @Test
     fun `test process handles missing project gracefully`() {
         every { mockProjectManager.openProjects } returns emptyArray()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "scope" to listOf("whole_project"),
-            "severity" to listOf("all")
+
+        val response = processGetRequest(
+            "/api/inspection/route?project_key=path:/missing&client_run_id=abababab-abab-4bab-8bab-abababababab"
         )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertTrue(body.contains("\"code\": \"no_project\""), body)
+        assertTrue(body.contains("\"classification\": \"configuration_blocked\""), body)
+        assertTrue(body.contains("\"phase\": \"route\""), body)
+        assertTrue(body.contains("\"client_run_id\": \"abababab-abab-4bab-8bab-abababababab\""), body)
     }
     
     @Test
@@ -1596,11 +1590,16 @@ class InspectionHandlerTest {
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
 
-        val response = processGetRequest("/api/inspection/wait?timeout_ms=1000&poll_ms=200")
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&client_run_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"completion_reason\":"))
+        assertTrue(body.contains("\"inspection_attribution\":"), body)
+        assertTrue(body.contains("\"schema_version\": 1"), body)
+        assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
     }
 
@@ -2503,10 +2502,20 @@ class InspectionHandlerTest {
         mockkStatic(ToolWindowManager::class)
         every { ToolWindowManager.getInstance(mockProject) } throws IllegalStateException("boom")
 
-        val response = processGetRequest("/api/inspection/status")
+        val response = processGetRequest(
+            "/api/inspection/status?client_run_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
-        assertTrue(response.content().toString(Charsets.UTF_8).contains("Internal server error"))
+        assertTrue(body.contains("Internal server error"))
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"inspection_api_http_error\""), body)
+        assertTrue(body.contains("\"classification\": \"tool_caused\""), body)
+        assertTrue(body.contains("\"phase\": \"status\""), body)
+        assertTrue(body.contains("\"http_status\": 500"), body)
+        assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
+        assertFalse(body.contains("boom"), body)
     }
 
     @Test
@@ -2515,15 +2524,23 @@ class InspectionHandlerTest {
         every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } throws
             IllegalStateException("boom")
 
-        val response = processGetRequest("/api/inspection/problems")
+        val response = processGetRequest(
+            "/api/inspection/problems?client_run_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
-        assertTrue(response.content().toString(Charsets.UTF_8).contains("Internal server error"))
+        assertTrue(body.contains("Internal server error"))
+        assertTrue(body.contains("\"endpoint\": \"/api/inspection/problems\""), body)
+        assertTrue(body.contains("\"client_run_id\": \"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\""), body)
+        assertFalse(body.contains("boom"), body)
     }
 
     @Test
     fun `test route endpoint reports session drift as conflict`() {
-        val response = processGetRequest("/api/inspection/route?session_id=old-session")
+        val response = processGetRequest(
+            "/api/inspection/route?session_id=old-session&client_run_id=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        )
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.CONFLICT, response.status())
@@ -2531,6 +2548,22 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""))
         assertTrue(body.contains("\"inspection_verdict_reason\": \"session_drift\""))
         assertTrue(body.contains("\"expected_session_id\": \"old-session\""))
+        assertTrue(body.contains("\"classification\": \"legitimate_fail_closed\""), body)
+        assertTrue(body.contains("\"phase\": \"route\""), body)
+        assertTrue(body.contains("\"http_status\": 409"), body)
+        assertTrue(body.contains("\"client_run_id\": \"cccccccc-cccc-4ccc-8ccc-cccccccccccc\""), body)
+    }
+
+    @Test
+    fun `test attribution hashes non uuid caller correlation`() {
+        val response = processGetRequest(
+            "/api/inspection/route?session_id=old-session&client_run_id=sensitive-value-not-an-id"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("\"client_run_id\": \"sha256:"), body)
+        assertFalse(body.contains("sensitive-value-not-an-id"), body)
     }
 
     @Test
@@ -4077,7 +4110,7 @@ class InspectionHandlerTest {
         }
 
         val first = processGetRequest(
-            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token&client_run_id=dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         )
         val second = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
@@ -4261,7 +4294,7 @@ class InspectionHandlerTest {
         }
 
         val first = processGetRequest(
-            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token&client_run_id=dddddddd-dddd-4ddd-8ddd-dddddddddddd"
         )
         var closed = false
         handler.forceCloseProject = { _, save ->
@@ -4276,6 +4309,9 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.CONFLICT, first.status())
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"classification\": \"legitimate_fail_closed\""))
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"phase\": \"lifecycle_close\""))
+        assertTrue(first.content().toString(Charsets.UTF_8).contains("\"client_run_id\": \"dddddddd-dddd-4ddd-8ddd-dddddddddddd\""))
         assertEquals(HttpResponseStatus.OK, second.status())
         assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
         assertEquals(listOf(true, false, false, true), saveModes)
@@ -4299,10 +4335,15 @@ class InspectionHandlerTest {
         handler.closeVerificationSleep = { throw IllegalStateException("verification failed") }
 
         val first = processGetRequest(
-            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token&client_run_id=eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
         )
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, first.status())
+        val firstBody = first.content().toString(Charsets.UTF_8)
+        assertTrue(firstBody.contains("\"inspection_verdict_reason\": \"inspection_api_http_error\""), firstBody)
+        assertTrue(firstBody.contains("\"phase\": \"lifecycle_close\""), firstBody)
+        assertFalse(firstBody.contains("verification failed"), firstBody)
+        assertFalse(firstBody.contains(requireNotNull(token)), firstBody)
 
         var closed = false
         handler.forceCloseProject = { _, _ ->

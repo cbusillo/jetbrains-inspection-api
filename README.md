@@ -373,6 +373,7 @@ closes, or the IDE built-in HTTP server event loop.
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
 - `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
 - `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
+- `client_run_id` (optional): Caller-owned UUID used to correlate a multi-request helper or MCP run. Non-UUID values are returned only as a short SHA-256 correlation hash.
 
 For stale responses, the same scope filters are applied before cached counts and
 optional cached findings are returned. A scoped `include_stale=true` response is
@@ -383,7 +384,23 @@ values return HTTP 400 with `error`, `parameter`, and `message` fields. Explicit
 `files`, `directory`, `current_file`, and `changed_files` scopes are resolved
 before filtering; missing or invalid targets return HTTP 400 instead of widening
 to whole-project findings. An empty valid changed-file set matches zero findings.
-Unexpected endpoint failures return HTTP 500 with a generic error body.
+Unexpected endpoint failures return HTTP 500 with a generic public message and
+an `UNKNOWN` verdict. The exception remains private to the IDE log.
+
+### UNKNOWN Attribution
+
+Every plugin-generated `UNKNOWN` or lifecycle cleanup anomaly includes a bounded
+`inspection_attribution` object with `schema_version: 1`. The stable fields are
+`source`, `classification`, `code`, `phase`, `endpoint`, `http_status`,
+`request_id`, optional `client_run_id`, session/project/run evidence IDs, and
+plugin/IDE provenance. `classification` is one of `configuration_blocked`,
+`legitimate_fail_closed`, `tool_caused`, or `unattributed`.
+
+The plugin generates a new `request_id` for each HTTP request and logs internal
+exceptions against that ID plus endpoint, session, project instance, and
+inspection run context. Responses never include stack traces or exception
+messages. Close tokens and unrestricted selector paths are excluded from the
+attribution object; project keys are represented by a bounded hash.
 
 **Examples**:
 ```bash

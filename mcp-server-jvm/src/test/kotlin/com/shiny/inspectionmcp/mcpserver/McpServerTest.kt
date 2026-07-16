@@ -382,6 +382,29 @@ class McpServerTest {
     }
 
     @Test
+    fun mcpPreservesGoldenAttributionForPluginUnknowns() {
+        attributionCases()
+            .filter { contract -> contract.mcpTool != null }
+            .forEach { contract ->
+                val path = "/api/inspection/${contract.endpoint}"
+                MockIdeServer(mapOf(path to MockResponse(contract.payloadText, contract.httpStatus))).use { server ->
+                    server.start()
+                    val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+                    val result = executor.handleToolCall(
+                        buildToolCall(contract.mcpTool ?: error("Missing MCP tool"), buildJsonObject { })
+                    )
+                    val text = result.firstText()
+
+                    assertEquals(contract.httpStatus >= 400, result.isError(), contract.name)
+                    contract.expected.stringArray("mcp_contains").forEach { expectedText ->
+                        assertTrue(text.contains(expectedText), "${contract.name} missing $expectedText in:\n$text")
+                    }
+                }
+            }
+    }
+
+    @Test
     fun inspectionGetProblemsHandlesZeroResults() {
         val response = """{"status":"results_available","total_problems":0,"problems_shown":0,"problems":[]}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
@@ -527,8 +550,9 @@ class McpServerTest {
                 ),
             )
 
-            val query = server.lastQuery.get()
-            assertTrue(query.isNullOrEmpty())
+            val query = server.lastQuery.get().orEmpty()
+            assertFalse(query.contains("project="))
+            assertTrue(query.contains("client_run_id="))
         }
     }
 
@@ -722,8 +746,9 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val query = server.lastQuery.get()
-            assertTrue(query.isNullOrEmpty())
+            val query = server.lastQuery.get().orEmpty()
+            assertFalse(query.contains("project="))
+            assertTrue(query.contains("client_run_id="))
         }
     }
 
@@ -742,8 +767,9 @@ class McpServerTest {
                 ),
             )
 
-            val query = server.lastQuery.get()
-            assertTrue(query.isNullOrEmpty())
+            val query = server.lastQuery.get().orEmpty()
+            assertFalse(query.contains("project="))
+            assertTrue(query.contains("client_run_id="))
         }
     }
 
@@ -1074,7 +1100,7 @@ class McpServerTest {
                 val status = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
 
                 assertFalse(trigger.isError())
-                assertFalse(status.isError())
+                assertFalse(status.isError(), status.firstText())
                 assertTrue(first.lastQuery.get()?.contains("session_id=first-${first.port}") == true)
             }
         }
@@ -1567,6 +1593,35 @@ private data class ContractCase(
     val payloadText: String,
     val expected: JsonObject,
 )
+
+private data class AttributionCase(
+    val name: String,
+    val endpoint: String,
+    val httpStatus: Int,
+    val mcpTool: String?,
+    val payloadText: String,
+    val expected: JsonObject,
+)
+
+private fun attributionCases(): List<AttributionCase> {
+    val relative = Path.of("test-fixtures/contract-attribution/cases.json")
+    val path = generateSequence(Path.of("").toAbsolutePath()) { current -> current.parent }
+        .map { root -> root.resolve(relative) }
+        .firstOrNull { candidate -> Files.exists(candidate) }
+        ?: error("Missing contract fixture: $relative")
+    return Json.parseToJsonElement(Files.readString(path)).jsonArray.map { element ->
+        val root = element.jsonObject
+        val payload = root["payload"]?.jsonObject ?: error("Missing attribution payload")
+        AttributionCase(
+            name = root.string("name") ?: error("Missing attribution case name"),
+            endpoint = root.string("endpoint") ?: "status",
+            httpStatus = root["http_status"]?.jsonPrimitive?.intOrNull ?: 200,
+            mcpTool = root.string("mcp_tool"),
+            payloadText = Json.encodeToString(JsonElement.serializer(), payload),
+            expected = root["expected"]?.jsonObject ?: error("Missing attribution expected values"),
+        )
+    }
+}
 
 private fun contractCase(name: String): ContractCase {
     val path = contractFixturePath(name)
