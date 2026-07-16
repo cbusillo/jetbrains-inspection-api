@@ -30,6 +30,7 @@ import java.net.http.HttpResponse
 import java.net.http.HttpTimeoutException
 import java.nio.charset.StandardCharsets
 import java.time.Duration
+import java.util.UUID
 
 private const val SERVER_NAME = "jetbrains-inspection-mcp"
 private const val DEFAULT_PROTOCOL_VERSION = "2024-11-05"
@@ -394,7 +395,8 @@ internal class ToolExecutor(
         timeoutSeconds: Long = 10,
     ): Pair<JsonElement, InspectionTarget> {
         var target = targetResolver.resolve(args)
-        val requestParams = params.withRoutingSelector(args, target)
+        val clientRunId = UUID.randomUUID().toString()
+        val requestParams = params.withRoutingSelector(args, target) + ("client_run_id" to clientRunId)
         try {
             return httpGet(buildUrl("${target.baseUrl}/$endpoint", requestParams), timeoutSeconds, target.idePort) to target
         } catch (error: RuntimeException) {
@@ -404,7 +406,7 @@ internal class ToolExecutor(
             val excludedSessionIds = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull?.let(::setOf)
                 ?: emptySet()
             target = targetResolver.resolve(args, excludedSessionIds = excludedSessionIds)
-            val retryParams = params.withRoutingSelector(args, target)
+            val retryParams = params.withRoutingSelector(args, target) + ("client_run_id" to clientRunId)
             return httpGet(buildUrl("${target.baseUrl}/$endpoint", retryParams), timeoutSeconds, target.idePort) to target
         }
     }
@@ -1218,6 +1220,45 @@ private fun summarizeErrorBody(body: String): String? {
         parsedBody["error"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += it }
         parsedBody["parameter"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += "Parameter: $it" }
         parsedBody["message"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }?.let { parts += it }
+        val verdict = parsedBody["inspection_verdict"]?.jsonPrimitive?.contentOrNull
+        val verdictReason = parsedBody["inspection_verdict_reason"]?.jsonPrimitive?.contentOrNull
+        val verdictMessage = parsedBody["inspection_verdict_message"]?.jsonPrimitive?.contentOrNull
+        val verdictNextAction = parsedBody["inspection_verdict_next_action"]?.jsonPrimitive?.contentOrNull
+        if (!verdict.isNullOrBlank()) {
+            parts += buildString {
+                append("VERDICT: ")
+                append(verdict)
+                if (!verdictReason.isNullOrBlank()) {
+                    append(" reason=")
+                    append(verdictReason)
+                }
+            }
+            if (!verdictMessage.isNullOrBlank()) {
+                parts += "MESSAGE: $verdictMessage"
+            }
+            if (!verdictNextAction.isNullOrBlank()) {
+                parts += "NEXT_ACTION: $verdictNextAction"
+            }
+        }
+        val attribution = parsedBody["inspection_attribution"] as? JsonObject
+        if (attribution != null) {
+            val fields = listOf(
+                "classification",
+                "code",
+                "phase",
+                "endpoint",
+                "http_status",
+                "request_id",
+                "client_run_id",
+            ).mapNotNull { name ->
+                attribution[name]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { value -> value.isNotBlank() }
+                    ?.let { value -> "$name=$value" }
+            }
+            if (fields.isNotEmpty()) {
+                parts += "ATTRIBUTION: ${fields.joinToString(" ")}"
+            }
+        }
         parsedBody["suggested_open_projects"]?.jsonArray
             ?.mapNotNull { element -> element.jsonPrimitive.contentOrNull }
             ?.takeIf { suggestions -> suggestions.isNotEmpty() }

@@ -1,0 +1,251 @@
+[
+  {
+    "name": "plugin-http-500",
+    "endpoint": "status",
+    "http_status": 500,
+    "mcp_tool": "inspection_get_status",
+    "payload": {
+      "status": "error",
+      "error": "Internal server error",
+      "error_reason": "inspection_api_http_error",
+      "completion_reason": "inspection_api_http_error",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "inspection_api_http_error",
+      "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+      "inspection_verdict_next_action": "Do not report GREEN or RED. Rerun inspection and include diagnostics if it remains UNKNOWN.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "tool_caused",
+        "code": "inspection_api_http_error",
+        "phase": "status",
+        "endpoint": "/api/inspection/status",
+        "http_status": 500,
+        "request_id": "11111111-1111-4111-8111-111111111111",
+        "client_run_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "session_id": "session-http-500",
+        "plugin_build_fingerprint": "fixture-fingerprint"
+      }
+    },
+    "expected": {
+      "classification": "tool_caused",
+      "code": "inspection_api_http_error",
+      "phase": "status",
+      "helper_bucket": "tool_bug",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=inspection_api_http_error",
+        "NEXT_ACTION:",
+        "classification=tool_caused",
+        "request_id=11111111-1111-4111-8111-111111111111"
+      ]
+    }
+  },
+  {
+    "name": "readiness-timeout",
+    "payload": {
+      "status": "error",
+      "error_reason": "ide_not_ready_timeout",
+      "client_run_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      "readiness": {
+        "attempts": 12,
+        "elapsed_ms": 300000
+      }
+    },
+    "expected": {
+      "classification": "configuration_blocked",
+      "code": "ide_not_ready_timeout",
+      "phase": "readiness_wait",
+      "helper_bucket": "environment_blocked"
+    }
+  },
+  {
+    "name": "wait-timeout",
+    "endpoint": "wait",
+    "http_status": 200,
+    "mcp_tool": "inspection_wait",
+    "payload": {
+      "status": "running",
+      "wait_completed": false,
+      "timed_out": true,
+      "completion_reason": "timeout",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "timeout",
+      "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+      "inspection_verdict_next_action": "Wait for indexing/scanning to settle or rerun with a larger timeout.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "configuration_blocked",
+        "code": "timeout",
+        "phase": "wait",
+        "endpoint": "/api/inspection/wait",
+        "http_status": 200,
+        "request_id": "22222222-2222-4222-8222-222222222222",
+        "client_run_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "inspection_run_id": 42
+      }
+    },
+    "expected": {
+      "classification": "configuration_blocked",
+      "code": "timeout",
+      "phase": "wait",
+      "helper_bucket": "ide_not_ready",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=timeout",
+        "\"inspection_attribution\"",
+        "22222222-2222-4222-8222-222222222222"
+      ]
+    }
+  },
+  {
+    "name": "selection-required",
+    "payload": {
+      "status": "error",
+      "error_reason": "ide_selection_required",
+      "client_run_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+    },
+    "expected": {
+      "classification": "configuration_blocked",
+      "code": "ide_selection_required",
+      "phase": "selection",
+      "helper_bucket": "policy_required"
+    }
+  },
+  {
+    "name": "session-drift",
+    "endpoint": "status",
+    "http_status": 409,
+    "mcp_tool": "inspection_get_status",
+    "payload": {
+      "error": "IDE session changed",
+      "session_drift": true,
+      "session_id": "session-new",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "session_drift",
+      "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+      "inspection_verdict_next_action": "Resolve the route again and rerun; the IDE/plugin session changed.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "legitimate_fail_closed",
+        "code": "session_drift",
+        "phase": "status",
+        "endpoint": "/api/inspection/status",
+        "http_status": 409,
+        "request_id": "33333333-3333-4333-8333-333333333333",
+        "client_run_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "session_id": "session-new"
+      }
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "session_drift",
+      "phase": "status",
+      "helper_bucket": "route_not_ready",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=session_drift",
+        "classification=legitimate_fail_closed",
+        "request_id=33333333-3333-4333-8333-333333333333"
+      ]
+    }
+  },
+  {
+    "name": "malformed-response",
+    "payload": {
+      "status": "error",
+      "error_reason": "invalid_api_response",
+      "endpoint": "problems",
+      "http_status": 200,
+      "response_code": "invalid_api_response",
+      "client_run_id": "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    },
+    "expected": {
+      "classification": "tool_caused",
+      "code": "invalid_api_response",
+      "phase": "problems",
+      "helper_bucket": "tool_bug"
+    }
+  },
+  {
+    "name": "cleanup-failure",
+    "payload": {
+      "status": "clean",
+      "clean": true,
+      "inspection_result": {
+        "verdict": "GREEN",
+        "reason": "clean_confirmed"
+      },
+      "cleanup_failed": true,
+      "cleanup": {
+        "status": "failed",
+        "reason": "close_failed",
+        "inspection_attribution": {
+          "schema_version": 1,
+          "source": "plugin",
+          "classification": "legitimate_fail_closed",
+          "code": "close_failed",
+          "phase": "lifecycle_close",
+          "endpoint": "/api/inspection/lifecycle/close",
+          "http_status": 409,
+          "request_id": "44444444-4444-4444-8444-444444444444",
+          "client_run_id": "99999999-9999-4999-8999-999999999999",
+          "project_instance_id": "project-instance-fixture"
+        }
+      }
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "close_failed",
+      "phase": "lifecycle_close",
+      "helper_bucket": "cleanup_not_clean"
+    }
+  },
+  {
+    "name": "profile-resolution-error",
+    "payload": {
+      "status": "capture_incomplete",
+      "capture_incomplete": true,
+      "capture_incomplete_reason": "profile_resolution_error",
+      "command": "get-problems",
+      "client_run_id": "12121212-1212-4212-8212-121212121212"
+    },
+    "expected": {
+      "classification": "configuration_blocked",
+      "code": "profile_resolution_error",
+      "phase": "problems",
+      "helper_bucket": "policy_required"
+    }
+  },
+  {
+    "name": "scope-not-covered",
+    "payload": {
+      "status": "scope_mismatch",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "scope_not_covered",
+      "inspection_verdict_message": "Inspection did not cover the requested scope.",
+      "inspection_verdict_next_action": "Trigger a fresh inspection for the requested scope.",
+      "command": "get-problems",
+      "client_run_id": "13131313-1313-4313-8313-131313131313"
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "scope_not_covered",
+      "phase": "problems",
+      "helper_bucket": "capture_not_ready"
+    }
+  },
+  {
+    "name": "unattributed-unknown",
+    "payload": {
+      "status": "mystery",
+      "command": "get-status",
+      "client_run_id": "14141414-1414-4414-8414-141414141414"
+    },
+    "expected": {
+      "classification": "unattributed",
+      "code": "unattributed_unknown",
+      "phase": "status",
+      "helper_bucket": "tool_bug"
+    }
+  }
+]

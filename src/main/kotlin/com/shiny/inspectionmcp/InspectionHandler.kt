@@ -63,6 +63,14 @@ import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import io.netty.handler.codec.http.*
 import com.intellij.openapi.diagnostic.Logger
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.longOrNull
 import org.jdom.Element
 import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
@@ -83,6 +91,11 @@ import javax.swing.tree.TreeNode
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
+private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
+private val CLIENT_RUN_ID_PATTERN = Regex(
+    "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+)
+private val INSPECTION_RESPONSE_JSON = Json { prettyPrint = true }
 
 internal fun lifecycleOpenProjectTask(openPath: Path, onBeforeInit: (Project) -> Unit): OpenProjectTask =
     OpenProjectTaskCompat.build(openPath, onBeforeInit)
@@ -1148,6 +1161,13 @@ internal fun classifyCaptureIncompleteReason(
 class InspectionHandler : HttpRequestHandler() {
     private val logger = Logger.getInstance(InspectionHandler::class.java)
 
+    private data class InspectionRequestAttribution(
+        val requestId: String,
+        val clientRunId: String?,
+        val endpoint: String,
+        val phase: String,
+    )
+
     private data class ProjectSuggestion(
         val name: String,
         val path: String,
@@ -1487,6 +1507,231 @@ class InspectionHandler : HttpRequestHandler() {
         return InspectionProof(proof, failures.distinct())
     }
 
+    private fun requestAttribution(
+        path: String,
+        parameters: Map<String, List<String>>,
+    ): InspectionRequestAttribution {
+        val endpoint = path.takeIf { it.startsWith("/api/inspection/") } ?: "/api/inspection/unknown"
+        val phase = endpoint.removePrefix("/api/inspection/")
+            .replace('/', '_')
+            .ifBlank { "unknown" }
+        return InspectionRequestAttribution(
+            requestId = UUID.randomUUID().toString(),
+            clientRunId = normalizedClientRunId(firstParameter(parameters, "client_run_id")),
+            endpoint = endpoint,
+            phase = phase,
+        )
+    }
+
+    private fun normalizedClientRunId(value: String?): String? {
+        val trimmed = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        if (CLIENT_RUN_ID_PATTERN.matches(trimmed)) {
+            return trimmed.lowercase()
+        }
+        return "sha256:${sha256(trimmed).take(16)}"
+    }
+
+    private fun addInspectionAttribution(
+        target: MutableMap<String, Any?>,
+        request: InspectionRequestAttribution?,
+        code: String,
+        httpStatus: HttpResponseStatus,
+        parameters: Map<String, List<String>> = emptyMap(),
+    ) {
+        if (request == null) {
+            return
+        }
+        val route = target["route"] as? Map<*, *>
+        val identity = safeInspectionIdentity()
+        val projectKey = (target["project_key"] as? String)
+            ?: (route?.get("project_key") as? String)
+            ?: firstParameter(parameters, "project_key")
+        val projectInstanceId = (target["project_instance_id"] as? String)
+            ?: (route?.get("project_instance_id") as? String)
+            ?: firstParameter(parameters, "project_instance_id")
+        val inspectionRunId = (target["inspection_run_id"] as? Number)?.toLong()
+            ?: (target["run_id"] as? Number)?.toLong()
+            ?: firstParameter(parameters, "inspection_run_id")?.toLongOrNull()
+        val attribution = mapOf(
+            "schema_version" to INSPECTION_ATTRIBUTION_SCHEMA_VERSION,
+            "source" to "plugin",
+            "classification" to attributionClassification(code),
+            "code" to code,
+            "phase" to request.phase,
+            "endpoint" to request.endpoint,
+            "http_status" to httpStatus.code(),
+            "request_id" to request.requestId,
+            "client_run_id" to request.clientRunId,
+            "session_id" to (target["session_id"] ?: route?.get("session_id") ?: identity["session_id"]),
+            "project_instance_id" to projectInstanceId,
+            "project_key_hash" to projectKey?.let { "sha256:${sha256(it).take(16)}" },
+            "inspection_run_id" to inspectionRunId,
+            "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
+            "plugin_version" to identity["plugin_version"],
+            "ide_product_code" to identity["ide_product_code"],
+            "ide_version" to identity["ide_version"],
+        ).filterValues { value -> value != null }
+        target["inspection_attribution"] = attribution
+    }
+
+    private fun attributionClassification(code: String): String {
+        return when (code) {
+            "inspection_api_http_error",
+            "invalid_api_response",
+            "extractor_failure",
+            "helper_plugin_error",
+            "inspection_proof_failed",
+            "inspection_trigger_empty_model",
+            "non_empty_unmapped_tree",
+            "open_schedule_failed" -> "tool_caused"
+            "timeout",
+            "inspection_api_timeout",
+            "inspection_api_unavailable",
+            "missing_session_id",
+            "no_project",
+            "profile_resolution_error",
+            "ide_selection_required",
+            "ide_config_ambiguous",
+            "ide_config_missing",
+            "implicit_eap_selection",
+            "ide_not_ready_timeout" -> "configuration_blocked"
+            "ambiguous_route",
+            "already_opening",
+            "capture_incomplete",
+            "close_failed",
+            "current_run_psi_churn",
+            "inspection_in_progress",
+            "inspection_still_running",
+            "interrupted",
+            "lease_mismatch",
+            "not_claimed",
+            "no_recent_inspection",
+            "no_results",
+            "open_state_unknown",
+            "ownership_not_proven",
+            "project_not_open",
+            "project_preexisted",
+            "project_instance_reused",
+            "project_mismatch",
+            "route_missing",
+            "route_mismatch",
+            "run_changed",
+            "scope_mismatch",
+            "scope_not_covered",
+            "session_drift",
+            "stale_results",
+            "token_mismatch",
+            "unreadable_tree",
+            "view_not_ready",
+            "view_updating_unreadable" -> "legitimate_fail_closed"
+            else -> "unattributed"
+        }
+    }
+
+    private fun sendInternalServerError(
+        context: ChannelHandlerContext,
+        request: InspectionRequestAttribution,
+        parameters: Map<String, List<String>>,
+        error: Throwable,
+    ) {
+        val response = mutableMapOf<String, Any?>(
+            "status" to "error",
+            "error" to "Internal server error",
+            "error_reason" to "inspection_api_http_error",
+            "completion_reason" to "inspection_api_http_error",
+        )
+        addInspectionVerdict(response)
+        addInspectionAttribution(
+            target = response,
+            request = request,
+            code = "inspection_api_http_error",
+            httpStatus = HttpResponseStatus.INTERNAL_SERVER_ERROR,
+            parameters = parameters,
+        )
+        val attribution = response["inspection_attribution"] as? Map<*, *>
+        logger.warn(
+            "Inspection API failure request_id=${request.requestId} " +
+                "client_run_id=${request.clientRunId ?: "none"} endpoint=${request.endpoint} " +
+                "session_id=${attribution?.get("session_id") ?: "unknown"} " +
+                "project_instance_id=${attribution?.get("project_instance_id") ?: "unknown"} " +
+                "inspection_run_id=${attribution?.get("inspection_run_id") ?: "unknown"}",
+            error,
+        )
+        sendJsonResponse(
+            context,
+            formatJsonManually(response),
+            HttpResponseStatus.INTERNAL_SERVER_ERROR,
+        )
+    }
+
+    private fun sendInspectionJsonResponse(
+        context: ChannelHandlerContext,
+        jsonContent: String,
+        status: HttpResponseStatus,
+        request: InspectionRequestAttribution,
+        parameters: Map<String, List<String>>,
+    ) {
+        sendJsonResponse(
+            context,
+            ensureInspectionAttribution(jsonContent, status, request, parameters),
+            status,
+        )
+    }
+
+    private fun ensureInspectionAttribution(
+        jsonContent: String,
+        status: HttpResponseStatus,
+        request: InspectionRequestAttribution,
+        parameters: Map<String, List<String>>,
+    ): String {
+        val payload = runCatching {
+            INSPECTION_RESPONSE_JSON.parseToJsonElement(jsonContent) as? JsonObject
+        }.getOrNull() ?: return jsonContent
+        if (
+            (payload["inspection_verdict"] as? JsonPrimitive)?.contentOrNull != "UNKNOWN" ||
+            payload["inspection_attribution"] is JsonObject
+        ) {
+            return jsonContent
+        }
+        val route = payload["route"] as? JsonObject
+        fun stringField(name: String): String? {
+            return (payload[name] as? JsonPrimitive)?.contentOrNull
+                ?: (route?.get(name) as? JsonPrimitive)?.contentOrNull
+        }
+        val code = stringField("inspection_verdict_reason") ?: "unattributed_unknown"
+        val responseContext = mutableMapOf<String, Any?>(
+            "session_id" to stringField("session_id"),
+            "project_instance_id" to stringField("project_instance_id"),
+            "project_key" to stringField("project_key"),
+            "inspection_run_id" to (payload["inspection_run_id"] as? JsonPrimitive)?.longOrNull,
+        )
+        addInspectionAttribution(
+            target = responseContext,
+            request = request,
+            code = code,
+            httpStatus = status,
+            parameters = parameters,
+        )
+        val attribution = responseContext["inspection_attribution"] as? Map<*, *> ?: return jsonContent
+        val attributedPayload = payload.toMutableMap()
+        attributedPayload["inspection_attribution"] = attributionJsonElement(attribution)
+        return INSPECTION_RESPONSE_JSON.encodeToString(JsonElement.serializer(), JsonObject(attributedPayload))
+    }
+
+    private fun attributionJsonElement(value: Any?): JsonElement {
+        return when (value) {
+            null -> JsonNull
+            is Boolean -> JsonPrimitive(value)
+            is Number -> JsonPrimitive(value)
+            is String -> JsonPrimitive(value)
+            is Map<*, *> -> JsonObject(
+                value.entries.associate { (key, item) -> key.toString() to attributionJsonElement(item) }
+            )
+            is Iterable<*> -> JsonArray(value.map(::attributionJsonElement))
+            else -> JsonPrimitive(value.toString())
+        }
+    }
+
     override fun isSupported(request: FullHttpRequest): Boolean {
         return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
     }
@@ -1497,9 +1742,14 @@ class InspectionHandler : HttpRequestHandler() {
         request: FullHttpRequest,
         context: ChannelHandlerContext,
     ): Boolean {
+        var path = "/api/inspection/unknown"
+        var parameters = emptyMap<String, List<String>>()
+        var requestAttribution = requestAttribution(path, parameters)
         try {
-            val path = urlDecoder.path()
-            val parameters = urlDecoder.parameters() ?: emptyMap()
+            path = urlDecoder.path()
+            requestAttribution = requestAttribution(path, parameters)
+            parameters = urlDecoder.parameters() ?: emptyMap()
+            requestAttribution = requestAttribution(path, parameters)
             when (path) {
                 "/api/inspection/identity" -> {
                     val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
@@ -1508,59 +1758,61 @@ class InspectionHandler : HttpRequestHandler() {
                     sendJsonResponse(context, result)
                 }
                 "/api/inspection/route" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
                     val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                         buildRouteResponse(parameters)
                     }
-                    sendJsonResponse(context, result)
+                    sendInspectionJsonResponse(context, result, HttpResponseStatus.OK, requestAttribution, parameters)
                 }
                 "/api/inspection/lifecycle/claim" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
                     val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                         buildLifecycleClaimResponse(parameters)
                     }
-                    sendJsonResponse(context, result)
+                    sendInspectionJsonResponse(context, result, HttpResponseStatus.OK, requestAttribution, parameters)
                 }
                 "/api/inspection/lifecycle/open" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
                     val result = openLifecycleProject(parameters)
-                    sendJsonResponse(context, formatJsonManually(result.first), result.second)
+                    sendInspectionJsonResponse(
+                        context,
+                        formatJsonManually(result.first),
+                        result.second,
+                        requestAttribution,
+                        parameters,
+                    )
                 }
                 "/api/inspection/lifecycle/close" -> {
-                    val scheduled = runCatching {
+                    val schedulingFailure = runCatching {
                         lifecycleCloseExecutor(Runnable {
-                            processLifecycleCloseRequest(parameters, context)
+                            processLifecycleCloseRequest(parameters, context, requestAttribution)
                         })
-                    }.isSuccess
-                    if (!scheduled) {
-                        sendJsonResponse(
-                            context,
-                            """{"error": "Internal server error"}""",
-                            HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                        )
+                    }.exceptionOrNull()
+                    if (schedulingFailure != null) {
+                        sendInternalServerError(context, requestAttribution, parameters, schedulingFailure)
                     }
                 }
                 "/api/inspection/cancel" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
                     val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                         buildInspectionCancellationResponse(parameters)
                     }
-                    sendJsonResponse(context, result)
+                    sendInspectionJsonResponse(context, result, HttpResponseStatus.OK, requestAttribution, parameters)
                 }
                 "/api/inspection/problems" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
@@ -1585,7 +1837,13 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            withCurrentProject(context, projectName, refreshProjectState = false) { project ->
+                            withCurrentProject(
+                                context,
+                                projectName,
+                                refreshProjectState = false,
+                                requestAttribution = requestAttribution,
+                                parameters = parameters,
+                            ) { project ->
                                 val validatedRequestScope = validateInspectionScopeRequest(
                                     project = project,
                                     scopeParam = scope,
@@ -1615,18 +1873,23 @@ class InspectionHandler : HttpRequestHandler() {
                                         expectedRunId,
                                     )
                                 }
-                                sendJsonResponse(context, result)
+                                sendInspectionJsonResponse(
+                                    context,
+                                    result,
+                                    HttpResponseStatus.OK,
+                                    requestAttribution,
+                                    parameters,
+                                )
                             }
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
                         } catch (error: Exception) {
-                            logger.warn("Failed to process inspection problems request", error)
-                            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
+                            sendInternalServerError(context, requestAttribution, parameters, error)
                         }
                     }
                 }
                 "/api/inspection/trigger" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
@@ -1654,18 +1917,15 @@ class InspectionHandler : HttpRequestHandler() {
                                 changedFilesMode = changedFilesMode,
                                 maxFiles = maxFiles,
                                 profile = profile,
+                                requestAttribution = requestAttribution,
+                                parameters = parameters,
                             )
                         } catch (error: InspectionRunConflictException) {
                             sendInspectionRunConflict(context, error)
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
                         } catch (error: Exception) {
-                            logger.warn("Failed to process inspection trigger request", error)
-                            sendJsonResponse(
-                                context,
-                                """{"error": "Internal server error"}""",
-                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
-                            )
+                            sendInternalServerError(context, requestAttribution, parameters, error)
                         }
                     }
                     val requestedScope = scope?.lowercase()?.trim().orEmpty().ifBlank {
@@ -1682,20 +1942,31 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 "/api/inspection/status" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
                     val projectName = extractProjectSelector(urlDecoder, request)
-                    withCurrentProject(context, projectName) { project ->
+                    withCurrentProject(
+                        context,
+                        projectName,
+                        requestAttribution = requestAttribution,
+                        parameters = parameters,
+                    ) { project ->
                         val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                             getInspectionStatus(project)
                         }
-                        sendJsonResponse(context, result)
+                        sendInspectionJsonResponse(
+                            context,
+                            result,
+                            HttpResponseStatus.OK,
+                            requestAttribution,
+                            parameters,
+                        )
                     }
                 }
                 "/api/inspection/wait" -> {
-                    responseHasSessionDrift(parameters)?.let {
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
                         sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
                         return true
                     }
@@ -1705,12 +1976,18 @@ class InspectionHandler : HttpRequestHandler() {
                     val expectedRunId = parseOptionalPositiveLongParameter(parameters, "inspection_run_id")
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
-                            val result = waitForInspection(projectName, timeoutMs, pollMs, expectedRunId)
-                            sendJsonResponse(context, result)
+                            val result = waitForInspection(projectName, timeoutMs, pollMs, expectedRunId, requestAttribution)
+                            sendInspectionJsonResponse(
+                                context,
+                                result,
+                                HttpResponseStatus.OK,
+                                requestAttribution,
+                                parameters,
+                            )
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
-                        } catch (_: Exception) {
-                            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
+                        } catch (error: Exception) {
+                            sendInternalServerError(context, requestAttribution, parameters, error)
                         }
                     }
                 }
@@ -1726,8 +2003,7 @@ class InspectionHandler : HttpRequestHandler() {
             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
             return true
         } catch (error: Exception) {
-            logger.warn("Failed to process inspection API request", error)
-            sendJsonResponse(context, """{"error": "Internal server error"}""", HttpResponseStatus.INTERNAL_SERVER_ERROR)
+            sendInternalServerError(context, requestAttribution, parameters, error)
             return true
         }
     }
@@ -1742,8 +2018,15 @@ class InspectionHandler : HttpRequestHandler() {
         changedFilesMode: String?,
         maxFiles: Int?,
         profile: String?,
+        requestAttribution: InspectionRequestAttribution,
+        parameters: Map<String, List<String>>,
     ) {
-        withCurrentProject(context, projectName) { project ->
+        withCurrentProject(
+            context,
+            projectName,
+            requestAttribution = requestAttribution,
+            parameters = parameters,
+        ) { project ->
             val captureScope = validateInspectionScopeRequest(
                 project = project,
                 scopeParam = scope,
@@ -1921,7 +2204,10 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    private fun responseHasSessionDrift(parameters: Map<String, List<String>>): String? {
+    private fun responseHasSessionDrift(
+        parameters: Map<String, List<String>>,
+        requestAttribution: InspectionRequestAttribution? = null,
+    ): String? {
         val expectedSessionId = firstParameter(parameters, "session_id") ?: return null
         if (expectedSessionId == InspectionIdeSession.sessionId) {
             return null
@@ -1935,6 +2221,14 @@ class InspectionHandler : HttpRequestHandler() {
                 "message" to "The JetBrains IDE session changed. Resolve the route again and re-trigger inspection before trusting cached results.",
             )
         addStatusInspectionVerdict(response)
+        @Suppress("UNCHECKED_CAST")
+        addInspectionAttribution(
+            target = response as MutableMap<String, Any?>,
+            request = requestAttribution,
+            code = "session_drift",
+            httpStatus = HttpResponseStatus.CONFLICT,
+            parameters = parameters,
+        )
         return formatJsonManually(response)
     }
 
@@ -2336,19 +2630,25 @@ class InspectionHandler : HttpRequestHandler() {
     private fun processLifecycleCloseRequest(
         parameters: Map<String, List<String>>,
         context: ChannelHandlerContext,
+        requestAttribution: InspectionRequestAttribution,
     ) {
         try {
             val result = closeLifecycleProject(parameters)
-            sendJsonResponse(context, formatJsonManually(result.first), result.second)
+            val response = result.first.toMutableMap()
+            if (response["status"] != "closed") {
+                addInspectionAttribution(
+                    target = response,
+                    request = requestAttribution,
+                    code = response["reason"]?.toString() ?: "cleanup_failed",
+                    httpStatus = result.second,
+                    parameters = parameters,
+                )
+            }
+            sendJsonResponse(context, formatJsonManually(response), result.second)
         } catch (error: BadRequestException) {
             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
         } catch (error: Exception) {
-            logger.warn("Failed to process lifecycle close request", error)
-            sendJsonResponse(
-                context,
-                """{"error": "Internal server error"}""",
-                HttpResponseStatus.INTERNAL_SERVER_ERROR,
-            )
+            sendInternalServerError(context, requestAttribution, parameters, error)
         }
     }
 
@@ -3204,16 +3504,25 @@ class InspectionHandler : HttpRequestHandler() {
         context: ChannelHandlerContext,
         projectName: String?,
         refreshProjectState: Boolean = false,
+        requestAttribution: InspectionRequestAttribution? = null,
+        parameters: Map<String, List<String>> = emptyMap(),
         action: (Project) -> Unit,
     ) {
         val resolvedProjectName = normalizeProjectSelector(projectName)
         val project = ApplicationManager.getApplication().runReadAction<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         if (project == null) {
-            sendJsonResponse(
-                context,
-                formatJsonManually(buildMissingProjectResponse(resolvedProjectName)),
-                HttpResponseStatus.NOT_FOUND,
-            )
+            val response = formatJsonManually(buildMissingProjectResponse(resolvedProjectName))
+            if (requestAttribution == null) {
+                sendJsonResponse(context, response, HttpResponseStatus.NOT_FOUND)
+            } else {
+                sendInspectionJsonResponse(
+                    context,
+                    response,
+                    HttpResponseStatus.NOT_FOUND,
+                    requestAttribution,
+                    parameters,
+                )
+            }
             return
         }
         if (refreshProjectState && !isInspectionInProgress(project)) {
@@ -3657,7 +3966,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("unused")
     private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
-        return waitForInspection(projectName, timeoutMsRaw, pollMsRaw, null)
+        return waitForInspection(projectName, timeoutMsRaw, pollMsRaw, null, null)
     }
 
     private fun waitForInspection(
@@ -3665,6 +3974,7 @@ class InspectionHandler : HttpRequestHandler() {
         timeoutMsRaw: Long?,
         pollMsRaw: Long?,
         expectedRunId: Long?,
+        requestAttribution: InspectionRequestAttribution? = null,
     ): String {
         val timeoutMs = (timeoutMsRaw ?: 180000L).coerceIn(1000L, 300000L)
         val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
@@ -3678,7 +3988,8 @@ class InspectionHandler : HttpRequestHandler() {
                     start,
                     timeoutMs,
                     pollMs,
-                    "no_project"
+                    "no_project",
+                    requestAttribution,
                 )
             }
 
@@ -3690,7 +4001,8 @@ class InspectionHandler : HttpRequestHandler() {
                     start,
                     timeoutMs,
                     pollMs,
-                    "interrupted"
+                    "interrupted",
+                    requestAttribution,
                 )
             }
 
@@ -3708,10 +4020,10 @@ class InspectionHandler : HttpRequestHandler() {
 
         while (true) {
             if (expectedRunId != null && inspectionRunId(status) != expectedRunId) {
-                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId)
+                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId, requestAttribution)
             }
             if (expectedRunId != null && waitSnapshotRunChanged(status, expectedRunId)) {
-                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId)
+                return formatWaitRunChanged(status, start, timeoutMs, pollMs, expectedRunId, requestAttribution)
             }
             val hasResults = status["has_inspection_results"] as? Boolean ?: false
             val inspectionTriggered = status["inspection_triggered"] as? Boolean ?: false
@@ -3730,7 +4042,7 @@ class InspectionHandler : HttpRequestHandler() {
 
             if (resultsMayBeStale && !isScanning && !inProgress) {
                 status["wait_note"] = "Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "stale_results")
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "stale_results", requestAttribution)
             }
 
             if (cleanInspection && !isScanning && !inProgress) {
@@ -3738,7 +4050,7 @@ class InspectionHandler : HttpRequestHandler() {
                     cleanStableSince = now
                 }
                 if (cleanWaitHasSettled(now, resultsTimestampMs, cleanStableSince, timeSinceTrigger, minStableMs)) {
-                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean")
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "clean", requestAttribution)
                 }
             } else {
                 cleanStableSince = null
@@ -3749,7 +4061,7 @@ class InspectionHandler : HttpRequestHandler() {
                     status["snapshot_note"] as? String
                         ?: "Inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Inspection Results tool window."
                     )
-                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "capture_incomplete")
+                return formatWaitResponse(status, start, timeoutMs, pollMs, true, "capture_incomplete", requestAttribution)
             }
 
             if (
@@ -3759,7 +4071,7 @@ class InspectionHandler : HttpRequestHandler() {
                 !inspectionTriggered
             ) {
                 status["wait_note"] = "No recent inspection - trigger inspection first."
-                return formatWaitError(status, start, timeoutMs, pollMs, "no_recent_inspection")
+                return formatWaitError(status, start, timeoutMs, pollMs, "no_recent_inspection", requestAttribution)
             }
 
             val toolWindowNoResults = resultsSource == "tool_window" &&
@@ -3775,7 +4087,7 @@ class InspectionHandler : HttpRequestHandler() {
                 noResultsObservationCount += 1
                 if (noResultsWaitHasSettled(now, noResultsStableSince, timeSinceTrigger, minStableMs)) {
                     status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
-                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results", requestAttribution)
                 }
             } else {
                 noResultsStableSince = null
@@ -3801,10 +4113,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
 
                     if (resultsWaitHasSettled(now, stableSince, timeSinceTrigger, minStableMs)) {
-                        return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+                        return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results", requestAttribution)
                     }
                 } else {
-                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results")
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "results", requestAttribution)
                 }
             }
 
@@ -3820,15 +4132,15 @@ class InspectionHandler : HttpRequestHandler() {
                     noResultsObservationCount >= 2
                 ) {
                     status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
-                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results")
+                    return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results", requestAttribution)
                 }
-                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout")
+                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout", requestAttribution)
             }
 
             try {
                 TimeUnit.MILLISECONDS.sleep(pollMs)
             } catch (_: Exception) {
-                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted")
+                return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted", requestAttribution)
             }
 
             status = ApplicationManager.getApplication().runReadAction<MutableMap<String, Any>, Exception> { buildInspectionStatus(activeProject) }
@@ -3853,6 +4165,7 @@ class InspectionHandler : HttpRequestHandler() {
         timeoutMs: Long,
         pollMs: Long,
         expectedRunId: Long,
+        requestAttribution: InspectionRequestAttribution? = null,
     ): String {
         val response = status.toMutableMap()
         response["status"] = "run_changed"
@@ -3865,6 +4178,13 @@ class InspectionHandler : HttpRequestHandler() {
         response["poll_ms"] = pollMs
         response["message"] = "A different inspection run replaced the run accepted by this request; no cancellation or cleanup authority is implied."
         addStatusInspectionVerdict(response)
+        @Suppress("UNCHECKED_CAST")
+        addInspectionAttribution(
+            target = response as MutableMap<String, Any?>,
+            request = requestAttribution,
+            code = "run_changed",
+            httpStatus = HttpResponseStatus.OK,
+        )
         return formatJsonManually(response)
     }
 
@@ -3874,7 +4194,8 @@ class InspectionHandler : HttpRequestHandler() {
         timeoutMs: Long,
         pollMs: Long,
         completed: Boolean,
-        reason: String
+        reason: String,
+        requestAttribution: InspectionRequestAttribution? = null,
     ): String {
         val response = status.toMutableMap()
         if (reason == "stale_results") {
@@ -3891,6 +4212,15 @@ class InspectionHandler : HttpRequestHandler() {
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
         addStatusInspectionVerdict(response)
+        if (response["inspection_verdict"] == "UNKNOWN") {
+            @Suppress("UNCHECKED_CAST")
+            addInspectionAttribution(
+                target = response as MutableMap<String, Any?>,
+                request = requestAttribution,
+                code = response["inspection_verdict_reason"]?.toString() ?: reason,
+                httpStatus = HttpResponseStatus.OK,
+            )
+        }
         return formatJsonManually(response)
     }
 
@@ -3899,7 +4229,8 @@ class InspectionHandler : HttpRequestHandler() {
         startMs: Long,
         timeoutMs: Long,
         pollMs: Long,
-        reason: String
+        reason: String,
+        requestAttribution: InspectionRequestAttribution? = null,
     ): String {
         val response = responseData.toMutableMap()
         response["wait_completed"] = false
@@ -3913,6 +4244,13 @@ class InspectionHandler : HttpRequestHandler() {
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
         addStatusInspectionVerdict(response)
+        @Suppress("UNCHECKED_CAST")
+        addInspectionAttribution(
+            target = response as MutableMap<String, Any?>,
+            request = requestAttribution,
+            code = response["inspection_verdict_reason"]?.toString() ?: reason,
+            httpStatus = HttpResponseStatus.OK,
+        )
         return formatJsonManually(response)
     }
 
