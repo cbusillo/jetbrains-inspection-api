@@ -263,7 +263,12 @@ evidence for:
 
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a
-fresh route rather than treating one long wait timeout as a clean result.
+fresh route rather than treating one long wait timeout as a clean result. When
+the timed-out response still reports `inspection_in_progress`, exercise
+`/api/inspection/cancel` with that response's `inspection_run_id`, verify
+`/status` reaches an idle state, and confirm a concurrent `/identity` request
+remains responsive while lifecycle close runs. A `run_changed` response must
+leave the newer run untouched and defer helper-owned project cleanup.
 
 For normal dogfood against the latest installed stable IDE, use
 `qualityGate.manualSmoke.execHarnessInstalledWorktree` from `.github/github.json`

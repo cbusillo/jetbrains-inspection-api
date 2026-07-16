@@ -12,11 +12,15 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.vfs.VirtualFileManager
+import com.intellij.openapi.vfs.VfsUtilCore
+import com.intellij.openapi.vfs.VirtualFileVisitor
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.IdeFrame
 import com.intellij.openapi.wm.ToolWindow
@@ -28,7 +32,10 @@ import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
+import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiFile
+import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentManager
@@ -38,6 +45,7 @@ import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.channel.ChannelHandlerContext
+import org.jdom.Element
 import org.jetbrains.concurrency.Promise
 import org.jetbrains.concurrency.resolvedPromise
 import org.jetbrains.concurrency.rejectedPromise
@@ -48,6 +56,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JFrame
 import javax.swing.JPanel
@@ -121,13 +130,25 @@ class InspectionHandlerTest {
             disassembly.contains("com/intellij/ide/impl/OpenProjectTask.\"<init>\""),
             "The full OpenProjectTask constructor is binary-incompatible when JetBrains adds task properties.",
         )
+        assertFalse(
+            disassembly.contains("runProcessWithProgressSynchronously"),
+            "Agent-triggered inspections must not block lifecycle requests behind a modal progress task.",
+        )
+        assertTrue(
+            disassembly.contains("com/intellij/openapi/progress/util/ProgressWindow"),
+            "JetBrains global inspections require a non-modal ProgressWindow indicator.",
+        )
     }
     
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
         handler.trustProjectPath = {}
+        handler.refreshProjectRoot = {}
         handler.inspectionRunExpirationMs = 300000L
+        handler.inspectionProcessRunner = { task, _ -> task.run() }
+        handler.inspectionIndicatorFactory = { mockk(relaxed = true) }
+        handler.lifecycleCloseExecutor = { task -> task.run() }
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
         mockProject = mockk<Project>()
@@ -253,7 +274,7 @@ class InspectionHandlerTest {
         every { mockApplication.isDispatchThread } returns true
         every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns emptyList()
-        every { mockProfileManager.getProfile("RedLane") } returns mockProfile
+        every { mockProfileManager.getProfile("RedLane", false) } returns null
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
@@ -265,6 +286,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"profile\": \"RedLane\""))
+        verify(exactly = 1) { mockProfileManager.getProfile("RedLane", false) }
         verify(exactly = 0) { mockProfileManager.getProfile("RedLane") }
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
         val status = buildInspectionStatus()
@@ -293,6 +315,7 @@ class InspectionHandlerTest {
         every { mockApplication.isDispatchThread } returns true
         every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns emptyList()
+        every { mockProfileManager.getProfile("RedLane", false) } returns null
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
@@ -320,36 +343,32 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test explicit inspection profile with unreadable profile list is unknown`() {
+    fun `test exact inspection profile works when project profile list is unreadable`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
         every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } throws IllegalStateException("profiles unavailable")
+        every { mockProfileManager.getProfile("RedLane", false) } returns mockProfile
+        every { mockProfile.name } returns "RedLane"
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
         }
         mockInspectionPrerequisites(mockProject)
 
-        val response = processTriggerRequest("/api/inspection/trigger?profile=RedLane")
+        val response = processTriggerRequest(
+            "/api/inspection/trigger?scope=changed_files&include_unversioned=false&profile=RedLane",
+        )
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"profile\": \"RedLane\""))
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
         val status = buildInspectionStatus()
-        assertEquals("capture_incomplete", status["snapshot_outcome"])
-        assertEquals("profile_resolution", status["results_source"])
-        assertEquals("profile_resolution_error", status["capture_incomplete_reason"])
-        assertEquals("UNKNOWN", status["inspection_verdict"])
-        assertEquals("profile_resolution_error", status["inspection_verdict_reason"])
-        @Suppress("UNCHECKED_CAST")
-        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
-        assertEquals("RedLane", diagnostic["profile_requested"])
-        assertEquals(true, diagnostic["profile_unverified"])
-        assertEquals(false, diagnostic["profile_list_readable"])
-        assertEquals("profile_list_unreadable", diagnostic["exit_reason"])
+        assertEquals("clean_confirmed", status["snapshot_outcome"])
+        assertEquals("empty_changed_files", status["results_source"])
+        assertEquals(false, status["capture_incomplete"])
     }
     
     @Test
@@ -635,6 +654,667 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test final publication reconciles verified psi churn without absorbing later edits`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiModificationCount = AtomicLong(11L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            psiModificationCount.get()
+        }
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "line" to 4,
+                "column" to 7,
+                "severity" to "warning",
+                "inspectionType" to "CurrentRunInspection",
+                "description" to "current run finding",
+                "source" to "inspection_context",
+            ),
+        )
+        val liveProblems = snapshotProblems.map { problem ->
+            problem + mapOf(
+                "source" to "enhanced_tree_extractor",
+                "locationKnown" to true,
+            )
+        }
+        val extractionCount = AtomicInteger()
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
+            if (extractionCount.getAndIncrement() == 0) {
+                assertNull(InspectionResultsStore.getSnapshot(key))
+            }
+            ProblemExtractionResult(
+                problems = liveProblems,
+                succeeded = true,
+                source = ProblemExtractionSource.INSPECTION_RESULTS,
+            )
+        }
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+        val reconciledSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        verify(exactly = 1) {
+            mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
+        }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+        psiModificationCount.set(12L)
+        val editedStatus = buildInspectionStatus()
+
+        assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
+        assertEquals(false, completedStatus["results_may_be_stale"])
+        assertEquals(true, completedStatus["has_inspection_results"])
+        assertEquals(true, editedStatus["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test final publication validates unchanged psi inputs before publishing`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = listOf(
+                mapOf(
+                    "file" to "/tmp/TestProject/src/Included.kt",
+                    "severity" to "warning",
+                    "description" to "current run finding",
+                ),
+            ),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        assertEquals(snapshot, InspectionResultsStore.getSnapshot(key))
+        verify(exactly = 1) {
+            mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
+        }
+    }
+
+    @Test
+    fun `test final publication closes tracker race before fresh publication`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker().apply {
+            beforeRunIfUnchanged = { changed = true }
+        }
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+    }
+
+    @Test
+    fun `test final publication rejects input drift without psi churn`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val changedFingerprint = inputFingerprint.copy(
+            profileConfigurationHash = "changed-profile-configuration-hash",
+        )
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> changedFingerprint }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = listOf(
+                mapOf(
+                    "file" to "/tmp/TestProject/src/Included.kt",
+                    "severity" to "warning",
+                    "description" to "current run finding",
+                ),
+            ),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals("inspection_input_validation", publishedSnapshot.source)
+        assertEquals(CaptureIncompleteReason.UNKNOWN, publishedSnapshot.captureIncompleteReason)
+        assertTrue(publishedSnapshot.problems.isEmpty())
+        assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+    }
+
+    @Test
+    fun `test final publication rejects tracked file changes without psi churn`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker(changed = true)
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+    }
+
+    @Test
+    fun `test final publication rejects unavailable validation without psi churn`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = null,
+            projectContentTracker = null,
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals("validation_unavailable", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+    }
+
+    @Test
+    fun `test final publication keeps fail closed baseline for unsaved capture state`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 1),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertEquals(true, completedStatus["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", completedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test final publication rejects saved content changes during inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
+            contentTracker.changed = true
+            ProblemExtractionResult(
+                problems = snapshotProblems,
+                succeeded = true,
+                source = ProblemExtractionSource.INSPECTION_RESULTS,
+            )
+        }
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertEquals(true, completedStatus["results_may_be_stale"])
+    }
+
+    @Test
+    fun `test final publication rejects project input changes during inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val changedFingerprint = inputFingerprint.copy(projectSdkVersion = "3.14")
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> changedFingerprint }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @Test
+    fun `test final publication does not promote a narrow capture scope`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val snapshotProblems = listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/Included.kt",
+                "severity" to "warning",
+                "description" to "current run finding",
+            ),
+        )
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = snapshotProblems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureScope = InspectionCaptureScope(
+                scopeParam = "files",
+                files = listOf("src/Included.kt"),
+                resolvedFiles = listOf("/tmp/TestProject/src/Included.kt"),
+            ),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @Test
+    fun `test final publication requires authoritative live extraction`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        val contentTracker = FakeInspectionProjectContentTracker()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = false,
+            source = ProblemExtractionSource.NONE,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = contentTracker,
+        )
+
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @Test
+    fun `test project content tracker path matching excludes metadata and sibling roots`() {
+        val roots = listOf("/tmp/TestProject", "/tmp/shared-content")
+
+        assertTrue(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/src/App.kt"))
+        assertTrue(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/shared-content/lib.py"))
+        assertTrue(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/.idea/misc.xml"))
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/.idea"))
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/.idea/workspace.xml"))
+        assertFalse(
+            isTrackedInspectionInputPath(
+                "/tmp/TestProject",
+                roots,
+                "/tmp/TestProject/.idea/workspace.xml___jb_tmp___",
+            )
+        )
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/.git/index"))
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/modules/sub/.git/index"))
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/shared-content/.git/index"))
+        assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject-copy/src/App.kt"))
+        assertFalse(
+            isTrackedInspectionInputPath(
+                projectBasePath = "/tmp/TestProject",
+                rootPaths = roots,
+                eventPath = "/tmp/TestProject/build/classes/App.class",
+                excludedRootPaths = listOf("/tmp/TestProject/build"),
+            )
+        )
+    }
+
+    @Test
+    fun `test inspection event paths preserve both sides of moves and renames`() {
+        val moveEvent = mockk<com.intellij.openapi.vfs.newvfs.events.VFileMoveEvent>()
+        every { moveEvent.oldPath } returns "/tmp/outside/App.kt"
+        every { moveEvent.newPath } returns "/tmp/TestProject/src/App.kt"
+        val renameEvent = mockk<com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent>()
+        every { renameEvent.isRename } returns true
+        every { renameEvent.oldPath } returns "/tmp/TestProject/src/Old.kt"
+        every { renameEvent.newPath } returns "/tmp/TestProject/src/New.kt"
+
+        assertEquals(
+            listOf("/tmp/outside/App.kt", "/tmp/TestProject/src/App.kt"),
+            inspectionEventPaths(moveEvent),
+        )
+        assertEquals(
+            listOf("/tmp/TestProject/src/Old.kt", "/tmp/TestProject/src/New.kt"),
+            inspectionEventPaths(renameEvent),
+        )
+    }
+
+    @Test
+    fun `test archive inspection roots map to their backing local jar`() {
+        val archiveRoot = mockk<VirtualFile>()
+        every { archiveRoot.path } returns "/tmp/sdk/lib/runtime.jar!/"
+        every { archiveRoot.isInLocalFileSystem } returns false
+
+        assertEquals("/tmp/sdk/lib/runtime.jar", localInspectionRootPath(archiveRoot))
+    }
+
+    @Test
+    fun `test inspection profile fingerprint preserves scope order and tool options`() {
+        val firstProfile = mockk<InspectionProfileImpl>()
+        val reorderedProfile = mockk<InspectionProfileImpl>()
+        val changedOptionProfile = mockk<InspectionProfileImpl>()
+        every { firstProfile.writeExternal(any()) } answers {
+            populateInspectionProfileElement(
+                target = firstArg(),
+                scopeNames = listOf("Production", "Tests"),
+                optionValue = "strict",
+            )
+        }
+        every { reorderedProfile.writeExternal(any()) } answers {
+            populateInspectionProfileElement(
+                target = firstArg(),
+                scopeNames = listOf("Tests", "Production"),
+                optionValue = "strict",
+            )
+        }
+        every { changedOptionProfile.writeExternal(any()) } answers {
+            populateInspectionProfileElement(
+                target = firstArg(),
+                scopeNames = listOf("Production", "Tests"),
+                optionValue = "lenient",
+            )
+        }
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "inspectionProfileConfigurationHash",
+            InspectionProfileImpl::class.java,
+        )
+        method.isAccessible = true
+
+        val firstHash = method.invoke(handler, firstProfile)
+        val reorderedHash = method.invoke(handler, reorderedProfile)
+        val changedOptionHash = method.invoke(handler, changedOptionProfile)
+
+        assertNotEquals(firstHash, reorderedHash)
+        assertNotEquals(firstHash, changedOptionHash)
+    }
+
+    @Test
+    fun `test requested inspection profile resolution never falls back`() {
+        every { mockProfileManager.getProfile("RedLane", false) } returns null
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "resolveInspectionProfile",
+            InspectionProjectProfileManager::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+
+        val resolvedProfile = method.invoke(handler, mockProfileManager, "RedLane")
+
+        assertNull(resolvedProfile)
+        verify(exactly = 1) { mockProfileManager.getProfile("RedLane", false) }
+        verify(exactly = 0) { mockProfileManager.getProfile("RedLane") }
+    }
+
+    @Test
     fun `test long-running inspection remains serialized until worker finishes`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -663,6 +1343,166 @@ class InspectionHandlerTest {
         assertEquals(true, status["is_scanning"])
         assertEquals(true, status["inspection_run_expired"])
         assertEquals("capture_incomplete", status["snapshot_outcome"])
+    }
+
+    @Test
+    fun `test cancellation endpoint cancels the active inspection indicator`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 7L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 7L, indicator = indicator))
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"cancel_requested\""))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        verify(exactly = 1) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation endpoint requires the inspection run id`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 7L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 7L, indicator = indicator))
+
+        val response = processGetRequest("/api/inspection/cancel?worktree_path=/tmp/TestProject")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("Parameter 'inspection_run_id' is required."))
+        verify(exactly = 0) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation endpoint refuses to cancel a newer inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 8L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        setInspectionRunControl(key, InspectionRunControl(runId = 8L, indicator = indicator))
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+        verify(exactly = 0) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation endpoint detects a completed replacement run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 8L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"inspection_in_progress\": false"))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+    }
+
+    @Test
+    fun `test queued inspection can be cancelled before its worker starts`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val queuedTasks = mutableListOf<Runnable>()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            queuedTasks += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+
+        val triggerResponse = processTriggerRequest("/api/inspection/trigger")
+        val cancelResponse = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=1",
+        )
+        val cancelBody = cancelResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, triggerResponse.status())
+        assertTrue(triggerResponse.content().toString(Charsets.UTF_8).contains("\"run_id\": 1"))
+        assertEquals(1, queuedTasks.size)
+        assertEquals(HttpResponseStatus.OK, cancelResponse.status())
+        assertTrue(cancelBody.contains("\"status\": \"cancel_requested\""))
+        assertTrue(cancelBody.contains("\"inspection_run_id\": 1"))
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            queuedTasks.single().run()
+        }
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test indicator creation failure releases inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        handler.inspectionIndicatorFactory = { throw IllegalStateException("indicator failed") }
+
+        val response = processTriggerRequest("/api/inspection/trigger")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertEquals(false, state?.inProgress)
+    }
+
+    @Test
+    fun `test runner setup failure releases inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        handler.inspectionProcessRunner = { _, _ -> throw IllegalStateException("runner failed") }
+
+        val response = processTriggerRequest("/api/inspection/trigger")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
+        assertEquals(false, state?.inProgress)
+    }
+
+    @Test
+    fun `test capture failure diagnostic preserves exception details`() {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "captureFailureDiagnostic",
+            Exception::class.java,
+        )
+        method.isAccessible = true
+
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = method.invoke(handler, IllegalStateException("capture exploded")) as Map<String, Any>
+
+        assertEquals("helper_plugin_error", diagnostic["exit_reason"])
+        assertEquals(IllegalStateException::class.java.name, diagnostic["exception_type"])
+        assertEquals("capture exploded", diagnostic["exception_message"])
     }
 
     @Test
@@ -733,6 +1573,23 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test inspection refreshes only the selected project root`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        mockInspectionPrerequisites(mockProject)
+        val refreshedProjectRoots = mutableListOf<String>()
+        handler.refreshProjectRoot = { path -> refreshedProjectRoots += path }
+        val method = InspectionHandler::class.java.getDeclaredMethod("syncProjectState", Project::class.java)
+        method.isAccessible = true
+
+        method.invoke(handler, mockProject)
+
+        assertEquals(listOf("/tmp/TestProject"), refreshedProjectRoots)
+        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+    }
+
+    @Test
     fun `test wait endpoint executes on pooled thread`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -745,6 +1602,181 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"completion_reason\":"))
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test wait endpoint refuses a replacement inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 8L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+        assertTrue(body.contains("\"timed_out\": false"))
+    }
+
+    @Test
+    fun `test wait endpoint refuses a snapshot from an older run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                runId = 6L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertTrue(body.contains("\"snapshot_run_id\": 6"))
+    }
+
+    @Test
+    fun `test wait endpoint keeps accepted run while its snapshot is pending`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"completion_reason\": \"timeout\""))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertFalse(body.contains("\"status\": \"run_changed\""))
+    }
+
+    @Test
+    fun `test problems endpoint refuses a replacement inspection run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 8L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?severity=all&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"run_changed\""))
+        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
+        assertTrue(body.contains("\"inspection_run_id\": 8"))
+    }
+
+    @Test
+    fun `test problems endpoint keeps active run while prior snapshot remains`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Old.kt",
+                        "severity" to "warning",
+                        "description" to "old run finding",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis() - 10_000,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = 6L,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?severity=all&inspection_run_id=7"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"inspection_in_progress\""))
+        assertTrue(body.contains("\"inspection_in_progress\": true"))
+        assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertTrue(body.contains("\"snapshot_run_id\": 6"))
+        assertFalse(body.contains("old run finding"))
+        assertFalse(body.contains("\"status\": \"run_changed\""))
     }
 
     @Test
@@ -1250,6 +2282,159 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test targeted analysis scopes are built under read actions`() {
+        val directory = mockk<VirtualFile>()
+        val currentFile = mockk<VirtualFile>()
+        val psiDirectory = mockk<PsiDirectory>()
+        val psiFile = mockk<PsiFile>()
+        val psiManager = mockk<PsiManager>()
+        mockkStatic(PsiManager::class)
+        every { PsiManager.getInstance(mockProject) } returns psiManager
+        val insideReadAction = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            insideReadAction.set(true)
+            try {
+                firstArg<ThrowableComputable<Any, Exception>>().compute()
+            } finally {
+                insideReadAction.set(false)
+            }
+        }
+        every { psiManager.findDirectory(directory) } answers {
+            assertTrue(insideReadAction.get())
+            psiDirectory
+        }
+        every { psiManager.findFile(currentFile) } answers {
+            assertTrue(insideReadAction.get())
+            psiFile
+        }
+        every { psiDirectory.project } answers {
+            assertTrue(insideReadAction.get())
+            mockProject
+        }
+        every { psiFile.project } answers {
+            assertTrue(insideReadAction.get())
+            mockProject
+        }
+
+        assertNotNull(invokeTargetedAnalysisScopeResolver("analysisScopeForDirectory", directory))
+        assertNotNull(invokeTargetedAnalysisScopeResolver("analysisScopeForFile", currentFile))
+
+        verify(exactly = 2) { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) }
+    }
+
+    @Test
+    fun `test active editor scope resolution uses a read action`() {
+        val currentFile = mockk<VirtualFile>()
+        val fileEditorManager = mockk<FileEditorManager>()
+        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
+        val insideReadAction = java.util.concurrent.atomic.AtomicBoolean(false)
+        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            insideReadAction.set(true)
+            try {
+                firstArg<ThrowableComputable<Any, Exception>>().compute()
+            } finally {
+                insideReadAction.set(false)
+            }
+        }
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } answers {
+            assertTrue(insideReadAction.get())
+            fileEditorManager
+        }
+        every { fileEditorManager.selectedFiles } answers {
+            assertTrue(insideReadAction.get())
+            arrayOf(currentFile)
+        }
+        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
+        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } answers {
+            assertTrue(insideReadAction.get())
+            projectFileIndex
+        }
+        every { currentFile.isValid } returns true
+        every { currentFile.isInLocalFileSystem } returns true
+        every { projectFileIndex.isInContent(currentFile) } answers {
+            assertTrue(insideReadAction.get())
+            true
+        }
+
+        assertSame(currentFile, invokeActiveEditorFileResolver())
+
+        verify(exactly = 1) { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) }
+    }
+
+    @Test
+    fun `test directory scope supplies files to inspection engine fallback`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val directory = mockk<VirtualFile>()
+        val pythonFile = mockk<VirtualFile>()
+        val nonSourcePythonFile = mockk<VirtualFile>()
+        val javascriptFile = mockk<VirtualFile>()
+        val psiFile = mockk<PsiFile>()
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src") } returns directory
+        every { directory.isDirectory } returns true
+        every { pythonFile.isDirectory } returns false
+        every { pythonFile.extension } returns "py"
+        every { nonSourcePythonFile.isDirectory } returns false
+        every { nonSourcePythonFile.extension } returns "py"
+        every { javascriptFile.isDirectory } returns false
+        every { javascriptFile.extension } returns "js"
+
+        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
+        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
+        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+        every { projectFileIndex.isInSourceContent(pythonFile) } returns true
+        every { projectFileIndex.isInSourceContent(nonSourcePythonFile) } returns false
+        every { projectFileIndex.isInSourceContent(javascriptFile) } returns true
+
+        val psiManager = mockk<PsiManager>()
+        mockkStatic(PsiManager::class)
+        every { PsiManager.getInstance(mockProject) } returns psiManager
+        every { psiManager.findFile(pythonFile) } returns psiFile
+
+        mockkStatic(VfsUtilCore::class)
+        every {
+            VfsUtilCore.visitChildrenRecursively(directory, any<VirtualFileVisitor<Any>>())
+        } answers {
+            val visitor = secondArg<VirtualFileVisitor<Any>>()
+            visitor.visitFile(directory)
+            visitor.visitFile(pythonFile)
+            visitor.visitFile(nonSourcePythonFile)
+            visitor.visitFile(javascriptFile)
+            VirtualFileVisitor.CONTINUE
+        }
+
+        assertEquals(listOf(psiFile), invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY"))
+        verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
+        verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
+        verify(exactly = 1) {
+            VfsUtilCore.visitChildrenRecursively(directory, any<VirtualFileVisitor<Any>>())
+        }
+        verify(exactly = 0) { psiManager.findFile(nonSourcePythonFile) }
+        verify(exactly = 0) { psiManager.findFile(javascriptFile) }
+    }
+
+    @Test
+    fun `test directory scope fallback fails closed when root disappears`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src") } returns null
+
+        mockkStatic(VfsUtilCore::class)
+
+        assertTrue(invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY").isEmpty())
+        verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
+        verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
+        verify(exactly = 0) {
+            VfsUtilCore.visitChildrenRecursively(any<VirtualFile>(), any<VirtualFileVisitor<Any>>())
+        }
+    }
+
+    @Test
     fun `test problems rejects invalid filters`() {
         listOf(
             "/api/inspection/problems?severity=fatal" to "severity",
@@ -1471,6 +2656,36 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle claim rejects ownership bound to another project object`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val otherProject = mockProject(
+            name = "OtherProject",
+            basePath = "/repo/app",
+            projectFilePath = "/repo/app/.idea/misc.xml",
+        )
+        val field = InspectionHandler::class.java.getDeclaredField("lifecycleOpenOwnershipByProjectInstance")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val ownership = field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
+        ownership[projectInstanceId(mockProject)] = InspectionHandler.LifecycleOpenOwnership(
+            leaseId = "test-lease",
+            targetKey = Paths.get("/repo/app").normalize().toAbsolutePath().toString(),
+            project = otherProject,
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=${projectInstanceId(mockProject)}&lease_id=test-lease"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"not_owned\""))
+        assertTrue(body.contains("\"reason\": \"project_instance_reused\""))
+        assertFalse(body.contains("\"close_token\""))
+    }
+
+    @Test
     fun `test lifecycle claim rejects stale project instance id`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
@@ -1556,6 +2771,49 @@ class InspectionHandlerTest {
             "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=owned-lease"
         )
         val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, openResponse.status())
+        assertEquals(HttpResponseStatus.OK, claimResponse.status())
+        assertTrue(claimBody.contains("\"status\": \"claimed\""))
+        assertTrue(claimBody.contains("\"ownership_proven\": true"))
+        assertTrue(claimBody.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle claim succeeds before project open call returns`() {
+        val tempDir = Files.createTempDirectory("inspection-open-claim-race")
+        val openedProject = mockProject(
+            name = "OwnedDuringOpen",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        val scheduled = AtomicReference<Runnable?>()
+        val beforeInitComplete = CountDownLatch(1)
+        val allowOpenReturn = CountDownLatch(1)
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled.set(firstArg<Runnable>())
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
+            beforeInitComplete.countDown()
+            assertTrue(allowOpenReturn.await(5, TimeUnit.SECONDS))
+            openedProject
+        }
+
+        val openResponse = processGetRequest(lifecycleOpenUri(tempDir, "race-lease"))
+        val openThread = Thread { scheduled.get()?.run() }
+        openThread.start()
+        assertTrue(beforeInitComplete.await(5, TimeUnit.SECONDS))
+        val instanceId = projectInstanceId(openedProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=race-lease"
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+        allowOpenReturn.countDown()
+        openThread.join(5_000)
 
         assertEquals(HttpResponseStatus.OK, openResponse.status())
         assertEquals(HttpResponseStatus.OK, claimResponse.status())
@@ -2517,6 +3775,107 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close releases the HTTP event loop before close work`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+
+        val scheduled = AtomicReference<Runnable?>()
+        handler.lifecycleCloseExecutor = { task -> scheduled.set(task) }
+        every { mockApplication.isDispatchThread } returns true
+        var closed = false
+        handler.forceCloseProject = { _, _ ->
+            closed = true
+            true
+        }
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
+        val uri = "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        val urlDecoder = QueryStringDecoder(uri)
+        val request = mockk<FullHttpRequest>()
+        val context = mockk<ChannelHandlerContext>()
+        val responses = mutableListOf<FullHttpResponse>()
+        every { request.uri() } returns uri
+        every { context.writeAndFlush(any()) } answers {
+            responses.add(firstArg())
+            mockk(relaxed = true)
+        }
+
+        assertTrue(handler.process(urlDecoder, request, context))
+        assertTrue(responses.isEmpty())
+        assertNotNull(scheduled.get())
+
+        scheduled.get()?.run()
+
+        assertEquals(1, responses.size)
+        assertEquals(HttpResponseStatus.OK, responses.single().status())
+        assertTrue(responses.single().content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+    }
+
+    @Test
+    fun `test lifecycle close preserves claim while inspection is running`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        val closeCalls = AtomicInteger(0)
+        handler.forceCloseProject = { _, _ ->
+            closeCalls.incrementAndGet()
+            true
+        }
+
+        val blocked = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, blocked.status())
+        assertTrue(blocked.content().toString(Charsets.UTF_8).contains("\"reason\": \"inspection_in_progress\""))
+        assertTrue(blocked.content().toString(Charsets.UTF_8).contains("\"inspection_run_id\": 7"))
+        assertEquals(0, closeCalls.get())
+
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        every { mockProjectManager.openProjects } answers {
+            if (closeCalls.get() == 0) arrayOf(mockProject) else emptyArray()
+        }
+        every { mockApplication.isDispatchThread } returns true
+
+        val closed = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+        )
+
+        assertEquals(HttpResponseStatus.OK, closed.status())
+        assertTrue(closed.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(1, closeCalls.get())
+    }
+
+    @Test
     fun `test lifecycle close uses claimed project instance even when route selectors drift`() {
         val mainProject = mockProject(
             name = "Main",
@@ -2624,6 +3983,7 @@ class InspectionHandlerTest {
             basePath = "/repo/app",
             sessionId = "stale-session",
             claimedAtMs = 1L,
+            project = mockProject,
         )
         val closeCalls = AtomicInteger(0)
         handler.forceCloseProject = { _, _ ->
@@ -2878,7 +4238,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close consumes token when close fails after retries`() {
+    fun `test lifecycle close preserves token when close fails after retries`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -2903,6 +4263,13 @@ class InspectionHandlerTest {
         val first = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
         )
+        var closed = false
+        handler.forceCloseProject = { _, save ->
+            saveModes.add(save)
+            closed = true
+            true
+        }
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
         val second = processGetRequest(
             "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
         )
@@ -2910,9 +4277,47 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.CONFLICT, first.status())
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"reason\": \"close_failed\""))
         assertEquals(HttpResponseStatus.OK, second.status())
-        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"reason\": \"not_claimed\""))
-        assertEquals(listOf(true, false, false), saveModes)
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+        assertEquals(listOf(true, false, false, true), saveModes)
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"closed_verified\": false"))
+    }
+
+    @Test
+    fun `test lifecycle close preserves token when verification throws`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
+        assertNotNull(token)
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        handler.forceCloseProject = { _, _ -> true }
+        handler.closeVerificationSleep = { throw IllegalStateException("verification failed") }
+
+        val first = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, first.status())
+
+        var closed = false
+        handler.forceCloseProject = { _, _ ->
+            closed = true
+            true
+        }
+        handler.closeVerificationSleep = {}
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
+
+        val second = processGetRequest(
+            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.OK, second.status())
+        assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
     }
 
     @Test
@@ -3308,7 +4713,7 @@ class InspectionHandlerTest {
         field.isAccessible = true
         val ownership = field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
         val targetKey = Paths.get(requireNotNull(project.basePath)).normalize().toAbsolutePath().toString()
-        ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey)
+        ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey, project)
     }
 
     private fun processGetRequest(uri: String): FullHttpResponse {
@@ -3333,12 +4738,149 @@ class InspectionHandlerTest {
         return method.invoke(handler, mockProject) as MutableMap<String, Any>
     }
 
+    private fun invokeTargetedAnalysisScopeResolver(methodName: String, virtualFile: VirtualFile): Any? {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            methodName,
+            Project::class.java,
+            VirtualFile::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject, virtualFile)
+    }
+
+    private fun invokeActiveEditorFileResolver(): VirtualFile? {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "resolveActiveEditorFile",
+            Project::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject) as? VirtualFile
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun invokeScopedPsiFilesForInspectionEngine(
+        scopeParam: String,
+        directoryParam: String?,
+        ideProductCode: String?,
+    ): List<PsiFile> {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "scopedPsiFilesForInspectionEngine",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            List::class.java,
+            String::class.java,
+            List::class.java,
+            List::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(
+            handler,
+            mockProject,
+            scopeParam,
+            directoryParam,
+            null,
+            null,
+            null,
+            emptyList<Map<String, Any?>>(),
+            ideProductCode,
+        ) as List<PsiFile>
+    }
+
+    private fun publishInspectionSnapshot(
+        runId: Long,
+        snapshot: InspectionResultsSnapshot,
+        captureEndState: InspectionProjectStateSnapshot,
+        projectStateChangedDuringCapture: Boolean,
+        inspectionInputFingerprint: InspectionProjectInputsFingerprint?,
+        projectContentTracker: InspectionProjectContentTracker?,
+    ) {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "publishInspectionSnapshot",
+            Project::class.java,
+            Long::class.javaPrimitiveType,
+            InspectionResultsSnapshot::class.java,
+            InspectionProjectStateSnapshot::class.java,
+            Boolean::class.javaPrimitiveType,
+            InspectionProjectInputsFingerprint::class.java,
+            InspectionProjectContentTracker::class.java,
+        )
+        method.isAccessible = true
+        method.invoke(
+            handler,
+            mockProject,
+            runId,
+            snapshot,
+            captureEndState,
+            projectStateChangedDuringCapture,
+            inspectionInputFingerprint,
+            projectContentTracker,
+        )
+    }
+
+    private fun projectInputsFingerprint(
+        profileName: String = "RedLane",
+        rootPaths: List<String> = listOf("/tmp/TestProject"),
+    ): InspectionProjectInputsFingerprint {
+        return InspectionProjectInputsFingerprint(
+            rootPaths = rootPaths,
+            excludedRootPaths = listOf("/tmp/TestProject/build"),
+            projectSdkName = "Test SDK",
+            projectSdkTypeName = "Python SDK",
+            projectSdkVersion = "3.13",
+            projectSdkHomePath = "/tmp/python",
+            requestedProfileName = profileName,
+            resolvedProfileName = profileName,
+            profileToolStates = listOf("CurrentRunInspection|null|true|WARNING|null"),
+            namedScopeDefinitions = emptyList(),
+            profileConfigurationHash = "profile-configuration-hash",
+        )
+    }
+
+    private fun populateInspectionProfileElement(
+        target: Element,
+        scopeNames: List<String>,
+        optionValue: String,
+    ) {
+        val tool = Element("inspection_tool")
+            .setAttribute("class", "CurrentRunInspection")
+            .addContent(Element("option").setAttribute("name", "mode").setAttribute("value", optionValue))
+        scopeNames.forEach { scopeName ->
+            tool.addContent(Element("scope").setAttribute("name", scopeName))
+        }
+        target.addContent(tool)
+    }
+
+    private class FakeInspectionProjectContentTracker(
+        var changed: Boolean = false,
+    ) : InspectionProjectContentTracker {
+        var closed: Boolean = false
+        var beforeRunIfUnchanged: (() -> Unit)? = null
+
+        override fun hasChanges(): Boolean = changed
+
+        override fun runIfUnchanged(action: () -> Unit): Boolean {
+            beforeRunIfUnchanged?.invoke()
+            if (changed) {
+                return false
+            }
+            action()
+            return true
+        }
+
+        override fun close() {
+            closed = true
+        }
+    }
+
     private fun mockExtractor(problems: List<Map<String, Any>>) {
         val extractor = mockk<EnhancedTreeExtractor>()
         every { extractor.extractAllProblems(mockProject) } returns problems
         every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
             problems = problems,
             succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
     }
@@ -3408,6 +4950,22 @@ class InspectionHandlerTest {
         @Suppress("UNCHECKED_CAST")
         val states = field.get(handler) as MutableMap<String, InspectionRunState>
         states[projectKey] = state
+    }
+
+    private fun inspectionRunState(projectKey: String): InspectionRunState? {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val states = field.get(handler) as Map<String, InspectionRunState>
+        return states[projectKey]
+    }
+
+    private fun setInspectionRunControl(projectKey: String, control: InspectionRunControl) {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunControlsByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val controls = field.get(handler) as MutableMap<String, InspectionRunControl>
+        controls[projectKey] = control
     }
 
     private fun mockProject(name: String, basePath: String?, projectFilePath: String): Project {

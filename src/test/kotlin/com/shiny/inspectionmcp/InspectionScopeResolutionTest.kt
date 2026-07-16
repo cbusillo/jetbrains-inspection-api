@@ -1,16 +1,38 @@
 package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import io.mockk.*
+import com.intellij.openapi.application.Application
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.util.ThrowableComputable
 import java.lang.reflect.InvocationTargetException
 
 class InspectionScopeResolutionTest {
+
+    private lateinit var application: Application
+
+    @BeforeEach
+    fun setUp() {
+        application = mockk()
+        mockkStatic(ApplicationManager::class)
+        every { ApplicationManager.getApplication() } returns application
+        every { application.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
+            firstArg<ThrowableComputable<Any, Exception>>().compute()
+        }
+    }
+
+    @AfterEach
+    fun tearDown() {
+        unmockkAll()
+    }
 
     private fun mockProject(name: String = "TestProject"): Project {
         val p = mockk<Project>(relaxed = true)
