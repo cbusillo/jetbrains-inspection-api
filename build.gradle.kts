@@ -14,9 +14,9 @@ import java.util.Properties
 
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "2.4.10"
+    id("org.jetbrains.kotlin.jvm") version "2.4.0"
     id("org.jetbrains.intellij.platform") version "2.18.1"
-    kotlin("plugin.serialization") version "2.4.10"
+    kotlin("plugin.serialization") version "2.4.0"
     id("jacoco")
 }
 
