@@ -14,9 +14,9 @@ import java.util.Properties
 
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "2.4.0"
-    id("org.jetbrains.intellij.platform") version "2.18.0"
-    kotlin("plugin.serialization") version "2.4.0"
+    id("org.jetbrains.kotlin.jvm") version "2.4.10"
+    id("org.jetbrains.intellij.platform") version "2.18.1"
+    kotlin("plugin.serialization") version "2.4.10"
     id("jacoco")
 }
 
@@ -141,8 +141,8 @@ dependencies {
     implementation(project(":inspection-core"))
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     
-    testImplementation("org.junit.jupiter:junit-jupiter:6.1.1")
-    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.1")
+    testImplementation("org.junit.jupiter:junit-jupiter:6.1.2")
+    testRuntimeOnly("org.junit.platform:junit-platform-launcher:6.1.2")
     testRuntimeOnly("junit:junit:4.13.2")
     testImplementation("org.mockito:mockito-core:5.23.0")
     testImplementation("org.mockito:mockito-junit-jupiter:5.23.0")
