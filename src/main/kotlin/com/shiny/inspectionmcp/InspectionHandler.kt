@@ -187,6 +187,7 @@ internal data class InspectionResultsSnapshot(
     val captureIncompleteReason: CaptureIncompleteReason? = null,
     val runId: Long? = null,
     val triggerTimeMs: Long? = null,
+    val reconciliationChangeKind: String? = null,
 )
 
 internal data class InspectionViewObservation(
@@ -707,9 +708,16 @@ internal fun inspectionCaptureScopeCoversRequest(
                 else -> false
             }
         }
-        "files", "current_file", "changed_files" -> when (requestKind) {
+        "files", "current_file" -> when (requestKind) {
             "files", "current_file" -> requestFiles.isNotEmpty() && captureFiles.containsAll(requestFiles)
-            "changed_files" -> captureFiles.containsAll(requestFiles)
+            "changed_files" -> requestFiles.isNotEmpty() && captureFiles.containsAll(requestFiles)
+            else -> false
+        }
+        "changed_files" -> when (requestKind) {
+            "files", "current_file" -> requestFiles.isNotEmpty() && captureFiles.containsAll(requestFiles)
+            "changed_files" -> captureScope.resolvedFiles != null &&
+                requestScope.resolvedFiles != null &&
+                captureFiles == requestFiles
             else -> false
         }
         else -> false
@@ -3162,7 +3170,10 @@ class InspectionHandler : HttpRequestHandler() {
                 return@run formatInspectionRunChangedResponse(project, expectedInspectionRunId, runState, snapshot)
             }
             var staleness = resolveSnapshotStaleness(project, snapshot)
-            if (staleness.changeKind == "current_run_psi_churn") {
+            if (
+                staleness.changeKind == "current_run_psi_churn" &&
+                staleness.reasons.contains("project_changed_since_inspection")
+            ) {
                 val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
                 snapshot = reconciliation.snapshot
                 staleness = if (reconciliation.reconciled) {
@@ -3566,7 +3577,10 @@ class InspectionHandler : HttpRequestHandler() {
         var snapshot = resultsStore.getSnapshot(key)
         val hasInspectionSnapshot = snapshot != null
         var staleness = resolveSnapshotStaleness(project, snapshot)
-        if (staleness.changeKind == "current_run_psi_churn") {
+        if (
+            staleness.changeKind == "current_run_psi_churn" &&
+            staleness.reasons.contains("project_changed_since_inspection")
+        ) {
             val reconciliation = reconcileCurrentRunPsiChurn(project, snapshot)
             snapshot = reconciliation.snapshot
             staleness = if (reconciliation.reconciled) {
@@ -3792,13 +3806,13 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
 
-        val wholeProjectCapture = isWholeProjectCaptureScope(snapshot.captureScope)
+        val stableInputValidationScope = supportsStableInputValidation(snapshot.captureScope)
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
         val canAttemptReconciliation = projectStateChangedDuringCapture &&
-            wholeProjectCapture &&
+            stableInputValidationScope &&
             captureEndState.unsavedProjectDocuments == 0 &&
             hasInputValidation
-        val requiresStableInputValidation = wholeProjectCapture && !projectStateChangedDuringCapture
+        val requiresStableInputValidation = stableInputValidationScope && !projectStateChangedDuringCapture
         if (!canAttemptReconciliation && !requiresStableInputValidation) {
             if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                 resultsStore.setSnapshot(key, snapshot)
@@ -3822,14 +3836,20 @@ class InspectionHandler : HttpRequestHandler() {
             ApplicationManager.getApplication().runReadAction<Unit, Exception> {
                 val contentChangedBeforeVerification = contentTracker.hasChanges()
                 val stateStableBeforeVerification = captureProjectState(project) == captureEndState
+                val scopeMatchedBeforeVerification = changedFilesCaptureScopeMatchesCurrent(project, snapshot.captureScope)
                 val reconciliation = if (
                     canAttemptReconciliation &&
                     !project.isDisposed &&
                     !contentChangedBeforeVerification &&
                     stateStableBeforeVerification &&
+                    scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
+                    if (isExactEmptyChangedFilesSnapshot(snapshot)) {
+                        CurrentRunPsiChurnReconciliation(snapshot, true)
+                    } else {
+                        reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
+                    }
                 } else {
                     CurrentRunPsiChurnReconciliation(snapshot, false)
                 }
@@ -3846,10 +3866,13 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 val contentChangedAfterVerification = contentTracker.hasChanges()
                 val stateStableAfterVerification = captureProjectState(project) == captureEndState
+                val scopeMatchedAfterVerification = changedFilesCaptureScopeMatchesCurrent(project, snapshot.captureScope)
                 val inputsMatched = currentFingerprint == inputFingerprint
                 val finalValidationPassed =
                     !contentChangedAfterVerification &&
                     stateStableAfterVerification &&
+                    scopeMatchedBeforeVerification &&
+                    scopeMatchedAfterVerification &&
                     inputsMatched &&
                     !project.isDisposed &&
                     isCurrentInspectionRun(key, runId)
@@ -3863,12 +3886,21 @@ class InspectionHandler : HttpRequestHandler() {
                         "contentChangedAfter=$contentChangedAfterVerification, " +
                         "stateStableBefore=$stateStableBeforeVerification, " +
                         "stateStableAfter=$stateStableAfterVerification, " +
+                        "scopeMatchedBefore=$scopeMatchedBeforeVerification, " +
+                        "scopeMatchedAfter=$scopeMatchedAfterVerification, " +
                         "inputsMatched=$inputsMatched, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
                         "promoted=$shouldReconcile"
                 )
                 val snapshotToPublish = if (shouldReconcile) {
-                    snapshot.copy(projectState = captureEndState)
+                    snapshot.copy(
+                        projectState = captureEndState,
+                        reconciliationChangeKind = if (isChangedFilesCaptureScope(snapshot.captureScope)) {
+                            CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue
+                        } else {
+                            snapshot.reconciliationChangeKind
+                        },
+                    )
                 } else if (shouldPublishUnchangedSnapshot || projectStateChangedDuringCapture) {
                     snapshot
                 } else {
@@ -3876,9 +3908,15 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                     val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
+                    var scopeMatchedAtPublication = !publicationRequiresStableTracker
                     val publishedWithStableTracker = if (publicationRequiresStableTracker) {
                         contentTracker.runIfUnchanged {
-                            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                            scopeMatchedAtPublication = changedFilesCaptureScopeMatchesCurrent(project, snapshot.captureScope)
+                            if (
+                                scopeMatchedAtPublication &&
+                                !project.isDisposed &&
+                                isCurrentInspectionRun(key, runId)
+                            ) {
                                 resultsStore.setSnapshot(key, snapshotToPublish)
                             }
                         }
@@ -3886,7 +3924,11 @@ class InspectionHandler : HttpRequestHandler() {
                         resultsStore.setSnapshot(key, snapshotToPublish)
                         true
                     }
-                    if (!publishedWithStableTracker && !project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                    if (
+                        (!publishedWithStableTracker || !scopeMatchedAtPublication) &&
+                        !project.isDisposed &&
+                        isCurrentInspectionRun(key, runId)
+                    ) {
                         val fallbackSnapshot = if (projectStateChangedDuringCapture) {
                             snapshot
                         } else {
@@ -3928,6 +3970,55 @@ class InspectionHandler : HttpRequestHandler() {
     private fun isWholeProjectCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
         val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
         return scope == "whole_project" || scope == "all"
+    }
+
+    private fun isChangedFilesCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
+        return captureScope?.scopeParam?.trim()?.lowercase() == "changed_files"
+    }
+
+    private fun supportsStableInputValidation(captureScope: InspectionCaptureScope?): Boolean {
+        return isWholeProjectCaptureScope(captureScope) || isChangedFilesCaptureScope(captureScope)
+    }
+
+    private fun changedFilesCaptureScopeMatchesCurrent(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+    ): Boolean {
+        if (!isChangedFilesCaptureScope(captureScope)) {
+            return true
+        }
+        val resolvedCaptureScope = captureScope ?: return false
+        val capturedFiles = normalizeResolvedFileSet(resolvedCaptureScope.resolvedFiles) ?: return false
+        val currentFiles = try {
+            resolveChangedFilesScopeFiles(
+                project = project,
+                includeUnversioned = resolvedCaptureScope.includeUnversioned,
+                changedFilesMode = resolvedCaptureScope.changedFilesMode,
+                maxFiles = resolvedCaptureScope.maxFiles,
+            ).map { file -> file.path }
+        } catch (_: Exception) {
+            return false
+        }
+        return capturedFiles == normalizeResolvedFileSet(currentFiles)
+    }
+
+    private fun normalizeResolvedFileSet(paths: List<String>?): Set<String>? {
+        if (paths == null) {
+            return null
+        }
+        val normalizedPaths = linkedSetOf<String>()
+        for (path in paths) {
+            normalizedPaths += normalizeFileSystemPath(path) ?: return null
+        }
+        return normalizedPaths
+    }
+
+    private fun isExactEmptyChangedFilesSnapshot(snapshot: InspectionResultsSnapshot): Boolean {
+        return isChangedFilesCaptureScope(snapshot.captureScope) &&
+            snapshot.captureScope?.resolvedFiles?.isEmpty() == true &&
+            snapshot.problems.isEmpty() &&
+            snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
+            snapshot.source == "empty_changed_files"
     }
 
     private fun inspectionProblemIdentityCounts(
@@ -4535,10 +4626,89 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId == runId) state.copy(captureScope = effectiveCaptureScope) else state
             }
-            if (changedFilesScopeFiles != null && changedFilesScopeFiles.isEmpty()) {
+            var profile = resolveInspectionProfile(profileManager, requestedProfileName)
+            if (profile == null) {
                 resultsStore.setSnapshot(
                     key,
                     InspectionResultsSnapshot(
+                        problems = emptyList(),
+                        timestamp = System.currentTimeMillis(),
+                        projectState = inspectionInputState,
+                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                        source = "profile_resolution",
+                        note = if (requestedProfileName != null) {
+                            "Requested inspection profile '$requestedProfileName' was no longer available."
+                        } else {
+                            "The current inspection profile was unavailable."
+                        },
+                        captureScope = effectiveCaptureScope,
+                        captureDiagnostic = mapOf(
+                            "profile_requested" to requestedProfileName,
+                            "profile_missing" to true,
+                            "exit_reason" to "profile_disappeared",
+                        ),
+                        captureIncompleteReason = CaptureIncompleteReason.PROFILE_RESOLUTION_ERROR,
+                        runId = runId,
+                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                    ),
+                )
+                return
+            }
+            if (supportsStableInputValidation(effectiveCaptureScope)) {
+                val initialFingerprint = projectInputsFingerprintProvider(project, requestedProfileName)
+                val tracker = initialFingerprint?.let { fingerprint ->
+                    projectContentTrackerFactory(project, fingerprint)
+                }
+                val confirmedProfile = if (tracker != null) {
+                    resolveInspectionProfile(profileManager, requestedProfileName)
+                } else {
+                    null
+                }
+                val confirmedFingerprint = confirmedProfile?.let {
+                    projectInputsFingerprintProvider(project, requestedProfileName)
+                }
+                val trackerChangedDuringPreflight = tracker?.hasChanges() ?: true
+                if (
+                    tracker != null &&
+                    !trackerChangedDuringPreflight &&
+                    initialFingerprint == confirmedFingerprint
+                ) {
+                    projectContentTracker = tracker
+                    inspectionInputFingerprint = confirmedFingerprint
+                    profile = requireNotNull(confirmedProfile)
+                } else {
+                    tracker?.close()
+                    resultsStore.setSnapshot(
+                        key,
+                        InspectionResultsSnapshot(
+                            problems = emptyList(),
+                            timestamp = System.currentTimeMillis(),
+                            projectState = inspectionInputState,
+                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                            source = "inspection_input_validation",
+                            note = "Project inspection inputs could not be captured consistently before inspection.",
+                            captureScope = effectiveCaptureScope,
+                            captureDiagnostic = mapOf(
+                                "initial_fingerprint_available" to (initialFingerprint != null),
+                                "tracker_available" to (tracker != null),
+                                "tracker_changed" to trackerChangedDuringPreflight,
+                                "confirmed_profile_available" to (confirmedProfile != null),
+                                "fingerprints_matched" to (initialFingerprint == confirmedFingerprint),
+                            ),
+                            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+                            runId = runId,
+                            triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                        ),
+                    )
+                    return
+                }
+            }
+            if (changedFilesScopeFiles != null && changedFilesScopeFiles.isEmpty()) {
+                val captureEndState = captureStableProjectState(project)
+                publishInspectionSnapshot(
+                    project = project,
+                    runId = runId,
+                    snapshot = InspectionResultsSnapshot(
                         problems = emptyList(),
                         timestamp = System.currentTimeMillis(),
                         projectState = inspectionInputState,
@@ -4548,7 +4718,11 @@ class InspectionHandler : HttpRequestHandler() {
                         captureScope = effectiveCaptureScope,
                         runId = runId,
                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                    )
+                    ),
+                    captureEndState = captureEndState,
+                    projectStateChangedDuringCapture = captureEndState != inspectionInputState,
+                    inspectionInputFingerprint = inspectionInputFingerprint,
+                    projectContentTracker = projectContentTracker,
                 )
                 return
             }
@@ -4587,92 +4761,6 @@ class InspectionHandler : HttpRequestHandler() {
                 resolvedChangedFiles = changedFilesScopeFiles,
                 resolvedScope = effectiveCaptureScope,
             )
-            
-            var profile = resolveInspectionProfile(profileManager, requestedProfileName)
-            if (profile == null) {
-                resultsStore.setSnapshot(
-                    key,
-                    InspectionResultsSnapshot(
-                        problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
-                        projectState = inspectionInputState,
-                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                        source = "profile_resolution",
-                        note = if (requestedProfileName != null) {
-                            "Requested inspection profile '$requestedProfileName' was no longer available."
-                        } else {
-                            "The current inspection profile was unavailable."
-                        },
-                        captureScope = effectiveCaptureScope,
-                        captureDiagnostic = mapOf(
-                            "profile_requested" to requestedProfileName,
-                            "profile_missing" to true,
-                            "exit_reason" to "profile_disappeared",
-                        ),
-                        captureIncompleteReason = CaptureIncompleteReason.PROFILE_RESOLUTION_ERROR,
-                        runId = runId,
-                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                    ),
-                )
-                return
-            }
-            if (isWholeProjectCaptureScope(effectiveCaptureScope)) {
-                val initialFingerprint = captureInspectionProjectInputs(
-                    project = project,
-                    selectedProfile = profile,
-                    profileName = requestedProfileName,
-                )
-                val tracker = initialFingerprint?.let { fingerprint ->
-                    projectContentTrackerFactory(project, fingerprint)
-                }
-                val confirmedProfile = if (tracker != null) {
-                    resolveInspectionProfile(profileManager, requestedProfileName)
-                } else {
-                    null
-                }
-                val confirmedFingerprint = confirmedProfile?.let { resolvedProfile ->
-                    captureInspectionProjectInputs(
-                        project = project,
-                        selectedProfile = resolvedProfile,
-                        profileName = requestedProfileName,
-                    )
-                }
-                val trackerChangedDuringPreflight = tracker?.hasChanges() ?: true
-                if (
-                    tracker != null &&
-                    !trackerChangedDuringPreflight &&
-                    initialFingerprint == confirmedFingerprint
-                ) {
-                    projectContentTracker = tracker
-                    inspectionInputFingerprint = confirmedFingerprint
-                    profile = requireNotNull(confirmedProfile)
-                } else {
-                    tracker?.close()
-                    resultsStore.setSnapshot(
-                        key,
-                        InspectionResultsSnapshot(
-                            problems = emptyList(),
-                            timestamp = System.currentTimeMillis(),
-                            projectState = inspectionInputState,
-                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                            source = "inspection_input_validation",
-                            note = "Project inspection inputs could not be captured consistently before inspection.",
-                            captureScope = effectiveCaptureScope,
-                            captureDiagnostic = mapOf(
-                                "initial_fingerprint_available" to (initialFingerprint != null),
-                                "tracker_available" to (tracker != null),
-                                "tracker_changed" to trackerChangedDuringPreflight,
-                                "confirmed_profile_available" to (confirmedProfile != null),
-                                "fingerprints_matched" to (initialFingerprint == confirmedFingerprint),
-                            ),
-                            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
-                            runId = runId,
-                            triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                        ),
-                    )
-                    return
-                }
-            }
             val resolvedProfileName = try {
                 profile.name
             } catch (_: Exception) {
@@ -5748,7 +5836,11 @@ class InspectionHandler : HttpRequestHandler() {
             reasons += "project_changed_since_inspection"
         }
         if (reasons.isEmpty()) {
-            return SnapshotStaleness(false, emptyList())
+            return SnapshotStaleness(
+                false,
+                emptyList(),
+                snapshot.reconciliationChangeKind ?: "fresh",
+            )
         }
 
         val currentRunState = inspectionRunStatesByProject[projectKey(project)]
@@ -6165,7 +6257,9 @@ class InspectionHandler : HttpRequestHandler() {
             } catch (_: Exception) {
             }
         }
-        val unique = changeFiles.distinct()
+        val unique = changeFiles
+            .distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }
+            .sortedBy { file -> normalizeFileSystemPath(file.path) ?: file.path }
         return if (maxFiles != null && maxFiles > 0) unique.take(maxFiles) else unique
     }
 

@@ -123,12 +123,35 @@ class InspectionSnapshotStateTest {
             scopeParam = "files",
             resolvedFiles = listOf("/tmp/TestProject/test/AppTest.kt"),
         )
+        val changedFiles = InspectionCaptureScope(
+            scopeParam = "changed_files",
+            resolvedFiles = listOf(
+                "/tmp/TestProject/src/App.kt",
+                "/tmp/TestProject/src/Util.kt",
+            ),
+        )
+        val changedAppFile = InspectionCaptureScope(
+            scopeParam = "changed_files",
+            resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+        )
+        val noChangedFiles = InspectionCaptureScope(
+            scopeParam = "changed_files",
+            resolvedFiles = emptyList(),
+        )
 
         assertTrue(inspectionCaptureScopeCoversRequest(wholeProject, otherFile))
         assertTrue(inspectionCaptureScopeCoversRequest(directory, appFile))
+        assertTrue(inspectionCaptureScopeCoversRequest(directory, changedAppFile))
         assertTrue(inspectionCaptureScopeCoversRequest(files, appFile))
+        assertTrue(inspectionCaptureScopeCoversRequest(changedFiles, files))
+        assertTrue(inspectionCaptureScopeCoversRequest(changedFiles, changedFiles))
+        assertTrue(inspectionCaptureScopeCoversRequest(noChangedFiles, noChangedFiles))
         assertFalse(inspectionCaptureScopeCoversRequest(files, wholeProject))
+        assertFalse(inspectionCaptureScopeCoversRequest(changedFiles, wholeProject))
         assertFalse(inspectionCaptureScopeCoversRequest(files, otherFile))
+        assertFalse(inspectionCaptureScopeCoversRequest(files, noChangedFiles))
+        assertFalse(inspectionCaptureScopeCoversRequest(changedFiles, changedAppFile))
+        assertFalse(inspectionCaptureScopeCoversRequest(changedAppFile, changedFiles))
         assertFalse(inspectionCaptureScopeCoversRequest(directory, otherFile))
     }
 
