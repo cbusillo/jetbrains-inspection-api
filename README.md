@@ -219,7 +219,7 @@ Notes:
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `scope_not_covered`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
-- `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale. `current_run_psi_churn` is reserved for a PSI tick while the originating inspection is still active; changes after a completed run make its snapshot stale.
+- `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale. `current_run_psi_churn` means the plugin proved that a PSI tick was benign for the originating inspection; `changed_files` captures require an exact resolved file set, unchanged inspection inputs, and matching scoped results. Later unverified changes still make the snapshot stale.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
 
 ## API Reference
@@ -558,7 +558,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 **Status Indicators**:
 - `is_scanning: true` → Inspection running, wait
 - `results_may_be_stale: true` → Project changed after the last inspection; trigger again before trusting results
-- `snapshot_change_kind: "current_run_psi_churn"` → The active run observed a PSI modification-count tick while capturing results and keeps waiting for stable evidence. A tick after the run completes makes the snapshot stale.
+- `snapshot_change_kind: "current_run_psi_churn"` → The plugin observed a PSI modification-count tick from the originating run. During an active run it is still verifying the result; for a completed `changed_files` run, the marker means exact scope, input, and result equivalence was proven. Any later unverified tick makes the snapshot stale.
 - `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `scope_not_covered`, `current_run_psi_churn`, `timeout`, and `inspection_trigger_empty_model`; profile configuration bucket is `profile_resolution_error`; plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
 - `clean_inspection: true` → Inspection complete; `inspection_verdict` is `GREEN` for the selected scope/filter
 - `has_inspection_results: true` → Problems found, retrieve with `/problems`

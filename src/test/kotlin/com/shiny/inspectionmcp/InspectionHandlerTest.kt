@@ -15,6 +15,7 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -252,6 +253,10 @@ class InspectionHandlerTest {
         every { DumbService.getInstance(mockProject) } returns dumbService
         every { dumbService.isDumb } returns false
 
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
+
         val response = processTriggerRequest("/api/inspection/trigger?scope=changed_files&include_unversioned=false")
         val body = response.content().toString(Charsets.UTF_8)
 
@@ -356,6 +361,9 @@ class InspectionHandlerTest {
             mockk(relaxed = true)
         }
         mockInspectionPrerequisites(mockProject)
+        val inputFingerprint = projectInputsFingerprint(profileName = "RedLane")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
 
         val response = processTriggerRequest(
             "/api/inspection/trigger?scope=changed_files&include_unversioned=false&profile=RedLane",
@@ -727,9 +735,278 @@ class InspectionHandlerTest {
 
         assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
         assertEquals(false, completedStatus["results_may_be_stale"])
+        assertEquals("fresh", completedStatus["snapshot_change_kind"])
         assertEquals(true, completedStatus["has_inspection_results"])
         assertEquals(true, editedStatus["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test changed files final publication reconciles verified psi churn`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiModificationCount = AtomicLong(11L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            psiModificationCount.get()
+        }
+        mockChangedFiles(listOf("/tmp/TestProject/src/Included.kt"))
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val snapshotProblems = listOf(changedFileProblem())
+        mockExtractor(snapshotProblems)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(snapshotProblems),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val reconciledSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
+        assertEquals("current_run_psi_churn", reconciledSnapshot.reconciliationChangeKind)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val completedStatus = buildInspectionStatus()
+        assertEquals(false, completedStatus["results_may_be_stale"])
+        assertEquals("current_run_psi_churn", completedStatus["snapshot_change_kind"])
+
+        psiModificationCount.set(12L)
+        val editedStatus = buildInspectionStatus()
+        assertEquals(true, editedStatus["results_may_be_stale"])
+        assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
+    }
+
+    @Test
+    fun `test empty changed files final publication reconciles verified psi churn without extraction`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 11L
+        mockChangedFiles(emptyList())
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val extractor = mockk<EnhancedTreeExtractor>()
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(
+                problems = emptyList(),
+                resolvedFiles = emptyList(),
+                source = "empty_changed_files",
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            ),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val reconciledSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
+        assertEquals("empty_changed_files", reconciledSnapshot.source)
+        assertEquals("current_run_psi_churn", reconciledSnapshot.reconciliationChangeKind)
+        verify(exactly = 0) { extractor.extractAllProblemsWithStatus(any()) }
+    }
+
+    @Test
+    fun `test changed files final publication rejects changed resolved scope`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 11L
+        mockChangedFiles(
+            listOf(
+                "/tmp/TestProject/src/Included.kt",
+                "/tmp/TestProject/src/Added.kt",
+            )
+        )
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        val extractor = mockk<EnhancedTreeExtractor>()
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertNull(publishedSnapshot.reconciliationChangeKind)
+        verify(exactly = 0) { extractor.extractAllProblemsWithStatus(any()) }
+    }
+
+    @Test
+    fun `test changed files final publication rejects unsaved documents`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 1),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertNull(publishedSnapshot.reconciliationChangeKind)
+    }
+
+    @Test
+    fun `test changed files final publication does not replace a newer run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 2L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = projectInputsFingerprint(),
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        assertNull(InspectionResultsStore.getSnapshot(key))
+    }
+
+    @Test
+    fun `test changed files final publication rejects unreadable live extraction`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 11L
+        mockChangedFiles(listOf("/tmp/TestProject/src/Included.kt"))
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        mockExtractorFailure()
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertNull(publishedSnapshot.reconciliationChangeKind)
+    }
+
+    @Test
+    fun `test changed files final publication rejects live identity mismatch`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 11L
+        mockChangedFiles(listOf("/tmp/TestProject/src/Included.kt"))
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        mockExtractor(listOf(changedFileProblem(description = "different live finding")))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertNull(publishedSnapshot.reconciliationChangeKind)
+    }
+
+    @Test
+    fun `test changed files final publication rejects project input mismatch`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 11L
+        mockChangedFiles(listOf("/tmp/TestProject/src/Included.kt"))
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> projectInputsFingerprint(profileName = "ChangedProfile") }
+        mockExtractor(listOf(changedFileProblem()))
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
+        assertNull(publishedSnapshot.reconciliationChangeKind)
     }
 
     @Test
@@ -4877,6 +5154,58 @@ class InspectionHandlerTest {
             namedScopeDefinitions = emptyList(),
             profileConfigurationHash = "profile-configuration-hash",
         )
+    }
+
+    private fun changedFilesSnapshot(
+        problems: List<Map<String, Any>>,
+        resolvedFiles: List<String> = listOf("/tmp/TestProject/src/Included.kt"),
+        psiModificationCount: Long = 10L,
+        source: String = "global_context",
+        outcome: InspectionSnapshotOutcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+    ): InspectionResultsSnapshot {
+        return InspectionResultsSnapshot(
+            problems = problems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(
+                psiModificationCount = psiModificationCount,
+                unsavedProjectDocuments = 0,
+            ),
+            outcome = outcome,
+            source = source,
+            captureScope = InspectionCaptureScope(
+                scopeParam = "changed_files",
+                resolvedFiles = resolvedFiles,
+                includeUnversioned = false,
+            ),
+            runId = 1L,
+        )
+    }
+
+    private fun changedFileProblem(
+        file: String = "/tmp/TestProject/src/Included.kt",
+        description: String = "current run finding",
+    ): Map<String, Any> {
+        return mapOf(
+            "file" to file,
+            "line" to 4,
+            "column" to 7,
+            "severity" to "warning",
+            "inspectionType" to "CurrentRunInspection",
+            "description" to description,
+        )
+    }
+
+    private fun mockChangedFiles(paths: List<String>): ChangeListManager {
+        val changeListManager = mockk<ChangeListManager>(relaxed = true)
+        every { ChangeListManager.getInstance(mockProject) } returns changeListManager
+        every { changeListManager.allChanges } returns paths.map { path ->
+            val file = mockk<VirtualFile>()
+            every { file.path } returns path
+            val change = mockk<Change>()
+            every { change.virtualFile } returns file
+            change
+        }
+        return changeListManager
     }
 
     private fun populateInspectionProfileElement(
