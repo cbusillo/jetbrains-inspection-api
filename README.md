@@ -412,7 +412,7 @@ The plugin generates a new `request_id` for each HTTP request and logs internal
 exceptions against that ID plus endpoint, session, project instance, and
 inspection run context. Responses never include stack traces or exception
 messages. Close tokens and unrestricted selector paths are excluded from the
-attribution object; project keys are represented by a bounded hash.
+attribution object; project keys are represented by a full SHA-256 hash.
 
 **Examples**:
 ```bash

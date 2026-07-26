@@ -641,6 +641,8 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"total_problems\": 0"), body)
         assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
         assertTrue(body.contains("\"inspection_verdict_reason\": \"scope_semantic_coverage_truncated\""), body)
+        assertTrue(body.contains("\"classification\": \"legitimate_fail_closed\""), body)
+        assertTrue(Regex("\\\"project_key_hash\\\": \\\"sha256:[0-9a-f]{64}\\\"").containsMatchIn(body), body)
         assertTrue(body.contains("\"scope_file_diagnostics_complete\": false"), body)
     }
 
