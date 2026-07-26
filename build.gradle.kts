@@ -64,7 +64,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
             setProperty("plugin.build.short_commit", shortCommit)
             setProperty("plugin.build.dirty", dirty)
             setProperty("plugin.build.time", Instant.now().toString())
-            setProperty("plugin.build.fingerprint", "$shortCommit-$state")
+            setProperty("plugin.build.fingerprint", "$commit-$state")
         }
 
         val target = outputFile.get().asFile

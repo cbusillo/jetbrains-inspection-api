@@ -119,6 +119,17 @@ findings to zero remains `UNKNOWN` rather than becoming a false GREEN.
 Use `uv run "$HELPER" summarize-outcomes` to view a helper-side rollup of
 `outcomes.jsonl` by verdict, bucket, retry, IDE channel, and cleanup status
 without running another inspection.
+For the #209 operational denominator, point `JB_INSPECT_DEPLOYMENT_MANIFEST` at
+the immutable manifest for the installed plugin/helper pair and run
+`uv run "$HELPER" summarize-outcomes --qualification-file <qualification.json>
+--sample-size 50`. Qualification schema v1 records an ISO-8601 boundary,
+optional boundary event ID, exact helper revision, exact plugin fingerprint,
+and deployment-manifest SHA-256. The strict rollup counts only `inspect` and
+`inspect-closeout` assessments, groups retries by client run ID, reports every
+post-boundary exclusion, and fails closed on incomplete provenance,
+unattributed UNKNOWNs, artifact mismatch, or non-clean cleanup. A
+configuration-blocked event is excluded only when inspection never started and
+the exact missing IDE selector/configuration code is recorded.
 When this repo changes
 inspection status semantics, route metadata, clean/capture classification,
 lifecycle cleanup contracts, or MCP tool response contracts, update the skill

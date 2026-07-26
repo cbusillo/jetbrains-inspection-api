@@ -20,6 +20,12 @@ class InspectionPluginBuildInfoTest {
         val fingerprint = requireNotNull(buildInfo.fingerprint)
         assertTrue(requireNotNull(buildInfo.version).isNotBlank())
         assertTrue(shortCommit.isNotBlank())
-        assertTrue(fingerprint.contains(shortCommit))
+        assertTrue(fingerprint.startsWith(requireNotNull(buildInfo.commit)))
+    }
+
+    @Test
+    fun ideChannelUsesStableSelectorVocabulary() {
+        assertTrue(inspectionIdeChannel(isEap = true) == "eap")
+        assertTrue(inspectionIdeChannel(isEap = false) == "stable")
     }
 }

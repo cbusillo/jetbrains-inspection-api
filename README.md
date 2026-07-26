@@ -208,8 +208,9 @@ Typical response (truncated):
     "ide": {
       "name": "IntelliJ IDEA Ultimate",
       "product_code": "IU",
+      "channel": "stable",
       "plugin_version": "1.13.17",
-      "plugin_build_fingerprint": "abc123def456-clean"
+      "plugin_build_fingerprint": "abc123def456abc123def456abc123def456abcd-clean"
     }
   },
   "method": "enhanced_tree"
@@ -262,8 +263,9 @@ routing state.
       "name": "IntelliJ IDEA Ultimate",
       "version": "2025.1.1",
       "product_code": "IU",
+      "channel": "stable",
       "plugin_version": "1.13.17",
-      "plugin_build_fingerprint": "abc123def456-clean"
+      "plugin_build_fingerprint": "abc123def456abc123def456abc123def456abcd-clean"
     }
   },
   "registry": {
@@ -282,13 +284,14 @@ routing state.
 
 Identity responses and registry instance files share the same schema:
 `session_id`, `started_at_ms`, `heartbeat_ms`, `pid`, `port`, `ide_name`,
-`ide_version`, `ide_product_code`, `plugin_version`, `plugin_build_fingerprint`,
-`plugin_build_commit`, `plugin_build_short_commit`, `plugin_build_dirty`,
-`plugin_build_time`, and `open_projects`. Use `plugin_build_fingerprint` to
-distinguish same-version local or unreleased plugin builds when diagnosing stale
-running IDE processes. Repeated route summaries include only
-`plugin_build_fingerprint`; clients that need full build provenance should call
-`/identity` or read the registry instance file.
+`ide_version`, `ide_product_code`, `ide_channel`, `plugin_version`,
+`plugin_build_fingerprint`, `plugin_build_commit`, `plugin_build_short_commit`,
+`plugin_build_dirty`, `plugin_build_time`, and `open_projects`. `ide_channel` is
+`stable` or `eap`. The build fingerprint uses the full source commit plus its
+clean/dirty state so same-version local or unreleased plugin builds remain
+distinguishable when diagnosing stale running IDE processes. Repeated route
+summaries include the IDE channel and plugin fingerprint; clients that need full
+build provenance should call `/identity` or read the registry instance file.
 Each project includes `project_key`, `name`, `base_path`, `project_file_path`,
 `project_instance_id`, and `focused` as a JSON boolean. `project_instance_id` is
 opaque and only stable for the lifetime of that IDE process; clients should use
@@ -392,14 +395,18 @@ to whole-project findings. An empty valid changed-file set matches zero findings
 Unexpected endpoint failures return HTTP 500 with a generic public message and
 an `UNKNOWN` verdict. The exception remains private to the IDE log.
 
-### UNKNOWN Attribution
+### Verdict Attribution
 
-Every plugin-generated `UNKNOWN` or lifecycle cleanup anomaly includes a bounded
-`inspection_attribution` object with `schema_version: 1`. The stable fields are
-`source`, `classification`, `code`, `phase`, `endpoint`, `http_status`,
-`request_id`, optional `client_run_id`, session/project/run evidence IDs, and
-plugin/IDE provenance. `classification` is one of `configuration_blocked`,
-`legitimate_fail_closed`, `tool_caused`, or `unattributed`.
+Every plugin-generated `GREEN`, `RED`, or `UNKNOWN` response and every lifecycle
+cleanup anomaly includes a bounded `inspection_attribution` object with
+`schema_version: 1`. The stable fields are `source`, `classification`, `code`,
+`phase`, `endpoint`, `http_status`, `request_id`, optional `client_run_id`,
+session/project/run evidence IDs, and plugin/IDE provenance including
+`plugin_version`, `plugin_build_fingerprint`, `ide_product_code`, `ide_version`,
+and `ide_channel`. `classification` is one of `decisive`,
+`configuration_blocked`, `legitimate_fail_closed`, `tool_caused`, or
+`unattributed`; decisive responses use `clean_confirmed`,
+`no_matching_findings`, or `actionable_findings` as their code.
 
 The plugin generates a new `request_id` for each HTTP request and logs internal
 exceptions against that ID plus endpoint, session, project instance, and

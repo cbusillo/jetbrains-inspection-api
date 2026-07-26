@@ -2136,6 +2136,136 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test clean problems response includes decisive attribution`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                runId = 7L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?inspection_run_id=7&client_run_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"inspection_verdict\": \"GREEN\""), body)
+        assertTrue(body.contains("\"classification\": \"decisive\""), body)
+        assertTrue(body.contains("\"code\": \"no_matching_findings\""), body)
+        assertTrue(body.contains("\"inspection_run_id\": 7"), body)
+        assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
+    }
+
+    @Test
+    fun `test clean status response includes decisive attribution`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 9L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                runId = 9L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/status?client_run_id=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"inspection_verdict\": \"GREEN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"clean_confirmed\""), body)
+        assertTrue(body.contains("\"classification\": \"decisive\""), body)
+        assertTrue(body.contains("\"code\": \"clean_confirmed\""), body)
+        assertTrue(body.contains("\"inspection_run_id\": 9"), body)
+        assertTrue(body.contains("\"client_run_id\": \"cccccccc-cccc-4ccc-8ccc-cccccccccccc\""), body)
+    }
+
+    @Test
+    fun `test findings problems response includes decisive attribution`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 8L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/App.kt",
+                        "severity" to "warning",
+                        "description" to "known warning",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = 8L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/problems?inspection_run_id=8&client_run_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"inspection_verdict\": \"RED\""), body)
+        assertTrue(body.contains("\"classification\": \"decisive\""), body)
+        assertTrue(body.contains("\"code\": \"actionable_findings\""), body)
+        assertTrue(body.contains("\"inspection_run_id\": 8"), body)
+        assertTrue(body.contains("\"client_run_id\": \"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\""), body)
+    }
+
+    @Test
     fun `test problems endpoint refuses a replacement inspection run`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
