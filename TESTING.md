@@ -30,7 +30,8 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 ./gradlew :mcp-server-jvm:test
 
 # Focused MCP auto-routing coverage lives in McpServerTest and covers
-# inspection_list_projects, project_path routing, and duplicate-name ambiguity.
+# inspection_list_projects, project_path routing, duplicate-name ambiguity,
+# accepted-run pinning, run replacement, and triggered-scope carry-forward.
 
 # MCP server jar
 ./gradlew :mcp-server-jvm:mcpServerJar
@@ -106,6 +107,15 @@ inspection worked and returned actionable findings, and `UNKNOWN` means the
 tooling did not prove either state. The external `jb-inspect.py` helper may wrap
 these fields in its own compact `agent_result` envelope with retry policy for
 agent workflows.
+Snapshot-less `/problems` calls return `no_results`/`UNKNOWN` rather than using a
+live tool-window scrape as current evidence. Targeted clean captures with more
+resolved files than the 25-file scope-diagnostic cap expose explicit truncation
+metadata and return `capture_incomplete`/`scope_not_covered`. MCP trigger flows
+pin the accepted inspection run through wait/problems and reuse the trigger's
+scope-defining parameters unless the caller explicitly supplies a new scope.
+Foreign 409 runs and terminal responses without run identity remain `UNKNOWN`.
+Finding-bearing snapshots preserve truncation metadata, so filtering their
+findings to zero remains `UNKNOWN` rather than becoming a false GREEN.
 Use `uv run "$HELPER" summarize-outcomes` to view a helper-side rollup of
 `outcomes.jsonl` by verdict, bucket, retry, IDE channel, and cleanup status
 without running another inspection.

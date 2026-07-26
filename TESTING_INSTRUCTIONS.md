@@ -49,6 +49,12 @@ Expected behavior:
 - If an IDE restarts on a new port, the MCP router rediscovers it.
 - If an IDE restarts during a trigger/wait/problems flow, the MCP response asks
   for a fresh trigger instead of silently using stale state.
+- Wait and problems calls carry the trigger's accepted `inspection_run_id`; a
+  replacement run returns `run_changed`/`UNKNOWN` and does not expose the
+  replacement run's findings as current evidence.
+- Selector-free `inspection_get_problems` reuses the trigger's targeted scope
+  and its `dir`, `files`, `include_unversioned`, `changed_files_mode`, and
+  `max_files` values unless the caller explicitly supplies another scope.
 - Duplicate project names produce an ambiguity response with paths/project keys.
 
 ## Helper lifecycle smoke

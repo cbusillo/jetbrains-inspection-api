@@ -496,6 +496,37 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test problems endpoint without snapshot never trusts live tool window scrape`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblems(mockProject) } returns listOf(
+            mapOf(
+                "file" to "/tmp/TestProject/src/LiveOnly.kt",
+                "severity" to "warning",
+                "description" to "unverified live finding",
+            ),
+        )
+        enhancedTreeExtractorFactory = { extractor }
+
+        val unfilteredBody = processGetRequest("/api/inspection/problems?severity=all")
+            .content().toString(Charsets.UTF_8)
+        val filteredBody = processGetRequest("/api/inspection/problems?severity=error")
+            .content().toString(Charsets.UTF_8)
+
+        listOf(unfilteredBody, filteredBody).forEach { body ->
+            assertTrue(body.contains("\"status\": \"no_results\""), body)
+            assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+            assertTrue(body.contains("\"total_problems\": 0"), body)
+            assertFalse(body.contains("unverified live finding"), body)
+        }
+        verify(exactly = 0) { extractor.extractAllProblems(mockProject) }
+    }
+
+    @Test
     fun `test problems endpoint applies requested files scope to cached snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -570,6 +601,47 @@ class InspectionHandlerTest {
         assertFalse(body.contains("excluded problem"))
         assertTrue(body.contains("\"scope\": \"files\""))
         assertTrue(body.contains("\"files_requested\": 1"))
+    }
+
+    @Test
+    fun `test filtered findings stay unknown when scope diagnostics were truncated`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Warning.kt",
+                        "severity" to "warning",
+                        "description" to "warning outside requested filter",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                captureDiagnostic = mapOf(
+                    "scope_file_resolved_count" to 26,
+                    "scope_file_diagnostic_count" to 25,
+                    "scope_file_diagnostics_omitted_count" to 1,
+                    "scope_file_diagnostics_truncated" to true,
+                    "scope_file_diagnostics_complete" to false,
+                    "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+                ),
+                runId = 1L,
+            ),
+        )
+
+        val response = processGetRequest("/api/inspection/problems?severity=error")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertTrue(body.contains("\"total_problems\": 0"), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"scope_semantic_coverage_truncated\""), body)
+        assertTrue(body.contains("\"scope_file_diagnostics_complete\": false"), body)
     }
 
     @Test
@@ -1777,6 +1849,91 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test truncated scope diagnostics cannot publish a clean snapshot`() {
+        val resolvedFiles = (1..26).map { index ->
+            mockk<VirtualFile>().also { file ->
+                every { file.path } returns "/tmp/TestProject/src/File$index.kt"
+            }
+        }
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "inspectCaptureScopeFiles",
+            Project::class.java,
+            String::class.java,
+            String::class.java,
+            List::class.java,
+            String::class.java,
+            List::class.java,
+        )
+        method.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = method.invoke(
+            handler,
+            mockProject,
+            "changed_files",
+            null,
+            null,
+            null,
+            resolvedFiles,
+        ) as Map<String, Any?>
+
+        assertEquals(26, diagnostic["scope_file_resolved_count"])
+        assertEquals(25, diagnostic["scope_file_diagnostic_count"])
+        assertEquals(25, diagnostic["scope_file_diagnostics_limit"])
+        assertEquals(1, diagnostic["scope_file_diagnostics_omitted_count"])
+        assertEquals(true, diagnostic["scope_file_diagnostics_truncated"])
+        assertEquals(false, diagnostic["scope_file_diagnostics_complete"])
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 1L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = "Inspection completed cleanly.",
+                captureScope = InspectionCaptureScope(scopeParam = "changed_files"),
+                captureDiagnostic = diagnostic,
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis(),
+                viewReadyOk = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.SCOPE_NOT_COVERED, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    fun `test findings snapshot preserves truncated scope diagnostics`() {
+        val diagnostic = mapOf<String, Any?>(
+            "scope_file_resolved_count" to 26,
+            "scope_file_diagnostic_count" to 25,
+            "scope_file_diagnostics_omitted_count" to 1,
+            "scope_file_diagnostics_truncated" to true,
+            "scope_file_diagnostics_complete" to false,
+            "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(mapOf("description" to "actionable finding")),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 1L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(scopeParam = "changed_files"),
+                captureDiagnostic = diagnostic,
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis(),
+                viewReadyOk = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(diagnostic, snapshot.captureDiagnostic)
+    }
+
+    @Test
     fun `test completed scoped run without snapshot remains unknown`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -2497,6 +2654,8 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"error\": \"inspection_in_progress\""))
         assertTrue(body.contains("\"status\": \"inspection_in_progress\""))
         assertTrue(body.contains("\"inspection_run_id\": 42"))
+        assertTrue(body.contains("\"project_key\": \"path:/tmp/TestProject\""))
+        assertTrue(body.contains("\"session_id\""))
     }
 
     @Test

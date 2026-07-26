@@ -293,7 +293,7 @@ class InspectionSnapshotStateTest {
         assertEquals(projectState, snapshot.projectState)
         assertEquals(42L, snapshot.runId)
         assertEquals(1000L, snapshot.triggerTimeMs)
-        assertEquals(null, snapshot.captureDiagnostic)
+        assertEquals(mapOf("exit_reason" to "timeout"), snapshot.captureDiagnostic)
         assertEquals(null, snapshot.captureIncompleteReason)
     }
 

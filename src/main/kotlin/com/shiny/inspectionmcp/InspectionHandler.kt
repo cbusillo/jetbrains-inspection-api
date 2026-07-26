@@ -90,6 +90,7 @@ import javax.swing.tree.TreeNode
 
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
+private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 private val CLIENT_RUN_ID_PATTERN = Regex(
@@ -249,6 +250,7 @@ internal data class InspectionCaptureSnapshotInput(
 
 internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
+    val scopeFileDiagnosticsComplete = input.captureDiagnostic?.get("scope_file_diagnostics_complete") != false
     return when {
         input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
             problems = input.bestResults,
@@ -257,11 +259,12 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = input.bestSource,
             captureScope = input.captureScope,
+            captureDiagnostic = input.captureDiagnostic,
             runId = input.runId,
             triggerTimeMs = input.triggerTimeMs,
         )
 
-        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED -> InspectionResultsSnapshot(
+        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED && scopeFileDiagnosticsComplete -> InspectionResultsSnapshot(
             problems = emptyList(),
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
@@ -279,7 +282,11 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             projectState = input.projectState,
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
             source = if (input.viewReadyOk) "inspection_view" else "tool_window",
-            note = input.emptyNote,
+            note = if (!scopeFileDiagnosticsComplete) {
+                "Inspection scope diagnostics did not cover every resolved file, so a clean result could not be proven."
+            } else {
+                input.emptyNote
+            },
             captureScope = input.captureScope,
             captureDiagnostic = input.captureDiagnostic,
             captureIncompleteReason = captureIncompleteReason,
@@ -642,6 +649,8 @@ internal class BadRequestException(
 
 internal class InspectionRunConflictException(
     val runId: Long,
+    val projectKey: String,
+    val sessionId: String,
 ) : RuntimeException("Inspection run $runId is already in progress for this project.")
 
 internal fun projectKey(project: Project): String {
@@ -1144,6 +1153,7 @@ internal fun classifyCaptureIncompleteReason(
     val inspectionViewObservationCount = (diagnostic["inspection_view_observation_count"] as? Number)?.toInt() ?: 0
 
     return when {
+        diagnostic["scope_file_diagnostics_complete"] == false -> CaptureIncompleteReason.SCOPE_NOT_COVERED
         exitReason == "helper_plugin_error" -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
         exitReason == CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue ->
             CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL
@@ -1400,6 +1410,7 @@ class InspectionHandler : HttpRequestHandler() {
             payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete" -> {
                 (payload["capture_incomplete_reason"] as? String) ?: "capture_incomplete"
             }
+            hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload) -> "scope_semantic_coverage_truncated"
             payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
             status == "scope_mismatch" -> "scope_mismatch"
@@ -1437,6 +1448,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Trigger and wait for a fresh inspection whose scope covers the requested problems scope."
             "scope_not_covered" ->
                 "Trigger and wait for a fresh inspection with a valid explicit scope before reporting GREEN or RED."
+            "scope_semantic_coverage_truncated" ->
+                "Update the plugin/helper proof path so every resolved file has semantic diagnostics, then rerun inspection."
             "ambiguous_route" ->
                 "Pass project_key, project_path, or worktree_path so the plugin can inspect the exact project."
             "session_drift" ->
@@ -1459,6 +1472,7 @@ class InspectionHandler : HttpRequestHandler() {
         val inspectionRunId = (payload["inspection_run_id"] as? Number)?.toLong()
         val currentRunId = inspectionRunId ?: (payload["run_id"] as? Number)?.toLong()
         val captureIncompleteReason = payload["capture_incomplete_reason"] as? String
+        val incompleteScopeDiagnostics = hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload)
         val proofStatus = when {
             payload["session_drift"] == true -> "failed"
             payload["ambiguous"] == true -> "failed"
@@ -1466,6 +1480,7 @@ class InspectionHandler : HttpRequestHandler() {
             status == "no_project" || completionReason == "no_project" -> "failed"
             payload["results_may_be_stale"] == true -> "failed"
             payload["capture_incomplete"] == true -> "failed"
+            incompleteScopeDiagnostics -> "failed"
             payload["timed_out"] == true -> "failed"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "pending"
             payload["clean_inspection"] == true -> "complete"
@@ -1488,7 +1503,11 @@ class InspectionHandler : HttpRequestHandler() {
             "profile" to profileResolved,
             "expected_profile" to profileRequested,
             "snapshot_outcome" to payload["snapshot_outcome"],
-            "capture_complete" to (payload["capture_incomplete"] != true && status != "capture_incomplete"),
+            "capture_complete" to (
+                payload["capture_incomplete"] != true &&
+                    status != "capture_incomplete" &&
+                    !incompleteScopeDiagnostics
+                ),
             "inspection_completed" to (payload["inspection_in_progress"] != true && payload["is_scanning"] != true),
             "indexing_complete" to (payload["indexing"] != true),
             "session_fresh" to (payload["session_drift"] != true),
@@ -1504,6 +1523,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (payload["unavailable"] == true) failures.add("inspection_api_unavailable")
         if (payload["results_may_be_stale"] == true || status == "stale_results" || completionReason == "stale_results") failures.add("stale_results")
         if (payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete") failures.add(captureIncompleteReason ?: "capture_incomplete")
+        if (incompleteScopeDiagnostics) failures.add("scope_semantic_coverage_truncated")
         if (payload["timed_out"] == true || completionReason == "timeout") failures.add("timeout")
         if (payload["indexing"] == true) failures.add("indexing")
         if (payload["is_scanning"] == true || payload["inspection_in_progress"] == true) failures.add("inspection_still_running")
@@ -1513,6 +1533,14 @@ class InspectionHandler : HttpRequestHandler() {
         if (snapshotRunId != null && currentRunId != null && snapshotRunId != currentRunId) failures.add("run_mismatch")
 
         return InspectionProof(proof, failures.distinct())
+    }
+
+    private fun hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *> ?: return false
+        if (diagnostic["scope_file_diagnostics_complete"] != false) return false
+        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
+        val problems = payload["problems"] as? List<*>
+        return (totalProblems ?: problems?.size ?: 0) <= 0
     }
 
     private fun requestAttribution(
@@ -2104,6 +2132,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "status" to "inspection_in_progress",
                     "inspection_in_progress" to true,
                     "inspection_run_id" to error.runId,
+                    "project_key" to error.projectKey,
+                    "session_id" to error.sessionId,
                     "message" to error.message,
                 ),
             ),
@@ -3327,14 +3357,9 @@ class InspectionHandler : HttpRequestHandler() {
                 addInspectionVerdict(response)
                 return formatJsonManually(response)
             }
-            val problems = if (snapshot?.problems != null) {
-                snapshot.problems
-            } else {
-                val extractor = enhancedTreeExtractorFactory()
-                extractor.extractAllProblems(project)
-            }
+            val problems = snapshot?.problems.orEmpty()
             
-            if (problems.isNotEmpty() || hasSnapshot) {
+            if (snapshot != null) {
                 val scopeProblemMatcher = buildScopeProblemMatcher(
                     project = project,
                     scopeParam = requestedScope,
@@ -3385,11 +3410,11 @@ class InspectionHandler : HttpRequestHandler() {
                         "problem_type" to (problemType ?: "all"),
                         "file_pattern" to (filePattern ?: "all")
                     ),
-                    "method" to (snapshot?.source ?: "enhanced_tree")
+                    "method" to snapshot.source
                 )
-                snapshot?.runId?.let { response["snapshot_run_id"] = it }
-                snapshot?.triggerTimeMs?.let { response["snapshot_trigger_time_ms"] = it }
-                snapshot?.captureDiagnostic?.let { response["capture_diagnostic"] = it }
+                snapshot.runId?.let { response["snapshot_run_id"] = it }
+                snapshot.triggerTimeMs?.let { response["snapshot_trigger_time_ms"] = it }
+                snapshot.captureDiagnostic?.let { response["capture_diagnostic"] = it }
                 response["snapshot_change_kind"] = resolveSnapshotStaleness(project, snapshot).changeKind
                 addInspectionVerdict(response)
                 
@@ -5502,7 +5527,13 @@ class InspectionHandler : HttpRequestHandler() {
                 runState
             }
         }
-        activeRun?.let { throw InspectionRunConflictException(it.runId) }
+        activeRun?.let {
+            throw InspectionRunConflictException(
+                runId = it.runId,
+                projectKey = key,
+                sessionId = InspectionIdeSession.sessionId,
+            )
+        }
         return runState
     }
 
@@ -5987,13 +6018,21 @@ class InspectionHandler : HttpRequestHandler() {
             scopeLower == "current_file" -> "current_file_resolved"
             else -> "project_scope"
         }
-        val inspectedFiles = selectedFiles.take(25).map { inspectVirtualFileForDiagnostics(project, it) }
+        val inspectedFiles = selectedFiles
+            .take(MAX_SCOPE_FILE_DIAGNOSTICS)
+            .map { inspectVirtualFileForDiagnostics(project, it) }
+        val omittedDiagnosticCount = (selectedFiles.size - inspectedFiles.size).coerceAtLeast(0)
         return mapOf(
             "scope_kind" to (scopeLower ?: "whole_project"),
             "scope_resolution_status" to resolutionStatus,
             "scope_directory_requested" to directoryParam,
             "scope_file_requested_count" to (files?.size ?: 0),
             "scope_file_resolved_count" to selectedFiles.size,
+            "scope_file_diagnostic_count" to inspectedFiles.size,
+            "scope_file_diagnostics_limit" to MAX_SCOPE_FILE_DIAGNOSTICS,
+            "scope_file_diagnostics_omitted_count" to omittedDiagnosticCount,
+            "scope_file_diagnostics_truncated" to (omittedDiagnosticCount > 0),
+            "scope_file_diagnostics_complete" to (omittedDiagnosticCount == 0),
             "scope_file_diagnostics" to inspectedFiles,
         ).filterValues { it != null }
     }

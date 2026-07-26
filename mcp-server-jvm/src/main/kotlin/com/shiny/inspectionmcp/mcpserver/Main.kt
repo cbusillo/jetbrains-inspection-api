@@ -52,6 +52,14 @@ private val prettyJson = Json {
 private data class PinnedInspectionTarget(
     val projectKey: String,
     val sessionId: String,
+    val inspectionRunId: Long?,
+    val problemsScopeParams: List<Pair<String, String>>,
+)
+
+private data class RoutedInspectionResponse(
+    val result: JsonElement,
+    val target: InspectionTarget,
+    val pinnedInspection: PinnedInspectionTarget?,
 )
 
 private object VersionAnchor
@@ -189,7 +197,7 @@ internal class ToolExecutor(
     private val targetResolver: InspectionTargetResolver = FixedTargetResolver(baseUrl, idePort),
     private val httpClientFactory: () -> HttpClient = ::buildHttpClient,
 ) {
-    private val pinnedSessionsByProject = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val pinnedInspectionsByProject = java.util.concurrent.ConcurrentHashMap<String, PinnedInspectionTarget>()
     private var latestTriggeredTarget: PinnedInspectionTarget? = null
 
     companion object {
@@ -220,7 +228,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. Follow-ups pin the accepted inspection_run_id, and omitted scope arguments reuse the triggered scope and its defining parameters. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -285,9 +293,9 @@ internal class ToolExecutor(
     private fun handleGetProblems(args: JsonObject): JsonObject {
         return try {
             val params = mutableListOf<Pair<String, String>>()
-            val scope = args.string("scope") ?: "whole_project"
             val severity = args.string("severity") ?: "all"
-            params += "scope" to scope
+            val explicitScopeParams = problemsScopeParams(args, defaultWholeProject = false)
+            params += explicitScopeParams
             params += "severity" to severity
             args.string("problem_type")?.let { params += "problem_type" to it }
             args.string("file_pattern")?.let { params += "file_pattern" to it }
@@ -299,11 +307,23 @@ internal class ToolExecutor(
                 params += "include_stale" to "true"
             }
 
-            val (result, target) = routeAndGet(autoPinnedArgs(args), "problems", params)
-            ensurePinnedSessionStillValid("inspection_get_problems", target, result)
+            val routed = routeAndGet(
+                args = autoPinnedArgs(args),
+                endpoint = "problems",
+                params = params,
+                pinInspectionRun = true,
+                inheritProblemsScope = explicitScopeParams.isEmpty(),
+            )
+            ensurePinnedSessionStillValid(
+                "inspection_get_problems",
+                routed.target,
+                routed.result,
+                routed.pinnedInspection,
+            )
+            val result = failClosedOnInspectionRunChange(routed.result, routed.pinnedInspection)
 
             val guidance = buildProblemsGuidance(result)
-            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(routed.target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting problems: ${error.message}")
@@ -338,12 +358,52 @@ internal class ToolExecutor(
                 ?.let { params += "max_files" to it.toString() }
             args.string("profile")?.let { params += "profile" to it }
 
-            val (result, target) = routeAndGet(autoPinnedArgs(args), "trigger", params)
-            pinTriggeredSession(target, result)
+            val routed = routeAndGet(autoPinnedArgs(args), "trigger", params)
+            val inspectionRunConflict = isInspectionRunConflict(routed.result)
+            val acceptedRunId = acceptedTriggerRunId(routed.result)
+            val pinned = acceptedRunId != null && pinTriggeredInspection(
+                target = routed.target,
+                result = routed.result,
+                inspectionRunId = acceptedRunId,
+                problemsScopeParams = problemsScopeParams(args, defaultWholeProject = true),
+            )
+            val result = when {
+                isInspectionRunConflict(routed.result) -> failClosedTriggerResult(
+                    routed.result,
+                    reason = "inspection_proof_failed",
+                    message = "Another client already has an inspection in progress, and MCP cannot prove that run used this request's scope and profile.",
+                    nextAction = "Wait for the active run to finish, then trigger a fresh inspection.",
+                )
+                acceptedRunId == null -> failClosedTriggerResult(
+                    routed.result,
+                    reason = "run_identity_missing",
+                    message = "The trigger response did not provide a positive inspection run ID.",
+                    nextAction = "Trigger inspection again before waiting for or fetching results.",
+                )
+                !pinned -> failClosedTriggerResult(
+                    routed.result,
+                    reason = "target_identity_missing",
+                    message = "The trigger response did not provide enough project/session identity to pin follow-up requests.",
+                    nextAction = "Resolve the exact project route and trigger inspection again.",
+                )
+                else -> routed.result
+            }
+            if (!pinned) {
+                clearPinnedInspection(
+                    target = routed.target,
+                    result = routed.result,
+                    preserveMatchingConflict = inspectionRunConflict,
+                )
+            }
 
+            val followUp = if (pinned) {
+                "Use inspection_wait (preferred) or poll inspection_get_status before fetching problems."
+            } else {
+                "Do not use this run as verdict evidence; trigger a fresh inspection before waiting or fetching problems."
+            }
             val text = prettyJson.encodeToString(JsonElement.serializer(), result) +
-                "\n\nUse inspection_wait (preferred) or poll inspection_get_status before fetching problems." +
-                buildRouteGuidance(target)
+                "\n\n$followUp" +
+                buildRouteGuidance(routed.target)
             toolText(text)
         } catch (error: Exception) {
             toolError("Error triggering inspection: ${error.message}")
@@ -354,11 +414,16 @@ internal class ToolExecutor(
         return try {
             val params = mutableListOf<Pair<String, String>>()
 
-            val (result, target) = routeAndGet(autoPinnedArgs(args), "status", params)
-            ensurePinnedSessionStillValid("inspection_get_status", target, result)
+            val routed = routeAndGet(autoPinnedArgs(args), "status", params)
+            ensurePinnedSessionStillValid(
+                "inspection_get_status",
+                routed.target,
+                routed.result,
+                routed.pinnedInspection,
+            )
 
-            val guidance = buildStatusGuidance(result)
-            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
+            val guidance = buildStatusGuidance(routed.result)
+            val text = renderInspectionResult(routed.result, guidance, buildRouteGuidance(routed.target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting status: ${error.message}")
@@ -377,15 +442,63 @@ internal class ToolExecutor(
             if (pollProvided || pollMs != 1000) params += "poll_ms" to pollMs.toString()
 
             val requestTimeoutSeconds = ((timeoutMs + 5000) / 1000).toLong().coerceAtLeast(15L)
-            val (result, target) = routeAndGet(autoPinnedArgs(args), "wait", params, requestTimeoutSeconds)
-            ensurePinnedSessionStillValid("inspection_wait", target, result)
+            val routed = routeAndGet(
+                args = autoPinnedArgs(args),
+                endpoint = "wait",
+                params = params,
+                timeoutSeconds = requestTimeoutSeconds,
+                pinInspectionRun = true,
+            )
+            ensurePinnedSessionStillValid(
+                "inspection_wait",
+                routed.target,
+                routed.result,
+                routed.pinnedInspection,
+            )
+            val result = failClosedOnInspectionRunChange(routed.result, routed.pinnedInspection)
 
             val guidance = buildWaitGuidance(result)
-            val text = renderInspectionResult(result, guidance, buildRouteGuidance(target))
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(routed.target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error waiting for inspection: ${error.message}")
         }
+    }
+
+    private fun problemsScopeParams(
+        args: JsonObject,
+        defaultWholeProject: Boolean,
+    ): List<Pair<String, String>> {
+        val directory = args.string("dir") ?: args.string("directory") ?: args.string("path")
+        val files = args.fileValues()
+        val requestedScope = args.string("scope")?.trim()?.takeIf { it.isNotEmpty() }
+        val scope = requestedScope ?: when {
+            !directory.isNullOrBlank() -> "directory"
+            files.isNotEmpty() -> "files"
+            defaultWholeProject -> "whole_project"
+            else -> null
+        }
+        val normalizedScope = scope?.lowercase()
+        val params = mutableListOf<Pair<String, String>>()
+        scope?.let { params += "scope" to it }
+        if (normalizedScope == "directory" && !directory.isNullOrBlank()) {
+            params += "dir" to directory
+        }
+        if (normalizedScope == "files") {
+            files.forEach { params += "file" to it }
+        }
+        if (normalizedScope == "changed_files") {
+            val includeUnversioned = args["include_unversioned"]?.jsonPrimitive?.booleanOrNull ?: true
+            params += "include_unversioned" to includeUnversioned.toString()
+            args.string("changed_files_mode")
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { params += "changed_files_mode" to it }
+            args.int("max_files")
+                ?.takeIf { it > 0 }
+                ?.let { params += "max_files" to it.toString() }
+        }
+        return params
     }
 
     private fun routeAndGet(
@@ -393,12 +506,35 @@ internal class ToolExecutor(
         endpoint: String,
         params: MutableList<Pair<String, String>>,
         timeoutSeconds: Long = 10,
-    ): Pair<JsonElement, InspectionTarget> {
+        pinInspectionRun: Boolean = false,
+        inheritProblemsScope: Boolean = false,
+    ): RoutedInspectionResponse {
         var target = targetResolver.resolve(args)
         val clientRunId = UUID.randomUUID().toString()
-        val requestParams = params.withRoutingSelector(args, target) + ("client_run_id" to clientRunId)
+
+        fun requestParamsForTarget(currentTarget: InspectionTarget): Pair<List<Pair<String, String>>, PinnedInspectionTarget?> {
+            val pinnedInspection = pinnedInspectionFor(args, currentTarget)
+            val inheritedParams = if (inheritProblemsScope && pinnedInspection != null) {
+                pinnedInspection.problemsScopeParams + params
+            } else {
+                params
+            }
+            val runPinnedParams = if (pinInspectionRun && pinnedInspection?.inspectionRunId != null) {
+                inheritedParams + ("inspection_run_id" to pinnedInspection.inspectionRunId.toString())
+            } else {
+                inheritedParams
+            }
+            return (runPinnedParams.withRoutingSelector(args, currentTarget) + ("client_run_id" to clientRunId)) to
+                pinnedInspection
+        }
+
+        var (requestParams, pinnedInspection) = requestParamsForTarget(target)
         try {
-            return httpGet(buildUrl("${target.baseUrl}/$endpoint", requestParams), timeoutSeconds, target.idePort) to target
+            return RoutedInspectionResponse(
+                result = httpGet(buildUrl("${target.baseUrl}/$endpoint", requestParams), timeoutSeconds, target.idePort),
+                target = target,
+                pinnedInspection = pinnedInspection,
+            )
         } catch (error: RuntimeException) {
             if (!targetResolver.autoRouting || !isRetryableRouteFailure(error)) {
                 throw error
@@ -406,8 +542,14 @@ internal class ToolExecutor(
             val excludedSessionIds = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull?.let(::setOf)
                 ?: emptySet()
             target = targetResolver.resolve(args, excludedSessionIds = excludedSessionIds)
-            val retryParams = params.withRoutingSelector(args, target) + ("client_run_id" to clientRunId)
-            return httpGet(buildUrl("${target.baseUrl}/$endpoint", retryParams), timeoutSeconds, target.idePort) to target
+            val retryRequest = requestParamsForTarget(target)
+            requestParams = retryRequest.first
+            pinnedInspection = retryRequest.second
+            return RoutedInspectionResponse(
+                result = httpGet(buildUrl("${target.baseUrl}/$endpoint", requestParams), timeoutSeconds, target.idePort),
+                target = target,
+                pinnedInspection = pinnedInspection,
+            )
         }
     }
 
@@ -425,19 +567,118 @@ internal class ToolExecutor(
         return routedParams
     }
 
-    private fun pinTriggeredSession(target: InspectionTarget, result: JsonElement) {
+    private fun pinTriggeredInspection(
+        target: InspectionTarget,
+        result: JsonElement,
+        inspectionRunId: Long,
+        problemsScopeParams: List<Pair<String, String>>,
+    ): Boolean {
         val resultObject = result as? JsonObject
-        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
-            ?: resultObject?.get("project_key")?.jsonPrimitive?.contentOrNull
-            ?: return
-        val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull
-            ?: resultObject?.get("session_id")?.jsonPrimitive?.contentOrNull
-            ?: return
-        pinnedSessionsByProject[projectKey] = sessionId
-        latestTriggeredTarget = PinnedInspectionTarget(projectKey, sessionId)
+        val targetProjectKey = target.project?.nonBlankString("project_key")
+        val responseProjectKey = resultObject?.nonBlankString("project_key")
+        if (targetProjectKey != null && responseProjectKey != null && targetProjectKey != responseProjectKey) {
+            return false
+        }
+        val projectKey = targetProjectKey
+            ?: responseProjectKey
+            ?: return false
+        val targetSessionId = target.identity?.nonBlankString("session_id")
+        val responseSessionId = resultObject?.nonBlankString("session_id")
+        if (targetSessionId != null && responseSessionId != null && targetSessionId != responseSessionId) {
+            return false
+        }
+        val sessionId = targetSessionId
+            ?: responseSessionId
+            ?: return false
+        val pinnedInspection = PinnedInspectionTarget(
+            projectKey = projectKey,
+            sessionId = sessionId,
+            inspectionRunId = inspectionRunId,
+            problemsScopeParams = problemsScopeParams,
+        )
+        pinnedInspectionsByProject[projectKey] = pinnedInspection
+        latestTriggeredTarget = pinnedInspection
+        return true
     }
 
-    private fun ensurePinnedSessionStillValid(toolName: String, target: InspectionTarget, result: JsonElement) {
+    private fun acceptedTriggerRunId(result: JsonElement): Long? {
+        val resultObject = result as? JsonObject ?: return null
+        if (resultObject.string("status") != "triggered") return null
+        return resultObject.positiveLong("inspection_run_id")
+            ?: resultObject.positiveLong("run_id")
+    }
+
+    private fun isInspectionRunConflict(result: JsonElement): Boolean {
+        val resultObject = result as? JsonObject ?: return false
+        return resultObject.string("status") == "inspection_in_progress" ||
+            resultObject.string("error") == "inspection_in_progress" ||
+            resultObject["inspection_in_progress"]?.jsonPrimitive?.booleanOrNull == true
+    }
+
+    private fun failClosedTriggerResult(
+        result: JsonElement,
+        reason: String,
+        message: String,
+        nextAction: String,
+    ): JsonElement {
+        val resultObject = result as? JsonObject
+        return buildJsonObject {
+            resultObject?.forEach { (key, value) -> put(key, value) }
+            put("inspection_verdict", JsonPrimitive("UNKNOWN"))
+            put("inspection_verdict_reason", JsonPrimitive(reason))
+            put("inspection_verdict_message", JsonPrimitive(message))
+            put("inspection_verdict_next_action", JsonPrimitive(nextAction))
+        }
+    }
+
+    private fun clearPinnedInspection(
+        target: InspectionTarget,
+        result: JsonElement,
+        preserveMatchingConflict: Boolean,
+    ) {
+        val resultObject = result as? JsonObject
+        val projectKey = target.project?.nonBlankString("project_key")
+            ?: resultObject?.nonBlankString("project_key")
+        if (projectKey != null) {
+            val existingPin = pinnedInspectionsByProject[projectKey]
+            val observedRunId = resultObject?.positiveLong("inspection_run_id")
+                ?: resultObject?.positiveLong("run_id")
+            val observedSessionId = resultObject?.nonBlankString("session_id")
+                ?: target.identity?.nonBlankString("session_id")
+            if (
+                preserveMatchingConflict &&
+                existingPin?.inspectionRunId != null &&
+                existingPin.inspectionRunId == observedRunId &&
+                (observedSessionId == null || existingPin.sessionId == observedSessionId)
+            ) {
+                return
+            }
+            pinnedInspectionsByProject.remove(projectKey)
+            if (latestTriggeredTarget?.projectKey == projectKey) {
+                latestTriggeredTarget = null
+            }
+        } else if (!targetResolver.autoRouting) {
+            pinnedInspectionsByProject.clear()
+            latestTriggeredTarget = null
+        }
+    }
+
+    private fun pinnedInspectionFor(args: JsonObject, target: InspectionTarget): PinnedInspectionTarget? {
+        val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
+            ?: args.string("project_key")?.trim()?.takeIf { it.isNotEmpty() }
+        if (projectKey != null) {
+            return pinnedInspectionsByProject[projectKey]
+        }
+        return latestTriggeredTarget.takeIf { !targetResolver.autoRouting }
+    }
+
+    private fun ensurePinnedSessionStillValid(
+        toolName: String,
+        target: InspectionTarget,
+        result: JsonElement,
+        pinnedInspection: PinnedInspectionTarget?,
+    ) {
+        val expectedSession = pinnedInspection ?: return
         val resultObject = result as? JsonObject
         val projectKey = target.project?.get("project_key")?.jsonPrimitive?.contentOrNull
             ?: resultObject?.get("project_key")?.jsonPrimitive?.contentOrNull
@@ -445,14 +686,82 @@ internal class ToolExecutor(
         val sessionId = target.identity?.get("session_id")?.jsonPrimitive?.contentOrNull
             ?: resultObject?.get("session_id")?.jsonPrimitive?.contentOrNull
             ?: return
-        val pinnedSessionId = pinnedSessionsByProject[projectKey] ?: return
-        if (pinnedSessionId != sessionId) {
-            pinnedSessionsByProject.remove(projectKey)
-            if (latestTriggeredTarget?.projectKey == projectKey) {
+        if (expectedSession.projectKey != projectKey || expectedSession.sessionId != sessionId) {
+            pinnedInspectionsByProject.remove(expectedSession.projectKey, expectedSession)
+            if (latestTriggeredTarget?.projectKey == expectedSession.projectKey) {
                 latestTriggeredTarget = null
             }
             throw RuntimeException(
                 "The JetBrains IDE session for project $projectKey restarted before $toolName completed. Re-trigger inspection for this project."
+            )
+        }
+    }
+
+    private fun failClosedOnInspectionRunChange(
+        result: JsonElement,
+        pinnedInspection: PinnedInspectionTarget?,
+    ): JsonElement {
+        val expectedRunId = pinnedInspection?.inspectionRunId ?: return result
+        val resultObject = result as? JsonObject ?: return result
+        val inspectionRunId = resultObject.positiveLong("inspection_run_id")
+            ?: resultObject.positiveLong("run_id")
+        val snapshotRunId = resultObject.positiveLong("snapshot_run_id")
+        val inspectionInProgress = resultObject["inspection_in_progress"]?.jsonPrimitive?.booleanOrNull == true
+        val status = resultObject.string("status")
+        val resultBearingPayload = resultObject["total_problems"] != null || resultObject["problems"] is JsonArray
+        val terminalResult = !inspectionInProgress && (
+            resultObject["wait_completed"]?.jsonPrimitive?.booleanOrNull == true ||
+                resultObject.string("inspection_verdict") in setOf("GREEN", "RED", "UNKNOWN") ||
+                resultBearingPayload ||
+                status in setOf("results_available", "no_results", "capture_incomplete", "stale_results", "clean", "findings")
+            )
+        if (terminalResult && inspectionRunId == null && snapshotRunId == null) {
+            return buildJsonObject {
+                put("status", JsonPrimitive("run_identity_missing"))
+                put("run_identity_missing", JsonPrimitive(true))
+                put("expected_inspection_run_id", JsonPrimitive(expectedRunId))
+                put(
+                    "message",
+                    JsonPrimitive("The terminal inspection response omitted the run identity accepted by inspection_trigger."),
+                )
+                put("inspection_verdict", JsonPrimitive("UNKNOWN"))
+                put("inspection_verdict_reason", JsonPrimitive("run_identity_missing"))
+                put(
+                    "inspection_verdict_message",
+                    JsonPrimitive("Inspection evidence without run attribution cannot establish GREEN or RED."),
+                )
+                put(
+                    "inspection_verdict_next_action",
+                    JsonPrimitive("Trigger a fresh inspection and keep that inspection_run_id pinned through wait and problems retrieval."),
+                )
+            }
+        }
+        val runChanged = resultObject.string("status") == "run_changed" ||
+            (inspectionRunId != null && inspectionRunId != expectedRunId) ||
+            (!inspectionInProgress && snapshotRunId != null && snapshotRunId != expectedRunId)
+        if (!runChanged) {
+            return result
+        }
+
+        return buildJsonObject {
+            put("status", JsonPrimitive("run_changed"))
+            put("run_changed", JsonPrimitive(true))
+            put("expected_inspection_run_id", JsonPrimitive(expectedRunId))
+            inspectionRunId?.let { put("inspection_run_id", JsonPrimitive(it)) }
+            snapshotRunId?.let { put("snapshot_run_id", JsonPrimitive(it)) }
+            put(
+                "message",
+                JsonPrimitive("A different inspection run or snapshot replaced the run accepted by inspection_trigger."),
+            )
+            put("inspection_verdict", JsonPrimitive("UNKNOWN"))
+            put("inspection_verdict_reason", JsonPrimitive("run_changed"))
+            put(
+                "inspection_verdict_message",
+                JsonPrimitive("Inspection evidence belongs to a different run and cannot establish GREEN or RED."),
+            )
+            put(
+                "inspection_verdict_next_action",
+                JsonPrimitive("Trigger a fresh inspection and keep that inspection_run_id pinned through wait and problems retrieval."),
             )
         }
     }
@@ -760,6 +1069,18 @@ internal class ToolExecutor(
         val completionReason = obj["completion_reason"]?.jsonPrimitive?.contentOrNull
         val captureReason = obj["capture_incomplete_reason"]?.jsonPrimitive?.contentOrNull
         return when {
+            obj["run_identity_missing"]?.jsonPrimitive?.booleanOrNull == true || status == "run_identity_missing" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "run_identity_missing",
+                "The inspection response omitted the run identity accepted by inspection_trigger.",
+                "Trigger a fresh inspection and keep that inspection_run_id pinned through wait and problems retrieval.",
+            )
+            obj["run_changed"]?.jsonPrimitive?.booleanOrNull == true || status == "run_changed" -> McpInspectionVerdict(
+                "UNKNOWN",
+                "run_changed",
+                "Inspection evidence belongs to a different run than the one accepted by inspection_trigger.",
+                "Trigger a fresh inspection and keep that inspection_run_id pinned through wait and problems retrieval.",
+            )
             obj["session_drift"]?.jsonPrimitive?.booleanOrNull == true -> McpInspectionVerdict(
                 "UNKNOWN",
                 "session_drift",
@@ -1021,10 +1342,28 @@ internal class ToolExecutor(
                 put(
                     "scope",
                     stringProp(
-                        "Scope: whole_project | current_file | <path substring>",
-                        defaultValue = "whole_project"
+                        "Scope: whole_project | current_file | directory | changed_files | files | <legacy path substring>. Omit after inspection_trigger to reuse that run's scope."
                     )
                 )
+                put("dir", stringProp("Directory for scope=directory"))
+                put("directory", stringProp("Alias for dir"))
+                put("path", stringProp("Alias for dir"))
+                put("files", buildJsonObject {
+                    put("type", JsonPrimitive("array"))
+                    put("description", JsonPrimitive("File paths for scope=files"))
+                    put("items", buildJsonObject {
+                        put("type", JsonPrimitive("string"))
+                    })
+                })
+                put("include_unversioned", buildJsonObject {
+                    put("type", JsonPrimitive("boolean"))
+                    put("description", JsonPrimitive("changed_files only; default true"))
+                })
+                put(
+                    "changed_files_mode",
+                    enumProp("changed_files only: all | staged | unstaged", listOf("all", "staged", "unstaged"))
+                )
+                put("max_files", intProp("Positive cap for scope=changed_files only", minimum = 1))
                 put(
                     "severity",
                     stringProp(
@@ -1198,6 +1537,23 @@ internal class ToolExecutor(
 
 private fun JsonObject.string(name: String): String? {
     return (this[name] as? JsonPrimitive)?.contentOrNull
+}
+
+private fun JsonObject.nonBlankString(name: String): String? {
+    return string(name)?.trim()?.takeIf { it.isNotEmpty() }
+}
+
+private fun JsonObject.fileValues(): List<String> {
+    return when (val element = this["files"]) {
+        is JsonArray -> element.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        is JsonPrimitive -> element.contentOrNull?.let(::listOf).orEmpty()
+        else -> emptyList()
+    }
+}
+
+private fun JsonObject.positiveLong(name: String): Long? {
+    val value = (this[name] as? JsonPrimitive)?.longOrNull ?: return null
+    return value.takeIf { it > 0 }
 }
 
 private fun JsonObject.optionalProject(): String? {

@@ -103,6 +103,14 @@ class McpServerTest {
         assertEquals(180000, timeout?.get("default")?.jsonPrimitive?.intOrNull)
         assertEquals(1000, timeout?.get("minimum")?.jsonPrimitive?.intOrNull)
         assertEquals(300000, timeout?.get("maximum")?.jsonPrimitive?.intOrNull)
+
+        val problems = tools?.first { it.jsonObject["name"]?.jsonPrimitive?.content == "inspection_get_problems" }?.jsonObject
+        val problemProperties = problems?.get("inputSchema")?.jsonObject?.get("properties")?.jsonObject
+        assertTrue(
+            problemProperties?.keys?.containsAll(
+                setOf("scope", "dir", "directory", "path", "files", "include_unversioned", "changed_files_mode", "max_files"),
+            ) == true,
+        )
     }
 
     @Test
@@ -439,8 +447,167 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionFollowUpsPinAcceptedRunAndFailClosedOnReplacement() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val waitResponse = """{"wait_completed":true,"completion_reason":"clean","inspection_run_id":7,"inspection_verdict":"GREEN","total_problems":0}"""
+        val replacementProblems = """{"status":"results_available","inspection_run_id":8,"snapshot_run_id":8,"inspection_verdict":"RED","total_problems":1,"problems_shown":1,"problems":[{"description":"replacement finding"}]}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/wait" to MockResponse(waitResponse),
+                "/api/inspection/problems" to MockResponse(replacementProblems),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            assertFalse(wait.isError(), wait.firstText())
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+
+            val problems = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = problems.firstText()
+            assertFalse(problems.isError(), text)
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+            assertTrue(text.contains("\"status\": \"run_changed\""), text)
+            assertTrue(text.contains("\"expected_inspection_run_id\": 7"), text)
+            assertTrue(text.contains("\"inspection_run_id\": 8"), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_changed"), text)
+            assertFalse(text.contains("replacement finding"), text)
+            assertFalse(text.contains("VERDICT: RED"), text)
+        }
+    }
+
+    @Test
+    fun inspectionWaitFailsClosedOnReplacementRun() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val replacementWait = """{"wait_completed":true,"completion_reason":"clean","inspection_run_id":8,"inspection_verdict":"GREEN","total_problems":0}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/wait" to MockResponse(replacementWait),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            val text = wait.firstText()
+
+            assertFalse(wait.isError(), text)
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+            assertTrue(text.contains("\"status\": \"run_changed\""), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_changed"), text)
+            assertFalse(text.contains("VERDICT: GREEN"), text)
+        }
+    }
+
+    @Test
+    fun inspectionWaitFailsClosedWhenTerminalRunIdentityIsMissing() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val unpinnedWait = """{"wait_completed":true,"completion_reason":"clean","inspection_verdict":"GREEN","total_problems":0}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/wait" to MockResponse(unpinnedWait),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            val text = wait.firstText()
+
+            assertFalse(wait.isError(), text)
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+            assertTrue(text.contains("\"status\": \"run_identity_missing\""), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_identity_missing"), text)
+            assertFalse(text.contains("VERDICT: GREEN"), text)
+        }
+    }
+
+    @Test
+    fun inspectionProblemsFailClosedWhenTerminalRunIdentityIsMissing() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val unpinnedProblems = """{"total_problems":1,"problems":[{"description":"unattributed finding"}]}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/problems" to MockResponse(unpinnedProblems),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val problems = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = problems.firstText()
+
+            assertFalse(problems.isError(), text)
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+            assertTrue(text.contains("\"status\": \"run_identity_missing\""), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_identity_missing"), text)
+            assertFalse(text.contains("unattributed finding"), text)
+            assertFalse(text.contains("VERDICT: RED"), text)
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsDefaultsToTriggeredScopeParameters() {
+        val cases = listOf(
+            buildJsonObject {
+                put("scope", JsonPrimitive("current_file"))
+            } to listOf("scope=current_file"),
+            buildJsonObject {
+                put("scope", JsonPrimitive("directory"))
+                put("dir", JsonPrimitive("src/main"))
+            } to listOf("scope=directory", "dir=src%2Fmain"),
+            buildJsonObject {
+                put("scope", JsonPrimitive("files"))
+                put("files", JsonArray(listOf(JsonPrimitive("src/a.kt"), JsonPrimitive("src/b.kt"))))
+            } to listOf("scope=files", "file=src%2Fa.kt", "file=src%2Fb.kt"),
+            buildJsonObject {
+                put("scope", JsonPrimitive("changed_files"))
+                put("include_unversioned", JsonPrimitive(false))
+                put("changed_files_mode", JsonPrimitive("staged"))
+                put("max_files", JsonPrimitive(25))
+            } to listOf(
+                "scope=changed_files",
+                "include_unversioned=false",
+                "changed_files_mode=staged",
+                "max_files=25",
+            ),
+        )
+
+        cases.forEach { (triggerArgs, expectedQueryParts) ->
+            MockIdeServer(
+                mapOf(
+                    "/api/inspection/trigger" to MockResponse(
+                        """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}""",
+                    ),
+                ),
+            ).use { server ->
+                server.start()
+                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+                executor.handleToolCall(buildToolCall("inspection_trigger", triggerArgs))
+                val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+
+                assertFalse(result.isError(), result.firstText())
+                val query = server.lastQuery.get().orEmpty()
+                expectedQueryParts.forEach { expected -> assertTrue(query.contains(expected), query) }
+                assertTrue(query.contains("inspection_run_id=7"), query)
+                assertFalse(query.contains("scope=whole_project"), query)
+            }
+        }
+    }
+
+    @Test
     fun inspectionTriggerReturnsExistingRunForConflict() {
-        val response = """{"error":"inspection_in_progress","status":"inspection_in_progress","inspection_in_progress":true,"inspection_run_id":42}"""
+        val response = """{"error":"inspection_in_progress","status":"inspection_in_progress","inspection_in_progress":true,"inspection_run_id":42,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
         MockIdeServer(mapOf("/api/inspection/trigger" to MockResponse(response, 409))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -451,7 +618,90 @@ class McpServerTest {
             assertFalse(result.isError())
             assertTrue(text.contains("\"status\": \"inspection_in_progress\""))
             assertTrue(text.contains("\"inspection_run_id\": 42"))
-            assertTrue(text.contains("inspection_wait"))
+            assertTrue(text.contains("\"inspection_verdict\": \"UNKNOWN\""), text)
+            assertTrue(text.contains("\"inspection_verdict_reason\": \"inspection_proof_failed\""), text)
+            assertTrue(text.contains("Do not use this run as verdict evidence"), text)
+
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            assertFalse(wait.isError(), wait.firstText())
+            assertFalse(server.lastQuery.get().orEmpty().contains("inspection_run_id=42"))
+        }
+    }
+
+    @Test
+    fun matchingTriggerConflictPreservesPreviouslyAcceptedPin() {
+        val projectKey = "path:/tmp/jetbrains-inspection-api"
+        MockIdeServer(
+            responseSequences = mapOf(
+                "/api/inspection/trigger" to listOf(
+                    MockResponse("""{"status":"triggered","run_id":7,"project_key":"$projectKey","session_id":"session"}"""),
+                    MockResponse(
+                        """{"error":"inspection_in_progress","status":"inspection_in_progress","inspection_in_progress":true,"inspection_run_id":7,"project_key":"$projectKey","session_id":"session"}""",
+                        409,
+                    ),
+                ),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val accepted = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            assertFalse(accepted.isError(), accepted.firstText())
+            val conflict = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            assertTrue(conflict.firstText().contains("\"inspection_verdict\": \"UNKNOWN\""), conflict.firstText())
+
+            val wait = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
+            assertFalse(wait.isError(), wait.firstText())
+            assertTrue(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+        }
+    }
+
+    @Test
+    fun malformedFixedTargetTriggerClearsStoredProjectPin() {
+        val projectKey = "path:/tmp/jetbrains-inspection-api"
+        MockIdeServer(
+            responseSequences = mapOf(
+                "/api/inspection/trigger" to listOf(
+                    MockResponse("""{"status":"triggered","run_id":7,"project_key":"$projectKey","session_id":"session"}"""),
+                    MockResponse("""{"status":"triggered","run_id":8}"""),
+                ),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val malformed = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            assertTrue(malformed.firstText().contains("\"inspection_verdict_reason\": \"target_identity_missing\""))
+
+            executor.handleToolCall(
+                buildToolCall(
+                    "inspection_wait",
+                    buildJsonObject { put("project_key", JsonPrimitive(projectKey)) },
+                ),
+            )
+            assertFalse(server.lastQuery.get().orEmpty().contains("inspection_run_id=7"))
+        }
+    }
+
+    @Test
+    fun blankTriggerIdentityFailsClosed() {
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(
+                    """{"status":"triggered","run_id":7,"project_key":" ","session_id":" "}""",
+                ),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertFalse(result.isError(), text)
+            assertTrue(text.contains("\"inspection_verdict\": \"UNKNOWN\""), text)
+            assertTrue(text.contains("\"inspection_verdict_reason\": \"target_identity_missing\""), text)
         }
     }
 
@@ -1492,6 +1742,7 @@ private class MockIdeServer(
     private val identityBasePath: String? = "/tmp/jetbrains-inspection-api",
     private val identityProjectFilePath: String? = null,
     private val identitySessionId: String = "session",
+    responseSequences: Map<String, List<MockResponse>> = emptyMap(),
 ) : AutoCloseable {
     private val server: HttpServer = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
     val port: Int = server.address.port
@@ -1505,16 +1756,16 @@ private class MockIdeServer(
                 """{"status":"results_available","total_problems":2,"problems_shown":2,"problems":[]}"""
             ),
             "/api/inspection/trigger" to MockResponse(
-                """{"status":"triggered","message":"Inspection triggered","project_key":"${identityProjectKey()}","session_id":"${identitySessionId}-${port}"}"""
+                """{"status":"triggered","message":"Inspection triggered","run_id":7,"project_key":"${identityProjectKey()}","session_id":"${identitySessionId}-${port}"}"""
             ),
             "/api/inspection/wait" to MockResponse("""{"wait_completed":true,"completion_reason":"results"}"""),
             "/api/inspection/identity" to MockResponse(identityBody()),
         )
 
-        val responses = defaults.toMutableMap()
-        responses.putAll(overrides)
-        responses.forEach { (path, response) ->
-            register(path, response)
+        val responses = defaults.toMutableMap().apply { putAll(overrides) }
+        (responses.keys + responseSequences.keys).forEach { path ->
+            val sequence = responseSequences[path] ?: listOfNotNull(responses[path])
+            register(path, sequence)
         }
     }
 
@@ -1526,9 +1777,11 @@ private class MockIdeServer(
         server.stop(0)
     }
 
-    private fun register(path: String, response: MockResponse) {
+    private fun register(path: String, responses: List<MockResponse>) {
+        val responseIndex = AtomicInteger(0)
         server.createContext(path) { exchange ->
             lastQuery.set(exchange.requestURI.rawQuery)
+            val response = responses[responseIndex.getAndIncrement().coerceAtMost(responses.lastIndex)]
             val bytes = response.body.toByteArray(StandardCharsets.UTF_8)
             exchange.responseHeaders.add("Content-Type", "application/json")
             exchange.sendResponseHeaders(response.status, bytes.size.toLong())
