@@ -157,7 +157,9 @@ curl "http://127.0.0.1:63340/api/inspection/route?cwd=/Users/me/Developer/MyProj
 Stateless skill or script clients should resolve a route, then pass the returned
 `project_key` and `session_id` to trigger, wait, status, and problems calls. If
 the IDE restarts, those calls return HTTP 409 with `session_drift: true`; resolve
-again and re-trigger before trusting cached results.
+again and re-trigger before trusting cached results. After trigger accepts a
+run, pass its `run_id` as `inspection_run_id` to wait and problems so replacement
+runs fail closed instead of substituting evidence.
 
 ## Result Schema
 
@@ -216,8 +218,10 @@ Typical response (truncated):
 
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
-- `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list.
+- `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list. Without a run-attributed snapshot, `/problems` does not promote a live tool-window scrape to current evidence; the verdict remains `UNKNOWN` even if a generic Problems/Inspection tree contains findings.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `scope_not_covered`, `current_run_psi_churn`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
+- Targeted file-scope capture diagnostics inspect at most 25 resolved files and expose `scope_file_diagnostic_count`, `scope_file_diagnostics_limit`, `scope_file_diagnostics_omitted_count`, `scope_file_diagnostics_truncated`, and `scope_file_diagnostics_complete`. If a would-be clean capture does not cover every resolved file, it becomes `capture_incomplete`/`scope_not_covered` instead of GREEN.
+- Finding-bearing snapshots retain the same scope diagnostics. If later severity or problem filters reduce those findings to zero while diagnostics are incomplete, the filtered response remains `UNKNOWN`/`scope_semantic_coverage_truncated` instead of becoming GREEN.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale. `current_run_psi_churn` means the plugin proved that a PSI tick was benign for the originating inspection; `changed_files` captures require an exact resolved file set, unchanged inspection inputs, and matching scoped results. Later unverified changes still make the snapshot stale.
 - `session_drift: true` means the client sent an old `session_id`; the IDE/plugin session restarted or the port was reused.
@@ -373,6 +377,7 @@ closes, or the IDE built-in HTTP server event loop.
 - `project` (optional): Blank or omitted uses the focused or active open project. Nonblank values must match an open project.
 - `project_key`, `project_path`, `worktree_path`, `cwd` (optional): Route selectors for stateless clients.
 - `session_id` (optional): Expected IDE session; mismatches return HTTP 409 with `session_drift: true`.
+- `inspection_run_id` (optional): Expected run accepted from trigger (`run_id`). If another run or snapshot replaced it, the response is `run_changed`/`UNKNOWN` and withholds verdict-grade findings.
 - `client_run_id` (optional): Caller-owned UUID used to correlate a multi-request helper or MCP run. Non-UUID values are returned only as a short SHA-256 correlation hash.
 
 For stale responses, the same scope filters are applied before cached counts and
@@ -612,13 +617,24 @@ The bundled JVM MCP (Model Context Protocol) server provides integration for any
   - Also supports `scope=files` with `files=[...]`, and `scope=changed_files` with `include_unversioned`, `changed_files_mode`, and `max_files`.
 - **`inspection_get_status()`** - Checks inspection status
 - **`inspection_wait(timeout_ms?, poll_ms?)`** - Long-poll until results or timeout
-- **`inspection_get_problems(scope?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. The MCP wrapper forwards `whole_project`, `current_file`, or legacy path-substring `scope` values plus `file_pattern`; it does not currently expose HTTP-only `file`, `files`, `dir`, `directory`, `changed_files_mode`, or `max_files` problem-filter parameters. `include_stale` returns cached stale findings for diagnostics only.
+- **`inspection_get_problems(scope?, dir?, files?, include_unversioned?, changed_files_mode?, max_files?, severity?, problem_type?, file_pattern?, limit?, offset?, include_stale?)`** - Gets inspection problems with filtering and pagination. It supports the same targeted scope-defining parameters as trigger; omitted scope arguments reuse the accepted trigger scope. `include_stale` returns cached stale findings for diagnostics only.
 
 All four routed inspection tools accept `project_key`, `project_path`,
 `worktree_path`, `cwd`, `project`, and `ide`. Prefer the exact key or root from
 `inspection_list_projects`; use `cwd` for nested-directory containment. A
 selector-less trigger, wait, status, or problems call stays pinned to the last
 successfully triggered project while that IDE session remains valid.
+
+After `inspection_trigger`, MCP also pins the accepted `run_id` as
+`inspection_run_id` through wait and problems retrieval. A replacement run or
+snapshot is returned as `run_changed` with an `UNKNOWN` verdict, and replacement
+findings are withheld. Unless the caller supplies a new problems scope, MCP also
+reuses the trigger's `scope`, `dir`, `files`, `include_unversioned`,
+`changed_files_mode`, and `max_files` values so targeted runs do not widen or
+produce a deterministic scope mismatch. A concurrent 409 run is foreign and
+remains `UNKNOWN`; MCP does not pin it without configuration proof. Terminal
+wait/problems responses that omit run identity also fail closed as
+`run_identity_missing`.
 
 `inspection_trigger(profile=...)` expects the exact inspection profile name.
 Omit it to use the target project's current profile. The trigger acknowledges
