@@ -57,6 +57,8 @@ private val pluginBuildInfo: InspectionPluginBuildInfo by lazy { loadInspectionP
 
 internal fun inspectionPluginVersion(): String? = pluginBuildInfo.version
 
+internal fun inspectionIdeChannel(isEap: Boolean): String = if (isEap) "eap" else "stable"
+
 internal fun buildInspectionIdentity(): Map<String, Any?> {
     val appInfo = ApplicationInfo.getInstance()
     val buildInfo = pluginBuildInfo
@@ -69,6 +71,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "ide_name" to appInfo.fullApplicationName,
         "ide_version" to appInfo.fullVersion,
         "ide_product_code" to resolveIdeProductCode(appInfo),
+        "ide_channel" to inspectionIdeChannel(appInfo.isEAP),
         "plugin_version" to buildInfo.version,
         "plugin_build_fingerprint" to buildInfo.fingerprint,
         "plugin_build_commit" to buildInfo.commit,

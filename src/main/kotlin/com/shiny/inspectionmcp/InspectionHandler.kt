@@ -1606,12 +1606,18 @@ class InspectionHandler : HttpRequestHandler() {
             "plugin_version" to identity["plugin_version"],
             "ide_product_code" to identity["ide_product_code"],
             "ide_version" to identity["ide_version"],
+            "ide_channel" to identity["ide_channel"],
         ).filterValues { value -> value != null }
         target["inspection_attribution"] = attribution
     }
 
     private fun attributionClassification(code: String): String {
         return when (code) {
+            "clean",
+            "findings",
+            "no_matching_findings",
+            "clean_confirmed",
+            "actionable_findings" -> "decisive"
             "inspection_api_http_error",
             "invalid_api_response",
             "extractor_failure",
@@ -1723,8 +1729,9 @@ class InspectionHandler : HttpRequestHandler() {
         val payload = runCatching {
             INSPECTION_RESPONSE_JSON.parseToJsonElement(jsonContent) as? JsonObject
         }.getOrNull() ?: return jsonContent
+        val verdict = (payload["inspection_verdict"] as? JsonPrimitive)?.contentOrNull
         if (
-            (payload["inspection_verdict"] as? JsonPrimitive)?.contentOrNull != "UNKNOWN" ||
+            verdict !in setOf("GREEN", "RED", "UNKNOWN") ||
             payload["inspection_attribution"] is JsonObject
         ) {
             return jsonContent
@@ -1734,7 +1741,11 @@ class InspectionHandler : HttpRequestHandler() {
             return (payload[name] as? JsonPrimitive)?.contentOrNull
                 ?: (route?.get(name) as? JsonPrimitive)?.contentOrNull
         }
-        val code = stringField("inspection_verdict_reason") ?: "unattributed_unknown"
+        val code = stringField("inspection_verdict_reason") ?: when (verdict) {
+            "GREEN" -> "clean"
+            "RED" -> "findings"
+            else -> "unattributed_unknown"
+        }
         val responseContext = mutableMapOf<String, Any?>(
             "session_id" to stringField("session_id"),
             "project_instance_id" to stringField("project_instance_id"),
@@ -3020,6 +3031,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "ide_name" to null,
                 "ide_version" to null,
                 "ide_product_code" to null,
+                "ide_channel" to null,
                 "plugin_version" to null,
                 "plugin_build_fingerprint" to null,
                 "plugin_build_commit" to null,
@@ -3063,6 +3075,7 @@ class InspectionHandler : HttpRequestHandler() {
             "name" to identity["ide_name"],
             "version" to identity["ide_version"],
             "product_code" to identity["ide_product_code"],
+            "channel" to identity["ide_channel"],
             "pid" to identity["pid"],
             "plugin_version" to identity["plugin_version"],
             "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
@@ -3114,6 +3127,7 @@ class InspectionHandler : HttpRequestHandler() {
             ideProductCode = this["ide_product_code"] as? String,
             pluginVersion = this["plugin_version"] as? String,
             pluginBuildFingerprint = this["plugin_build_fingerprint"] as? String,
+            ideChannel = this["ide_channel"] as? String,
             projects = ((this["open_projects"] as? List<*>)?.filterIsInstance<Map<String, Any?>>()
                 ?: openProjectIdentities()).map { identity ->
                 InspectionRouteProject(
