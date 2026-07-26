@@ -235,6 +235,42 @@
     }
   },
   {
+    "name": "scope-semantic-coverage-truncated",
+    "endpoint": "problems",
+    "http_status": 200,
+    "mcp_tool": "inspection_get_problems",
+    "payload": {
+      "status": "results_available",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "scope_semantic_coverage_truncated",
+      "inspection_verdict_message": "Semantic coverage diagnostics were incomplete.",
+      "inspection_verdict_next_action": "Update the plugin or helper and rerun inspection.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "legitimate_fail_closed",
+        "code": "scope_semantic_coverage_truncated",
+        "phase": "problems",
+        "endpoint": "/api/inspection/problems",
+        "http_status": 200,
+        "request_id": "15151515-1515-4515-8515-151515151515",
+        "client_run_id": "16161616-1616-4616-8616-161616161616",
+        "project_key_hash": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      }
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "scope_semantic_coverage_truncated",
+      "phase": "problems",
+      "helper_bucket": "tool_bug",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=scope_semantic_coverage_truncated",
+        "\"classification\": \"legitimate_fail_closed\"",
+        "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      ]
+    }
+  },
+  {
     "name": "unattributed-unknown",
     "payload": {
       "status": "mystery",
