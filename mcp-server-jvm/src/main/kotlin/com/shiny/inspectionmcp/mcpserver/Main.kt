@@ -1045,6 +1045,7 @@ internal class ToolExecutor(
 
     private fun inspectionVerdictGuidance(obj: JsonObject, fallback: McpInspectionVerdict?): String? {
         val blockerVerdict = blockerVerdict(obj)
+        val proofFailureCodes = proofFailures(obj)
         val pluginVerdict = obj["inspection_verdict"]?.jsonPrimitive?.contentOrNull
             ?.takeIf { it == "GREEN" || it == "RED" || it == "UNKNOWN" }
             ?.let { verdict ->
@@ -1058,7 +1059,16 @@ internal class ToolExecutor(
                 )
             }
 
-        val verdict = blockerVerdict ?: pluginVerdict ?: fallback ?: return null
+        val verdict = pluginVerdict
+            ?.takeIf { verdict ->
+                blockerVerdict?.reason == "inspection_proof_failed" &&
+                    verdict.verdict == "UNKNOWN" &&
+                    verdict.reason in proofFailureCodes
+            }
+            ?: blockerVerdict
+            ?: pluginVerdict
+            ?: fallback
+            ?: return null
         return "\n\nVERDICT: ${verdict.verdict} reason=${verdict.reason}" +
             "\nMESSAGE: ${verdict.message}" +
             "\nNEXT_ACTION: ${verdict.nextAction}"
