@@ -647,6 +647,87 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test filtered findings stay decisive when aggregate semantic proof covers bounded diagnostics`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "file" to "/tmp/TestProject/src/Warning.kt",
+                        "severity" to "warning",
+                        "description" to "warning outside requested filter",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                captureDiagnostic = mapOf(
+                    "scope_file_resolved_count" to 26,
+                    "scope_file_diagnostic_count" to 25,
+                    "scope_file_diagnostics_omitted_count" to 1,
+                    "scope_file_diagnostics_truncated" to true,
+                    "scope_file_diagnostics_complete" to false,
+                    "scope_file_semantic_evidence_complete" to true,
+                    "scope_file_semantic_coverage" to mapOf(
+                        "schema_version" to 1,
+                        "evaluated_file_count" to 26,
+                        "unproven_file_count" to 0,
+                        "missing_file_count" to 0,
+                        "reason_counts" to emptyMap<String, Int>(),
+                        "missing_files" to emptyList<Map<String, Any?>>(),
+                        "metadata_file_count" to 0,
+                        "metadata_files" to emptyList<Map<String, Any?>>(),
+                    ),
+                    "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+                ),
+                runId = 1L,
+            ),
+        )
+
+        val response = processGetRequest("/api/inspection/problems?severity=error")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertTrue(body.contains("\"total_problems\": 0"), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"GREEN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"no_matching_findings\""), body)
+        assertTrue(body.contains("\"scope_file_diagnostics_complete\": false"), body)
+        assertTrue(body.contains("\"scope_file_semantic_evidence_complete\": true"), body)
+    }
+
+    @Test
+    fun `test clean problems fail closed when aggregate semantic coverage is missing`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "test",
+                captureDiagnostic = semanticCoverageGapDiagnostic(),
+                runId = 1L,
+            ),
+        )
+
+        val response = processGetRequest("/api/inspection/problems")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertTrue(body.contains("\"total_problems\": 0"), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"scope_semantic_coverage_missing\""), body)
+        assertTrue(body.contains("\"classification\": \"configuration_blocked\""), body)
+    }
+
+    @Test
     fun `test problems endpoint does not refresh project state before reading snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -1167,6 +1248,7 @@ class InspectionHandlerTest {
 
         val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
@@ -1216,7 +1298,7 @@ class InspectionHandlerTest {
         val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
         assertEquals("inspection_input_validation", publishedSnapshot.source)
-        assertEquals(CaptureIncompleteReason.UNKNOWN, publishedSnapshot.captureIncompleteReason)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
         assertTrue(publishedSnapshot.problems.isEmpty())
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
@@ -1257,6 +1339,7 @@ class InspectionHandlerTest {
 
         val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
@@ -1292,6 +1375,7 @@ class InspectionHandlerTest {
 
         val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.HELPER_PLUGIN_ERROR, publishedSnapshot.captureIncompleteReason)
         assertEquals("validation_unavailable", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
@@ -1851,32 +1935,26 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test truncated scope diagnostics cannot publish a clean snapshot`() {
-        val resolvedFiles = (1..26).map { index ->
-            mockk<VirtualFile>().also { file ->
-                every { file.path } returns "/tmp/TestProject/src/File$index.kt"
-            }
+    fun `test bounded scope diagnostics can publish clean snapshot with complete semantic proof`() {
+        val fileDiagnostics = (1..26).map { index ->
+            mapOf<String, Any?>(
+                "path" to "/tmp/TestProject/src/File$index.kt",
+                "valid" to true,
+                "directory" to false,
+                "file_type" to "Kotlin",
+                "psi_language" to "kotlin",
+                "psi_class" to "org.jetbrains.kotlin.psi.KtFile",
+                "in_content" to true,
+            )
         }
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "inspectCaptureScopeFiles",
-            Project::class.java,
-            String::class.java,
-            String::class.java,
-            List::class.java,
-            String::class.java,
-            List::class.java,
+        val diagnostic = buildScopeFileDiagnosticPayload(
+            scopeKind = "changed_files",
+            resolutionStatus = "changed_files_resolved",
+            directoryParam = null,
+            requestedFileCount = 0,
+            resolvedFileCount = 26,
+            fileDiagnostics = fileDiagnostics,
         )
-        method.isAccessible = true
-        @Suppress("UNCHECKED_CAST")
-        val diagnostic = method.invoke(
-            handler,
-            mockProject,
-            "changed_files",
-            null,
-            null,
-            null,
-            resolvedFiles,
-        ) as Map<String, Any?>
 
         assertEquals(26, diagnostic["scope_file_resolved_count"])
         assertEquals(25, diagnostic["scope_file_diagnostic_count"])
@@ -1884,6 +1962,87 @@ class InspectionHandlerTest {
         assertEquals(1, diagnostic["scope_file_diagnostics_omitted_count"])
         assertEquals(true, diagnostic["scope_file_diagnostics_truncated"])
         assertEquals(false, diagnostic["scope_file_diagnostics_complete"])
+        assertEquals(true, diagnostic["scope_file_semantic_evidence_complete"])
+        @Suppress("UNCHECKED_CAST")
+        val semanticCoverage = diagnostic["scope_file_semantic_coverage"] as Map<String, Any?>
+        assertEquals(26, semanticCoverage["evaluated_file_count"])
+        assertEquals(0, semanticCoverage["unproven_file_count"])
+        assertEquals(0, semanticCoverage["missing_file_count"])
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 1L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = "Inspection completed cleanly.",
+                captureScope = InspectionCaptureScope(scopeParam = "changed_files"),
+                captureDiagnostic = diagnostic,
+                runId = 1L,
+                triggerTimeMs = System.currentTimeMillis(),
+                viewReadyOk = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
+        assertNull(snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    fun `test aggregate semantic proof preserves gaps beyond emitted diagnostics`() {
+        val semanticFiles = (1..25).map { index ->
+            mapOf<String, Any?>(
+                "path" to "/tmp/TestProject/src/File$index.py",
+                "valid" to true,
+                "directory" to false,
+                "file_type" to "Python",
+                "psi_language" to "Python",
+                "psi_class" to "com.jetbrains.python.psi.impl.PyFileImpl",
+                "in_content" to true,
+            )
+        }
+        val textOnlyFile = mapOf<String, Any?>(
+            "path" to "/tmp/TestProject/src/View.swift",
+            "valid" to true,
+            "directory" to false,
+            "file_type" to "TextMate",
+            "psi_language" to "textmate",
+            "psi_class" to "org.jetbrains.plugins.textmate.psi.TextMateFile",
+            "in_content" to true,
+        )
+
+        val diagnostic = buildScopeFileDiagnosticPayload(
+            scopeKind = "changed_files",
+            resolutionStatus = "changed_files_resolved",
+            directoryParam = null,
+            requestedFileCount = 0,
+            resolvedFileCount = 26,
+            fileDiagnostics = semanticFiles + textOnlyFile,
+        )
+
+        @Suppress("UNCHECKED_CAST")
+        val semanticCoverage = diagnostic["scope_file_semantic_coverage"] as Map<String, Any?>
+        @Suppress("UNCHECKED_CAST")
+        val reasonCounts = semanticCoverage["reason_counts"] as Map<String, Int>
+        @Suppress("UNCHECKED_CAST")
+        val missingFiles = semanticCoverage["missing_files"] as List<Map<String, Any?>>
+        assertEquals(true, diagnostic["scope_file_semantic_evidence_complete"])
+        assertEquals(1, semanticCoverage["missing_file_count"])
+        assertEquals(1, reasonCounts["non_semantic_fallback"])
+        assertEquals("/tmp/TestProject/src/View.swift", missingFiles.single()["path"])
+    }
+
+    @Test
+    fun `test legacy truncated scope diagnostics still fail closed`() {
+        val diagnostic = mapOf<String, Any?>(
+            "scope_file_resolved_count" to 26,
+            "scope_file_diagnostic_count" to 25,
+            "scope_file_diagnostics_omitted_count" to 1,
+            "scope_file_diagnostics_truncated" to true,
+            "scope_file_diagnostics_complete" to false,
+            "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+        )
 
         val snapshot = buildInspectionCaptureSnapshot(
             InspectionCaptureSnapshotInput(
@@ -2218,6 +2377,44 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"code\": \"clean_confirmed\""), body)
         assertTrue(body.contains("\"inspection_run_id\": 9"), body)
         assertTrue(body.contains("\"client_run_id\": \"cccccccc-cccc-4ccc-8ccc-cccccccccccc\""), body)
+    }
+
+    @Test
+    fun `test clean status fails closed when aggregate semantic coverage is missing`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 10L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureDiagnostic = semanticCoverageGapDiagnostic(),
+                runId = 10L,
+            ),
+        )
+
+        val response = processGetRequest("/api/inspection/status")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertTrue(body.contains("\"clean_inspection\": false"), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertTrue(body.contains("\"inspection_verdict_reason\": \"scope_semantic_coverage_missing\""), body)
+        assertTrue(body.contains("\"classification\": \"configuration_blocked\""), body)
     }
 
     @Test
@@ -5324,6 +5521,36 @@ class InspectionHandlerTest {
         val targetKey = Paths.get(requireNotNull(project.basePath)).normalize().toAbsolutePath().toString()
         ownership[projectInstanceId(project)] = InspectionHandler.LifecycleOpenOwnership(leaseId, targetKey, project)
     }
+
+    private fun semanticCoverageGapDiagnostic(): Map<String, Any?> = mapOf(
+        "scope_file_resolved_count" to 26,
+        "scope_file_diagnostic_count" to 25,
+        "scope_file_diagnostics_truncated" to true,
+        "scope_file_diagnostics_complete" to false,
+        "scope_file_semantic_evidence_complete" to true,
+        "scope_file_semantic_coverage" to mapOf(
+            "schema_version" to 1,
+            "evaluated_file_count" to 26,
+            "unproven_file_count" to 0,
+            "missing_file_count" to 1,
+            "reason_counts" to mapOf("non_semantic_fallback" to 1),
+            "missing_files" to listOf(
+                mapOf(
+                    "path" to "/tmp/TestProject/src/View.swift",
+                    "valid" to true,
+                    "directory" to false,
+                    "file_type" to "TextMate",
+                    "psi_language" to "textmate",
+                    "psi_class" to "org.jetbrains.plugins.textmate.psi.TextMateFile",
+                    "in_content" to true,
+                    "reasons" to listOf("non_semantic_fallback"),
+                ),
+            ),
+            "metadata_file_count" to 0,
+            "metadata_files" to emptyList<Map<String, Any?>>(),
+        ),
+        "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+    )
 
     private fun processGetRequest(uri: String): FullHttpResponse {
         val urlDecoder = QueryStringDecoder(uri)

@@ -1045,6 +1045,7 @@ internal class ToolExecutor(
 
     private fun inspectionVerdictGuidance(obj: JsonObject, fallback: McpInspectionVerdict?): String? {
         val blockerVerdict = blockerVerdict(obj)
+        val proofFailureCodes = proofFailures(obj)
         val pluginVerdict = obj["inspection_verdict"]?.jsonPrimitive?.contentOrNull
             ?.takeIf { it == "GREEN" || it == "RED" || it == "UNKNOWN" }
             ?.let { verdict ->
@@ -1058,7 +1059,16 @@ internal class ToolExecutor(
                 )
             }
 
-        val verdict = blockerVerdict ?: pluginVerdict ?: fallback ?: return null
+        val verdict = pluginVerdict
+            ?.takeIf { verdict ->
+                blockerVerdict?.reason == "inspection_proof_failed" &&
+                    verdict.verdict == "UNKNOWN" &&
+                    verdict.reason in proofFailureCodes
+            }
+            ?: blockerVerdict
+            ?: pluginVerdict
+            ?: fallback
+            ?: return null
         return "\n\nVERDICT: ${verdict.verdict} reason=${verdict.reason}" +
             "\nMESSAGE: ${verdict.message}" +
             "\nNEXT_ACTION: ${verdict.nextAction}"
@@ -1180,6 +1190,8 @@ internal class ToolExecutor(
                 "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
             "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
+            "inspection_inputs_changed" ->
+                "Rerun inspection after project files, VCS state, and inspection settings finish changing."
             "timeout" ->
                 "Wait for indexing/scanning to settle or rerun with a larger timeout."
             "profile_resolution_error" ->

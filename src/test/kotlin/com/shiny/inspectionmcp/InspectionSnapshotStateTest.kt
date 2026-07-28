@@ -2158,6 +2158,14 @@ class InspectionSnapshotStateTest {
             classifyCaptureIncompleteReason(emptyMap(), snapshotChangeKind = "current_run_psi_churn"),
         )
         assertEquals(
+            CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED,
+            classifyCaptureIncompleteReason(mapOf("final_input_validation" to "inputs_changed")),
+        )
+        assertEquals(
+            CaptureIncompleteReason.HELPER_PLUGIN_ERROR,
+            classifyCaptureIncompleteReason(mapOf("final_input_validation" to "validation_unavailable")),
+        )
+        assertEquals(
             CaptureIncompleteReason.TIMEOUT,
             classifyCaptureIncompleteReason(
                 mapOf(

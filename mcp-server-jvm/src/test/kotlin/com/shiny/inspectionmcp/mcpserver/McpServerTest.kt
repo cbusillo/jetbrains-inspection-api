@@ -896,6 +896,21 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusProvidesInputChangeGuidance() {
+        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"inspection_inputs_changed","has_inspection_results":false,"clean_inspection":false}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertTrue(text.contains("reason=inspection_inputs_changed"))
+            assertTrue(text.contains("project files, VCS state, and inspection settings"))
+        }
+    }
+
+    @Test
     fun inspectionGetStatusProvidesProfileResolutionGuidance() {
         val response = """{"capture_incomplete":true,"capture_incomplete_reason":"profile_resolution_error","has_inspection_results":false,"clean_inspection":false}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
