@@ -98,6 +98,26 @@ private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 private val NON_SEMANTIC_SCOPE_FILE_VALUES = setOf("text", "plaintext", "textmate")
 private val NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS = setOf("plaintext", "textmate")
 private val PROJECT_METADATA_SCOPE_FILE_TYPES = setOf("ideamodule")
+private const val PROJECT_METADATA_SCOPE_FILE_ROLE = "project_metadata"
+private const val EXCLUDED_DEPENDENCY_LOCKFILE_SCOPE_FILE_ROLE = "excluded_dependency_lockfile"
+private val DEPENDENCY_LOCKFILE_NAMES = setOf(
+    "bun.lock",
+    "bun.lockb",
+    "cargo.lock",
+    "composer.lock",
+    "flake.lock",
+    "gemfile.lock",
+    "go.sum",
+    "npm-shrinkwrap.json",
+    "package-lock.json",
+    "package.resolved",
+    "packages.lock.json",
+    "pipfile.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "uv.lock",
+    "yarn.lock",
+)
 private val NON_ALPHANUMERIC_SCOPE_FILE_MARKER = Regex("[^a-z0-9]+")
 private val CLIENT_RUN_ID_PATTERN = Regex(
     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
@@ -278,8 +298,31 @@ internal fun scopeFileIsProjectMetadata(fileDiagnostic: Map<String, Any?>): Bool
         fileType in PROJECT_METADATA_SCOPE_FILE_TYPES
 }
 
+private fun scopeFileBasename(fileDiagnostic: Map<String, Any?>): String =
+    fileDiagnostic["path"]
+        ?.toString()
+        ?.replace('\\', '/')
+        ?.substringAfterLast('/')
+        ?.lowercase()
+        .orEmpty()
+
+internal fun scopeFileIsExcludedDependencyLockfile(fileDiagnostic: Map<String, Any?>): Boolean =
+    fileDiagnostic["directory"] != true &&
+        fileDiagnostic["valid"] == true &&
+        fileDiagnostic["diagnostic_error"]?.toString()?.isNotBlank() != true &&
+        fileDiagnostic["in_content"] == false &&
+        fileDiagnostic["is_excluded"] == true &&
+        scopeFileBasename(fileDiagnostic) in DEPENDENCY_LOCKFILE_NAMES
+
+internal fun scopeFileCoverageRole(fileDiagnostic: Map<String, Any?>): String? = when {
+    scopeFileIsProjectMetadata(fileDiagnostic) -> PROJECT_METADATA_SCOPE_FILE_ROLE
+    scopeFileIsExcludedDependencyLockfile(fileDiagnostic) -> EXCLUDED_DEPENDENCY_LOCKFILE_SCOPE_FILE_ROLE
+    else -> null
+}
+
 internal fun scopeFileSemanticCoverageReasons(fileDiagnostic: Map<String, Any?>): List<String> {
     if (fileDiagnostic["directory"] == true) return emptyList()
+    if (scopeFileCoverageRole(fileDiagnostic) != null) return emptyList()
 
     val reasons = mutableListOf<String>()
     val fileType = normalizedScopeFileMarker(fileDiagnostic["file_type"])
@@ -289,7 +332,7 @@ internal fun scopeFileSemanticCoverageReasons(fileDiagnostic: Map<String, Any?>)
         fileType in NON_SEMANTIC_SCOPE_FILE_VALUES ||
             psiLanguage in NON_SEMANTIC_SCOPE_FILE_VALUES ||
             NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS.any(psiClass::contains)
-    if (nonSemanticFallback && !scopeFileIsProjectMetadata(fileDiagnostic)) {
+    if (nonSemanticFallback) {
         reasons += "non_semantic_fallback"
     }
     if (fileDiagnostic["valid"] == false) reasons += "invalid_file"
@@ -313,7 +356,14 @@ internal fun buildScopeFileDiagnosticPayload(
         val reasons = scopeFileSemanticCoverageReasons(diagnostic)
         diagnostic.takeIf { reasons.isNotEmpty() }?.plus("reasons" to reasons)
     }
-    val metadataFiles = fileDiagnostics.filter(::scopeFileIsProjectMetadata)
+    val metadataFiles = fileDiagnostics.mapNotNull { diagnostic ->
+        scopeFileCoverageRole(diagnostic)?.let { role ->
+            diagnostic + mapOf(
+                "classification" to role,
+                "coverage_required" to false,
+            )
+        }
+    }
     val reasonCounts = missingFiles
         .flatMap { diagnostic -> (diagnostic["reasons"] as? List<*>)?.filterIsInstance<String>().orEmpty() }
         .groupingBy { it }
@@ -1324,6 +1374,18 @@ class InspectionHandler : HttpRequestHandler() {
         val project: Project,
     )
 
+    internal data class LifecycleContentRootReadiness(
+        val ready: Boolean,
+        val reason: String,
+        val targetKey: String,
+        val contentRootCount: Int = 0,
+        val sourceRootCount: Int = 0,
+        val moduleCount: Int = 0,
+        val targetInsideContent: Boolean = false,
+        val contentRootInsideTarget: Boolean = false,
+        val contentRoots: List<String> = emptyList(),
+    )
+
     private data class LifecycleCloseAttempt(
         val attempt: Int,
         val save: Boolean,
@@ -1378,6 +1440,8 @@ class InspectionHandler : HttpRequestHandler() {
             .refreshAndFindFileByPath(path)
             ?.refresh(false, true)
     }
+    internal var lifecycleContentRootReadinessProvider: (Project, String) -> LifecycleContentRootReadiness =
+        { project, targetKey -> inspectLifecycleContentRootReadiness(project, targetKey) }
     internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, beforeInit ->
         val openPath = canonicalTrustPath(path)
         ProjectManagerEx.getInstanceEx().openProject(
@@ -2464,6 +2528,10 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
 
+        val lifecycleReadiness = lifecycleContentRootReadinessProvider(
+            resolved.project,
+            requireNotNull(exactOwnership).targetKey,
+        )
         val closeToken = UUID.randomUUID().toString()
         val lease = InspectionProjectLease(
             closeToken = closeToken,
@@ -2487,6 +2555,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "project_key" to lease.projectKey,
                 "session_id" to InspectionIdeSession.sessionId,
                 "route" to routeMetadata(resolved),
+                "lifecycle_readiness" to lifecycleContentRootReadinessPayload(lifecycleReadiness),
                 "claimed_at_ms" to lease.claimedAtMs,
                 "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
             )
@@ -2511,7 +2580,11 @@ class InspectionHandler : HttpRequestHandler() {
         }
         unresolvedLifecycleOpenProjects[target.key]?.let { project ->
             if (isUnresolvedLifecycleOpenActive(project)) {
-                return lifecycleOpenStateUnknown(target)
+                if (isLifecycleOpenProjectUsable(target.key, project)) {
+                    unresolvedLifecycleOpenProjects.remove(target.key, project)
+                    return lifecycleOpenAlreadyOpen(project)
+                }
+                return lifecycleOpenStateUnknown(target, project)
             }
             unresolvedLifecycleOpenProjects.remove(target.key, project)
         }
@@ -2562,12 +2635,14 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     val initializedProject = AtomicReference<Project?>()
                     trustProjectPath(target.openPath)
+                    refreshProjectRoot(target.openPath.toString())
                     opened = openProjectPath(target.openPath) { project ->
                         if (initializedProject.compareAndSet(null, project) && requestedLeaseId != null) {
                             registerLifecycleOpenOwnership(project, requestedLeaseId, target.key)
                         }
                     }
                     if (opened != null) {
+                        refreshProjectRoot(target.openPath.toString())
                         keepOpeningGuard = true
                         releaseLifecycleOpenGuardWhenUsable(target.key, opened, request)
                     }
@@ -2626,17 +2701,14 @@ class InspectionHandler : HttpRequestHandler() {
                     while (openingProjectRequests.containsKey(key)) {
                         val nowMs = lifecycleOpenGuardNow()
                         val lifecycleComplete = runCatching {
-                            ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                                val isOpenProject = ProjectManager.getInstance().openProjects.any { openProject -> openProject === project }
-                                val isIdentifiableProject = isOpenProject && lifecycleOpenKeys(project).contains(key)
-                                val isUsableLifecycleProject = isIdentifiableProject && isUsableProject(project)
-                                observedOpenProject = observedOpenProject || isOpenProject
-                                unresolvedOpenState = !isUsableLifecycleProject && nowMs >= deadlineMs
-                                project.isDisposed ||
-                                    isUsableLifecycleProject ||
-                                    (observedOpenProject && !isOpenProject) ||
-                                    unresolvedOpenState
-                            }
+                            val readiness = lifecycleContentRootReadinessProvider(project, key)
+                            val isOpenProject = readiness.reason != "project_not_open"
+                            observedOpenProject = observedOpenProject || isOpenProject
+                            unresolvedOpenState = !readiness.ready && nowMs >= deadlineMs
+                            project.isDisposed ||
+                                readiness.ready ||
+                                (observedOpenProject && !isOpenProject) ||
+                                unresolvedOpenState
                         }.getOrDefault(false)
                         if (lifecycleComplete) {
                             return@executeOnPooledThread
@@ -2668,14 +2740,95 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun isLifecycleOpenProjectUsable(key: String, project: Project): Boolean {
+        return lifecycleContentRootReadinessProvider(project, key).ready
+    }
+
+    private fun inspectLifecycleContentRootReadiness(
+        project: Project,
+        targetKey: String,
+    ): LifecycleContentRootReadiness {
+        if (project.isDisposed) {
+            return LifecycleContentRootReadiness(false, "project_disposed", targetKey)
+        }
         return runCatching {
-            ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
-                isLifecycleOpenProject(project) &&
-                    ProjectManager.getInstance().openProjects.any { openProject -> openProject === project } &&
-                    lifecycleOpenKeys(project).contains(key) &&
-                    isUsableProject(project)
+            ApplicationManager.getApplication().runReadAction<LifecycleContentRootReadiness, Exception> {
+                when {
+                    project.isDisposed -> LifecycleContentRootReadiness(false, "project_disposed", targetKey)
+                    !ProjectManager.getInstance().openProjects.any { openProject -> openProject === project } ->
+                        LifecycleContentRootReadiness(false, "project_not_open", targetKey)
+                    !lifecycleOpenKeys(project).contains(targetKey) ->
+                        LifecycleContentRootReadiness(false, "route_mismatch", targetKey)
+                    !project.isInitialized ->
+                        LifecycleContentRootReadiness(false, "project_not_initialized", targetKey)
+                    else -> {
+                        val rootManager = ProjectRootManager.getInstance(project)
+                        val contentRoots = rootManager.contentRoots
+                            .mapNotNull(::localInspectionRootPath)
+                            .mapNotNull(::normalizeFileSystemPath)
+                            .distinct()
+                            .sorted()
+                        val sourceRootCount = rootManager.contentSourceRoots
+                            .mapNotNull(::localInspectionRootPath)
+                            .mapNotNull(::normalizeFileSystemPath)
+                            .distinct()
+                            .size
+                        val targetPath = canonicalTrustPath(Paths.get(targetKey))
+                        val targetInsideContent = contentRoots.any { contentRoot ->
+                            runCatching {
+                                targetPath.startsWith(canonicalTrustPath(Paths.get(contentRoot)))
+                            }.getOrDefault(false)
+                        }
+                        val contentRootInsideTarget = contentRoots.any { contentRoot ->
+                            runCatching {
+                                canonicalTrustPath(Paths.get(contentRoot)).startsWith(targetPath)
+                            }.getOrDefault(false)
+                        }
+                        val reason = when {
+                            contentRoots.isEmpty() -> "no_content_roots"
+                            !targetInsideContent && !contentRootInsideTarget -> "content_roots_outside_target"
+                            else -> "ready"
+                        }
+                        LifecycleContentRootReadiness(
+                            ready = reason == "ready",
+                            reason = reason,
+                            targetKey = targetKey,
+                            contentRootCount = contentRoots.size,
+                            sourceRootCount = sourceRootCount,
+                            moduleCount = ModuleManager.getInstance(project).modules.size,
+                            targetInsideContent = targetInsideContent,
+                            contentRootInsideTarget = contentRootInsideTarget,
+                            contentRoots = contentRoots.take(MAX_SCOPE_FILE_DIAGNOSTICS),
+                        )
+                    }
+                }
             }
-        }.getOrDefault(false)
+        }.getOrElse {
+            LifecycleContentRootReadiness(false, "readiness_unavailable", targetKey)
+        }
+    }
+
+    private fun lifecycleContentRootReadinessPayload(readiness: LifecycleContentRootReadiness): Map<String, Any?> {
+        return mapOf(
+            "ready" to readiness.ready,
+            "reason" to readiness.reason,
+            "target_key" to readiness.targetKey,
+            "content_root_count" to readiness.contentRootCount,
+            "source_root_count" to readiness.sourceRootCount,
+            "module_count" to readiness.moduleCount,
+            "target_inside_content" to readiness.targetInsideContent,
+            "content_root_inside_target" to readiness.contentRootInsideTarget,
+            "content_roots" to readiness.contentRoots,
+        )
+    }
+
+    private fun lifecycleContentRootReadinessForRoute(project: Project): Map<String, Any?>? {
+        val instanceId = projectInstanceId(project)
+        val ownership = lifecycleOpenOwnershipByProjectInstance[instanceId]
+            ?.takeIf { candidate -> candidate.project === project }
+            ?: return null
+        return lifecycleContentRootReadinessPayload(
+            lifecycleContentRootReadinessProvider(project, ownership.targetKey)
+        )
     }
 
     private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
@@ -2699,16 +2852,26 @@ class InspectionHandler : HttpRequestHandler() {
         ) to HttpResponseStatus.OK
     }
 
-    private fun lifecycleOpenStateUnknown(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+    private fun lifecycleOpenStateUnknown(
+        target: LifecycleOpenTarget,
+        project: Project,
+    ): Pair<Map<String, Any?>, HttpResponseStatus> {
+        val readiness = lifecycleContentRootReadinessProvider(project, target.key)
+        val contentRootFailure = readiness.reason in setOf("no_content_roots", "content_roots_outside_target")
         return mapOf(
             "status" to "failed",
             "opened" to false,
             "opening_scheduled" to false,
-            "reason" to "open_state_unknown",
-            "message" to "The IDE accepted the lifecycle open request but did not report the project before the guard timeout.",
+            "reason" to if (contentRootFailure) "project_content_roots_missing" else "open_state_unknown",
+            "message" to if (contentRootFailure) {
+                "The IDE opened the project but did not establish a content root covering the requested worktree before the guard timeout."
+            } else {
+                "The IDE accepted the lifecycle open request but did not report a ready project before the guard timeout."
+            },
             "worktree_path" to target.path.toString(),
             "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
+            "lifecycle_readiness" to lifecycleContentRootReadinessPayload(readiness),
         ) to HttpResponseStatus.CONFLICT
     }
 
@@ -3183,6 +3346,7 @@ class InspectionHandler : HttpRequestHandler() {
             "base_path" to routeBasePath(resolved.projectIdentity),
             "project_file_path" to resolved.projectIdentity["project_file_path"],
             "focused" to resolved.projectIdentity["focused"],
+            "lifecycle_readiness" to lifecycleContentRootReadinessForRoute(resolved.project),
             "ide" to ideRouteMetadata(resolved.identity),
             "score" to resolved.score,
         )
@@ -6392,7 +6556,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val projectIndex = ProjectFileIndex.getInstance(project)
                 val psiFile = PsiManager.getInstance(project).findFile(file)
                 val module = ModuleUtilCore.findModuleForFile(file, project)
-                mapOf(
+                val diagnostic = mapOf(
                     "path" to file.path,
                     "valid" to file.isValid,
                     "directory" to file.isDirectory,
@@ -6402,7 +6566,10 @@ class InspectionHandler : HttpRequestHandler() {
                     "module" to module?.name,
                     "in_content" to projectIndex.isInContent(file),
                     "in_source" to projectIndex.isInSourceContent(file),
+                    "is_excluded" to projectIndex.isExcluded(file),
                 ).filterValues { it != null }
+                scopeFileCoverageRole(diagnostic)?.let { role -> diagnostic + ("coverage_role" to role) }
+                    ?: diagnostic
             }
         } catch (e: Exception) {
             mapOf("path" to file.path, "diagnostic_error" to formatModelUnreadableReason("file_scope", e))
