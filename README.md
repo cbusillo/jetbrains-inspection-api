@@ -221,7 +221,7 @@ Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list. Without a run-attributed snapshot, `/problems` does not promote a live tool-window scrape to current evidence; the verdict remains `UNKNOWN` even if a generic Problems/Inspection tree contains findings.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `scope_not_covered`, `current_run_psi_churn`, `inspection_inputs_changed`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
-- Targeted file-scope capture emits at most 25 detailed file rows through `scope_file_diagnostics`, while `scope_file_semantic_coverage` records aggregate evaluated, unproven, missing, and project-metadata counts plus bounded missing-file examples for the complete resolved scope. `scope_file_diagnostics_truncated` therefore means only that detail rows were bounded; `scope_file_semantic_evidence_complete` proves whether every resolved file contributed semantic-coverage evidence. A would-be clean capture becomes `capture_incomplete`/`scope_not_covered` when that aggregate proof is incomplete, while proven TextMate/PlainText, invalid, outside-content, or diagnostic-error gaps return `UNKNOWN`/`scope_semantic_coverage_missing`. HTTP and MCP stay fail-closed; the external helper may explicitly allow text-only coverage with `--allow-text-only-coverage`.
+- Targeted file-scope capture emits at most 25 detailed file rows through `scope_file_diagnostics`, while `scope_file_semantic_coverage` records aggregate evaluated, unproven, missing, and project-metadata counts plus bounded missing-file examples for the complete resolved scope. `scope_file_diagnostics_truncated` therefore means only that detail rows were bounded; `scope_file_semantic_evidence_complete` proves whether every resolved file contributed semantic-coverage evidence. A valid recognized dependency lockfile receives `coverage_role: "excluded_dependency_lockfile"` only when `ProjectFileIndex.isExcluded(file)` is true; that narrow metadata classification does not require language-aware PSI. The same basename without explicit IDE exclusion, any arbitrary source file outside content, malformed roles, and all other proven TextMate/PlainText, invalid, outside-content, or diagnostic-error gaps remain `UNKNOWN`/`scope_semantic_coverage_missing`. HTTP and MCP stay fail-closed; the external helper may explicitly allow text-only coverage with `--allow-text-only-coverage`.
 - Finding-bearing snapshots retain the same scope diagnostics and aggregate proof. If later severity or problem filters reduce those findings to zero while aggregate evidence is incomplete or reports semantic gaps, the filtered response remains `UNKNOWN` with `scope_semantic_coverage_truncated` or `scope_semantic_coverage_missing` instead of becoming GREEN.
 - `status: "stale_results"` means project files changed after the last inspection. It is not a clean result. Cached findings are withheld by default; call `/problems?include_stale=true` only when explicitly diagnosing cached data.
 - `snapshot_change_kind` explains freshness classification when present. `snapshot_predates_current_trigger` and `unsaved_documents` are stale. `current_run_psi_churn` means the plugin proved that a PSI tick was benign for the originating inspection; `changed_files` captures require an exact resolved file set, unchanged inspection inputs, and matching scoped results. Later unverified changes still make the snapshot stale.
@@ -314,7 +314,9 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
 - `GET /api/inspection/lifecycle/open`: accepts `project_path` or
   `worktree_path`, returns immediately after scheduling an IDE open when the
   exact path is not already open, and uses the worktree directory name as the
-  project frame name. Scheduling a new open requires the current `session_id`
+  project frame name. Helper-owned opens run JetBrains project configurators
+  with VFS refresh enabled so raw directories can establish their module and
+  content-root model. Scheduling a new open requires the current `session_id`
   from `/identity`, the registry, or a prior `/route` response. Omitting it
   returns HTTP 400 with `reason: "missing_session_id"`; a stale value returns
   HTTP 409 with `session_drift: true`. Scheduled/opening responses include
@@ -331,7 +333,11 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `close_token` only when the supplied `lease_id` is bound to the exact project
   created by that lifecycle open. The authoritative response includes
   `ownership_proven: true`; preexisting, coalesced, mismatched, and untracked
-  projects return `status: "not_owned"` without a close token.
+  projects return `status: "not_owned"` without a close token. Helper-owned
+  routes and claims also include `lifecycle_readiness`; automation must wait
+  for `ready: true` before inspection. A project that remains
+  `no_content_roots` or `content_roots_outside_target` fails preparation while
+  retaining lease-bound close authority for cleanup.
 - `GET /api/inspection/lifecycle/close`: requires `project_key`,
   `project_instance_id`, `session_id`, and `close_token`, and accepts the
   original `lease_id` for an additional binding check. It closes the project

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import io.mockk.*
+import com.intellij.lang.Language
 import com.intellij.ide.DataManager
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.actionSystem.DataContext
@@ -12,9 +13,14 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.roots.ProjectRootManager
+import com.intellij.openapi.roots.ProjectFileIndex
+import com.intellij.openapi.module.ModuleManager
+import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -76,6 +82,7 @@ class InspectionHandlerTest {
     private lateinit var mockApplication: Application
 
     @Test
+    @Suppress("DEPRECATION")
     fun `lifecycle open task uses binary stable builder callback`() {
         val initializedProject = mockk<Project>()
         val capturedProject = AtomicReference<Project?>()
@@ -84,6 +91,8 @@ class InspectionHandlerTest {
         }
 
         assertTrue(task.forceOpenInNewFrame)
+        assertTrue(task.runConfigurators)
+        assertTrue(task.isRefreshVfsNeeded)
         assertEquals("issue-206", task.projectName)
         task.beforeInit?.invoke(initializedProject)
         assertSame(initializedProject, capturedProject.get())
@@ -146,6 +155,42 @@ class InspectionHandlerTest {
         handler = InspectionHandler()
         handler.trustProjectPath = {}
         handler.refreshProjectRoot = {}
+        handler.lifecycleContentRootReadinessProvider = { project, targetKey ->
+            when {
+                project.isDisposed -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = false,
+                    reason = "project_disposed",
+                    targetKey = targetKey,
+                )
+                mockProjectManager.openProjects.none { openProject -> openProject === project } ->
+                    InspectionHandler.LifecycleContentRootReadiness(
+                        ready = false,
+                        reason = "project_not_open",
+                        targetKey = targetKey,
+                    )
+                project.basePath == null && project.projectFilePath == null ->
+                    InspectionHandler.LifecycleContentRootReadiness(
+                        ready = false,
+                        reason = "route_mismatch",
+                        targetKey = targetKey,
+                    )
+                !project.isInitialized -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = false,
+                    reason = "project_not_initialized",
+                    targetKey = targetKey,
+                )
+                else -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = true,
+                    reason = "ready",
+                    targetKey = targetKey,
+                    contentRootCount = 1,
+                    sourceRootCount = 1,
+                    moduleCount = 1,
+                    targetInsideContent = true,
+                    contentRoots = listOf(targetKey),
+                )
+            }
+        }
         handler.inspectionRunExpirationMs = 300000L
         handler.inspectionProcessRunner = { task, _ -> task.run() }
         handler.inspectionIndicatorFactory = { mockk(relaxed = true) }
@@ -1990,6 +2035,151 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test excluded dependency lockfile is classified as metadata`() {
+        val lockfile = mapOf<String, Any?>(
+            "path" to "/tmp/TestProject/uv.lock",
+            "valid" to true,
+            "directory" to false,
+            "file_type" to "PLAIN_TEXT",
+            "psi_language" to "TEXT",
+            "psi_class" to "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content" to false,
+            "in_source" to false,
+            "is_excluded" to true,
+        )
+
+        assertTrue(scopeFileIsExcludedDependencyLockfile(lockfile))
+        assertEquals("excluded_dependency_lockfile", scopeFileCoverageRole(lockfile))
+        assertTrue(scopeFileSemanticCoverageReasons(lockfile).isEmpty())
+
+        val diagnostic = buildScopeFileDiagnosticPayload(
+            scopeKind = "changed_files",
+            resolutionStatus = "changed_files_resolved",
+            directoryParam = null,
+            requestedFileCount = 1,
+            resolvedFileCount = 1,
+            fileDiagnostics = listOf(lockfile),
+        )
+        @Suppress("UNCHECKED_CAST")
+        val semanticCoverage = diagnostic["scope_file_semantic_coverage"] as Map<String, Any?>
+        assertEquals(0, semanticCoverage["missing_file_count"])
+        assertEquals(1, semanticCoverage["metadata_file_count"])
+        @Suppress("UNCHECKED_CAST")
+        val metadataFiles = semanticCoverage["metadata_files"] as List<Map<String, Any?>>
+        assertEquals("excluded_dependency_lockfile", metadataFiles.single()["classification"])
+        assertEquals(false, metadataFiles.single()["coverage_required"])
+    }
+
+    @Test
+    fun `test scope file diagnostics emit explicit exclusion and coverage role`() {
+        val file = mockk<VirtualFile>()
+        val fileType = mockk<FileType>()
+        val projectIndex = mockk<ProjectFileIndex>()
+        val psiManager = mockk<PsiManager>()
+        val psiFile = mockk<PsiFile>()
+        val language = mockk<Language>()
+        every { file.path } returns "/tmp/TestProject/uv.lock"
+        every { file.isValid } returns true
+        every { file.isDirectory } returns false
+        every { file.fileType } returns fileType
+        every { fileType.name } returns "PLAIN_TEXT"
+        every { projectIndex.isInContent(file) } returns false
+        every { projectIndex.isInSourceContent(file) } returns false
+        every { projectIndex.isExcluded(file) } returns true
+        every { psiManager.findFile(file) } returns psiFile
+        every { psiFile.language } returns language
+        every { language.id } returns "TEXT"
+
+        mockkStatic(ProjectFileIndex::class)
+        mockkStatic(PsiManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns projectIndex
+        every { PsiManager.getInstance(mockProject) } returns psiManager
+        every { ModuleUtilCore.findModuleForFile(file, mockProject) } returns null
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "inspectVirtualFileForDiagnostics",
+            Project::class.java,
+            VirtualFile::class.java,
+        )
+        method.isAccessible = true
+
+        try {
+            @Suppress("UNCHECKED_CAST")
+            val diagnostic = method.invoke(handler, mockProject, file) as Map<String, Any?>
+            assertEquals(true, diagnostic["is_excluded"])
+            assertEquals("excluded_dependency_lockfile", diagnostic["coverage_role"])
+        } finally {
+            unmockkStatic(ProjectFileIndex::class)
+            unmockkStatic(PsiManager::class)
+            unmockkStatic(ModuleUtilCore::class)
+        }
+    }
+
+    @Test
+    fun `test dependency lockfile requires explicit IDE exclusion`() {
+        val lockfile = mapOf<String, Any?>(
+            "path" to "/tmp/TestProject/uv.lock",
+            "valid" to true,
+            "directory" to false,
+            "file_type" to "PLAIN_TEXT",
+            "psi_language" to "TEXT",
+            "psi_class" to "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content" to false,
+            "in_source" to false,
+            "is_excluded" to false,
+        )
+
+        assertFalse(scopeFileIsExcludedDependencyLockfile(lockfile))
+        assertNull(scopeFileCoverageRole(lockfile))
+        assertEquals(
+            listOf("non_semantic_fallback", "outside_project_content"),
+            scopeFileSemanticCoverageReasons(lockfile),
+        )
+    }
+
+    @Test
+    fun `test excluded lockfile does not hide source outside content`() {
+        val lockfile = mapOf<String, Any?>(
+            "path" to "/tmp/TestProject/uv.lock",
+            "valid" to true,
+            "directory" to false,
+            "file_type" to "PLAIN_TEXT",
+            "psi_language" to "TEXT",
+            "psi_class" to "com.intellij.psi.impl.source.PsiPlainTextFile",
+            "in_content" to false,
+            "in_source" to false,
+            "is_excluded" to true,
+        )
+        val source = mapOf<String, Any?>(
+            "path" to "/tmp/TestProject/src/app.py",
+            "valid" to true,
+            "directory" to false,
+            "file_type" to "Python",
+            "psi_language" to "Python",
+            "psi_class" to "com.jetbrains.python.psi.impl.PyFileImpl",
+            "in_content" to false,
+            "in_source" to false,
+            "is_excluded" to false,
+        )
+
+        val diagnostic = buildScopeFileDiagnosticPayload(
+            scopeKind = "changed_files",
+            resolutionStatus = "changed_files_resolved",
+            directoryParam = null,
+            requestedFileCount = 2,
+            resolvedFileCount = 2,
+            fileDiagnostics = listOf(lockfile, source),
+        )
+        @Suppress("UNCHECKED_CAST")
+        val semanticCoverage = diagnostic["scope_file_semantic_coverage"] as Map<String, Any?>
+        assertEquals(1, semanticCoverage["missing_file_count"])
+        assertEquals(1, semanticCoverage["metadata_file_count"])
+        @Suppress("UNCHECKED_CAST")
+        val reasonCounts = semanticCoverage["reason_counts"] as Map<String, Int>
+        assertEquals(1, reasonCounts["outside_project_content"])
+    }
+
+    @Test
     fun `test aggregate semantic proof preserves gaps beyond emitted diagnostics`() {
         val semanticFiles = (1..25).map { index ->
             mapOf<String, Any?>(
@@ -3433,6 +3623,81 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"close_token\""))
         assertTrue(body.contains("\"lease_id\": \"test-lease\""))
         assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
+    }
+
+    @Test
+    fun `test lifecycle claim preserves cleanup authority while content roots are not ready`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        handler.lifecycleContentRootReadinessProvider = { _, targetKey ->
+            InspectionHandler.LifecycleContentRootReadiness(
+                ready = false,
+                reason = "no_content_roots",
+                targetKey = targetKey,
+            )
+        }
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"claimed\""))
+        assertTrue(body.contains("\"ownership_proven\": true"))
+        assertTrue(body.contains("\"close_token\""))
+        assertTrue(body.contains("\"lifecycle_readiness\""))
+        assertTrue(body.contains("\"ready\": false"))
+        assertTrue(body.contains("\"reason\": \"no_content_roots\""))
+    }
+
+    @Test
+    fun `test lifecycle content root readiness uses the real project model`() {
+        val tempDir = Files.createTempDirectory("inspection-content-root-readiness")
+        every { mockProject.basePath } returns tempDir.toString()
+        every { mockProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val rootManager = mockk<ProjectRootManager>()
+        val moduleManager = mockk<ModuleManager>()
+        var contentRoots = emptyArray<VirtualFile>()
+        every { rootManager.contentRoots } answers { contentRoots }
+        every { rootManager.contentSourceRoots } returns emptyArray()
+        every { moduleManager.modules } returns emptyArray()
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleManager::class)
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleManager.getInstance(mockProject) } returns moduleManager
+        val productionHandler = InspectionHandler()
+        val targetKey = tempDir.toRealPath().toString()
+
+        try {
+            val noRoots = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertFalse(noRoots.ready)
+            assertEquals("no_content_roots", noRoots.reason)
+
+            val childRootPath = Files.createDirectories(tempDir.resolve("module-a"))
+            val childRoot = mockk<VirtualFile>()
+            every { childRoot.path } returns childRootPath.toString()
+            every { childRoot.isInLocalFileSystem } returns true
+            contentRoots = arrayOf(childRoot)
+            val childReady = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertTrue(childReady.ready, childReady.toString())
+            assertFalse(childReady.targetInsideContent)
+            assertTrue(childReady.contentRootInsideTarget)
+
+            val outsideRootPath = Files.createDirectories(tempDir.resolveSibling("outside-module"))
+            val outsideRoot = mockk<VirtualFile>()
+            every { outsideRoot.path } returns outsideRootPath.toString()
+            every { outsideRoot.isInLocalFileSystem } returns true
+            contentRoots = arrayOf(outsideRoot)
+            val outside = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertFalse(outside.ready)
+            assertEquals("content_roots_outside_target", outside.reason)
+        } finally {
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(ModuleManager::class)
+        }
     }
 
     @Test

@@ -14,6 +14,8 @@ final class OpenProjectTaskCompat {
     static OpenProjectTask build(Path openPath, Function1<? super Project, Unit> onBeforeInit) {
         return OpenProjectTaskKt.OpenProjectTask(builder -> {
             builder.setForceOpenInNewFrame(true);
+            builder.setRunConfigurators(true);
+            builder.setRefreshVfsNeeded(true);
             Path fileName = openPath.getFileName();
             builder.setProjectName(fileName == null ? openPath.toString() : fileName.toString());
             builder.setBeforeInit(onBeforeInit);

@@ -83,7 +83,8 @@ to the separate-window mode. If auto-open stalls, treat it as a blocker: check
 for an unsupported IDE config layout, settings sync overwriting the config, or a
 missing inspection plugin. The
 plugin-side lifecycle open endpoint schedules project opening asynchronously and
-uses the worktree directory name as the frame project name so cloned worktrees
+uses the worktree directory name as the frame project name, runs project
+configurators, and refreshes the VFS so cloned worktrees
 with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
 PyCharm, and WebStorm. Current builds advertise the `lease_bound_v1` ownership
 protocol: the helper persists a lease before open, passes that `lease_id`, and
@@ -92,6 +93,11 @@ accepts cleanup authority only from a later claim with
 field without that proof is not sufficient to close a project. Regression tests
 must cover a user project appearing between open acceptance and IDE-thread
 execution, and must prove that such a project receives no close token.
+Helper-owned routes expose `lifecycle_readiness`; readiness requires a content
+root covering the requested worktree for two consecutive status observations.
+If import never establishes that model, preparation must fail with
+`project_content_roots_missing` and close the helper-owned project before any
+inspection trigger.
 
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
 session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
@@ -115,7 +121,10 @@ aggregate proof returns `capture_incomplete`/`scope_not_covered`; semantic gaps
 beyond the detail limit remain visible through bounded examples and counts and
 return `UNKNOWN`/`scope_semantic_coverage_missing` by default. HTTP and MCP stay
 fail-closed; only the external helper's explicit `--allow-text-only-coverage`
-option can accept generic text coverage.
+option can accept generic text coverage. Recognized dependency lockfiles count
+as metadata only when the plugin reports both `is_excluded=true` and the
+`excluded_dependency_lockfile` role; basename-only or wildcard lockfile
+exemptions are not allowed.
 Input changes during final publication return retryable
 `inspection_inputs_changed` instead of unattributed `unknown`. MCP trigger flows
 pin the accepted inspection run through wait/problems and reuse the trigger's
