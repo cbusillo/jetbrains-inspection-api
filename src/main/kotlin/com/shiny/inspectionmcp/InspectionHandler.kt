@@ -91,8 +91,14 @@ import javax.swing.tree.TreeNode
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
+private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
+private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
+private val NON_SEMANTIC_SCOPE_FILE_VALUES = setOf("text", "plaintext", "textmate")
+private val NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS = setOf("plaintext", "textmate")
+private val PROJECT_METADATA_SCOPE_FILE_TYPES = setOf("ideamodule")
+private val NON_ALPHANUMERIC_SCOPE_FILE_MARKER = Regex("[^a-z0-9]+")
 private val CLIENT_RUN_ID_PATTERN = Regex(
     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
 )
@@ -132,6 +138,7 @@ internal enum class CaptureIncompleteReason(val apiValue: String) {
     EXTRACTOR_FAILURE("extractor_failure"),
     NON_EMPTY_UNMAPPED_TREE("non_empty_unmapped_tree"),
     CURRENT_RUN_PSI_CHURN("current_run_psi_churn"),
+    INSPECTION_INPUTS_CHANGED("inspection_inputs_changed"),
     INSPECTION_TRIGGER_EMPTY_MODEL("inspection_trigger_empty_model"),
     TIMEOUT("timeout"),
     PROFILE_RESOLUTION_ERROR("profile_resolution_error"),
@@ -248,9 +255,106 @@ internal data class InspectionCaptureSnapshotInput(
     val viewReadyOk: Boolean,
 )
 
+internal fun scopeFileSemanticEvidenceComplete(captureDiagnostic: Map<String, Any?>?): Boolean {
+    val explicitCoverage = captureDiagnostic?.get("scope_file_semantic_evidence_complete") as? Boolean
+    return explicitCoverage ?: (captureDiagnostic?.get("scope_file_diagnostics_complete") != false)
+}
+
+internal fun scopeFileSemanticCoverageMissing(captureDiagnostic: Map<String, Any?>?): Boolean {
+    if (captureDiagnostic?.get("scope_file_semantic_evidence_complete") != true) return false
+    val summary = captureDiagnostic["scope_file_semantic_coverage"] as? Map<*, *> ?: return false
+    return ((summary["missing_file_count"] as? Number)?.toInt() ?: 0) > 0
+}
+
+private fun normalizedScopeFileMarker(value: Any?): String =
+    NON_ALPHANUMERIC_SCOPE_FILE_MARKER.replace(value?.toString()?.lowercase().orEmpty(), "")
+
+internal fun scopeFileIsProjectMetadata(fileDiagnostic: Map<String, Any?>): Boolean {
+    val fileType = normalizedScopeFileMarker(fileDiagnostic["file_type"])
+    return fileDiagnostic["directory"] != true &&
+        fileDiagnostic["valid"] == true &&
+        fileDiagnostic["diagnostic_error"]?.toString()?.isNotBlank() != true &&
+        fileDiagnostic["in_content"] == true &&
+        fileType in PROJECT_METADATA_SCOPE_FILE_TYPES
+}
+
+internal fun scopeFileSemanticCoverageReasons(fileDiagnostic: Map<String, Any?>): List<String> {
+    if (fileDiagnostic["directory"] == true) return emptyList()
+
+    val reasons = mutableListOf<String>()
+    val fileType = normalizedScopeFileMarker(fileDiagnostic["file_type"])
+    val psiLanguage = normalizedScopeFileMarker(fileDiagnostic["psi_language"])
+    val psiClass = normalizedScopeFileMarker(fileDiagnostic["psi_class"])
+    val nonSemanticFallback =
+        fileType in NON_SEMANTIC_SCOPE_FILE_VALUES ||
+            psiLanguage in NON_SEMANTIC_SCOPE_FILE_VALUES ||
+            NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS.any(psiClass::contains)
+    if (nonSemanticFallback && !scopeFileIsProjectMetadata(fileDiagnostic)) {
+        reasons += "non_semantic_fallback"
+    }
+    if (fileDiagnostic["valid"] == false) reasons += "invalid_file"
+    if (fileDiagnostic["in_content"] == false) reasons += "outside_project_content"
+    if (fileDiagnostic["diagnostic_error"]?.toString()?.isNotBlank() == true) reasons += "diagnostic_error"
+    return reasons
+}
+
+internal fun buildScopeFileDiagnosticPayload(
+    scopeKind: String,
+    resolutionStatus: String,
+    directoryParam: String?,
+    requestedFileCount: Int,
+    resolvedFileCount: Int,
+    fileDiagnostics: List<Map<String, Any?>>,
+): Map<String, Any?> {
+    val emittedDiagnostics = fileDiagnostics.take(MAX_SCOPE_FILE_DIAGNOSTICS)
+    val omittedDiagnosticCount = (fileDiagnostics.size - emittedDiagnostics.size).coerceAtLeast(0)
+    val unprovenFileCount = (resolvedFileCount - fileDiagnostics.size).coerceAtLeast(0)
+    val missingFiles = fileDiagnostics.mapNotNull { diagnostic ->
+        val reasons = scopeFileSemanticCoverageReasons(diagnostic)
+        diagnostic.takeIf { reasons.isNotEmpty() }?.plus("reasons" to reasons)
+    }
+    val metadataFiles = fileDiagnostics.filter(::scopeFileIsProjectMetadata)
+    val reasonCounts = missingFiles
+        .flatMap { diagnostic -> (diagnostic["reasons"] as? List<*>)?.filterIsInstance<String>().orEmpty() }
+        .groupingBy { it }
+        .eachCount()
+        .toSortedMap()
+    val emittedMissingFiles = missingFiles.take(MAX_SCOPE_FILE_DIAGNOSTICS)
+    val emittedMetadataFiles = metadataFiles.take(MAX_SCOPE_FILE_DIAGNOSTICS)
+    val semanticCoverage = mapOf(
+        "schema_version" to SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION,
+        "evaluated_file_count" to fileDiagnostics.size,
+        "unproven_file_count" to unprovenFileCount,
+        "missing_file_count" to missingFiles.size,
+        "reason_counts" to reasonCounts,
+        "missing_files_limit" to MAX_SCOPE_FILE_DIAGNOSTICS,
+        "missing_files_omitted_count" to (missingFiles.size - emittedMissingFiles.size).coerceAtLeast(0),
+        "missing_files" to emittedMissingFiles,
+        "metadata_file_count" to metadataFiles.size,
+        "metadata_files_limit" to MAX_SCOPE_FILE_DIAGNOSTICS,
+        "metadata_files_omitted_count" to (metadataFiles.size - emittedMetadataFiles.size).coerceAtLeast(0),
+        "metadata_files" to emittedMetadataFiles,
+    )
+    return mapOf(
+        "scope_kind" to scopeKind,
+        "scope_resolution_status" to resolutionStatus,
+        "scope_directory_requested" to directoryParam,
+        "scope_file_requested_count" to requestedFileCount,
+        "scope_file_resolved_count" to resolvedFileCount,
+        "scope_file_diagnostic_count" to emittedDiagnostics.size,
+        "scope_file_diagnostics_limit" to MAX_SCOPE_FILE_DIAGNOSTICS,
+        "scope_file_diagnostics_omitted_count" to omittedDiagnosticCount,
+        "scope_file_diagnostics_truncated" to (omittedDiagnosticCount > 0),
+        "scope_file_diagnostics_complete" to (omittedDiagnosticCount == 0 && unprovenFileCount == 0),
+        "scope_file_semantic_evidence_complete" to (unprovenFileCount == 0),
+        "scope_file_semantic_coverage" to semanticCoverage,
+        "scope_file_diagnostics" to emittedDiagnostics,
+    ).filterValues { it != null }
+}
+
 internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
-    val scopeFileDiagnosticsComplete = input.captureDiagnostic?.get("scope_file_diagnostics_complete") != false
+    val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
     return when {
         input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
             problems = input.bestResults,
@@ -1151,9 +1255,13 @@ internal fun classifyCaptureIncompleteReason(
         (diagnostic["unreadable_problem_state_observation_count"] as? Number)?.toInt() ?: 0
     val nullRootChildObservationCount = (diagnostic["null_root_child_observation_count"] as? Number)?.toInt() ?: 0
     val inspectionViewObservationCount = (diagnostic["inspection_view_observation_count"] as? Number)?.toInt() ?: 0
+    val finalInputValidation = diagnostic["final_input_validation"] as? String
 
     return when {
-        diagnostic["scope_file_diagnostics_complete"] == false -> CaptureIncompleteReason.SCOPE_NOT_COVERED
+        finalInputValidation == "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
+        finalInputValidation in setOf("validation_unavailable", "validation_failed") ->
+            CaptureIncompleteReason.HELPER_PLUGIN_ERROR
+        !scopeFileSemanticEvidenceComplete(diagnostic) -> CaptureIncompleteReason.SCOPE_NOT_COVERED
         exitReason == "helper_plugin_error" -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
         exitReason == CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue ->
             CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL
@@ -1410,6 +1518,7 @@ class InspectionHandler : HttpRequestHandler() {
             payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete" -> {
                 (payload["capture_incomplete_reason"] as? String) ?: "capture_incomplete"
             }
+            hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload) -> SCOPE_SEMANTIC_COVERAGE_MISSING_REASON
             hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload) -> "scope_semantic_coverage_truncated"
             payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
@@ -1432,6 +1541,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
             "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
+            "inspection_inputs_changed" ->
+                "Rerun inspection after project files, VCS state, and inspection settings finish changing."
             "stale_results" ->
                 "Rerun inspection; stale cached findings must not be treated as current."
             "timeout" ->
@@ -1448,6 +1559,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Trigger and wait for a fresh inspection whose scope covers the requested problems scope."
             "scope_not_covered" ->
                 "Trigger and wait for a fresh inspection with a valid explicit scope before reporting GREEN or RED."
+            SCOPE_SEMANTIC_COVERAGE_MISSING_REASON ->
+                "Open the worktree in a JetBrains IDE with semantic language support or enable the required language plugins, then rerun inspection."
             "scope_semantic_coverage_truncated" ->
                 "Update the plugin/helper proof path so every resolved file has semantic diagnostics, then rerun inspection."
             "ambiguous_route" ->
@@ -1523,6 +1636,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (payload["unavailable"] == true) failures.add("inspection_api_unavailable")
         if (payload["results_may_be_stale"] == true || status == "stale_results" || completionReason == "stale_results") failures.add("stale_results")
         if (payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete") failures.add(captureIncompleteReason ?: "capture_incomplete")
+        if (hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload)) failures.add(SCOPE_SEMANTIC_COVERAGE_MISSING_REASON)
         if (incompleteScopeDiagnostics) failures.add("scope_semantic_coverage_truncated")
         if (payload["timed_out"] == true || completionReason == "timeout") failures.add("timeout")
         if (payload["indexing"] == true) failures.add("indexing")
@@ -1536,8 +1650,18 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
-        val diagnostic = payload["capture_diagnostic"] as? Map<*, *> ?: return false
-        if (diagnostic["scope_file_diagnostics_complete"] != false) return false
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = payload["capture_diagnostic"] as? Map<String, Any?> ?: return false
+        if (scopeFileSemanticEvidenceComplete(diagnostic)) return false
+        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
+        val problems = payload["problems"] as? List<*>
+        return (totalProblems ?: problems?.size ?: 0) <= 0
+    }
+
+    private fun hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = payload["capture_diagnostic"] as? Map<String, Any?> ?: return false
+        if (!scopeFileSemanticCoverageMissing(diagnostic)) return false
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
         val problems = payload["problems"] as? List<*>
         return (totalProblems ?: problems?.size ?: 0) <= 0
@@ -1632,6 +1756,7 @@ class InspectionHandler : HttpRequestHandler() {
             "missing_session_id",
             "no_project",
             "profile_resolution_error",
+            SCOPE_SEMANTIC_COVERAGE_MISSING_REASON,
             "ide_selection_required",
             "ide_config_ambiguous",
             "ide_config_missing",
@@ -1642,6 +1767,7 @@ class InspectionHandler : HttpRequestHandler() {
             "capture_incomplete",
             "close_failed",
             "current_run_psi_churn",
+            "inspection_inputs_changed",
             "inspection_in_progress",
             "inspection_still_running",
             "interrupted",
@@ -3717,6 +3843,7 @@ class InspectionHandler : HttpRequestHandler() {
                 !inspectionInProgress &&
                 snapshotScopeHasProof &&
                 snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
+                !scopeFileSemanticCoverageMissing(snapshot.captureDiagnostic) &&
                 !staleness.stale
             )
         status["clean_inspection"] = cleanInspection
@@ -3995,6 +4122,10 @@ class InspectionHandler : HttpRequestHandler() {
         snapshot: InspectionResultsSnapshot,
         failure: String,
     ): InspectionResultsSnapshot {
+        val captureIncompleteReason = when (failure) {
+            "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
+            else -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
+        }
         return snapshot.copy(
             problems = emptyList(),
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
@@ -4003,7 +4134,7 @@ class InspectionHandler : HttpRequestHandler() {
             captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
                 "final_input_validation" to failure,
             ),
-            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+            captureIncompleteReason = captureIncompleteReason,
         )
     }
 
@@ -4717,6 +4848,20 @@ class InspectionHandler : HttpRequestHandler() {
                     inspectionInputFingerprint = confirmedFingerprint
                     profile = requireNotNull(confirmedProfile)
                 } else {
+                    val preflightFailureReason = if (
+                        tracker != null &&
+                        (
+                            trackerChangedDuringPreflight ||
+                                (
+                                    confirmedFingerprint != null &&
+                                        initialFingerprint != confirmedFingerprint
+                                    )
+                            )
+                    ) {
+                        CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
+                    } else {
+                        CaptureIncompleteReason.HELPER_PLUGIN_ERROR
+                    }
                     tracker?.close()
                     resultsStore.setSnapshot(
                         key,
@@ -4735,7 +4880,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 "confirmed_profile_available" to (confirmedProfile != null),
                                 "fingerprints_matched" to (initialFingerprint == confirmedFingerprint),
                             ),
-                            captureIncompleteReason = CaptureIncompleteReason.UNKNOWN,
+                            captureIncompleteReason = preflightFailureReason,
                             runId = runId,
                             triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                         ),
@@ -6033,23 +6178,15 @@ class InspectionHandler : HttpRequestHandler() {
             scopeLower == "current_file" -> "current_file_resolved"
             else -> "project_scope"
         }
-        val inspectedFiles = selectedFiles
-            .take(MAX_SCOPE_FILE_DIAGNOSTICS)
-            .map { inspectVirtualFileForDiagnostics(project, it) }
-        val omittedDiagnosticCount = (selectedFiles.size - inspectedFiles.size).coerceAtLeast(0)
-        return mapOf(
-            "scope_kind" to (scopeLower ?: "whole_project"),
-            "scope_resolution_status" to resolutionStatus,
-            "scope_directory_requested" to directoryParam,
-            "scope_file_requested_count" to (files?.size ?: 0),
-            "scope_file_resolved_count" to selectedFiles.size,
-            "scope_file_diagnostic_count" to inspectedFiles.size,
-            "scope_file_diagnostics_limit" to MAX_SCOPE_FILE_DIAGNOSTICS,
-            "scope_file_diagnostics_omitted_count" to omittedDiagnosticCount,
-            "scope_file_diagnostics_truncated" to (omittedDiagnosticCount > 0),
-            "scope_file_diagnostics_complete" to (omittedDiagnosticCount == 0),
-            "scope_file_diagnostics" to inspectedFiles,
-        ).filterValues { it != null }
+        val fileDiagnostics = selectedFiles.map { inspectVirtualFileForDiagnostics(project, it) }
+        return buildScopeFileDiagnosticPayload(
+            scopeKind = scopeLower ?: "whole_project",
+            resolutionStatus = resolutionStatus,
+            directoryParam = directoryParam,
+            requestedFileCount = files?.size ?: 0,
+            resolvedFileCount = selectedFiles.size,
+            fileDiagnostics = fileDiagnostics,
+        )
     }
 
     private fun resolveRequestedFiles(project: Project, files: List<String>): List<VirtualFile> {

@@ -1180,6 +1180,8 @@ internal class ToolExecutor(
                 "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
             "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
+            "inspection_inputs_changed" ->
+                "Rerun inspection after project files, VCS state, and inspection settings finish changing."
             "timeout" ->
                 "Wait for indexing/scanning to settle or rerun with a larger timeout."
             "profile_resolution_error" ->

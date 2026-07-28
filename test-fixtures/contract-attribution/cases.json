@@ -112,6 +112,44 @@
     }
   },
   {
+    "name": "inspection-inputs-changed",
+    "endpoint": "status",
+    "http_status": 200,
+    "mcp_tool": "inspection_get_status",
+    "payload": {
+      "status": "capture_incomplete",
+      "capture_incomplete": true,
+      "capture_incomplete_reason": "inspection_inputs_changed",
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "inspection_inputs_changed",
+      "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+      "inspection_verdict_next_action": "Rerun inspection after project files, VCS state, and inspection settings finish changing.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "legitimate_fail_closed",
+        "code": "inspection_inputs_changed",
+        "phase": "status",
+        "endpoint": "/api/inspection/status",
+        "http_status": 200,
+        "request_id": "33333333-3333-4333-8333-333333333333",
+        "client_run_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+        "inspection_run_id": 43
+      }
+    },
+    "expected": {
+      "classification": "legitimate_fail_closed",
+      "code": "inspection_inputs_changed",
+      "phase": "status",
+      "helper_bucket": "capture_not_ready",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=inspection_inputs_changed",
+        "project files, VCS state, and inspection settings",
+        "\"classification\": \"legitimate_fail_closed\""
+      ]
+    }
+  },
+  {
     "name": "session-drift",
     "endpoint": "status",
     "http_status": 409,
@@ -146,6 +184,48 @@
         "VERDICT: UNKNOWN reason=session_drift",
         "classification=legitimate_fail_closed",
         "request_id=33333333-3333-4333-8333-333333333333"
+      ]
+    }
+  },
+  {
+    "name": "scope-semantic-coverage-missing",
+    "endpoint": "problems",
+    "http_status": 200,
+    "mcp_tool": "inspection_get_problems",
+    "payload": {
+      "status": "results_available",
+      "total_problems": 0,
+      "problems_shown": 0,
+      "problems": [],
+      "proof_failures": [
+        "scope_semantic_coverage_missing"
+      ],
+      "inspection_verdict": "UNKNOWN",
+      "inspection_verdict_reason": "scope_semantic_coverage_missing",
+      "inspection_verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+      "inspection_verdict_next_action": "Open the worktree in a JetBrains IDE with semantic language support or enable the required language plugins, then rerun inspection.",
+      "inspection_attribution": {
+        "schema_version": 1,
+        "source": "plugin",
+        "classification": "configuration_blocked",
+        "code": "scope_semantic_coverage_missing",
+        "phase": "problems",
+        "endpoint": "/api/inspection/problems",
+        "http_status": 200,
+        "request_id": "55555555-5555-4555-8555-555555555555",
+        "client_run_id": "abababab-abab-4bab-8bab-abababababab",
+        "inspection_run_id": 44
+      }
+    },
+    "expected": {
+      "classification": "configuration_blocked",
+      "code": "scope_semantic_coverage_missing",
+      "phase": "problems",
+      "helper_bucket": "environment_blocked",
+      "mcp_contains": [
+        "VERDICT: UNKNOWN reason=scope_semantic_coverage_missing",
+        "semantic language support",
+        "\"classification\": \"configuration_blocked\""
       ]
     }
   },

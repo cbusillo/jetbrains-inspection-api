@@ -108,14 +108,22 @@ tooling did not prove either state. The external `jb-inspect.py` helper may wrap
 these fields in its own compact `agent_result` envelope with retry policy for
 agent workflows.
 Snapshot-less `/problems` calls return `no_results`/`UNKNOWN` rather than using a
-live tool-window scrape as current evidence. Targeted clean captures with more
-resolved files than the 25-file scope-diagnostic cap expose explicit truncation
-metadata and return `capture_incomplete`/`scope_not_covered`. MCP trigger flows
+live tool-window scrape as current evidence. Targeted clean captures may bound
+detail rows at 25 files, but they must evaluate every resolved file and expose
+the complete aggregate `scope_file_semantic_coverage` proof. Only missing
+aggregate proof returns `capture_incomplete`/`scope_not_covered`; semantic gaps
+beyond the detail limit remain visible through bounded examples and counts and
+return `UNKNOWN`/`scope_semantic_coverage_missing` by default. HTTP and MCP stay
+fail-closed; only the external helper's explicit `--allow-text-only-coverage`
+option can accept generic text coverage.
+Input changes during final publication return retryable
+`inspection_inputs_changed` instead of unattributed `unknown`. MCP trigger flows
 pin the accepted inspection run through wait/problems and reuse the trigger's
 scope-defining parameters unless the caller explicitly supplies a new scope.
 Foreign 409 runs and terminal responses without run identity remain `UNKNOWN`.
-Finding-bearing snapshots preserve truncation metadata, so filtering their
-findings to zero remains `UNKNOWN` rather than becoming a false GREEN.
+Finding-bearing snapshots preserve detail bounds and aggregate proof, so
+filtering their findings to zero remains `UNKNOWN` only when complete semantic
+coverage was not proven.
 Use `uv run "$HELPER" summarize-outcomes` to view a helper-side rollup of
 `outcomes.jsonl` by verdict, bucket, retry, IDE channel, and cleanup status
 without running another inspection.
