@@ -14,10 +14,12 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
 import com.intellij.openapi.roots.CompilerModuleExtension
 import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.ProgressWindow
@@ -93,6 +95,7 @@ private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
+private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 private val NON_SEMANTIC_SCOPE_FILE_VALUES = setOf("text", "plaintext", "textmate")
@@ -1381,6 +1384,7 @@ class InspectionHandler : HttpRequestHandler() {
         val contentRootCount: Int = 0,
         val sourceRootCount: Int = 0,
         val moduleCount: Int = 0,
+        val fallbackModuleCount: Int = 0,
         val targetInsideContent: Boolean = false,
         val contentRootInsideTarget: Boolean = false,
         val contentRoots: List<String> = emptyList(),
@@ -1409,7 +1413,10 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
-    internal var lifecycleOpenGuardTimeoutMs: Long = 10_000
+    internal var lifecycleOpenGuardTimeoutMs: Long = 30_000
+    internal var lifecycleOpenRootStabilizationMs: Long = 10_000
+    internal var lifecycleFallbackRootStabilizationMs: Long = 2_000
+    internal var lifecycleFallbackFailureThreshold: Int = 3
     internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunExpirationMs: Long = 300000L
@@ -1442,6 +1449,15 @@ class InspectionHandler : HttpRequestHandler() {
     }
     internal var lifecycleContentRootReadinessProvider: (Project, String) -> LifecycleContentRootReadiness =
         { project, targetKey -> inspectLifecycleContentRootReadiness(project, targetKey) }
+    internal var lifecycleProjectSmartProvider: (Project) -> Boolean = { project ->
+        !DumbService.getInstance(project).isDumb
+    }
+    internal var lifecycleFallbackContentRootInstaller: (Project, String) -> Boolean = { project, targetKey ->
+        installLifecycleFallbackContentRoot(project, targetKey)
+    }
+    internal var lifecycleFallbackContentRootCreator: (Project, VirtualFile) -> Boolean = { project, targetRoot ->
+        createLifecycleFallbackContentRoot(project, targetRoot)
+    }
     internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, beforeInit ->
         val openPath = canonicalTrustPath(path)
         ProjectManagerEx.getInstanceEx().openProject(
@@ -2528,7 +2544,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
 
-        val lifecycleReadiness = lifecycleContentRootReadinessProvider(
+        val lifecycleReadiness = lifecycleContentRootReadinessForOwnership(
             resolved.project,
             requireNotNull(exactOwnership).targetKey,
         )
@@ -2570,23 +2586,31 @@ class InspectionHandler : HttpRequestHandler() {
             ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' must be a valid local path.")
         val path = Paths.get(normalizedPath)
         findOpenProjectForLifecycleOpen(path.toString())?.let { project ->
+            unresolvedLifecycleOpenProjects.entries
+                .firstOrNull { entry -> entry.value === project }
+                ?.let { entry ->
+                    if (isUnresolvedLifecycleOpenActive(project)) {
+                        val projectRoot = Paths.get(entry.key)
+                        return lifecycleOpenStateUnknown(
+                            LifecycleOpenTarget(path, projectRoot, projectRoot, entry.key),
+                            project,
+                        )
+                    }
+                    unresolvedLifecycleOpenProjects.remove(entry.key, project)
+                }
             return lifecycleOpenAlreadyOpen(project)
         }
         val target = resolveLifecycleOpenTarget(path)
+        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
+            if (isUnresolvedLifecycleOpenActive(project)) {
+                return lifecycleOpenStateUnknown(target, project)
+            }
+            unresolvedLifecycleOpenProjects.remove(target.key, project)
+        }
         if (target.projectRoot != target.path) {
             findOpenProjectForLifecycleOpen(target.projectRoot.toString())?.let { project ->
                 return lifecycleOpenAlreadyOpen(project)
             }
-        }
-        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
-            if (isUnresolvedLifecycleOpenActive(project)) {
-                if (isLifecycleOpenProjectUsable(target.key, project)) {
-                    unresolvedLifecycleOpenProjects.remove(target.key, project)
-                    return lifecycleOpenAlreadyOpen(project)
-                }
-                return lifecycleOpenStateUnknown(target, project)
-            }
-            unresolvedLifecycleOpenProjects.remove(target.key, project)
         }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
             unresolvedLifecycleOpenProjects.remove(target.key)
@@ -2686,11 +2710,6 @@ class InspectionHandler : HttpRequestHandler() {
             unresolvedLifecycleOpenProjects.remove(key)
             return
         }
-        if (isLifecycleOpenProjectUsable(key, project)) {
-            openingProjectRequests.remove(key, request)
-            unresolvedLifecycleOpenProjects.remove(key)
-            return
-        }
         val submitted = runCatching {
             ApplicationManager.getApplication().executeOnPooledThread {
                 var unresolvedOpenState = false
@@ -2698,17 +2717,61 @@ class InspectionHandler : HttpRequestHandler() {
                     val startedAtMs = lifecycleOpenGuardNow()
                     val deadlineMs = startedAtMs + lifecycleOpenGuardTimeoutMs
                     var observedOpenProject = false
+                    var stableReadySinceMs: Long? = null
+                    var previousStabilizationMs: Long? = null
+                    var contentRootFailureCount = 0
+                    var fallbackAttemptCount = 0
                     while (openingProjectRequests.containsKey(key)) {
                         val nowMs = lifecycleOpenGuardNow()
                         val lifecycleComplete = runCatching {
                             val readiness = lifecycleContentRootReadinessProvider(project, key)
                             val isOpenProject = readiness.reason != "project_not_open"
                             observedOpenProject = observedOpenProject || isOpenProject
-                            unresolvedOpenState = !readiness.ready && nowMs >= deadlineMs
-                            project.isDisposed ||
-                                readiness.ready ||
-                                (observedOpenProject && !isOpenProject) ||
-                                unresolvedOpenState
+                            when {
+                                project.isDisposed -> true
+                                observedOpenProject && !isOpenProject -> true
+                                readiness.ready -> {
+                                    contentRootFailureCount = 0
+                                    val stabilizationMs = when {
+                                        readiness.fallbackModuleCount > 0 -> lifecycleFallbackRootStabilizationMs
+                                        readiness.sourceRootCount == 0 -> lifecycleOpenRootStabilizationMs
+                                        else -> 0L
+                                    }
+                                    if (
+                                        previousStabilizationMs != null &&
+                                        stabilizationMs > requireNotNull(previousStabilizationMs)
+                                    ) {
+                                        stableReadySinceMs = null
+                                    }
+                                    previousStabilizationMs = stabilizationMs
+                                    stableReadySinceMs = stableReadySinceMs ?: nowMs
+                                    val stabilized = nowMs - requireNotNull(stableReadySinceMs) >= stabilizationMs
+                                    unresolvedOpenState = !stabilized && nowMs >= deadlineMs
+                                    stabilized || unresolvedOpenState
+                                }
+                                else -> {
+                                    stableReadySinceMs = null
+                                    previousStabilizationMs = null
+                                    val fallbackOwned = hasExactLifecycleFallbackOwnership(project, key, request)
+                                    val contentRootFailure = readiness.reason == "no_content_roots"
+                                    if (contentRootFailure && fallbackOwned && lifecycleProjectSmartProvider(project)) {
+                                        contentRootFailureCount += 1
+                                        if (
+                                            contentRootFailureCount >= lifecycleFallbackFailureThreshold &&
+                                            fallbackAttemptCount == 0
+                                        ) {
+                                            contentRootFailureCount = 0
+                                            if (lifecycleFallbackContentRootInstaller(project, key)) {
+                                                fallbackAttemptCount += 1
+                                            }
+                                        }
+                                    } else {
+                                        contentRootFailureCount = 0
+                                    }
+                                    unresolvedOpenState = nowMs >= deadlineMs
+                                    unresolvedOpenState
+                                }
+                            }
                         }.getOrDefault(false)
                         if (lifecycleComplete) {
                             return@executeOnPooledThread
@@ -2716,18 +2779,18 @@ class InspectionHandler : HttpRequestHandler() {
                         lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                     }
                 } finally {
-                    openingProjectRequests.remove(key, request)
                     if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
                         unresolvedLifecycleOpenProjects[key] = project
                     }
+                    openingProjectRequests.remove(key, request)
                 }
             }
         }.isSuccess
         if (!submitted) {
-            openingProjectRequests.remove(key, request)
             if (isUnresolvedLifecycleOpenActive(project)) {
                 unresolvedLifecycleOpenProjects[key] = project
             }
+            openingProjectRequests.remove(key, request)
         }
     }
 
@@ -2739,8 +2802,79 @@ class InspectionHandler : HttpRequestHandler() {
         }.getOrDefault(!project.isDisposed)
     }
 
-    private fun isLifecycleOpenProjectUsable(key: String, project: Project): Boolean {
-        return lifecycleContentRootReadinessProvider(project, key).ready
+    private fun lifecycleContentRootReadinessForOwnership(
+        project: Project,
+        targetKey: String,
+    ): LifecycleContentRootReadiness {
+        val readiness = lifecycleContentRootReadinessProvider(project, targetKey)
+        return when {
+            openingProjectRequests.containsKey(targetKey) ->
+                readiness.copy(ready = false, reason = "project_configuring")
+            unresolvedLifecycleOpenProjects[targetKey] === project && readiness.ready ->
+                readiness.copy(ready = false, reason = "project_configuration_unstable")
+            else -> readiness
+        }
+    }
+
+    private fun installLifecycleFallbackContentRoot(project: Project, targetKey: String): Boolean {
+        val request = openingProjectRequests[targetKey] ?: return false
+        if (!hasExactLifecycleFallbackOwnership(project, targetKey, request)) return false
+        val targetPath = runCatching { canonicalTrustPath(Paths.get(targetKey)) }.getOrNull() ?: return false
+        if (!Files.isDirectory(targetPath)) return false
+        val targetRoot = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(targetPath) ?: return false
+        val application = ApplicationManager.getApplication()
+        return runCatching {
+            application.invokeLater {
+                val activeRequest = openingProjectRequests[targetKey]
+                if (
+                    activeRequest !== request ||
+                    !hasExactLifecycleFallbackOwnership(project, targetKey, request)
+                ) {
+                    return@invokeLater
+                }
+                val readiness = lifecycleContentRootReadinessProvider(project, targetKey)
+                if (readiness.reason != "no_content_roots") {
+                    return@invokeLater
+                }
+                lifecycleFallbackContentRootCreator(project, targetRoot)
+            }
+            true
+        }.getOrDefault(false)
+    }
+
+    private fun hasExactLifecycleFallbackOwnership(
+        project: Project,
+        targetKey: String,
+        request: LifecycleOpenRequest,
+    ): Boolean {
+        val leaseId = request.leaseId ?: return false
+        val ownership = lifecycleOpenOwnershipByProjectInstance[projectInstanceId(project)] ?: return false
+        return !project.isDisposed &&
+            ownership.project === project &&
+            ownership.targetKey == targetKey &&
+            ownership.leaseId == leaseId
+    }
+
+    private fun createLifecycleFallbackContentRoot(project: Project, targetRoot: VirtualFile): Boolean {
+        if (project.isDisposed) return false
+        var created = false
+        ApplicationManager.getApplication().runWriteAction {
+            if (project.isDisposed) return@runWriteAction
+            val moduleManager = ModuleManager.getInstance(project)
+            var moduleName = "$LIFECYCLE_FALLBACK_MODULE_PREFIX${UUID.randomUUID()}"
+            while (moduleManager.findModuleByName(moduleName) != null) {
+                moduleName = "$LIFECYCLE_FALLBACK_MODULE_PREFIX${UUID.randomUUID()}"
+            }
+            val module = moduleManager.newNonPersistentModule(moduleName, EmptyModuleType.EMPTY_MODULE)
+            try {
+                ModuleRootModificationUtil.addContentRoot(module, targetRoot)
+                created = true
+            } catch (error: Exception) {
+                moduleManager.disposeModule(module)
+                throw error
+            }
+        }
+        return created
     }
 
     private fun inspectLifecycleContentRootReadiness(
@@ -2767,6 +2901,7 @@ class InspectionHandler : HttpRequestHandler() {
                             .mapNotNull(::normalizeFileSystemPath)
                             .distinct()
                             .sorted()
+                        val modules = ModuleManager.getInstance(project).modules
                         val sourceRootCount = rootManager.contentSourceRoots
                             .mapNotNull(::localInspectionRootPath)
                             .mapNotNull(::normalizeFileSystemPath)
@@ -2783,9 +2918,17 @@ class InspectionHandler : HttpRequestHandler() {
                                 canonicalTrustPath(Paths.get(contentRoot)).startsWith(targetPath)
                             }.getOrDefault(false)
                         }
+                        val unrelatedContentRoot = contentRoots.any { contentRoot ->
+                            runCatching {
+                                val canonicalContentRoot = canonicalTrustPath(Paths.get(contentRoot))
+                                !targetPath.startsWith(canonicalContentRoot) &&
+                                    !canonicalContentRoot.startsWith(targetPath)
+                            }.getOrDefault(true)
+                        }
                         val reason = when {
                             contentRoots.isEmpty() -> "no_content_roots"
-                            !targetInsideContent && !contentRootInsideTarget -> "content_roots_outside_target"
+                            unrelatedContentRoot || (!targetInsideContent && !contentRootInsideTarget) ->
+                                "content_roots_outside_target"
                             else -> "ready"
                         }
                         LifecycleContentRootReadiness(
@@ -2794,7 +2937,10 @@ class InspectionHandler : HttpRequestHandler() {
                             targetKey = targetKey,
                             contentRootCount = contentRoots.size,
                             sourceRootCount = sourceRootCount,
-                            moduleCount = ModuleManager.getInstance(project).modules.size,
+                            moduleCount = modules.size,
+                            fallbackModuleCount = modules.count { module ->
+                                module.name.startsWith(LIFECYCLE_FALLBACK_MODULE_PREFIX)
+                            },
                             targetInsideContent = targetInsideContent,
                             contentRootInsideTarget = contentRootInsideTarget,
                             contentRoots = contentRoots.take(MAX_SCOPE_FILE_DIAGNOSTICS),
@@ -2815,6 +2961,7 @@ class InspectionHandler : HttpRequestHandler() {
             "content_root_count" to readiness.contentRootCount,
             "source_root_count" to readiness.sourceRootCount,
             "module_count" to readiness.moduleCount,
+            "fallback_module_count" to readiness.fallbackModuleCount,
             "target_inside_content" to readiness.targetInsideContent,
             "content_root_inside_target" to readiness.contentRootInsideTarget,
             "content_roots" to readiness.contentRoots,
@@ -2827,7 +2974,7 @@ class InspectionHandler : HttpRequestHandler() {
             ?.takeIf { candidate -> candidate.project === project }
             ?: return null
         return lifecycleContentRootReadinessPayload(
-            lifecycleContentRootReadinessProvider(project, ownership.targetKey)
+            lifecycleContentRootReadinessForOwnership(project, ownership.targetKey)
         )
     }
 
@@ -2856,7 +3003,12 @@ class InspectionHandler : HttpRequestHandler() {
         target: LifecycleOpenTarget,
         project: Project,
     ): Pair<Map<String, Any?>, HttpResponseStatus> {
-        val readiness = lifecycleContentRootReadinessProvider(project, target.key)
+        val observedReadiness = lifecycleContentRootReadinessProvider(project, target.key)
+        val readiness = if (observedReadiness.ready) {
+            observedReadiness.copy(ready = false, reason = "project_configuration_unstable")
+        } else {
+            observedReadiness
+        }
         val contentRootFailure = readiness.reason in setOf("no_content_roots", "content_roots_outside_target")
         return mapOf(
             "status" to "failed",
@@ -2865,6 +3017,8 @@ class InspectionHandler : HttpRequestHandler() {
             "reason" to if (contentRootFailure) "project_content_roots_missing" else "open_state_unknown",
             "message" to if (contentRootFailure) {
                 "The IDE opened the project but did not establish a content root covering the requested worktree before the guard timeout."
+            } else if (readiness.reason == "project_configuration_unstable") {
+                "The IDE project model became ready but did not remain stable for the required window before the guard timeout."
             } else {
                 "The IDE accepted the lifecycle open request but did not report a ready project before the guard timeout."
             },
