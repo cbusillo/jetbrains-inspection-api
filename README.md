@@ -335,9 +335,17 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `ownership_proven: true`; preexisting, coalesced, mismatched, and untracked
   projects return `status: "not_owned"` without a close token. Helper-owned
   routes and claims also include `lifecycle_readiness`; automation must wait
-  for `ready: true` before inspection. A project that remains
+  for `ready: true` before inspection. For a helper-owned raw directory whose
+  configurators leave no usable module/content root, the plugin may install a
+  non-persistent fallback module rooted at the requested worktree. Repair is
+  limited to the exact lease-bound project instance; preexisting, coalesced,
+  and outside-root projects remain untouched. The fallback exists only for that
+  IDE project instance and does not create tracked `.idea` or `.iml` files. A
+  project that remains
   `no_content_roots` or `content_roots_outside_target` fails preparation while
-  retaining lease-bound close authority for cleanup.
+  retaining lease-bound close authority for cleanup. Readiness that appears too
+  close to the guard deadline remains fail-closed as
+  `project_configuration_unstable` until cleanup.
 - `GET /api/inspection/lifecycle/close`: requires `project_key`,
   `project_instance_id`, `session_id`, and `close_token`, and accepts the
   original `lease_id` for an additional binding check. It closes the project

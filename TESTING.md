@@ -94,10 +94,17 @@ field without that proof is not sufficient to close a project. Regression tests
 must cover a user project appearing between open acceptance and IDE-thread
 execution, and must prove that such a project receives no close token.
 Helper-owned routes expose `lifecycle_readiness`; readiness requires a content
-root covering the requested worktree for two consecutive status observations.
-If import never establishes that model, preparation must fail with
+root covering the requested worktree after project configuration stabilizes.
+If configurators remove the initial raw-directory module, the plugin repairs
+the exact lease-bound helper-owned project with a non-persistent fallback module
+and reports `fallback_module_count`; the fallback must not create tracked
+project files or alter a preexisting, coalesced, or outside-root project.
+If neither the project model nor that bounded repair establishes coverage,
+preparation must fail with
 `project_content_roots_missing` and close the helper-owned project before any
-inspection trigger.
+inspection trigger. A project model that becomes ready but misses the required
+stabilization window must remain unresolved as `project_configuration_unstable`
+rather than becoming ready on the next lifecycle poll.
 
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
 session drift, route ambiguity, wrong-worktree routes, and cleanup failures as

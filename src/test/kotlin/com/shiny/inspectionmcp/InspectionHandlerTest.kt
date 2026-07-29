@@ -16,7 +16,9 @@ import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.module.ModuleManager
@@ -3661,9 +3663,10 @@ class InspectionHandlerTest {
         val rootManager = mockk<ProjectRootManager>()
         val moduleManager = mockk<ModuleManager>()
         var contentRoots = emptyArray<VirtualFile>()
+        var modules = emptyArray<com.intellij.openapi.module.Module>()
         every { rootManager.contentRoots } answers { contentRoots }
         every { rootManager.contentSourceRoots } returns emptyArray()
-        every { moduleManager.modules } returns emptyArray()
+        every { moduleManager.modules } answers { modules }
         mockkStatic(ProjectRootManager::class)
         mockkStatic(ModuleManager::class)
         every { ProjectRootManager.getInstance(mockProject) } returns rootManager
@@ -3686,6 +3689,12 @@ class InspectionHandlerTest {
             assertFalse(childReady.targetInsideContent)
             assertTrue(childReady.contentRootInsideTarget)
 
+            val fallbackModule = mockk<com.intellij.openapi.module.Module>()
+            every { fallbackModule.name } returns "__jetbrains_inspection_api_lifecycle_fallback__test"
+            modules = arrayOf(fallbackModule)
+            val fallbackReady = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertEquals(1, fallbackReady.fallbackModuleCount)
+
             val outsideRootPath = Files.createDirectories(tempDir.resolveSibling("outside-module"))
             val outsideRoot = mockk<VirtualFile>()
             every { outsideRoot.path } returns outsideRootPath.toString()
@@ -3694,8 +3703,50 @@ class InspectionHandlerTest {
             val outside = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
             assertFalse(outside.ready)
             assertEquals("content_roots_outside_target", outside.reason)
+
+            contentRoots = arrayOf(childRoot, outsideRoot)
+            val mixedRoots = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertFalse(mixedRoots.ready)
+            assertEquals("content_roots_outside_target", mixedRoots.reason)
         } finally {
             unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(ModuleManager::class)
+        }
+    }
+
+    @Test
+    fun `test lifecycle fallback creator adds a non-persistent module content root`() {
+        val moduleManager = mockk<ModuleManager>()
+        val module = mockk<com.intellij.openapi.module.Module>()
+        val targetRoot = mockk<VirtualFile>()
+        val moduleName = slot<String>()
+        every { mockProject.isDisposed } returns false
+        every { mockApplication.runWriteAction(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+        }
+        mockkStatic(ModuleManager::class)
+        mockkStatic(ModuleRootModificationUtil::class)
+        every { ModuleManager.getInstance(mockProject) } returns moduleManager
+        every { moduleManager.findModuleByName(any()) } returns null
+        every {
+            moduleManager.newNonPersistentModule(capture(moduleName), EmptyModuleType.EMPTY_MODULE)
+        } returns module
+        every { moduleManager.disposeModule(any()) } just Runs
+        every { ModuleRootModificationUtil.addContentRoot(module, targetRoot) } just Runs
+
+        try {
+            assertTrue(handler.lifecycleFallbackContentRootCreator(mockProject, targetRoot))
+            assertTrue(
+                moduleName.captured.startsWith("__jetbrains_inspection_api_lifecycle_fallback__"),
+                moduleName.captured,
+            )
+            verify(exactly = 1) {
+                moduleManager.newNonPersistentModule(moduleName.captured, EmptyModuleType.EMPTY_MODULE)
+                ModuleRootModificationUtil.addContentRoot(module, targetRoot)
+            }
+            verify(exactly = 0) { moduleManager.disposeModule(any()) }
+        } finally {
+            unmockkStatic(ModuleRootModificationUtil::class)
             unmockkStatic(ModuleManager::class)
         }
     }
@@ -3951,6 +4002,101 @@ class InspectionHandlerTest {
 
         assertTrue(claimBody.contains("\"status\": \"not_owned\""))
         assertFalse(claimBody.contains("\"close_token\""))
+        assertFalse(
+            handler.lifecycleFallbackContentRootInstaller(returnedProject, tempDir.toRealPath().toString()),
+            "A returned project that does not match the before-init ownership instance must not be repaired.",
+        )
+    }
+
+    @Test
+    fun `test lifecycle fallback installer requires a lease-bound open`() {
+        val tempDir = Files.createTempDirectory("inspection-open-fallback-no-lease")
+        val openedProject = mockProject(
+            name = "NoLease",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
+            openedProject
+        }
+        val encodedPath = java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")
+        val encodedSession = java.net.URLEncoder.encode(InspectionIdeSession.sessionId, "UTF-8")
+
+        processGetRequest(
+            "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession"
+        )
+
+        assertFalse(
+            handler.lifecycleFallbackContentRootInstaller(openedProject, tempDir.toRealPath().toString()),
+            "Fallback repair requires the same lease used to register helper ownership.",
+        )
+    }
+
+    @Test
+    fun `test lifecycle fallback installer schedules exact owned root without blocking`() {
+        val tempDir = Files.createTempDirectory("inspection-open-fallback-owned")
+        val openedProject = mockProject(
+            name = "OwnedFallback",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var openProjects = emptyArray<Project>()
+        val scheduled = mutableListOf<Runnable>()
+        val pooled = mutableListOf<Runnable>()
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            pooled += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
+            openedProject
+        }
+        handler.lifecycleContentRootReadinessProvider = { _, targetKey ->
+            InspectionHandler.LifecycleContentRootReadiness(
+                ready = false,
+                reason = "no_content_roots",
+                targetKey = targetKey,
+            )
+        }
+        val localFileSystem = mockk<LocalFileSystem>()
+        val targetRoot = mockk<VirtualFile>()
+        val targetKey = tempDir.toRealPath().toString()
+        var createdRoot: VirtualFile? = null
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.refreshAndFindFileByNioFile(tempDir.toRealPath()) } returns targetRoot
+        handler.lifecycleFallbackContentRootCreator = { project, root ->
+            assertSame(openedProject, project)
+            createdRoot = root
+            true
+        }
+
+        try {
+            processGetRequest(lifecycleOpenUri(tempDir, "owned-fallback-lease"))
+            scheduled.single().run()
+
+            assertEquals(1, pooled.size)
+            assertTrue(handler.lifecycleFallbackContentRootInstaller(openedProject, targetKey))
+            assertEquals(2, scheduled.size, "The installer must enqueue work instead of blocking on the EDT.")
+            assertNull(createdRoot)
+
+            scheduled.last().run()
+            assertSame(targetRoot, createdRoot)
+        } finally {
+            unmockkStatic(LocalFileSystem::class)
+        }
     }
 
     @Test
@@ -4343,6 +4489,107 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open repairs content root lost during project configuration`() {
+        val tempDir = Files.createTempDirectory("inspection-open-root-repair")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns true
+        every { initializingProject.name } returns "inspection-open-root-repair"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        var fallbackInstalled = false
+        var fallbackCreateCount = 0
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardPollMs = 200
+        handler.lifecycleOpenGuardTimeoutMs = 2_000
+        handler.lifecycleOpenRootStabilizationMs = 400
+        handler.lifecycleFallbackRootStabilizationMs = 200
+        handler.lifecycleFallbackFailureThreshold = 2
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis ->
+            if (!fallbackInstalled && scheduled.size > 1) {
+                scheduled.last().run()
+            }
+            nowMs += millis
+        }
+        handler.lifecycleProjectSmartProvider = { true }
+        handler.lifecycleContentRootReadinessProvider = { _, targetKey ->
+            when {
+                fallbackInstalled -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = true,
+                    reason = "ready",
+                    targetKey = targetKey,
+                    contentRootCount = 1,
+                    moduleCount = 1,
+                    fallbackModuleCount = 1,
+                    targetInsideContent = true,
+                    contentRoots = listOf(targetKey),
+                )
+                nowMs < 1_200L -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = true,
+                    reason = "ready",
+                    targetKey = targetKey,
+                    contentRootCount = 1,
+                    moduleCount = 1,
+                    targetInsideContent = true,
+                    contentRoots = listOf(targetKey),
+                )
+                else -> InspectionHandler.LifecycleContentRootReadiness(
+                    ready = false,
+                    reason = "no_content_roots",
+                    targetKey = targetKey,
+                )
+            }
+        }
+        val localFileSystem = mockk<LocalFileSystem>()
+        val targetRoot = mockk<VirtualFile>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.refreshAndFindFileByNioFile(tempDir.toRealPath()) } returns targetRoot
+        handler.lifecycleFallbackContentRootCreator = { project, root ->
+            assertSame(initializingProject, project)
+            assertSame(targetRoot, root)
+            fallbackCreateCount += 1
+            fallbackInstalled = true
+            true
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            openProjects[0] = initializingProject
+            beforeInit(initializingProject)
+            initializingProject
+        }
+
+        try {
+            val first = processGetRequest(lifecycleOpenUri(tempDir))
+            scheduled.single().run()
+            guardPolls.single().run()
+            val second = processGetRequest(lifecycleOpenUri(tempDir))
+            val secondBody = second.content().toString(Charsets.UTF_8)
+
+            assertEquals(HttpResponseStatus.OK, first.status())
+            assertEquals(HttpResponseStatus.OK, second.status())
+            assertEquals(1, fallbackCreateCount)
+            assertTrue(fallbackInstalled)
+            assertTrue(secondBody.contains("\"status\": \"already_open\""))
+            assertTrue(secondBody.contains("\"fallback_module_count\": 1"))
+        } finally {
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
     fun `test lifecycle open keeps opening guard while project remains open but not initialized`() {
         val tempDir = Files.createTempDirectory("inspection-open-slow-initializing")
         val openProjects = arrayOfNulls<Project>(1)
@@ -4474,6 +4721,76 @@ class InspectionHandlerTest {
         assertTrue(secondBody.contains("\"status\": \"failed\""))
         assertTrue(secondBody.contains("\"reason\": \"open_state_unknown\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+    }
+
+    @Test
+    fun `test lifecycle open remains unresolved when readiness misses stabilization deadline`() {
+        val tempDir = Files.createTempDirectory("inspection-open-unstable-ready")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        val openedProject = mockProject(
+            name = "UnstableReady",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        var nowMs = 1_000L
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.lifecycleOpenGuardTimeoutMs = 400
+        handler.lifecycleOpenRootStabilizationMs = 1_000
+        handler.lifecycleOpenGuardNow = { nowMs }
+        handler.lifecycleOpenGuardSleep = { millis -> nowMs += millis }
+        handler.lifecycleContentRootReadinessProvider = { _, targetKey ->
+            InspectionHandler.LifecycleContentRootReadiness(
+                ready = true,
+                reason = "ready",
+                targetKey = targetKey,
+                contentRootCount = 1,
+                sourceRootCount = 0,
+                moduleCount = 1,
+                targetInsideContent = true,
+                contentRoots = listOf(targetKey),
+            )
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            openProjects[0] = openedProject
+            beforeInit(openedProject)
+            openedProject
+        }
+        mockInspectionPrerequisites(openedProject)
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        guardPolls.single().run()
+        val encodedPath = java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")
+        val status = processGetRequest("/api/inspection/status?worktree_path=$encodedPath")
+        val statusBody = status.content().toString(Charsets.UTF_8)
+        val instanceId = projectInstanceId(openedProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=$encodedPath&project_instance_id=$instanceId&lease_id=test-open-lease"
+        )
+        val claimBody = claim.content().toString(Charsets.UTF_8)
+        val unresolved = processGetRequest(lifecycleOpenUri(tempDir))
+        val unresolvedBody = unresolved.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, status.status())
+        assertTrue(statusBody.contains("\"ready\": false"))
+        assertTrue(statusBody.contains("\"reason\": \"project_configuration_unstable\""))
+        assertEquals(HttpResponseStatus.OK, claim.status())
+        assertTrue(claimBody.contains("\"ready\": false"))
+        assertTrue(claimBody.contains("\"reason\": \"project_configuration_unstable\""))
+        assertEquals(HttpResponseStatus.CONFLICT, unresolved.status())
+        assertTrue(unresolvedBody.contains("\"reason\": \"open_state_unknown\""))
+        assertTrue(unresolvedBody.contains("\"ready\": false"))
+        assertTrue(unresolvedBody.contains("\"reason\": \"project_configuration_unstable\""))
+        assertFalse(unresolvedBody.contains("\"status\": \"already_open\""))
     }
 
     @Test
