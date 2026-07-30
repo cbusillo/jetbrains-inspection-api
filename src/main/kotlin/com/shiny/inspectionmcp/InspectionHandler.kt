@@ -2902,6 +2902,18 @@ class InspectionHandler : HttpRequestHandler() {
                             .distinct()
                             .sorted()
                         val modules = ModuleManager.getInstance(project).modules
+                        val nonFallbackContentRoots = modules
+                            .asSequence()
+                            .filterNot { module -> module.name.startsWith(LIFECYCLE_FALLBACK_MODULE_PREFIX) }
+                            .flatMap { module ->
+                                runCatching {
+                                    ModuleRootManager.getInstance(module).contentRoots.asSequence()
+                                }.getOrElse { emptySequence() }
+                            }
+                            .mapNotNull(::localInspectionRootPath)
+                            .mapNotNull(::normalizeFileSystemPath)
+                            .distinct()
+                            .toList()
                         val sourceRootCount = rootManager.contentSourceRoots
                             .mapNotNull(::localInspectionRootPath)
                             .mapNotNull(::normalizeFileSystemPath)
@@ -2925,8 +2937,16 @@ class InspectionHandler : HttpRequestHandler() {
                                     !canonicalContentRoot.startsWith(targetPath)
                             }.getOrDefault(true)
                         }
+                        val nonFallbackTargetCoverage = nonFallbackContentRoots.any { contentRoot ->
+                            runCatching {
+                                val canonicalContentRoot = canonicalTrustPath(Paths.get(contentRoot))
+                                targetPath.startsWith(canonicalContentRoot) ||
+                                    canonicalContentRoot.startsWith(targetPath)
+                            }.getOrDefault(false)
+                        }
                         val reason = when {
                             contentRoots.isEmpty() -> "no_content_roots"
+                            nonFallbackTargetCoverage -> "ready"
                             unrelatedContentRoot || (!targetInsideContent && !contentRootInsideTarget) ->
                                 "content_roots_outside_target"
                             else -> "ready"
@@ -4161,6 +4181,7 @@ class InspectionHandler : HttpRequestHandler() {
                 !inspectionInProgress &&
                 snapshotScopeHasProof &&
                 snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
+                scopeFileSemanticEvidenceComplete(snapshot.captureDiagnostic) &&
                 !scopeFileSemanticCoverageMissing(snapshot.captureDiagnostic) &&
                 !staleness.stale
             )
@@ -4615,6 +4636,12 @@ class InspectionHandler : HttpRequestHandler() {
             val resultsSource = status["results_source"] as? String
             val resultsTimestampMs = (status["results_timestamp_ms"] as? Number)?.toLong()
             val snapshotOutcome = status["snapshot_outcome"] as? String
+            val inspectionVerdict = status["inspection_verdict"] as? String
+            val inspectionVerdictReason = status["inspection_verdict_reason"] as? String
+            val terminalSemanticCoverageReason = inspectionVerdictReason?.takeIf { reason ->
+                reason == SCOPE_SEMANTIC_COVERAGE_MISSING_REASON ||
+                    reason == "scope_semantic_coverage_truncated"
+            }
             val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
             val resultsMayBeStale = status["results_may_be_stale"] as? Boolean ?: false
             val minStableMs = 5000L
@@ -4625,7 +4652,25 @@ class InspectionHandler : HttpRequestHandler() {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, true, "stale_results", requestAttribution)
             }
 
-            if (cleanInspection && !isScanning && !inProgress) {
+            if (
+                hasResults &&
+                !isScanning &&
+                !inProgress &&
+                inspectionVerdict == "UNKNOWN" &&
+                terminalSemanticCoverageReason != null
+            ) {
+                return formatWaitResponse(
+                    status,
+                    start,
+                    timeoutMs,
+                    pollMs,
+                    true,
+                    terminalSemanticCoverageReason,
+                    requestAttribution,
+                )
+            }
+
+            if (cleanInspection && inspectionVerdict == "GREEN" && !isScanning && !inProgress) {
                 if (cleanStableSince == null && resultsTimestampMs == null) {
                     cleanStableSince = now
                 }
