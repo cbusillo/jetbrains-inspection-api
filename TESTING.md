@@ -105,6 +105,10 @@ preparation must fail with
 inspection trigger. A project model that becomes ready but misses the required
 stabilization window must remain unresolved as `project_configuration_unstable`
 rather than becoming ready on the next lifecycle poll.
+Imported multi-module projects may retain unrelated sibling content roots when
+a normal non-fallback module covers the requested worktree. Regression coverage
+must also prove that fallback-only target coverage plus an unrelated root stays
+blocked as `content_roots_outside_target`.
 
 The helper treats `capture_incomplete`, stale results, timeouts, indexing,
 session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
@@ -132,6 +136,10 @@ option can accept generic text coverage. Recognized dependency lockfiles count
 as metadata only when the plugin reports both `is_excluded=true` and the
 `excluded_dependency_lockfile` role; basename-only or wildcard lockfile
 exemptions are not allowed.
+Once a settled clean snapshot has only a semantic-coverage gap, `/wait` must
+complete with that semantic reason instead of consuming the full timeout. This
+keeps default behavior fail-closed while allowing the helper's explicit
+text-only override to make a decisive result.
 Input changes during final publication return retryable
 `inspection_inputs_changed` instead of unattributed `unknown`. MCP trigger flows
 pin the accepted inspection run through wait/problems and reuse the trigger's

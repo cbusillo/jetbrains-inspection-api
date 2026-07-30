@@ -341,6 +341,9 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   limited to the exact lease-bound project instance; preexisting, coalesced,
   and outside-root projects remain untouched. The fallback exists only for that
   IDE project instance and does not create tracked `.idea` or `.iml` files. A
+  normal imported module that covers the requested worktree may coexist with
+  unrelated sibling-module content roots. An unrelated root still blocks
+  readiness when target coverage comes only from the lifecycle fallback. A
   project that remains
   `no_content_roots` or `content_roots_outside_target` fails preparation while
   retaining lease-bound close authority for cleanup. Readiness that appears too
@@ -601,6 +604,7 @@ Common completion reasons:
 - `clean`: inspection completed and a clean empty result was confirmed.
 - `no_results`: inspection finished, but no trustworthy result was captured. Treat this as `UNKNOWN`, not clean; rerun inspection or open the Inspection Results view for the exact worktree.
 - `capture_incomplete`: inspection finished, but the plugin could not conclusively capture the IDE results. The response includes `capture_incomplete_reason` when a bucket can be assigned; re-run the inspection or open the Problems/Inspection Results view.
+- `scope_semantic_coverage_missing` or `scope_semantic_coverage_truncated`: inspection finished and the semantic-coverage gap is terminal `UNKNOWN` evidence, not an active inspection timeout. Fetch `/problems` for the scoped diagnostics; the external helper may explicitly accept only generic text coverage with `--allow-text-only-coverage`.
 - `stale_results`: cached results exist, but project files changed after the last inspection. Trigger again before trusting findings. Wait responses expose cached counts as `cached_total_problems`, not `total_problems`.
 - `no_recent_inspection`: no inspection run is known for the selected project. Trigger one first.
 - `no_project`: no matching project was open during the wait period. This is not reported as `timed_out`; open a project or pass the exact project name.

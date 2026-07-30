@@ -19,6 +19,7 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.roots.ModuleRootModificationUtil
+import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.module.ModuleManager
@@ -2489,6 +2490,89 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test wait endpoint completes for settled semantic coverage gaps`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 10L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureDiagnostic = semanticCoverageGapDiagnostic(),
+                runId = 10L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=10"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"wait_completed\": true"), body)
+        assertTrue(body.contains("\"timed_out\": false"), body)
+        assertTrue(body.contains("\"completion_reason\": \"scope_semantic_coverage_missing\""), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+    }
+
+    @Test
+    fun `test wait endpoint keeps delayed truncated semantic coverage unknown`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 11L,
+                triggerTimeMs = System.currentTimeMillis() - 20_000L,
+                inProgress = false,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        InspectionResultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis() - 10_000L,
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "inspection_view",
+                captureDiagnostic = semanticCoverageTruncatedDiagnostic(),
+                runId = 11L,
+            ),
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=11"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"wait_completed\": true"), body)
+        assertTrue(body.contains("\"timed_out\": false"), body)
+        assertTrue(body.contains("\"completion_reason\": \"scope_semantic_coverage_truncated\""), body)
+        assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
+        assertFalse(body.contains("\"completion_reason\": \"clean\""), body)
+    }
+
+    @Test
     fun `test clean problems response includes decisive attribution`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -3664,13 +3748,18 @@ class InspectionHandlerTest {
         val moduleManager = mockk<ModuleManager>()
         var contentRoots = emptyArray<VirtualFile>()
         var modules = emptyArray<com.intellij.openapi.module.Module>()
+        val moduleRootManagers = mutableMapOf<com.intellij.openapi.module.Module, ModuleRootManager>()
         every { rootManager.contentRoots } answers { contentRoots }
         every { rootManager.contentSourceRoots } returns emptyArray()
         every { moduleManager.modules } answers { modules }
         mockkStatic(ProjectRootManager::class)
         mockkStatic(ModuleManager::class)
+        mockkStatic(ModuleRootManager::class)
         every { ProjectRootManager.getInstance(mockProject) } returns rootManager
         every { ModuleManager.getInstance(mockProject) } returns moduleManager
+        every { ModuleRootManager.getInstance(any()) } answers {
+            moduleRootManagers.getValue(firstArg())
+        }
         val productionHandler = InspectionHandler()
         val targetKey = tempDir.toRealPath().toString()
 
@@ -3690,9 +3779,13 @@ class InspectionHandlerTest {
             assertTrue(childReady.contentRootInsideTarget)
 
             val fallbackModule = mockk<com.intellij.openapi.module.Module>()
+            val fallbackRootManager = mockk<ModuleRootManager>()
             every { fallbackModule.name } returns "__jetbrains_inspection_api_lifecycle_fallback__test"
+            every { fallbackRootManager.contentRoots } returns arrayOf(childRoot)
+            moduleRootManagers[fallbackModule] = fallbackRootManager
             modules = arrayOf(fallbackModule)
             val fallbackReady = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertTrue(fallbackReady.ready, fallbackReady.toString())
             assertEquals(1, fallbackReady.fallbackModuleCount)
 
             val outsideRootPath = Files.createDirectories(tempDir.resolveSibling("outside-module"))
@@ -3700,17 +3793,35 @@ class InspectionHandlerTest {
             every { outsideRoot.path } returns outsideRootPath.toString()
             every { outsideRoot.isInLocalFileSystem } returns true
             contentRoots = arrayOf(outsideRoot)
+            modules = emptyArray()
             val outside = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
             assertFalse(outside.ready)
             assertEquals("content_roots_outside_target", outside.reason)
 
+            val targetModule = mockk<com.intellij.openapi.module.Module>()
+            val targetModuleRootManager = mockk<ModuleRootManager>()
+            every { targetModule.name } returns "target-module"
+            every { targetModuleRootManager.contentRoots } returns arrayOf(childRoot)
+            moduleRootManagers[targetModule] = targetModuleRootManager
+            val siblingModule = mockk<com.intellij.openapi.module.Module>()
+            val siblingModuleRootManager = mockk<ModuleRootManager>()
+            every { siblingModule.name } returns "sibling-module"
+            every { siblingModuleRootManager.contentRoots } returns arrayOf(outsideRoot)
+            moduleRootManagers[siblingModule] = siblingModuleRootManager
             contentRoots = arrayOf(childRoot, outsideRoot)
+            modules = arrayOf(targetModule, siblingModule)
             val mixedRoots = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
-            assertFalse(mixedRoots.ready)
-            assertEquals("content_roots_outside_target", mixedRoots.reason)
+            assertTrue(mixedRoots.ready, mixedRoots.toString())
+            assertEquals("ready", mixedRoots.reason)
+
+            modules = arrayOf(fallbackModule, siblingModule)
+            val fallbackWithSibling = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
+            assertFalse(fallbackWithSibling.ready)
+            assertEquals("content_roots_outside_target", fallbackWithSibling.reason)
         } finally {
             unmockkStatic(ProjectRootManager::class)
             unmockkStatic(ModuleManager::class)
+            unmockkStatic(ModuleRootManager::class)
         }
     }
 
@@ -6131,6 +6242,15 @@ class InspectionHandlerTest {
             "metadata_file_count" to 0,
             "metadata_files" to emptyList<Map<String, Any?>>(),
         ),
+        "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
+    )
+
+    private fun semanticCoverageTruncatedDiagnostic(): Map<String, Any?> = mapOf(
+        "scope_file_resolved_count" to 1,
+        "scope_file_diagnostic_count" to 0,
+        "scope_file_diagnostics_truncated" to true,
+        "scope_file_diagnostics_complete" to false,
+        "scope_file_semantic_evidence_complete" to false,
         "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
     )
 
