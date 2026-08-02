@@ -85,24 +85,7 @@ class InspectionHandlerTest {
     private lateinit var mockApplication: Application
 
     @Test
-    @Suppress("DEPRECATION")
-    fun `lifecycle open task uses binary stable builder callback`() {
-        val initializedProject = mockk<Project>()
-        val capturedProject = AtomicReference<Project?>()
-        val task = lifecycleOpenProjectTask(Paths.get("/tmp/issue-206")) { project ->
-            capturedProject.set(project)
-        }
-
-        assertTrue(task.forceOpenInNewFrame)
-        assertTrue(task.runConfigurators)
-        assertTrue(task.isRefreshVfsNeeded)
-        assertEquals("issue-206", task.projectName)
-        task.beforeInit?.invoke(initializedProject)
-        assertSame(initializedProject, capturedProject.get())
-    }
-
-    @Test
-    fun `inspection handler avoids binary fragile OpenProjectTask copy`() {
+    fun `inspection handler opens projects without private OpenProjectTask APIs`() {
         val resourceName = InspectionHandler::class.java.name.replace('.', '/') + ".class"
         val classResource = requireNotNull(InspectionHandler::class.java.classLoader.getResource(resourceName))
         val classPath = when (classResource.protocol) {
@@ -129,19 +112,18 @@ class InspectionHandlerTest {
             "-p",
             InspectionHandler::class.java.name,
             "com.shiny.inspectionmcp.InspectionHandlerKt",
-            OpenProjectTaskCompat::class.java.name,
         ).redirectErrorStream(true).start()
         val disassembly = process.inputStream.bufferedReader().use { it.readText() }
 
         assertTrue(process.waitFor(30, TimeUnit.SECONDS), "javap did not finish")
         assertEquals(0, process.exitValue(), disassembly)
         assertFalse(
-            disassembly.contains("com/intellij/ide/impl/OpenProjectTask.copy\$default"),
-            "OpenProjectTask.copy\$default is binary-incompatible when JetBrains adds task properties.",
+            disassembly.contains("com/intellij/ide/impl/OpenProjectTask"),
+            "Lifecycle project opening must not use JetBrains private OpenProjectTask APIs.",
         )
-        assertFalse(
-            disassembly.contains("com/intellij/ide/impl/OpenProjectTask.\"<init>\""),
-            "The full OpenProjectTask constructor is binary-incompatible when JetBrains adds task properties.",
+        assertTrue(
+            disassembly.contains("com/intellij/ide/impl/ProjectUtil.openOrImport"),
+            "Lifecycle project opening must use the public ProjectUtil open path.",
         )
         assertFalse(
             disassembly.contains("runProcessWithProgressSynchronously"),
@@ -4005,7 +3987,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle claim succeeds before project open call returns`() {
+    fun `test lifecycle route stays hidden until project ownership is registered`() {
         val tempDir = Files.createTempDirectory("inspection-open-claim-race")
         val openedProject = mockProject(
             name = "OwnedDuringOpen",
@@ -4014,16 +3996,16 @@ class InspectionHandlerTest {
         )
         var openProjects = emptyArray<Project>()
         val scheduled = AtomicReference<Runnable?>()
-        val beforeInitComplete = CountDownLatch(1)
+        val openedCallbackComplete = CountDownLatch(1)
         val allowOpenReturn = CountDownLatch(1)
         every { mockProjectManager.openProjects } answers { openProjects }
         every { mockApplication.invokeLater(any()) } answers {
             scheduled.set(firstArg<Runnable>())
         }
-        handler.openProjectPath = { _, beforeInit ->
-            beforeInit(openedProject)
+        handler.openProjectPath = { _, onOpened ->
+            onOpened(openedProject)
             openProjects = arrayOf(openedProject)
-            beforeInitComplete.countDown()
+            openedCallbackComplete.countDown()
             assertTrue(allowOpenReturn.await(5, TimeUnit.SECONDS))
             openedProject
         }
@@ -4031,16 +4013,33 @@ class InspectionHandlerTest {
         val openResponse = processGetRequest(lifecycleOpenUri(tempDir, "race-lease"))
         val openThread = Thread { scheduled.get()?.run() }
         openThread.start()
-        assertTrue(beforeInitComplete.await(5, TimeUnit.SECONDS))
+        assertTrue(openedCallbackComplete.await(5, TimeUnit.SECONDS))
         val instanceId = projectInstanceId(openedProject)
+        val hiddenClaimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=race-lease"
+        )
+        val hiddenClaimBody = hiddenClaimResponse.content().toString(Charsets.UTF_8)
+        val hiddenRouteResponse = processGetRequest(
+            "/api/inspection/route?project=${java.net.URLEncoder.encode("OwnedDuringOpen", "UTF-8")}",
+        )
+        val hiddenRouteBody = hiddenRouteResponse.content().toString(Charsets.UTF_8)
+        val hiddenIdentities = openProjectIdentities()
+        val hiddenProjectVisible = LifecycleOpenRouteVisibility.isVisible(openedProject)
+        allowOpenReturn.countDown()
+        openThread.join(5_000)
         val claimResponse = processGetRequest(
             "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=race-lease"
         )
         val claimBody = claimResponse.content().toString(Charsets.UTF_8)
-        allowOpenReturn.countDown()
-        openThread.join(5_000)
 
         assertEquals(HttpResponseStatus.OK, openResponse.status())
+        assertEquals(HttpResponseStatus.OK, hiddenClaimResponse.status())
+        assertTrue(hiddenClaimBody.contains("\"status\": \"no_project\""))
+        assertEquals(HttpResponseStatus.OK, hiddenRouteResponse.status())
+        assertTrue(hiddenRouteBody.contains("\"status\": \"no_project\""), hiddenRouteBody)
+        assertFalse(hiddenProjectVisible)
+        assertTrue(hiddenIdentities.isEmpty(), hiddenIdentities.toString())
+        assertTrue(openProjectIdentities().any { identity -> identity["project_instance_id"] == instanceId })
         assertEquals(HttpResponseStatus.OK, claimResponse.status())
         assertTrue(claimBody.contains("\"status\": \"claimed\""))
         assertTrue(claimBody.contains("\"ownership_proven\": true"))
@@ -4075,13 +4074,50 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, openResponse.status())
         assertTrue(openResponse.content().toString(Charsets.UTF_8).contains("\"ownership_registered\": true"))
         assertEquals(HttpResponseStatus.OK, claimResponse.status())
-        assertTrue(claimBody.contains("\"status\": \"not_owned\""))
-        assertTrue(claimBody.contains("\"ownership_proven\": false"))
+        assertTrue(claimBody.contains("\"status\": \"not_owned\""), claimBody)
+        assertTrue(claimBody.contains("\"ownership_proven\": false"), claimBody)
         assertFalse(claimBody.contains("\"close_token\""))
     }
 
     @Test
-    fun `test lifecycle open requires before init project identity for ownership`() {
+    fun `test lifecycle open does not own a project that appeared before the open call`() {
+        val tempDir = Files.createTempDirectory("inspection-open-late-user-race")
+        val userProject = mockProject(
+            name = "LateUserOwned",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        var initialized = false
+        var openProjects = emptyArray<Project>()
+        val scheduled = mutableListOf<Runnable>()
+        every { userProject.isInitialized } answers { initialized }
+        every { mockProjectManager.openProjects } answers { openProjects }
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        handler.openProjectPath = { _, onOpened ->
+            initialized = true
+            onOpened(userProject)
+            userProject
+        }
+
+        processGetRequest(lifecycleOpenUri(tempDir, "late-user-lease"))
+        openProjects = arrayOf(userProject)
+        scheduled.single().run()
+        val instanceId = projectInstanceId(userProject)
+        val claimResponse = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=${java.net.URLEncoder.encode(tempDir.toString(), "UTF-8")}&project_instance_id=$instanceId&lease_id=late-user-lease",
+        )
+        val claimBody = claimResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, claimResponse.status())
+        assertTrue(claimBody.contains("\"status\": \"not_owned\""), claimBody)
+        assertTrue(claimBody.contains("\"ownership_proven\": false"), claimBody)
+        assertFalse(claimBody.contains("\"close_token\""))
+    }
+
+    @Test
+    fun `test lifecycle open requires reported project identity to match returned project`() {
         val tempDir = Files.createTempDirectory("inspection-open-coalesced")
         val initializedProject = mockProject(
             name = "Initialized",
@@ -4115,7 +4151,7 @@ class InspectionHandlerTest {
         assertFalse(claimBody.contains("\"close_token\""))
         assertFalse(
             handler.lifecycleFallbackContentRootInstaller(returnedProject, tempDir.toRealPath().toString()),
-            "A returned project that does not match the before-init ownership instance must not be repaired.",
+            "A returned project that does not match the reported opened instance must not be repaired.",
         )
     }
 

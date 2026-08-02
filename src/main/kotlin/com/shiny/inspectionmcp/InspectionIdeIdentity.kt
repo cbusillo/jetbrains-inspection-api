@@ -9,12 +9,14 @@ import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.shiny.inspectionmcp.core.formatJsonManually
+import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.nio.file.StandardCopyOption
 import java.util.Properties
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ScheduledFuture
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
@@ -185,8 +187,44 @@ internal object InspectionIdeRegistry {
 internal fun openProjectIdentities(): List<Map<String, Any?>> {
     return ApplicationManager.getApplication().runReadAction<List<Map<String, Any?>>, Exception> {
         ProjectManager.getInstance().openProjects
-            .filter { project -> !project.isDefault && !project.isDisposed && project.isInitialized }
+            .filter { project ->
+                !project.isDefault &&
+                    !project.isDisposed &&
+                    project.isInitialized &&
+                    LifecycleOpenRouteVisibility.isVisible(project)
+            }
             .map(::openProjectIdentity)
+    }
+}
+
+internal object LifecycleOpenRouteVisibility {
+    private val hiddenTargetKeys = ConcurrentHashMap.newKeySet<String>()
+
+    fun hide(targetKey: String) {
+        hiddenTargetKeys.add(targetKey)
+    }
+
+    fun reveal(targetKey: String) {
+        hiddenTargetKeys.remove(targetKey)
+    }
+
+    fun isVisible(project: Project): Boolean {
+        if (hiddenTargetKeys.isEmpty()) return true
+        return lifecycleProjectTargetKeys(project).none(hiddenTargetKeys::contains)
+    }
+
+    private fun lifecycleProjectTargetKeys(project: Project): Set<String> {
+        val basePath = runCatching { project.basePath }.getOrNull()
+        val projectFilePath = runCatching { project.projectFilePath }.getOrNull()
+        return listOfNotNull(basePath, projectRootFromProjectFilePath(projectFilePath))
+            .mapNotNull(::canonicalTargetKey)
+            .toSet()
+    }
+
+    private fun canonicalTargetKey(path: String): String? {
+        return runCatching { Paths.get(path).toRealPath().toString() }
+            .recoverCatching { Paths.get(path).normalize().toAbsolutePath().toString() }
+            .getOrNull()
     }
 }
 
