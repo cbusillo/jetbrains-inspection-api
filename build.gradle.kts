@@ -1,6 +1,7 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
+import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
@@ -175,6 +176,31 @@ tasks {
     withType<KotlinCompile> {
         compilerOptions {
             jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_21)
+        }
+    }
+
+    withType<VerifyPluginTask> {
+        doLast {
+            val internalApiReports = verificationReportsDirectory.get().asFileTree.matching {
+                include("**/plugins/com.shiny.inspection.api/**/internal-api-usages.txt")
+            }.files
+            if (internalApiReports.isEmpty()) {
+                throw GradleException("Plugin Verifier did not produce internal API usage reports for the known exemption.")
+            }
+            val unexpectedUsages = internalApiReports.flatMap { report ->
+                report.readLines()
+                    .filter(String::isNotBlank)
+                    .filterNot { usage ->
+                        usage.contains("com.intellij.codeInspection.ex.GlobalInspectionContextImpl")
+                    }
+                    .map { usage -> "${report.relativeTo(project.projectDir)}: $usage" }
+            }
+            if (unexpectedUsages.isNotEmpty()) {
+                throw GradleException(
+                    "Plugin Verifier found unapproved internal API usage:\n" +
+                        unexpectedUsages.joinToString("\n"),
+                )
+            }
         }
     }
     

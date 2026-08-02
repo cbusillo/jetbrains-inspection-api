@@ -8,7 +8,7 @@ import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
-import com.intellij.ide.impl.OpenProjectTask
+import com.intellij.ide.impl.ProjectUtil
 import com.intellij.ide.trustedProjects.TrustedProjects
 import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
@@ -126,9 +126,6 @@ private val CLIENT_RUN_ID_PATTERN = Regex(
     "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
 )
 private val INSPECTION_RESPONSE_JSON = Json { prettyPrint = true }
-
-internal fun lifecycleOpenProjectTask(openPath: Path, onBeforeInit: (Project) -> Unit): OpenProjectTask =
-    OpenProjectTaskCompat.build(openPath, onBeforeInit)
 
 internal fun normalizeOptionalFilter(raw: String?): String? {
     val trimmed = raw?.trim() ?: return null
@@ -1458,12 +1455,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleFallbackContentRootCreator: (Project, VirtualFile) -> Boolean = { project, targetRoot ->
         createLifecycleFallbackContentRoot(project, targetRoot)
     }
-    internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, beforeInit ->
+    internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, onOpened ->
         val openPath = canonicalTrustPath(path)
-        ProjectManagerEx.getInstanceEx().openProject(
-            openPath,
-            lifecycleOpenProjectTask(openPath, beforeInit),
-        )
+        ProjectUtil.openOrImport(openPath.toString(), null, true)?.also(onOpened)
     }
 
     private val resultsStore = InspectionResultsStore
@@ -2651,26 +2645,43 @@ class InspectionHandler : HttpRequestHandler() {
             ApplicationManager.getApplication().invokeLater {
                 var opened: Project? = null
                 var keepOpeningGuard = false
+                var routeHidden = false
                 try {
                     val preexistingProject = findOpenProjectForLifecycleOpen(target.projectRoot.toString())
                     if (preexistingProject != null) {
                         opened = preexistingProject
                         return@invokeLater
                     }
-                    val initializedProject = AtomicReference<Project?>()
+                    val projectsBeforeOpen = ProjectManager.getInstance().openProjects.toList()
+                    LifecycleOpenRouteVisibility.hide(target.key)
+                    routeHidden = true
+                    val openedProjectCandidate = AtomicReference<Project?>()
                     trustProjectPath(target.openPath)
                     refreshProjectRoot(target.openPath.toString())
                     opened = openProjectPath(target.openPath) { project ->
-                        if (initializedProject.compareAndSet(null, project) && requestedLeaseId != null) {
-                            registerLifecycleOpenOwnership(project, requestedLeaseId, target.key)
-                        }
+                        openedProjectCandidate.compareAndSet(null, project)
                     }
+                    val ownershipProject = openedProjectCandidate.get()?.takeIf { project ->
+                        project === opened &&
+                            !project.isDefault &&
+                            !project.isDisposed &&
+                            projectsBeforeOpen.none { existingProject -> existingProject === project } &&
+                            lifecycleOpenKeys(project).contains(target.key)
+                    }
+                    if (ownershipProject != null && requestedLeaseId != null) {
+                        registerLifecycleOpenOwnership(ownershipProject, requestedLeaseId, target.key)
+                    }
+                    LifecycleOpenRouteVisibility.reveal(target.key)
+                    routeHidden = false
                     if (opened != null) {
                         refreshProjectRoot(target.openPath.toString())
                         keepOpeningGuard = true
                         releaseLifecycleOpenGuardWhenUsable(target.key, opened, request)
                     }
                 } finally {
+                    if (routeHidden) {
+                        LifecycleOpenRouteVisibility.reveal(target.key)
+                    }
                     if (!keepOpeningGuard) {
                         openingProjectRequests.remove(target.key, request)
                     }
@@ -3088,7 +3099,7 @@ class InspectionHandler : HttpRequestHandler() {
         val canonical = runCatching { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
         return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
             for (project in ProjectManager.getInstance().openProjects) {
-                if (!isUsableProject(project)) continue
+                if (!isInitializedOpenProject(project)) continue
                 val candidatePaths = projectCandidatePaths(project)
                 val matchesNormalizedPath = candidatePaths.any { candidatePath ->
                     normalizeFileSystemPath(candidatePath) == normalized
@@ -4893,7 +4904,7 @@ class InspectionHandler : HttpRequestHandler() {
         response["error"] = "Requested project '$displayProjectName' is not open in the IDE."
 
         val openProjectNames = ProjectManager.getInstance().openProjects
-            .filter { project -> !project.isDefault && !project.isDisposed && project.isInitialized }
+            .filter(::isUsableProject)
             .map { project -> project.name }
             .distinct()
             .sorted()
@@ -7032,9 +7043,11 @@ class InspectionHandler : HttpRequestHandler() {
         return validProjects.firstOrNull()
     }
 
-    private fun isUsableProject(project: Project?): Boolean {
-        return project != null && !project.isDefault && !project.isDisposed && project.isInitialized
-    }
+    private fun isInitializedOpenProject(project: Project?): Boolean =
+        project != null && !project.isDefault && !project.isDisposed && project.isInitialized
+
+    private fun isUsableProject(project: Project?): Boolean =
+        isInitializedOpenProject(project) && LifecycleOpenRouteVisibility.isVisible(requireNotNull(project))
     
     private fun resolveProjectSelector(projectName: String): Project? {
         val projectManager = ProjectManager.getInstance()
@@ -7062,10 +7075,7 @@ class InspectionHandler : HttpRequestHandler() {
         val pathHint = normalizeProjectPath(trimmed)
 
         val matches = openProjects.filter { project ->
-            !project.isDefault &&
-            !project.isDisposed &&
-            project.isInitialized &&
-            projectMatches(project, trimmed, pathHint)
+            isUsableProject(project) && projectMatches(project, trimmed, pathHint)
         }
         if (matches.size <= 1) {
             return matches.firstOrNull()

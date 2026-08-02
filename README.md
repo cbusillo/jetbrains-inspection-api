@@ -364,13 +364,15 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   poll `/status` until `inspection_in_progress` is false before closing a
   helper-owned project.
 
-The plugin checks again on the IDE event thread immediately before opening and
-binds ownership only when that request's `beforeInit` project is the same object
-returned by the open call. This prevents a user-opened same-path project from
-being claimed or closed during the asynchronous scheduling window. The
-contract lets script helpers preserve projects that were already open before
-automation started while cleaning up helper-opened worktrees after readiness
-inspection.
+The plugin checks again on the IDE event thread immediately before opening,
+hides the target route while the open call is unresolved, and snapshots the
+existing project instances. It binds ownership only when the reported opened
+project is the exact object returned by the call, was absent from that snapshot,
+and still resolves to the requested canonical root. This prevents a user-opened
+same-path project from being claimed or closed during the asynchronous
+scheduling window. The contract lets script helpers preserve projects that
+were already open before automation started while cleaning up helper-opened
+worktrees after readiness inspection.
 
 Agent-triggered inspections use a non-modal progress indicator. Long-running
 inspection work therefore remains cancellable without blocking lifecycle opens,

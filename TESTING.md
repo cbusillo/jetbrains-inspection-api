@@ -283,7 +283,9 @@ Version tags (`v*`) run `.github/workflows/release.yml`, which rejects tag,
 commit gate, runs `buildPlugin`, `verifyPluginStructure`, and `verifyPlugin`,
 creates the GitHub Release, then publishes to JetBrains Marketplace. The
 workflow also rejects tags that do not point at the current default-branch
-commit.
+commit. `verifyPlugin` treats internal API usage as a release failure except
+for the existing `GlobalInspectionContextImpl` Marketplace exemption enforced
+by the verifier report allowlist in `build.gradle.kts`.
 
 `./scripts/test-all.sh` reports the configured JaCoCo contracts accurately:
 plugin coverage is a 0% minimum report-only signal because IntelliJ classloader
