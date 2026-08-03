@@ -1283,6 +1283,99 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test current file clean snapshot becomes unknown after failed churn validation`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> projectInputsFingerprint(profileName = "ChangedProfile") }
+        mockExtractor(emptyList())
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 1),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(
+                scopeParam = "current_file",
+                resolvedCurrentFile = "/tmp/TestProject/src/Probe.py",
+            ),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        val status = buildInspectionStatus()
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
+        assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+    }
+
+    @Test
+    fun `test current file clean snapshot validates unchanged project inputs`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 10L
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val inputFingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> projectInputsFingerprint(profileName = "ChangedProfile") }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = InspectionCaptureScope(
+                scopeParam = "current_file",
+                resolvedCurrentFile = "/tmp/TestProject/src/Probe.py",
+            ),
+            runId = 1L,
+        )
+
+        publishInspectionSnapshot(
+            runId = 1L,
+            snapshot = snapshot,
+            captureEndState = snapshot.projectState,
+            projectStateChangedDuringCapture = false,
+            inspectionInputFingerprint = inputFingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
+        assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
+    }
+
+    @Test
     fun `test final publication rejects input drift without psi churn`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
