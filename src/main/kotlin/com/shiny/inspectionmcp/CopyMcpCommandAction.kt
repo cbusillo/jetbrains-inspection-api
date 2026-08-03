@@ -1,20 +1,26 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
-import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.application.PathManager
+import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.SystemInfo
 import java.awt.datatransfer.StringSelection
 import java.net.JarURLConnection
+import java.net.URI
 import java.net.URL
+import java.net.URLDecoder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import kotlin.streams.asSequence
 
 private const val MCP_JAR_NAME = "jetbrains-inspection-mcp.jar"
+private val LOG = Logger.getInstance(CopyMcpCommandAction::class.java)
 
 class CopyMcpCommandAction : AnAction() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
@@ -35,15 +41,58 @@ private data class McpSetupOption(
     val kind: McpSetupKind = McpSetupKind.SINGLE
 )
 
+internal enum class McpJarStrategy {
+    CODE_SOURCE,
+    CLASS_RESOURCE,
+    PATH_MANAGER_CLASS,
+    PLUGIN_ROOT_SCAN
+}
+
+internal data class StrategyAttempt(
+    val strategy: McpJarStrategy,
+    val detail: String,
+    val resolvedPath: Path?,
+    val success: Boolean
+)
+
+internal data class McpJarDiscoveryResult(
+    val jarPath: Path?,
+    val attempts: List<StrategyAttempt>
+) {
+    val winningAttempt: StrategyAttempt?
+        get() = attempts.firstOrNull { it.success }
+}
+
+internal fun redactUserHome(pathOrText: String): String {
+    val userHome = System.getProperty("user.home")
+    if (userHome.isNullOrBlank()) return pathOrText
+    val withForward = userHome.replace('\\', '/')
+    val withBack = userHome.replace('/', '\\')
+    return pathOrText.replace(userHome, "~")
+        .replace(withForward, "~")
+        .replace(withBack, "~")
+}
+
 internal fun copyMcpSetup(project: Project?) {
-    val setups = buildMcpSetupOptions() ?: run {
+    val discoveryResult = resolveMcpJarResult()
+    val jarPath = discoveryResult.jarPath
+    if (jarPath == null) {
+        val diagnostics = discoveryResult.attempts.joinToString("\n") { attempt ->
+            "• [${attempt.strategy}] ${redactUserHome(attempt.detail)}"
+        }
+        LOG.warn("Unable to locate $MCP_JAR_NAME across all discovery strategies:\n$diagnostics")
         Messages.showErrorDialog(
-            "Unable to locate $MCP_JAR_NAME in the installed plugin. Reinstall the plugin and try again.",
+            "Unable to locate $MCP_JAR_NAME in the installed plugin.\n\nDiagnostic attempts:\n$diagnostics\n\nReinstall the plugin and try again.",
             "MCP Setup"
         )
         return
     }
 
+    discoveryResult.winningAttempt?.let { winning ->
+        LOG.info("Resolved $MCP_JAR_NAME via ${winning.strategy}: ${winning.resolvedPath?.let { redactUserHome(it.toString()) }}")
+    }
+
+    val setups = buildMcpSetupOptions(jarPath)
     val chosen = chooseMcpSetup(project, setups) ?: return
     CopyPasteManager.getInstance().setContents(StringSelection(chosen.command))
     val prefix = if (chosen.kind == McpSetupKind.MULTI) {
@@ -71,8 +120,7 @@ private fun chooseMcpSetup(project: Project?, setups: List<McpSetupOption>): Mcp
     return setups.getOrNull(selection)
 }
 
-private fun buildMcpSetupOptions(): List<McpSetupOption>? {
-    val jarPath = resolveMcpJarPath() ?: return null
+private fun buildMcpSetupOptions(jarPath: Path): List<McpSetupOption> {
     val javaBin = resolveJavaBinary()
     val port = resolveIdePort()?.toString()
     val name = "inspection-jetbrains"
@@ -106,11 +154,292 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
     )
 }
 
-private fun resolveMcpJarPath(): Path? {
-    val codeSource = CopyMcpCommandAction::class.java.protectionDomain?.codeSource?.location
-        ?.let(::resolveCodeSourcePath)
-        ?: return null
-    return resolveMcpJarPathFromCodeSource(codeSource)
+internal fun resolveMcpJarPath(): Path? {
+    return resolveMcpJarResult().jarPath
+}
+
+internal fun resolveMcpJarResult(
+    codeSourceLocationProvider: () -> URL? = {
+        CopyMcpCommandAction::class.java.protectionDomain?.codeSource?.location
+    },
+    classResourceUrlProvider: () -> URL? = {
+        CopyMcpCommandAction::class.java.getResource("CopyMcpCommandAction.class")
+            ?: CopyMcpCommandAction::class.java.getResource("/com/shiny/inspectionmcp/CopyMcpCommandAction.class")
+    },
+    pathManagerJarPathProvider: () -> String? = {
+        runCatching { PathManager.getJarPathForClass(CopyMcpCommandAction::class.java) }.getOrNull()
+    },
+    pluginsPathProvider: () -> Path? = {
+        runCatching { Paths.get(PathManager.getPluginsPath()) }.getOrNull()
+    },
+    jarUrlConnectionOpener: (URL) -> URL? = { url ->
+        runCatching { (url.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
+    }
+): McpJarDiscoveryResult {
+    val attempts = mutableListOf<StrategyAttempt>()
+
+    // 1. ProtectionDomain codeSource
+    val codeSourceLocation = codeSourceLocationProvider()
+    if (codeSourceLocation == null) {
+        attempts.add(
+            StrategyAttempt(
+                McpJarStrategy.CODE_SOURCE,
+                "ProtectionDomain codeSource location is null",
+                null,
+                false
+            )
+        )
+    } else {
+        val codeSourcePath = resolveCodeSourcePath(codeSourceLocation)
+        if (codeSourcePath == null) {
+            attempts.add(
+                StrategyAttempt(
+                    McpJarStrategy.CODE_SOURCE,
+                    redactUserHome("Failed to resolve Path from codeSource location: $codeSourceLocation"),
+                    null,
+                    false
+                )
+            )
+        } else {
+            val jarPath = resolveMcpJarPathFromCodeSource(codeSourcePath)
+                ?: resolveMcpJarPathFromPluginPath(codeSourcePath)
+            if (jarPath != null) {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.CODE_SOURCE,
+                        redactUserHome("Found $MCP_JAR_NAME via codeSource location $codeSourceLocation"),
+                        jarPath,
+                        true
+                    )
+                )
+                return McpJarDiscoveryResult(jarPath, attempts)
+            } else {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.CODE_SOURCE,
+                        redactUserHome("codeSource path $codeSourcePath does not contain $MCP_JAR_NAME"),
+                        null,
+                        false
+                    )
+                )
+            }
+        }
+    }
+
+    // 2. Action class resource URL
+    val resourceUrl = classResourceUrlProvider()
+    if (resourceUrl == null) {
+        attempts.add(
+            StrategyAttempt(
+                McpJarStrategy.CLASS_RESOURCE,
+                "Action class resource URL is null",
+                null,
+                false
+            )
+        )
+    } else {
+        val resourceBasePath = parseResourceUrlToPath(resourceUrl, jarUrlConnectionOpener)
+        if (resourceBasePath == null) {
+            attempts.add(
+                StrategyAttempt(
+                    McpJarStrategy.CLASS_RESOURCE,
+                    redactUserHome("Failed to parse resource base Path from URL: $resourceUrl"),
+                    null,
+                    false
+                )
+            )
+        } else {
+            val jarPath = resolveMcpJarPathFromCodeSource(resourceBasePath)
+                ?: resolveMcpJarPathFromPluginPath(resourceBasePath)
+            if (jarPath != null) {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.CLASS_RESOURCE,
+                        redactUserHome("Found $MCP_JAR_NAME via class resource URL $resourceUrl"),
+                        jarPath,
+                        true
+                    )
+                )
+                return McpJarDiscoveryResult(jarPath, attempts)
+            } else {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.CLASS_RESOURCE,
+                        redactUserHome("Class resource base path $resourceBasePath does not contain $MCP_JAR_NAME"),
+                        null,
+                        false
+                    )
+                )
+            }
+        }
+    }
+
+    // 3. PathManager getJarPathForClass
+    val pathManagerJarPath = pathManagerJarPathProvider()
+    if (pathManagerJarPath.isNullOrBlank()) {
+        attempts.add(
+            StrategyAttempt(
+                McpJarStrategy.PATH_MANAGER_CLASS,
+                "PathManager.getJarPathForClass returned null or blank",
+                null,
+                false
+            )
+        )
+    } else {
+        val pathManagerPath = runCatching { Paths.get(pathManagerJarPath) }.getOrNull()
+        if (pathManagerPath == null) {
+            attempts.add(
+                StrategyAttempt(
+                    McpJarStrategy.PATH_MANAGER_CLASS,
+                    redactUserHome("Failed to convert PathManager jar path string to Path: $pathManagerJarPath"),
+                    null,
+                    false
+                )
+            )
+        } else {
+            val jarPath = resolveMcpJarPathFromCodeSource(pathManagerPath)
+                ?: resolveMcpJarPathFromPluginPath(pathManagerPath)
+            if (jarPath != null) {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.PATH_MANAGER_CLASS,
+                        redactUserHome("Found $MCP_JAR_NAME via PathManager class path: $pathManagerJarPath"),
+                        jarPath,
+                        true
+                    )
+                )
+                return McpJarDiscoveryResult(jarPath, attempts)
+            } else {
+                attempts.add(
+                    StrategyAttempt(
+                        McpJarStrategy.PATH_MANAGER_CLASS,
+                        redactUserHome("PathManager path $pathManagerPath does not contain $MCP_JAR_NAME"),
+                        null,
+                        false
+                    )
+                )
+            }
+        }
+    }
+
+    // 4. PathManager getPluginsPath & bounded plugin-root scan
+    val pluginsPath = pluginsPathProvider()
+    if (pluginsPath == null || !Files.isDirectory(pluginsPath)) {
+        attempts.add(
+            StrategyAttempt(
+                McpJarStrategy.PLUGIN_ROOT_SCAN,
+                redactUserHome("Plugins path is null or not a directory: $pluginsPath"),
+                null,
+                false
+            )
+        )
+    } else {
+        val scannedJarPath = scanPluginsDirForMcpJar(pluginsPath)
+        if (scannedJarPath != null) {
+            attempts.add(
+                StrategyAttempt(
+                    McpJarStrategy.PLUGIN_ROOT_SCAN,
+                    redactUserHome("Found $MCP_JAR_NAME during bounded plugin-root scan under $pluginsPath"),
+                    scannedJarPath,
+                    true
+                )
+            )
+            return McpJarDiscoveryResult(scannedJarPath, attempts)
+        } else {
+            attempts.add(
+                StrategyAttempt(
+                    McpJarStrategy.PLUGIN_ROOT_SCAN,
+                    redactUserHome("Scanned subdirectories under $pluginsPath but did not find $MCP_JAR_NAME"),
+                    null,
+                    false
+                )
+            )
+        }
+    }
+
+    return McpJarDiscoveryResult(null, attempts)
+}
+
+internal fun parseResourceUrlToPath(
+    url: URL,
+    jarUrlConnectionOpener: (URL) -> URL? = { u ->
+        runCatching { (u.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
+    }
+): Path? {
+    val jarFileUrl = jarUrlConnectionOpener(url)
+    if (jarFileUrl != null) {
+        val path = resolveCodeSourcePath(jarFileUrl)
+        if (path != null) return path
+    }
+
+    val urlString = url.toExternalForm()
+    if (urlString.contains("!")) {
+        val archivePart = urlString.substringBefore("!")
+        val fileUriString = if (archivePart.contains("file:")) {
+            "file:" + archivePart.substringAfter("file:")
+        } else {
+            archivePart
+        }
+        val path = parsePathFromUriOrString(fileUriString)
+        if (path != null) return path
+    }
+
+    val cleanUrlString = if (urlString.contains("file:")) {
+        "file:" + urlString.substringAfter("file:")
+    } else {
+        urlString
+    }
+
+    val parsedPath = parsePathFromUriOrString(cleanUrlString) ?: return null
+
+    if (Files.isDirectory(parsedPath)) {
+        return parsedPath
+    }
+
+    val pathStr = parsedPath.toString()
+    val classSuffix = "com/shiny/inspectionmcp/CopyMcpCommandAction.class"
+
+    return when {
+        pathStr.endsWith(classSuffix) -> {
+            val baseDirStr = pathStr.dropLast(classSuffix.length).trimEnd('/', '\\')
+            runCatching { Paths.get(baseDirStr) }.getOrNull()
+        }
+        pathStr.endsWith(".class") -> parsedPath.parent
+        else -> parsedPath
+    }
+}
+
+internal fun parsePathFromUriOrString(uriOrPath: String): Path? {
+    return runCatching {
+        val uri = URI(uriOrPath)
+        Paths.get(uri)
+    }.getOrElse {
+        runCatching {
+            val rawPath = if (uriOrPath.startsWith("file:")) {
+                runCatching { URI.create(uriOrPath).path }.getOrNull()
+                    ?: uriOrPath.substringAfter("file:")
+            } else {
+                uriOrPath
+            }
+            val decodedPath = runCatching { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+            Paths.get(decodedPath)
+        }.getOrNull()
+    }
+}
+
+internal fun scanPluginsDirForMcpJar(pluginsPath: Path): Path? {
+    if (!Files.isDirectory(pluginsPath)) return null
+
+    resolveMcpJarPathFromPluginPath(pluginsPath)?.let { return it }
+
+    return runCatching {
+        Files.list(pluginsPath).use { stream ->
+            stream.asSequence()
+                .filter { Files.isDirectory(it) }
+                .mapNotNull { child -> resolveMcpJarPathFromPluginPath(child) }
+                .firstOrNull()
+        }
+    }.getOrNull()
 }
 
 internal fun resolveCodeSourcePath(location: URL): Path? {
@@ -121,9 +450,7 @@ internal fun resolveCodeSourcePath(location: URL): Path? {
         }.getOrNull()
         else -> null
     } ?: return null
-    return runCatching { Paths.get(fileLocation.toURI()) }.getOrElse {
-        runCatching { Paths.get(fileLocation.path) }.getOrNull()
-    }
+    return parsePathFromUriOrString(fileLocation.toExternalForm())
 }
 
 internal fun resolveMcpJarPathFromPluginPath(pluginPath: Path): Path? {

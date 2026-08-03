@@ -3381,6 +3381,38 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("problems response keeps the current file resolved during request validation")
+    fun testProblemsResponseUsesValidatedCurrentFilePath() {
+        val validatedScope = InspectionCaptureScope(
+            scopeParam = "current_file",
+            resolvedCurrentFile = "/tmp/TestProject/original.py",
+            resolvedFiles = listOf("/tmp/TestProject/original.py"),
+        )
+
+        val currentFilePath = resolveProblemsCurrentFilePath(
+            normalizedScope = "current_file",
+            validatedRequestScope = validatedScope,
+        ) {
+            "/tmp/TestProject/newly-selected.py"
+        }
+
+        assertEquals("/tmp/TestProject/original.py", currentFilePath)
+    }
+
+    @Test
+    @DisplayName("problems response resolves the current file when validation evidence is unavailable")
+    fun testProblemsResponseFallsBackToCurrentEditorResolution() {
+        val currentFilePath = resolveProblemsCurrentFilePath(
+            normalizedScope = "current_file",
+            validatedRequestScope = null,
+        ) {
+            "/tmp/TestProject/current.py"
+        }
+
+        assertEquals("/tmp/TestProject/current.py", currentFilePath)
+    }
+
+    @Test
     @DisplayName("buildInspectionCaptureSnapshot with proof-skipped diagnostic stores EXECUTION_NOT_PROVEN reason")
     fun testBuildCaptureSnapshotWithProofSkippedStoresExecutionNotProvenReason() {
         val snapshot = buildInspectionCaptureSnapshot(
