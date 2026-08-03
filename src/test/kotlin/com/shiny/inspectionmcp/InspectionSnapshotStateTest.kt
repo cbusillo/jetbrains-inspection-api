@@ -3532,6 +3532,105 @@ class InspectionSnapshotStateTest {
         assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
     }
 
+    // ---- BoundedExecutionProofResult.proofEstablished direct decision tests ----
+
+    @Test
+    @DisplayName("proofEstablished is false when all executions errored (executedToolCount=0, errorCount>0)")
+    fun testProofEstablishedFalseWhenAllExecutionsErrored() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 3,
+            executedToolCount = 0,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 3,
+        )
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is false for partial execution errors (executedToolCount>0, errorCount>0)")
+    fun testProofEstablishedFalseForPartialExecutionErrors() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 5,
+            executedToolCount = 3,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 2,
+        )
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is true but proofClean is false when zero executions and no wrappers available")
+    fun testProofEstablishedTrueZeroExecutionsNoWrappers() {
+        // executedToolCount=0, errorCount=0, missingWrapperCount=0: nothing ran but no errors either.
+        // skippedReason=null since missingWrapperCount==0; proofEstablished=true but proofClean=false
+        // (proofClean requires executedToolCount > 0 to confirm absence of findings).
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 0,
+            executedToolCount = 0,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofClean is true for a successful zero-descriptor run with no errors")
+    fun testProofCleanTrueForSuccessfulZeroDescriptorRun() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 4,
+            executedToolCount = 4,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertTrue(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is true but proofClean is false when proof found findings")
+    fun testProofCleanFalseWhenProofFoundFindings() {
+        val finding = mapOf("description" to "Unused variable", "file" to "/tmp/f.kt", "line" to 1)
+        val proof = BoundedExecutionProofResult(
+            proofProblems = listOf(finding),
+            enabledLocalToolCount = 4,
+            executedToolCount = 4,
+            totalDescriptorCount = 1,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is true when some tools lack wrappers but at least one ran successfully")
+    fun testProofEstablishedTrueWhenSomeToolsMissingWrapperButSomeRan() {
+        // Deliberate behavior: tools without batch wrappers cannot run in the proof path, but
+        // those that can DID run — the proof covers what the engine can execute.
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 5,
+            executedToolCount = 2,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            missingWrapperCount = 3,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertTrue(proof.proofClean)
+    }
+
     // ---- Fix 3: Proof findings survive polling adoption (union by problemKey) ----
 
     @Test

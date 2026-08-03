@@ -279,6 +279,22 @@ internal data class InspectionCaptureSnapshotInput(
     val boundedProofEstablished: Boolean? = null,
 )
 
+internal data class BoundedExecutionProofResult(
+    val proofProblems: List<Map<String, Any>>,
+    val enabledLocalToolCount: Int,
+    val executedToolCount: Int,
+    val totalDescriptorCount: Int,
+    val skippedReason: String?,
+    val missingWrapperCount: Int = 0,
+    val errorCount: Int = 0,
+    val hitFileLimit: Boolean = false,
+    val hitTimeLimit: Boolean = false,
+) {
+    // All errors disqualify the proof: even partial errors mean some tools may have missed problems.
+    val proofEstablished: Boolean get() = skippedReason == null && !hitFileLimit && !hitTimeLimit && errorCount == 0
+    val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty() && executedToolCount > 0
+}
+
 internal fun scopeFileSemanticEvidenceComplete(captureDiagnostic: Map<String, Any?>?): Boolean {
     val explicitCoverage = captureDiagnostic?.get("scope_file_semantic_evidence_complete") as? Boolean
     return explicitCoverage ?: (captureDiagnostic?.get("scope_file_diagnostics_complete") != false)
@@ -5916,13 +5932,14 @@ class InspectionHandler : HttpRequestHandler() {
                         val projectStateChangedDuringCapture = captureEndState != inspectionInputState
                         val snapshotState = inspectionInputState
                         val ideProductCode = safeInspectionIdentity()["ide_product_code"] as? String
-                        // Proof-not-established reason covers skipped, hit-file-limit, and hit-time-limit cases
+                        // Proof-not-established reason covers skipped, hit-file-limit, hit-time-limit, and error cases
                         val proofNotEstablishedReason = when {
                             boundedProof == null -> null
                             boundedProof.proofEstablished -> null
                             boundedProof.skippedReason != null -> boundedProof.skippedReason
                             boundedProof.hitFileLimit -> "proof_file_limit_exceeded"
                             boundedProof.hitTimeLimit -> "proof_time_limit_exceeded"
+                            boundedProof.errorCount > 0 -> "proof_execution_errors"
                             else -> null
                         }
                         val suspiciousEmptyModelReason = suspiciousEmptyInspectionModelReason(
@@ -7774,21 +7791,6 @@ class InspectionHandler : HttpRequestHandler() {
             .joinToString(":")
     }
 
-    private data class BoundedExecutionProofResult(
-        val proofProblems: List<Map<String, Any>>,
-        val enabledLocalToolCount: Int,
-        val executedToolCount: Int,
-        val totalDescriptorCount: Int,
-        val skippedReason: String?,
-        val missingWrapperCount: Int = 0,
-        val errorCount: Int = 0,
-        val hitFileLimit: Boolean = false,
-        val hitTimeLimit: Boolean = false,
-    ) {
-        val proofEstablished: Boolean get() = skippedReason == null && !hitFileLimit && !hitTimeLimit
-        val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty() && executedToolCount > 0
-    }
-
     private fun buildProofDiagnostic(proof: BoundedExecutionProofResult?): Map<String, Any?> {
         proof ?: return emptyMap()
         return mapOf(
@@ -7916,6 +7918,8 @@ class InspectionHandler : HttpRequestHandler() {
         val skippedReason = when {
             hitTimeLimit -> null // hitTimeLimit flag signals unproven; no skippedReason needed
             executedToolCount == 0 && missingWrapperCount > 0 -> "no_batch_capable_tools"
+            // When executedToolCount > 0 and missingWrapperCount > 0, the proof is still established:
+            // tools without batch wrappers cannot run in this path, but those that can DID run.
             else -> null
         }
         return BoundedExecutionProofResult(
