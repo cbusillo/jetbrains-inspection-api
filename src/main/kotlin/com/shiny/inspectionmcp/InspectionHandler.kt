@@ -164,6 +164,7 @@ internal enum class CaptureIncompleteReason(val apiValue: String) {
     PROFILE_RESOLUTION_ERROR("profile_resolution_error"),
     SCOPE_NOT_COVERED("scope_not_covered"),
     HELPER_PLUGIN_ERROR("helper_plugin_error"),
+    EXECUTION_NOT_PROVEN("execution_not_proven"),
     UNKNOWN("unknown"),
 }
 
@@ -1306,6 +1307,7 @@ internal fun classifyCaptureIncompleteReason(
     val nullRootChildObservationCount = (diagnostic["null_root_child_observation_count"] as? Number)?.toInt() ?: 0
     val inspectionViewObservationCount = (diagnostic["inspection_view_observation_count"] as? Number)?.toInt() ?: 0
     val finalInputValidation = diagnostic["final_input_validation"] as? String
+    val executionProofSkipped = diagnostic["execution_proof_skipped"] as? Boolean
 
     return when {
         finalInputValidation == "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
@@ -1315,6 +1317,7 @@ internal fun classifyCaptureIncompleteReason(
         exitReason == "helper_plugin_error" -> CaptureIncompleteReason.HELPER_PLUGIN_ERROR
         exitReason == CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue ->
             CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL
+        executionProofSkipped == true -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN
         observedNonEmptyInspectionTree == true -> CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE
         inspectionViewUpdating == true &&
             (unreadableProblemStateObservationCount > 0 || nullRootChildObservationCount > 0) ->
@@ -5380,6 +5383,7 @@ class InspectionHandler : HttpRequestHandler() {
                         checkInspectionRunCancellation(key, runId)
                         val extractor = enhancedTreeExtractorFactory()
                         var extractedFromContextSucceeded = false
+                        var capturedScopeFiles: List<com.intellij.psi.PsiFile> = emptyList()
                         val contextExtraction = try {
                             val fallbackScopeFiles = scopedPsiFilesForInspectionEngine(
                                 project,
@@ -5391,6 +5395,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
                                 ideProductCode = ideProductCode,
                             )
+                            capturedScopeFiles = fallbackScopeFiles
                             extractProblemsFromContextSafe(
                                 globalContext,
                                 project,
@@ -5422,6 +5427,30 @@ class InspectionHandler : HttpRequestHandler() {
                         val deadlineMs = captureStartMs + 60000
                         var bestResults: List<Map<String, Any>> = scopedContextResults
                         var bestSource = if (scopedContextResults.isNotEmpty()) "global_context" else "inspection_view"
+
+                        val isBoundedProofScope = effectiveCaptureScope.scopeParam?.lowercase()?.trim() in setOf("current_file", "files")
+                        var boundedProof: BoundedExecutionProofResult? = null
+                        if (isBoundedProofScope && capturedScopeFiles.isNotEmpty()) {
+                            try {
+                                val proofRun = runBoundedExecutionProof(
+                                    globalContext,
+                                    project,
+                                    capturedScopeFiles,
+                                ) { checkInspectionRunCancellation(key, runId) }
+                                boundedProof = proofRun
+                                if (proofRun.proofProblems.isNotEmpty()) {
+                                    val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
+                                    val newProblems = proofRun.proofProblems.filter { problemKey(it) !in existingKeys }
+                                    if (newProblems.isNotEmpty()) {
+                                        bestResults = bestResults + newProblems
+                                        bestSource = "global_context"
+                                    }
+                                }
+                            } catch (e: Exception) {
+                                rethrowIfCanceled(e)
+                            }
+                        }
+
                         var lastSize = bestResults.size
                         var lastChangeMs = System.currentTimeMillis()
                         var observedInspectionView = false
@@ -5858,6 +5887,7 @@ class InspectionHandler : HttpRequestHandler() {
                         val projectStateChangedDuringCapture = captureEndState != inspectionInputState
                         val snapshotState = inspectionInputState
                         val ideProductCode = safeInspectionIdentity()["ide_product_code"] as? String
+                        val proofSkippedReason = boundedProof?.skippedReason
                         val suspiciousEmptyModelReason = suspiciousEmptyInspectionModelReason(
                             ideProductCode = ideProductCode,
                             requestedProfileName = requestedProfileName,
@@ -5865,7 +5895,7 @@ class InspectionHandler : HttpRequestHandler() {
                             problemDescriptorCount = contextExtraction.problemDescriptorCount,
                             bestResultsEmpty = bestResults.isEmpty(),
                             observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
-                        )
+                        ) ?: proofSkippedReason
                         val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
                             viewReadyOk = viewReadyOk,
                             observedInspectionView = observedInspectionView,
@@ -5939,7 +5969,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     "update_state_readable" to lastObservation?.updateStateReadable,
                                     "problem_state_readable" to lastObservation?.problemStateReadable,
                                 ).filterValues { it != null },
-                            ) + scopeDiagnostics + stateDiagnostic
+                            ) + scopeDiagnostics + stateDiagnostic + buildProofDiagnostic(boundedProof)
                         } else {
                             stateDiagnostic.takeIf { projectStateChangedDuringCapture }
                         }
@@ -7699,6 +7729,117 @@ class InspectionHandler : HttpRequestHandler() {
             ?.take(160)
         return listOfNotNull(stage, exception.javaClass.simpleName, message)
             .joinToString(":")
+    }
+
+    private data class BoundedExecutionProofResult(
+        val proofProblems: List<Map<String, Any>>,
+        val enabledLocalToolCount: Int,
+        val executedToolCount: Int,
+        val totalDescriptorCount: Int,
+        val skippedReason: String?,
+    ) {
+        val proofEstablished: Boolean get() = skippedReason == null
+        val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty()
+    }
+
+    private fun buildProofDiagnostic(proof: BoundedExecutionProofResult?): Map<String, Any?> {
+        proof ?: return emptyMap()
+        return mapOf(
+            "execution_proof_enabled_local_tool_count" to proof.enabledLocalToolCount,
+            "execution_proof_executed_tool_count" to proof.executedToolCount,
+            "execution_proof_descriptor_count" to proof.totalDescriptorCount,
+            "execution_proof_skipped" to (proof.skippedReason != null),
+            "execution_proof_skipped_reason" to proof.skippedReason,
+            "execution_proof_established" to proof.proofEstablished,
+            "execution_proof_clean" to proof.proofClean,
+        ).filterValues { it != null }
+    }
+
+    @Suppress("UnstableApiUsage")
+    private fun resolveEnabledLocalToolShortNames(
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+    ): Set<String> {
+        val names = linkedSetOf<String>()
+        try {
+            for (toolGroup in globalContext.tools.values) {
+                try {
+                    for (state in toolGroup.tools) {
+                        val enabled = try { state.isEnabled } catch (_: Exception) { false }
+                        if (!enabled) continue
+                        val wrapper = try { state.tool } catch (_: Exception) { null } ?: continue
+                        if (wrapper !is com.intellij.codeInspection.ex.LocalInspectionToolWrapper) continue
+                        val shortName = try { wrapper.shortName } catch (_: Exception) { null } ?: continue
+                        names += shortName
+                    }
+                } catch (_: Exception) { }
+            }
+        } catch (_: Exception) { }
+        return names
+    }
+
+    @Suppress("UnstableApiUsage")
+    private fun runBoundedExecutionProof(
+        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        project: Project,
+        scopeFiles: List<com.intellij.psi.PsiFile>,
+        cancellationCheck: () -> Unit,
+    ): BoundedExecutionProofResult {
+        val app = ApplicationManager.getApplication()
+        if (app.isDispatchThread) {
+            return BoundedExecutionProofResult(
+                proofProblems = emptyList(),
+                enabledLocalToolCount = 0,
+                executedToolCount = 0,
+                totalDescriptorCount = 0,
+                skippedReason = "proof_skipped_edt",
+            )
+        }
+        val enabledLocalToolNames = resolveEnabledLocalToolShortNames(globalContext)
+        if (enabledLocalToolNames.isEmpty()) {
+            return BoundedExecutionProofResult(
+                proofProblems = emptyList(),
+                enabledLocalToolCount = 0,
+                executedToolCount = 0,
+                totalDescriptorCount = 0,
+                skippedReason = "no_enabled_local_tools",
+            )
+        }
+        val problems = mutableListOf<Map<String, Any>>()
+        val seen = linkedSetOf<String>()
+        var executedToolCount = 0
+        var totalDescriptorCount = 0
+        app.runReadAction<Unit, Exception> {
+            for (shortName in enabledLocalToolNames) {
+                cancellationCheck()
+                for (psiFile in scopeFiles) {
+                    cancellationCheck()
+                    try {
+                        val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                            project,
+                            psiFile,
+                            shortName,
+                        ) ?: continue
+                        executedToolCount++
+                        val descriptors = InspectionEngine.runInspectionOnFile(psiFile, batchWrapper, globalContext)
+                        totalDescriptorCount += descriptors.size
+                        for (descriptor in descriptors) {
+                            cancellationCheck()
+                            val map = buildProblemMap(descriptor, batchWrapper, project) ?: continue
+                            if (seen.add(problemKey(map))) problems += map
+                        }
+                    } catch (e: Exception) {
+                        rethrowIfCanceled(e)
+                    }
+                }
+            }
+        }
+        return BoundedExecutionProofResult(
+            proofProblems = problems,
+            enabledLocalToolCount = enabledLocalToolNames.size,
+            executedToolCount = executedToolCount,
+            totalDescriptorCount = totalDescriptorCount,
+            skippedReason = null,
+        )
     }
 
     private fun buildProblemMap(

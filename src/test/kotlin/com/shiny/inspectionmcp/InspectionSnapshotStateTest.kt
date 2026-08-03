@@ -3259,6 +3259,194 @@ class InspectionSnapshotStateTest {
         )
     }
 
+    // ---- Bounded execution proof tests ----
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when proof was skipped on EDT")
+    fun testClassifyCaptureIncompleteReasonEdtSkipReturnsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "proof_skipped_edt",
+                "exit_reason" to "proof_skipped_edt",
+                "view_ready_ok" to true,
+                "observed_inspection_view" to true,
+                "scope_file_semantic_evidence_complete" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when no enabled local tools")
+    fun testClassifyCaptureIncompleteReasonNoEnabledToolsReturnsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "no_enabled_local_tools",
+                "exit_reason" to "no_enabled_local_tools",
+                "view_ready_ok" to true,
+                "observed_inspection_view" to true,
+                "scope_file_semantic_evidence_complete" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    @Test
+    @DisplayName("SCOPE_NOT_COVERED takes priority over EXECUTION_NOT_PROVEN")
+    fun testScopeNotCoveredTakesPriorityOverExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "proof_skipped_edt",
+                "scope_file_semantic_evidence_complete" to false,
+                "exit_reason" to "proof_skipped_edt",
+                "view_ready_ok" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.SCOPE_NOT_COVERED, reason)
+    }
+
+    @Test
+    @DisplayName("classifyEmptyInspectionCapture with proof-skipped reason returns CAPTURE_INCOMPLETE even when view settled empty")
+    fun testClassifyEmptyCapturWithProofSkippedPreventsCleanConfirmed() {
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+            suspiciousEmptyModelReason = "proof_skipped_edt",
+        )
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome)
+    }
+
+    @Test
+    @DisplayName("classifyEmptyInspectionCapture with proof-established and no suspicious reason still allows CLEAN_CONFIRMED")
+    fun testClassifyEmptyCaptureWithProofEstablishedAllowsCleanConfirmed() {
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+            suspiciousEmptyModelReason = null,
+        )
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome)
+    }
+
+    @Test
+    @DisplayName("buildInspectionCaptureSnapshot with proof-found problems merges them into PROBLEMS_FOUND")
+    fun testBuildCaptureSnapshotWithProofFoundProblemsIsProblemsFound() {
+        val proofProblem = mapOf(
+            "description" to "Undefined variable 'x'",
+            "file" to "/tmp/TestProject/src/main.py",
+            "line" to 12,
+            "column" to 4,
+            "severity" to "error",
+            "inspectionType" to "PyUnresolvedReferencesInspection",
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(proofProblem),
+                bestSource = "global_context",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to true,
+                    "execution_proof_descriptor_count" to 1,
+                    "execution_proof_enabled_local_tool_count" to 5,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+            ),
+        )
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(1, snapshot.problems.size)
+        assertEquals("Undefined variable 'x'", snapshot.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("buildInspectionCaptureSnapshot with proof-skipped diagnostic stores EXECUTION_NOT_PROVEN reason")
+    fun testBuildCaptureSnapshotWithProofSkippedStoresExecutionNotProvenReason() {
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "Inspection finished with an empty model in a proof lane where findings were expected.",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "proof_skipped_edt",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "proof_skipped_edt",
+                    "scope_file_semantic_evidence_complete" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+            ),
+        )
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    @DisplayName("CAPTURE_INCOMPLETE snapshot with EXECUTION_NOT_PROVEN reason produces UNKNOWN verdict")
+    fun testExecutionNotProvenSnapshotProducesUnknownVerdict() {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                captureIncompleteReason = CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "proof_skipped_edt",
+                    "exit_reason" to "proof_skipped_edt",
+                ),
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+
+        val status = buildInspectionStatus()
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("execution_not_proven", status["inspection_verdict_reason"])
+        assertEquals("execution_not_proven", status["capture_incomplete_reason"])
+        assertEquals(false, status["clean_inspection"])
+    }
+
     private fun buildInspectionStatus(): MutableMap<String, Any> {
         val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
         method.isAccessible = true
