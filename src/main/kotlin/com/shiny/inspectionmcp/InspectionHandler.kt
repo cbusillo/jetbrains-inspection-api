@@ -5531,6 +5531,14 @@ class InspectionHandler : HttpRequestHandler() {
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
                                         rethrowIfCanceled(e)
+                                        boundedProof = BoundedExecutionProofResult(
+                                            proofProblems = emptyList(),
+                                            enabledLocalToolCount = 0,
+                                            executedToolCount = 0,
+                                            totalDescriptorCount = 0,
+                                            skippedReason = "proof_execution_exception",
+                                            errorCount = 1,
+                                        )
                                     }
                                 }
                             }
