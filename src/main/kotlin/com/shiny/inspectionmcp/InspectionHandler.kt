@@ -4418,8 +4418,10 @@ class InspectionHandler : HttpRequestHandler() {
                             snapshot.reconciliationChangeKind
                         },
                     )
-                } else if (shouldPublishUnchangedSnapshot || projectStateChangedDuringCapture) {
+                } else if (shouldPublishUnchangedSnapshot) {
                     snapshot
+                } else if (projectStateChangedDuringCapture) {
+                    unverifiedChurnSnapshot(snapshot, "inputs_changed")
                 } else {
                     inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
                 }
@@ -4447,7 +4449,7 @@ class InspectionHandler : HttpRequestHandler() {
                         isCurrentInspectionRun(key, runId)
                     ) {
                         val fallbackSnapshot = if (projectStateChangedDuringCapture) {
-                            snapshot
+                            unverifiedChurnSnapshot(snapshot, "inputs_changed")
                         } else {
                             inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
                         }
@@ -4459,12 +4461,23 @@ class InspectionHandler : HttpRequestHandler() {
             logger.warn("Inspection snapshot validation failed for ${project.name}", error)
             if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                 val snapshotToPublish = if (projectStateChangedDuringCapture) {
-                    snapshot
+                    unverifiedChurnSnapshot(snapshot, "validation_failed")
                 } else {
                     inspectionInputValidationFailureSnapshot(snapshot, "validation_failed")
                 }
                 resultsStore.setSnapshot(key, snapshotToPublish)
             }
+        }
+    }
+
+    private fun unverifiedChurnSnapshot(
+        snapshot: InspectionResultsSnapshot,
+        failure: String,
+    ): InspectionResultsSnapshot {
+        return if (snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED) {
+            inspectionInputValidationFailureSnapshot(snapshot, failure)
+        } else {
+            snapshot
         }
     }
 
@@ -4498,7 +4511,8 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun supportsStableInputValidation(captureScope: InspectionCaptureScope?): Boolean {
-        return isWholeProjectCaptureScope(captureScope) || isChangedFilesCaptureScope(captureScope)
+        val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        return scope == "whole_project" || scope == "all" || scope == "changed_files" || scope == "current_file"
     }
 
     private fun changedFilesCaptureScopeMatchesCurrent(
