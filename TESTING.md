@@ -214,6 +214,25 @@ runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
 checks the IntelliJ, PyCharm, and WebStorm fixture contracts without requiring a
 GUI IDE.
 
+### Bounded execution proof (issue #239)
+
+For `current_file` and `files` scopes, GREEN now requires that at least one local inspection tool executes successfully against the file. If no tool runs, any tool errors out, or bounds are exceeded, the verdict is `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`.
+
+Run the focused regression suite:
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test \
+  --tests "*.InspectionSnapshotStateTest.boundedProof*" \
+  --tests "*.InspectionSnapshotStateTest.*execution*"
+```
+
+Key expectations:
+- `current_file`/`files` inspection with zero executed tools → `execution_not_proven`, not GREEN
+- `current_file`/`files` inspection with tool errors → `execution_not_proven`, not GREEN  
+- `current_file`/`files` inspection with successful execution, no findings → GREEN (`proofEstablished=true`, `executedToolCount > 0`)
+- `whole_project`/`directory`/`changed_files` scopes are unaffected; no bounded proof runs for them
+- `capture_diagnostic` contains `execution_proof_established`, `execution_proof_executed_tool_count`, `execution_proof_error_count`, `execution_proof_skipped`, and `execution_proof_skipped_reason`
+
 Before shipping changes to clean/capture classification, run the focused
 `InspectionSnapshotStateTest` coverage, then build the plugin with
 `./gradlew buildPlugin`. Smoke the installed plugin from the agent helper in the

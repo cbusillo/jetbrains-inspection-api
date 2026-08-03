@@ -29,6 +29,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotEquals
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -3257,6 +3259,622 @@ class InspectionSnapshotStateTest {
                 hasScopedMatcher = true,
             )
         )
+    }
+
+    // ---- Bounded execution proof tests ----
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when proof was skipped on EDT")
+    fun testClassifyCaptureIncompleteReasonEdtSkipReturnsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "proof_skipped_edt",
+                "exit_reason" to "proof_skipped_edt",
+                "view_ready_ok" to true,
+                "observed_inspection_view" to true,
+                "scope_file_semantic_evidence_complete" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when no enabled local tools")
+    fun testClassifyCaptureIncompleteReasonNoEnabledToolsReturnsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "no_enabled_local_tools",
+                "exit_reason" to "no_enabled_local_tools",
+                "view_ready_ok" to true,
+                "observed_inspection_view" to true,
+                "scope_file_semantic_evidence_complete" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    @Test
+    @DisplayName("SCOPE_NOT_COVERED takes priority over EXECUTION_NOT_PROVEN")
+    fun testScopeNotCoveredTakesPriorityOverExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to true,
+                "execution_proof_skipped_reason" to "proof_skipped_edt",
+                "scope_file_semantic_evidence_complete" to false,
+                "exit_reason" to "proof_skipped_edt",
+                "view_ready_ok" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.SCOPE_NOT_COVERED, reason)
+    }
+
+    @Test
+    @DisplayName("classifyEmptyInspectionCapture with proof-skipped reason returns CAPTURE_INCOMPLETE even when view settled empty")
+    fun testClassifyEmptyCapturWithProofSkippedPreventsCleanConfirmed() {
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+            suspiciousEmptyModelReason = "proof_skipped_edt",
+        )
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome)
+    }
+
+    @Test
+    @DisplayName("classifyEmptyInspectionCapture with proof-established and no suspicious reason still allows CLEAN_CONFIRMED")
+    fun testClassifyEmptyCaptureWithProofEstablishedAllowsCleanConfirmed() {
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = true,
+            observedInspectionView = true,
+            observedSettledEmptyInspectionView = true,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+            suspiciousEmptyModelReason = null,
+        )
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome)
+    }
+
+    @Test
+    @DisplayName("buildInspectionCaptureSnapshot with proof-found problems merges them into PROBLEMS_FOUND")
+    fun testBuildCaptureSnapshotWithProofFoundProblemsIsProblemsFound() {
+        val proofProblem = mapOf(
+            "description" to "Undefined variable 'x'",
+            "file" to "/tmp/TestProject/src/main.py",
+            "line" to 12,
+            "column" to 4,
+            "severity" to "error",
+            "inspectionType" to "PyUnresolvedReferencesInspection",
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(proofProblem),
+                bestSource = "global_context",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to true,
+                    "execution_proof_descriptor_count" to 1,
+                    "execution_proof_enabled_local_tool_count" to 5,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+            ),
+        )
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(1, snapshot.problems.size)
+        assertEquals("Undefined variable 'x'", snapshot.problems[0]["description"])
+    }
+
+    @Test
+    @DisplayName("buildInspectionCaptureSnapshot with proof-skipped diagnostic stores EXECUTION_NOT_PROVEN reason")
+    fun testBuildCaptureSnapshotWithProofSkippedStoresExecutionNotProvenReason() {
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "Inspection finished with an empty model in a proof lane where findings were expected.",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "exit_reason" to "proof_skipped_edt",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "proof_skipped_edt",
+                    "scope_file_semantic_evidence_complete" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+            ),
+        )
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    @DisplayName("CAPTURE_INCOMPLETE snapshot with EXECUTION_NOT_PROVEN reason produces UNKNOWN verdict")
+    fun testExecutionNotProvenSnapshotProducesUnknownVerdict() {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "inspection_view",
+                captureIncompleteReason = CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "proof_skipped_edt",
+                    "exit_reason" to "proof_skipped_edt",
+                ),
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+
+        val status = buildInspectionStatus()
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("execution_not_proven", status["inspection_verdict_reason"])
+        assertEquals("execution_not_proven", status["capture_incomplete_reason"])
+        assertEquals(false, status["clean_inspection"])
+    }
+
+    // ---- Fix 1: Zero executions (no batch capable tools) → unproven (not clean) ----
+
+    @Test
+    @DisplayName("Zero executions due to no batch capable tools yields execution_not_proven, not clean")
+    fun testNoBatchCapableToolsYieldsExecutionNotProven() {
+        // Diagnostic simulating: proof ran but every findTool2RunInBatch returned null
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "no_batch_capable_tools",
+                    "execution_proof_established" to false,
+                    "exit_reason" to "no_batch_capable_tools",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "observed_settled_empty_inspection_view" to true,
+                    "scope_file_semantic_evidence_complete" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false,
+            ),
+        )
+
+        // Defense-in-depth: CLEAN_CONFIRMED must be impossible when bounded proof required but not proven
+        assertFalse(snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED)
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    // ---- Fix 2: Count only after success; errors tracked separately ----
+
+    @Test
+    @DisplayName("Execution errors yield execution_not_proven and do not falsely confirm clean")
+    fun testAllExecutionErrorsYieldExecutionNotProven() {
+        // Simulates a proof run where all executions threw exceptions (errorCount > 0, executedToolCount == 0)
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                emptyNote = "Proof failed due to execution errors",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to false,
+                    "execution_proof_executed_tool_count" to 0,
+                    "execution_proof_error_count" to 3,
+                    "scope_file_semantic_evidence_complete" to true,
+                    "exit_reason" to "settled",
+                    "view_ready_ok" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false,
+            ),
+        )
+
+        assertFalse(snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED)
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    // ---- BoundedExecutionProofResult.proofEstablished direct decision tests ----
+
+    @Test
+    @DisplayName("proofEstablished is false when all executions errored (executedToolCount=0, errorCount>0)")
+    fun testProofEstablishedFalseWhenAllExecutionsErrored() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 3,
+            executedToolCount = 0,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 3,
+        )
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is false for partial execution errors (executedToolCount>0, errorCount>0)")
+    fun testProofEstablishedFalseForPartialExecutionErrors() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 5,
+            executedToolCount = 3,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 2,
+        )
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is false when zero executions and no wrappers available")
+    fun testProofEstablishedTrueZeroExecutionsNoWrappers() {
+        // executedToolCount=0, errorCount=0, missingWrapperCount=0: nothing ran — proof is not established.
+        // proofEstablished requires executedToolCount > 0; without any execution there is nothing confirmed.
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 0,
+            executedToolCount = 0,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofClean is true for a successful zero-descriptor run with no errors")
+    fun testProofCleanTrueForSuccessfulZeroDescriptorRun() {
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 4,
+            executedToolCount = 4,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertTrue(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is true but proofClean is false when proof found findings")
+    fun testProofCleanFalseWhenProofFoundFindings() {
+        val finding = mapOf("description" to "Unused variable", "file" to "/tmp/f.kt", "line" to 1)
+        val proof = BoundedExecutionProofResult(
+            proofProblems = listOf(finding),
+            enabledLocalToolCount = 4,
+            executedToolCount = 4,
+            totalDescriptorCount = 1,
+            skippedReason = null,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+    }
+
+    @Test
+    @DisplayName("proofEstablished is true when some tools lack wrappers but at least one ran successfully")
+    fun testProofEstablishedTrueWhenSomeToolsMissingWrapperButSomeRan() {
+        // Deliberate behavior: tools without batch wrappers cannot run in the proof path, but
+        // those that can DID run — the proof covers what the engine can execute.
+        val proof = BoundedExecutionProofResult(
+            proofProblems = emptyList(),
+            enabledLocalToolCount = 5,
+            executedToolCount = 2,
+            totalDescriptorCount = 0,
+            skippedReason = null,
+            missingWrapperCount = 3,
+            errorCount = 0,
+        )
+        assertTrue(proof.proofEstablished)
+        assertTrue(proof.proofClean)
+    }
+
+    // ---- Fix 3: Proof findings survive polling adoption (union by problemKey) ----
+
+    @Test
+    @DisplayName("Proof findings included in non-empty snapshot captureDiagnostic for visibility")
+    fun testProofDiagnosticsIncludedInNonEmptySnapshot() {
+        val proofProblem = mapOf(
+            "description" to "Duplicate key",
+            "file" to "/tmp/TestProject/src/app.json",
+            "line" to 5,
+            "column" to 3,
+            "severity" to "error",
+            "inspectionType" to "JsonDuplicatePropertyKeys",
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(proofProblem),
+                bestSource = "global_context",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/app.json"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to true,
+                    "execution_proof_executed_tool_count" to 1,
+                    "execution_proof_descriptor_count" to 1,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = true,
+            ),
+        )
+
+        // Non-empty: always PROBLEMS_FOUND regardless of proof
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(1, snapshot.problems.size)
+        // Proof diagnostic should be present in the snapshot (Fix 7)
+        assertNotNull(snapshot.captureDiagnostic)
+        assertEquals(true, snapshot.captureDiagnostic?.get("execution_proof_established"))
+    }
+
+    // ---- Fix 5: No scope PSI files → unproven ----
+
+    @Test
+    @DisplayName("Bounded scope with no resolved PSI files yields unproven, not clean")
+    fun testBoundedScopeNoScopeFilesYieldsUnproven() {
+        // no_scope_psi_files skipped reason: execution_proof_skipped=true
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "current_file",
+                    resolvedCurrentFile = "/tmp/TestProject/src/main.py",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "no_scope_psi_files",
+                    "execution_proof_established" to false,
+                    "exit_reason" to "settled",
+                    "view_ready_ok" to true,
+                    "observed_inspection_view" to true,
+                    "observed_settled_empty_inspection_view" to true,
+                    "scope_file_semantic_evidence_complete" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false,
+            ),
+        )
+
+        assertFalse(snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED)
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    // ---- Fix 6: Defense-in-depth snapshot gating ----
+
+    @Test
+    @DisplayName("CLEAN_CONFIRMED is structurally impossible when bounded proof required but not established")
+    fun testCleanConfirmedImpossibleWithoutBoundedProof() {
+        // Even if the view settled empty, if bounded proof required but not established, must be CAPTURE_INCOMPLETE
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED, // view says clean
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "scope_file_semantic_evidence_complete" to true,
+                    "exit_reason" to "settled",
+                    "view_ready_ok" to true,
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "proof_skipped_edt",
+                    "execution_proof_established" to false,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false, // proof not established
+            ),
+        )
+
+        // Must NOT be clean confirmed — defense-in-depth prevents false green
+        assertNotEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+    }
+
+    @Test
+    @DisplayName("CLEAN_CONFIRMED is allowed when bounded proof is established")
+    fun testCleanConfirmedAllowedWithEstablishedBoundedProof() {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "scope_file_semantic_evidence_complete" to true,
+                    "exit_reason" to "settled",
+                    "view_ready_ok" to true,
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to true,
+                    "execution_proof_executed_tool_count" to 2,
+                    "execution_proof_descriptor_count" to 0,
+                ),
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = true, // proof established!
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
+        assertEquals(emptyList<Map<String, Any>>(), snapshot.problems)
+    }
+
+    // ---- Fix 4: File limit and time limit yield unproven ----
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when proof_established is false")
+    fun testProofEstablishedFalseYieldsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to false,
+                "execution_proof_established" to false,
+                "execution_proof_hit_file_limit" to true,
+                "scope_file_semantic_evidence_complete" to true,
+                "exit_reason" to "settled",
+                "view_ready_ok" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    @Test
+    @DisplayName("classifyCaptureIncompleteReason returns EXECUTION_NOT_PROVEN when time limit hit")
+    fun testProofTimeLimitHitYieldsExecutionNotProven() {
+        val reason = classifyCaptureIncompleteReason(
+            captureDiagnostic = mapOf(
+                "execution_proof_skipped" to false,
+                "execution_proof_established" to false,
+                "execution_proof_hit_time_limit" to true,
+                "scope_file_semantic_evidence_complete" to true,
+                "exit_reason" to "settled",
+                "view_ready_ok" to true,
+            ),
+        )
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, reason)
+    }
+
+    // ---- Fix 7: Polling exit reason separate from proof diagnostics ----
+
+    @Test
+    @DisplayName("Non-empty snapshot with proof findings carries proof diagnostics in captureDiagnostic")
+    fun testNonEmptySnapshotWithProofCarriesProofDiagnostics() {
+        val problem = mapOf(
+            "description" to "Unresolved reference",
+            "file" to "/tmp/TestProject/src/app.js",
+            "line" to 5,
+            "severity" to "error",
+            "inspectionType" to "JSUnresolvedReference",
+        )
+        val proofDiag = mapOf(
+            "execution_proof_skipped" to false,
+            "execution_proof_established" to true,
+            "execution_proof_executed_tool_count" to 3,
+            "execution_proof_descriptor_count" to 1,
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(problem),
+                bestSource = "global_context",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/app.js"),
+                ),
+                captureDiagnostic = proofDiag,
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        // Fix 7: proof diagnostics must be present on non-empty snapshots
+        assertNotNull(snapshot.captureDiagnostic)
+        assertEquals(true, snapshot.captureDiagnostic?.get("execution_proof_established"))
+        assertEquals(3, snapshot.captureDiagnostic?.get("execution_proof_executed_tool_count"))
     }
 
     private fun buildInspectionStatus(): MutableMap<String, Any> {
