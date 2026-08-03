@@ -50,6 +50,22 @@ class CopyMcpCommandActionTest {
     }
 
     @Test
+    fun `resolves code-source URLs with percent-encoded spaces`() {
+        val dir = createTempDirectory("dir with spaces")
+        val pluginJar = Files.createFile(dir.resolve("inspection-api.jar"))
+        val fileUrl = pluginJar.toUri().toURL()
+
+        assertEquals(pluginJar, resolveCodeSourcePath(fileUrl))
+    }
+
+    @Test
+    fun `redacts user home prefix in path strings`() {
+        val userHome = System.getProperty("user.home")
+        val samplePath = "$userHome/plugins/inspection-api.jar"
+        assertEquals("~/plugins/inspection-api.jar", redactUserHome(samplePath))
+    }
+
+    @Test
     fun `rejects non-file code-source URLs`() {
         assertNull(resolveCodeSourcePath(URI.create("https://example.com/inspection-api.jar").toURL()))
     }
@@ -185,4 +201,3 @@ class CopyMcpCommandActionTest {
         assertEquals(McpJarStrategy.PLUGIN_ROOT_SCAN, result.attempts[3].strategy)
     }
 }
-

@@ -63,12 +63,22 @@ internal data class McpJarDiscoveryResult(
         get() = attempts.firstOrNull { it.success }
 }
 
+internal fun redactUserHome(pathOrText: String): String {
+    val userHome = System.getProperty("user.home")
+    if (userHome.isNullOrBlank()) return pathOrText
+    val withForward = userHome.replace('\\', '/')
+    val withBack = userHome.replace('/', '\\')
+    return pathOrText.replace(userHome, "~")
+        .replace(withForward, "~")
+        .replace(withBack, "~")
+}
+
 internal fun copyMcpSetup(project: Project?) {
     val discoveryResult = resolveMcpJarResult()
     val jarPath = discoveryResult.jarPath
     if (jarPath == null) {
         val diagnostics = discoveryResult.attempts.joinToString("\n") { attempt ->
-            "• [${attempt.strategy}] ${attempt.detail}"
+            "• [${attempt.strategy}] ${redactUserHome(attempt.detail)}"
         }
         LOG.warn("Unable to locate $MCP_JAR_NAME across all discovery strategies:\n$diagnostics")
         Messages.showErrorDialog(
@@ -79,17 +89,10 @@ internal fun copyMcpSetup(project: Project?) {
     }
 
     discoveryResult.winningAttempt?.let { winning ->
-        LOG.info("Resolved $MCP_JAR_NAME via ${winning.strategy}: ${winning.resolvedPath}")
+        LOG.info("Resolved $MCP_JAR_NAME via ${winning.strategy}: ${winning.resolvedPath?.let { redactUserHome(it.toString()) }}")
     }
 
-    val setups = buildMcpSetupOptions(jarPath) ?: run {
-        Messages.showErrorDialog(
-            "Unable to configure $MCP_JAR_NAME options.",
-            "MCP Setup"
-        )
-        return
-    }
-
+    val setups = buildMcpSetupOptions(jarPath)
     val chosen = chooseMcpSetup(project, setups) ?: return
     CopyPasteManager.getInstance().setContents(StringSelection(chosen.command))
     val prefix = if (chosen.kind == McpSetupKind.MULTI) {
@@ -117,7 +120,7 @@ private fun chooseMcpSetup(project: Project?, setups: List<McpSetupOption>): Mcp
     return setups.getOrNull(selection)
 }
 
-private fun buildMcpSetupOptions(jarPath: Path): List<McpSetupOption>? {
+private fun buildMcpSetupOptions(jarPath: Path): List<McpSetupOption> {
     val javaBin = resolveJavaBinary()
     val port = resolveIdePort()?.toString()
     val name = "inspection-jetbrains"
@@ -192,7 +195,7 @@ internal fun resolveMcpJarResult(
             attempts.add(
                 StrategyAttempt(
                     McpJarStrategy.CODE_SOURCE,
-                    "Failed to resolve Path from codeSource location: $codeSourceLocation",
+                    redactUserHome("Failed to resolve Path from codeSource location: $codeSourceLocation"),
                     null,
                     false
                 )
@@ -204,7 +207,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.CODE_SOURCE,
-                        "Found $MCP_JAR_NAME via codeSource location $codeSourceLocation",
+                        redactUserHome("Found $MCP_JAR_NAME via codeSource location $codeSourceLocation"),
                         jarPath,
                         true
                     )
@@ -214,7 +217,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.CODE_SOURCE,
-                        "codeSource path $codeSourcePath does not contain $MCP_JAR_NAME",
+                        redactUserHome("codeSource path $codeSourcePath does not contain $MCP_JAR_NAME"),
                         null,
                         false
                     )
@@ -240,7 +243,7 @@ internal fun resolveMcpJarResult(
             attempts.add(
                 StrategyAttempt(
                     McpJarStrategy.CLASS_RESOURCE,
-                    "Failed to parse resource base Path from URL: $resourceUrl",
+                    redactUserHome("Failed to parse resource base Path from URL: $resourceUrl"),
                     null,
                     false
                 )
@@ -252,7 +255,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.CLASS_RESOURCE,
-                        "Found $MCP_JAR_NAME via class resource URL $resourceUrl",
+                        redactUserHome("Found $MCP_JAR_NAME via class resource URL $resourceUrl"),
                         jarPath,
                         true
                     )
@@ -262,7 +265,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.CLASS_RESOURCE,
-                        "Class resource base path $resourceBasePath does not contain $MCP_JAR_NAME",
+                        redactUserHome("Class resource base path $resourceBasePath does not contain $MCP_JAR_NAME"),
                         null,
                         false
                     )
@@ -288,7 +291,7 @@ internal fun resolveMcpJarResult(
             attempts.add(
                 StrategyAttempt(
                     McpJarStrategy.PATH_MANAGER_CLASS,
-                    "Failed to convert PathManager jar path string to Path: $pathManagerJarPath",
+                    redactUserHome("Failed to convert PathManager jar path string to Path: $pathManagerJarPath"),
                     null,
                     false
                 )
@@ -300,7 +303,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.PATH_MANAGER_CLASS,
-                        "Found $MCP_JAR_NAME via PathManager class path: $pathManagerJarPath",
+                        redactUserHome("Found $MCP_JAR_NAME via PathManager class path: $pathManagerJarPath"),
                         jarPath,
                         true
                     )
@@ -310,7 +313,7 @@ internal fun resolveMcpJarResult(
                 attempts.add(
                     StrategyAttempt(
                         McpJarStrategy.PATH_MANAGER_CLASS,
-                        "PathManager path $pathManagerPath does not contain $MCP_JAR_NAME",
+                        redactUserHome("PathManager path $pathManagerPath does not contain $MCP_JAR_NAME"),
                         null,
                         false
                     )
@@ -325,7 +328,7 @@ internal fun resolveMcpJarResult(
         attempts.add(
             StrategyAttempt(
                 McpJarStrategy.PLUGIN_ROOT_SCAN,
-                "Plugins path is null or not a directory: $pluginsPath",
+                redactUserHome("Plugins path is null or not a directory: $pluginsPath"),
                 null,
                 false
             )
@@ -336,7 +339,7 @@ internal fun resolveMcpJarResult(
             attempts.add(
                 StrategyAttempt(
                     McpJarStrategy.PLUGIN_ROOT_SCAN,
-                    "Found $MCP_JAR_NAME during bounded plugin-root scan under $pluginsPath",
+                    redactUserHome("Found $MCP_JAR_NAME during bounded plugin-root scan under $pluginsPath"),
                     scannedJarPath,
                     true
                 )
@@ -346,7 +349,7 @@ internal fun resolveMcpJarResult(
             attempts.add(
                 StrategyAttempt(
                     McpJarStrategy.PLUGIN_ROOT_SCAN,
-                    "Scanned subdirectories under $pluginsPath but did not find $MCP_JAR_NAME",
+                    redactUserHome("Scanned subdirectories under $pluginsPath but did not find $MCP_JAR_NAME"),
                     null,
                     false
                 )
@@ -395,15 +398,10 @@ internal fun parseResourceUrlToPath(
 
     val pathStr = parsedPath.toString()
     val classSuffix = "com/shiny/inspectionmcp/CopyMcpCommandAction.class"
-    val altClassSuffix = CopyMcpCommandAction::class.java.name.replace('.', '/') + ".class"
 
     return when {
         pathStr.endsWith(classSuffix) -> {
             val baseDirStr = pathStr.dropLast(classSuffix.length).trimEnd('/', '\\')
-            runCatching { Paths.get(baseDirStr) }.getOrNull()
-        }
-        pathStr.endsWith(altClassSuffix) -> {
-            val baseDirStr = pathStr.dropLast(altClassSuffix.length).trimEnd('/', '\\')
             runCatching { Paths.get(baseDirStr) }.getOrNull()
         }
         pathStr.endsWith(".class") -> parsedPath.parent
@@ -452,9 +450,7 @@ internal fun resolveCodeSourcePath(location: URL): Path? {
         }.getOrNull()
         else -> null
     } ?: return null
-    return runCatching { Paths.get(fileLocation.toURI()) }.getOrElse {
-        runCatching { Paths.get(fileLocation.path) }.getOrNull()
-    }
+    return parsePathFromUriOrString(fileLocation.toExternalForm())
 }
 
 internal fun resolveMcpJarPathFromPluginPath(pluginPath: Path): Path? {
@@ -495,4 +491,3 @@ private fun quote(value: String): String {
         value
     }
 }
-
