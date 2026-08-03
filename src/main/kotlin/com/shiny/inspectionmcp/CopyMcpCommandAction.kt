@@ -4,18 +4,17 @@ import com.intellij.openapi.actionSystem.AnAction
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.ActionUpdateThread
 import com.intellij.openapi.ide.CopyPasteManager
-import com.intellij.ide.plugins.PluginManagerCore
-import com.intellij.openapi.extensions.PluginId
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.ui.Messages
 import com.intellij.openapi.util.SystemInfo
 import java.awt.datatransfer.StringSelection
+import java.net.JarURLConnection
+import java.net.URL
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 
 private const val MCP_JAR_NAME = "jetbrains-inspection-mcp.jar"
-private const val COPY_MCP_PLUGIN_ID = "com.shiny.inspection.api"
 
 class CopyMcpCommandAction : AnAction() {
     override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
@@ -108,14 +107,23 @@ private fun buildMcpSetupOptions(): List<McpSetupOption>? {
 }
 
 private fun resolveMcpJarPath(): Path? {
-    PluginManagerCore.getPlugin(PluginId.getId(COPY_MCP_PLUGIN_ID))
-        ?.pluginPath
-        ?.let(::resolveMcpJarPathFromPluginPath)
-        ?.let { return it }
-    val codeSource = runCatching {
-        CopyMcpCommandAction::class.java.protectionDomain?.codeSource?.location?.toURI()?.let(Paths::get)
-    }.getOrNull() ?: return null
+    val codeSource = CopyMcpCommandAction::class.java.protectionDomain?.codeSource?.location
+        ?.let(::resolveCodeSourcePath)
+        ?: return null
     return resolveMcpJarPathFromCodeSource(codeSource)
+}
+
+internal fun resolveCodeSourcePath(location: URL): Path? {
+    val fileLocation = when (location.protocol.lowercase()) {
+        "file" -> location
+        "jar" -> runCatching {
+            (location.openConnection() as? JarURLConnection)?.jarFileURL
+        }.getOrNull()
+        else -> null
+    } ?: return null
+    return runCatching { Paths.get(fileLocation.toURI()) }.getOrElse {
+        runCatching { Paths.get(fileLocation.path) }.getOrNull()
+    }
 }
 
 internal fun resolveMcpJarPathFromPluginPath(pluginPath: Path): Path? {
