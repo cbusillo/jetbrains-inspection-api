@@ -924,6 +924,15 @@ internal fun inspectionCaptureScopeHasProof(captureScope: InspectionCaptureScope
     }
 }
 
+internal fun resolveProblemsCurrentFilePath(
+    normalizedScope: String,
+    validatedRequestScope: InspectionCaptureScope?,
+    currentFileResolver: () -> String?,
+): String? {
+    return validatedRequestScope?.resolvedCurrentFile
+        ?: currentFileResolver().takeIf { normalizedScope == "current_file" }
+}
+
 internal object InspectionResultsStore {
     private val snapshotsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionResultsSnapshot>()
 
@@ -3667,7 +3676,12 @@ class InspectionHandler : HttpRequestHandler() {
         return run {
             val requestedScope = scope.trim().takeIf { it.isNotEmpty() } ?: "whole_project"
             val normalizedScope = normalizeProblemsScope(scope)
-            val currentFilePath = resolveCurrentFilePath(project, normalizedScope)
+            val currentFilePath = resolveProblemsCurrentFilePath(
+                normalizedScope = normalizedScope,
+                validatedRequestScope = validatedRequestScope,
+            ) {
+                resolveCurrentFilePath(project, normalizedScope)
+            }
             val requestedCaptureScope = validatedRequestScope ?: resolveCaptureScopeEvidence(
                 project,
                 InspectionCaptureScope(
