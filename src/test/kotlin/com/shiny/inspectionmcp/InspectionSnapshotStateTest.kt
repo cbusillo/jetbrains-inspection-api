@@ -3500,6 +3500,42 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("filters cannot turn an unproven finding snapshot into GREEN")
+    fun testFilteredFindingsRemainUnknownWhenExecutionIsUnproven() {
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Warning hidden by the error filter",
+                        "file" to "/tmp/TestProject/src/main.py",
+                        "line" to 5,
+                        "column" to 1,
+                        "severity" to "warning",
+                        "inspectionType" to "PyUnresolvedReferencesInspection",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to true,
+                    "execution_proof_skipped_reason" to "whole_project_execution_not_proven",
+                    "execution_proof_established" to false,
+                ),
+            ),
+        )
+
+        val response = getInspectionProblems(severity = "error")
+
+        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""), response)
+        assertTrue(response.contains("\"inspection_verdict_reason\": \"execution_not_proven\""), response)
+        assertTrue(response.contains("\"proof_failures\": [\"execution_not_proven\"]"), response)
+    }
+
+    @Test
     @DisplayName("buildInspectionCaptureSnapshot with proof-skipped diagnostic stores EXECUTION_NOT_PROVEN reason")
     fun testBuildCaptureSnapshotWithProofSkippedStoresExecutionNotProvenReason() {
         val snapshot = buildInspectionCaptureSnapshot(
@@ -4117,6 +4153,7 @@ class InspectionSnapshotStateTest {
         offset: Int = 0,
         directoryParam: String? = null,
         files: List<String>? = null,
+        severity: String = "all",
     ): String {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "getInspectionProblems",
@@ -4138,7 +4175,7 @@ class InspectionSnapshotStateTest {
         return method.invoke(
             handler,
             mockProject,
-            "all",
+            severity,
             scope,
             null,
             null,

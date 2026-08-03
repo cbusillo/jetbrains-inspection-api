@@ -241,6 +241,8 @@ Key expectations:
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
 - bounded inspection with successful execution, no findings → GREEN (`proofEstablished=true`, `executedToolCount > 0`)
 - `whole_project`/`directory` empty capture → `execution_not_proven`, not GREEN; non-empty findings still return RED
+- filtering an unproven finding snapshot to zero matching findings → `execution_not_proven`, not `no_matching_findings`
+- an exactly empty `changed_files` scope remains a vacuously clean result without executing tools
 - `capture_diagnostic` contains `execution_proof_established`, `execution_proof_executed_tool_count`, `execution_proof_error_count`, `execution_proof_skipped`, and `execution_proof_skipped_reason`
 
 Before shipping changes to clean/capture classification, run the focused

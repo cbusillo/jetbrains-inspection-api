@@ -1646,6 +1646,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload) -> SCOPE_SEMANTIC_COVERAGE_MISSING_REASON
             hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload) -> "scope_semantic_coverage_truncated"
+            hasUnprovenExecutionWithoutCurrentFindings(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
             payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
             status == "scope_mismatch" -> "scope_mismatch"
@@ -1714,6 +1715,7 @@ class InspectionHandler : HttpRequestHandler() {
         val currentRunId = inspectionRunId ?: (payload["run_id"] as? Number)?.toLong()
         val captureIncompleteReason = payload["capture_incomplete_reason"] as? String
         val incompleteScopeDiagnostics = hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload)
+        val unprovenExecution = hasUnprovenExecutionWithoutCurrentFindings(payload)
         val proofStatus = when {
             payload["session_drift"] == true -> "failed"
             payload["ambiguous"] == true -> "failed"
@@ -1722,6 +1724,7 @@ class InspectionHandler : HttpRequestHandler() {
             payload["results_may_be_stale"] == true -> "failed"
             payload["capture_incomplete"] == true -> "failed"
             incompleteScopeDiagnostics -> "failed"
+            unprovenExecution -> "failed"
             payload["timed_out"] == true -> "failed"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "pending"
             payload["clean_inspection"] == true -> "complete"
@@ -1747,7 +1750,8 @@ class InspectionHandler : HttpRequestHandler() {
             "capture_complete" to (
                 payload["capture_incomplete"] != true &&
                     status != "capture_incomplete" &&
-                    !incompleteScopeDiagnostics
+                    !incompleteScopeDiagnostics &&
+                    !unprovenExecution
                 ),
             "inspection_completed" to (payload["inspection_in_progress"] != true && payload["is_scanning"] != true),
             "indexing_complete" to (payload["indexing"] != true),
@@ -1766,6 +1770,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete") failures.add(captureIncompleteReason ?: "capture_incomplete")
         if (hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload)) failures.add(SCOPE_SEMANTIC_COVERAGE_MISSING_REASON)
         if (incompleteScopeDiagnostics) failures.add("scope_semantic_coverage_truncated")
+        if (unprovenExecution) failures.add(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue)
         if (payload["timed_out"] == true || completionReason == "timeout") failures.add("timeout")
         if (payload["indexing"] == true) failures.add("indexing")
         if (payload["is_scanning"] == true || payload["inspection_in_progress"] == true) failures.add("inspection_still_running")
@@ -1790,6 +1795,16 @@ class InspectionHandler : HttpRequestHandler() {
         @Suppress("UNCHECKED_CAST")
         val diagnostic = payload["capture_diagnostic"] as? Map<String, Any?> ?: return false
         if (!scopeFileSemanticCoverageMissing(diagnostic)) return false
+        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
+        val problems = payload["problems"] as? List<*>
+        return (totalProblems ?: problems?.size ?: 0) <= 0
+    }
+
+    private fun hasUnprovenExecutionWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *> ?: return false
+        val executionUnproven = diagnostic["execution_proof_established"] == false ||
+            diagnostic["execution_proof_skipped"] == true
+        if (!executionUnproven) return false
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
         val problems = payload["problems"] as? List<*>
         return (totalProblems ?: problems?.size ?: 0) <= 0
