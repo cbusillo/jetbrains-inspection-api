@@ -291,7 +291,8 @@ internal data class BoundedExecutionProofResult(
     val hitTimeLimit: Boolean = false,
 ) {
     // All errors disqualify the proof: even partial errors mean some tools may have missed problems.
-    val proofEstablished: Boolean get() = skippedReason == null && !hitFileLimit && !hitTimeLimit && errorCount == 0
+    // Zero executions also disqualify: nothing ran means nothing was confirmed.
+    val proofEstablished: Boolean get() = skippedReason == null && !hitFileLimit && !hitTimeLimit && errorCount == 0 && executedToolCount > 0
     val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty() && executedToolCount > 0
 }
 

@@ -3565,11 +3565,10 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("proofEstablished is true but proofClean is false when zero executions and no wrappers available")
+    @DisplayName("proofEstablished is false when zero executions and no wrappers available")
     fun testProofEstablishedTrueZeroExecutionsNoWrappers() {
-        // executedToolCount=0, errorCount=0, missingWrapperCount=0: nothing ran but no errors either.
-        // skippedReason=null since missingWrapperCount==0; proofEstablished=true but proofClean=false
-        // (proofClean requires executedToolCount > 0 to confirm absence of findings).
+        // executedToolCount=0, errorCount=0, missingWrapperCount=0: nothing ran — proof is not established.
+        // proofEstablished requires executedToolCount > 0; without any execution there is nothing confirmed.
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 0,
@@ -3578,7 +3577,7 @@ class InspectionSnapshotStateTest {
             skippedReason = null,
             errorCount = 0,
         )
-        assertTrue(proof.proofEstablished)
+        assertFalse(proof.proofEstablished)
         assertFalse(proof.proofClean)
     }
 
