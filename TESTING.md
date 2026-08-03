@@ -47,10 +47,18 @@ start it with a test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 
+### Installed-plugin smoke expectation
+
+When verifying an installed plugin in a live IDE:
+- **MCP Setup Discovery**: Confirm `Tools` → `Copy MCP Setup` locates `jetbrains-inspection-mcp.jar` via layered discovery (`CODE_SOURCE` → `CLASS_RESOURCE` → `PATH_MANAGER_CLASS` → `PLUGIN_ROOT_SCAN`).
+- **Redacted Failure Reporting**: On resolution failure, verify that dialogs and IDE logs report redacted strategy attempt outcomes with user home directory paths replaced by `~`.
+- **Workflow Support**: Confirm agent workflows operate via the preferred `codex-skills` `jetbrains-inspection` helper while MCP server tools remain fully supported.
+
 ## Agent inspection helper
 
 The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
-primary agent-facing wrapper around this plugin's HTTP API. Run it from the
+primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
+workflows while MCP remains supported). Run it from the
 installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash

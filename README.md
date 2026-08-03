@@ -47,10 +47,11 @@ path and rerun the command.
 
 ### 3. Set Up MCP Client
 
-The plugin bundles the MCP server as a JVM jar.
+The plugin bundles the MCP server as a JVM jar. Agent workflows generally prefer the `codex-skills` `jetbrains-inspection` helper, while MCP remains fully supported.
 
 Fast path: on the first run you’ll see a notification with a **Copy MCP Setup** button.
 You can also run `Tools` → `Copy MCP Setup`, pick your MCP client, then paste the command into your terminal.
+`Copy MCP Setup` uses a layered discovery chain (`CODE_SOURCE` → `CLASS_RESOURCE` → `PATH_MANAGER_CLASS` → `PLUGIN_ROOT_SCAN`) to locate `jetbrains-inspection-mcp.jar`. If discovery fails, the action dialog and IDE logs list redacted strategy outcomes with user home paths replaced by `~`.
 
 Manual examples:
 
