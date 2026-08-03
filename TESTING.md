@@ -224,21 +224,23 @@ GUI IDE.
 
 ### Bounded execution proof (issue #239)
 
-For `current_file` and `files` scopes, GREEN now requires that at least one local inspection tool executes successfully against the file. If no tool runs, any tool errors out, or bounds are exceeded, the verdict is `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`.
+For `current_file`, `files`, and `changed_files` scopes, GREEN requires that at least one local inspection tool executes successfully against the resolved files. If no tool runs, any tool errors out, or the 25-file/20-second bounds are exceeded, the verdict is `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`.
+
+Empty `whole_project` and `directory` captures fail closed with the same reason because a settled empty presentation model does not prove that the requested scope executed. Broad-scope findings still produce `RED`; use a bounded targeted scope when a proven clean result is required.
 
 Run the focused regression suite:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test \
-  --tests "*.InspectionSnapshotStateTest.boundedProof*" \
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
+  --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*"
 ```
 
 Key expectations:
-- `current_file`/`files` inspection with zero executed tools → `execution_not_proven`, not GREEN
-- `current_file`/`files` inspection with tool errors → `execution_not_proven`, not GREEN  
-- `current_file`/`files` inspection with successful execution, no findings → GREEN (`proofEstablished=true`, `executedToolCount > 0`)
-- `whole_project`/`directory`/`changed_files` scopes are unaffected; no bounded proof runs for them
+- `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
+- `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
+- bounded inspection with successful execution, no findings → GREEN (`proofEstablished=true`, `executedToolCount > 0`)
+- `whole_project`/`directory` empty capture → `execution_not_proven`, not GREEN; non-empty findings still return RED
 - `capture_diagnostic` contains `execution_proof_established`, `execution_proof_executed_tool_count`, `execution_proof_error_count`, `execution_proof_skipped`, and `execution_proof_skipped_reason`
 
 Before shipping changes to clean/capture classification, run the focused

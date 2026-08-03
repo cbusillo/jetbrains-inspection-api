@@ -296,6 +296,20 @@ internal data class BoundedExecutionProofResult(
     val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty() && executedToolCount > 0
 }
 
+internal enum class InspectionExecutionProofMode {
+    EXACT_BOUNDED,
+    UNAVAILABLE,
+    NONE,
+}
+
+internal fun inspectionExecutionProofMode(scopeParam: String?): InspectionExecutionProofMode {
+    return when (scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }) {
+        "current_file", "files", "changed_files" -> InspectionExecutionProofMode.EXACT_BOUNDED
+        "directory", "whole_project", "all" -> InspectionExecutionProofMode.UNAVAILABLE
+        else -> InspectionExecutionProofMode.NONE
+    }
+}
+
 internal fun scopeFileSemanticEvidenceComplete(captureDiagnostic: Map<String, Any?>?): Boolean {
     val explicitCoverage = captureDiagnostic?.get("scope_file_semantic_evidence_complete") as? Boolean
     return explicitCoverage ?: (captureDiagnostic?.get("scope_file_diagnostics_complete") != false)
@@ -426,7 +440,7 @@ internal fun buildScopeFileDiagnosticPayload(
 internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
     val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
-    // Fix 6: Defense-in-depth — CLEAN_CONFIRMED is structurally impossible when bounded proof is required but not proven clean
+    // Defense-in-depth: CLEAN_CONFIRMED is structurally impossible when execution proof is required but not established.
     val boundedProofBlocksClean = input.boundedProofRequired && input.boundedProofEstablished != true
     return when {
         input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
@@ -463,7 +477,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
                 !scopeFileDiagnosticsComplete ->
                     "Inspection scope diagnostics did not cover every resolved file, so a clean result could not be proven."
                 boundedProofBlocksClean ->
-                    "Bounded execution proof was required but not established, so a clean result could not be confirmed."
+                    "Inspection execution proof was required but not established, so a clean result could not be confirmed."
                 else -> input.emptyNote
             },
             captureScope = input.captureScope,
@@ -1665,6 +1679,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
             "profile_resolution_error" ->
                 "Check that the requested inspection profile exists and is loaded in the target IDE project, then rerun inspection."
+            "execution_not_proven" ->
+                "Use current_file, files, or a changed_files scope of at most 25 files for bounded proof; do not treat an unproven whole-project or directory result as clean."
             "inspection_proof_failed" ->
                 "Resolve the route/profile/scope proof failure, then trigger and wait for a fresh inspection before reporting GREEN or RED."
             "scope_mismatch" ->
@@ -5396,6 +5412,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ideProductCode = ideProductCode,
                 requestedProfileName = requestedProfileName,
             )
+            val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
 
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
@@ -5425,16 +5442,23 @@ class InspectionHandler : HttpRequestHandler() {
                         var extractedFromContextSucceeded = false
                         var capturedScopeFiles: List<com.intellij.psi.PsiFile> = emptyList()
                         val contextExtraction = try {
-                            val fallbackScopeFiles = scopedPsiFilesForInspectionEngine(
-                                project,
-                                effectiveCaptureScope.scopeParam,
-                                effectiveCaptureScope.resolvedDirectory ?: effectiveCaptureScope.directoryParam,
-                                effectiveCaptureScope.files,
-                                effectiveCaptureScope.resolvedCurrentFile,
-                                resolvedChangedFiles = changedFilesScopeFiles,
-                                scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
-                                ideProductCode = ideProductCode,
-                            )
+                            val fallbackScopeFiles = if (
+                                targetToolShortNames.isNotEmpty() ||
+                                executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED
+                            ) {
+                                scopedPsiFilesForInspectionEngine(
+                                    project,
+                                    effectiveCaptureScope.scopeParam,
+                                    effectiveCaptureScope.resolvedDirectory ?: effectiveCaptureScope.directoryParam,
+                                    effectiveCaptureScope.files,
+                                    effectiveCaptureScope.resolvedCurrentFile,
+                                    resolvedChangedFiles = changedFilesScopeFiles,
+                                    scopeDiagnostics["scope_file_diagnostics"] as? List<*>,
+                                    ideProductCode = ideProductCode,
+                                )
+                            } else {
+                                emptyList()
+                            }
                             capturedScopeFiles = fallbackScopeFiles
                             extractProblemsFromContextSafe(
                                 globalContext,
@@ -5468,34 +5492,48 @@ class InspectionHandler : HttpRequestHandler() {
                         var bestResults: List<Map<String, Any>> = scopedContextResults
                         var bestSource = if (scopedContextResults.isNotEmpty()) "global_context" else "inspection_view"
 
-                        val isBoundedProofScope = effectiveCaptureScope.scopeParam?.lowercase()?.trim() in setOf("current_file", "files")
+                        val requiresExecutionProof = executionProofMode != InspectionExecutionProofMode.NONE
                         var boundedProof: BoundedExecutionProofResult? = null
-                        // Separate store for proof findings; merged into bestResults after polling
                         var proofFindings: List<Map<String, Any>> = emptyList()
-                        if (isBoundedProofScope) {
-                            if (capturedScopeFiles.isEmpty()) {
-                                // Fix 5: bounded scope with no resolved PSI files is explicitly unproven
-                                boundedProof = BoundedExecutionProofResult(
-                                    proofProblems = emptyList(),
-                                    enabledLocalToolCount = 0,
-                                    executedToolCount = 0,
-                                    totalDescriptorCount = 0,
-                                    skippedReason = "no_scope_psi_files",
-                                )
-                            } else {
-                                try {
-                                    val proofRun = runBoundedExecutionProof(
-                                        globalContext,
-                                        project,
-                                        capturedScopeFiles,
-                                    ) { checkInspectionRunCancellation(key, runId) }
-                                    boundedProof = proofRun
-                                    // Fix 3: keep proof findings separate; do NOT merge into bestResults here
-                                    proofFindings = proofRun.proofProblems
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
+                        when (executionProofMode) {
+                            InspectionExecutionProofMode.EXACT_BOUNDED -> {
+                                if (capturedScopeFiles.isEmpty()) {
+                                    boundedProof = BoundedExecutionProofResult(
+                                        proofProblems = emptyList(),
+                                        enabledLocalToolCount = 0,
+                                        executedToolCount = 0,
+                                        totalDescriptorCount = 0,
+                                        skippedReason = "no_scope_psi_files",
+                                    )
+                                } else {
+                                    try {
+                                        val proofRun = runBoundedExecutionProof(
+                                            globalContext,
+                                            project,
+                                            capturedScopeFiles,
+                                        ) { checkInspectionRunCancellation(key, runId) }
+                                        boundedProof = proofRun
+                                        proofFindings = proofRun.proofProblems
+                                    } catch (e: Exception) {
+                                        rethrowIfCanceled(e)
+                                    }
                                 }
                             }
+                            InspectionExecutionProofMode.UNAVAILABLE -> {
+                                val scopeKind = effectiveCaptureScope.scopeParam
+                                    ?.trim()
+                                    ?.lowercase()
+                                    .orEmpty()
+                                    .ifBlank { "whole_project" }
+                                boundedProof = BoundedExecutionProofResult(
+                                    proofProblems = emptyList(),
+                                    enabledLocalToolCount = contextExtraction.enabledToolCount,
+                                    executedToolCount = 0,
+                                    totalDescriptorCount = 0,
+                                    skippedReason = "${scopeKind}_execution_not_proven",
+                                )
+                            }
+                            InspectionExecutionProofMode.NONE -> Unit
                         }
 
                         var lastSize = bestResults.size
@@ -6059,7 +6097,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                                 viewReadyOk = viewReadyOk,
-                                boundedProofRequired = isBoundedProofScope,
+                                boundedProofRequired = requiresExecutionProof,
                                 boundedProofEstablished = boundedProof?.proofEstablished,
                             )
                         )

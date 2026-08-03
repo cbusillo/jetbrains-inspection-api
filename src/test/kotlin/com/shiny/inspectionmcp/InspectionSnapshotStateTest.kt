@@ -3413,6 +3413,93 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("execution proof modes fail closed for broad scopes")
+    fun testExecutionProofModesByScope() {
+        assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("current_file"))
+        assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("files"))
+        assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("changed_files"))
+        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode("directory"))
+        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode("whole_project"))
+        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode(null))
+    }
+
+    @Test
+    @DisplayName("whole-project presentation-model emptiness cannot produce clean without execution proof")
+    fun testWholeProjectEmptySnapshotRequiresExecutionProof() {
+        val diagnostic = mapOf(
+            "exit_reason" to "settled",
+            "view_ready_ok" to true,
+            "observed_inspection_view" to true,
+            "observed_settled_empty_inspection_view" to true,
+            "model_verdict" to "clean",
+            "model_problem_descriptor_count" to 0,
+            "model_enabled_tool_count" to 601,
+            "model_readable_tool_count" to 601,
+            "execution_proof_skipped" to true,
+            "execution_proof_skipped_reason" to "whole_project_execution_not_proven",
+            "execution_proof_established" to false,
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 61L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+                captureDiagnostic = diagnostic,
+                runId = 3L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    @DisplayName("directory presentation-model emptiness cannot produce clean without execution proof")
+    fun testDirectoryEmptySnapshotRequiresExecutionProof() {
+        val diagnostic = mapOf(
+            "exit_reason" to "settled",
+            "view_ready_ok" to true,
+            "observed_inspection_view" to true,
+            "observed_settled_empty_inspection_view" to true,
+            "execution_proof_skipped" to true,
+            "execution_proof_skipped_reason" to "directory_execution_not_proven",
+            "execution_proof_established" to false,
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 61L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "directory",
+                    directoryParam = "src",
+                    resolvedDirectory = "/tmp/TestProject/src",
+                ),
+                captureDiagnostic = diagnostic,
+                runId = 4L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                boundedProofRequired = true,
+                boundedProofEstablished = false,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    @Test
     @DisplayName("buildInspectionCaptureSnapshot with proof-skipped diagnostic stores EXECUTION_NOT_PROVEN reason")
     fun testBuildCaptureSnapshotWithProofSkippedStoresExecutionNotProvenReason() {
         val snapshot = buildInspectionCaptureSnapshot(
