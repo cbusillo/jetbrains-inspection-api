@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
 import java.nio.file.Files
+import java.net.URI
+import java.net.URL
 import kotlin.io.path.createTempDirectory
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
@@ -32,5 +34,20 @@ class CopyMcpCommandActionTest {
     @Test
     fun `returns null when the MCP jar is not installed`() {
         assertNull(resolveMcpJarPathFromPluginPath(createTempDirectory("inspection-plugin")))
+    }
+
+    @Test
+    fun `resolves file and jar code-source URLs`() {
+        val pluginJar = Files.createFile(createTempDirectory("inspection-plugin").resolve("inspection-api.jar"))
+        val fileUrl = pluginJar.toUri().toURL()
+        val jarUrl = URI.create("jar:${fileUrl}!/").toURL()
+
+        assertEquals(pluginJar, resolveCodeSourcePath(fileUrl))
+        assertEquals(pluginJar, resolveCodeSourcePath(jarUrl))
+    }
+
+    @Test
+    fun `rejects non-file code-source URLs`() {
+        assertNull(resolveCodeSourcePath(URI.create("https://example.com/inspection-api.jar").toURL()))
     }
 }
