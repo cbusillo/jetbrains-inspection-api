@@ -46,6 +46,10 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 start it with a test project, and hit a few API endpoints.
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
+- The smoke verifies that the live IDE reports the version from
+  `gradle.properties`, selects one tracked source file, and runs `scope=files`
+  so a zero-finding result requires bounded execution proof. It does not use an
+  empty `whole_project` result as clean evidence.
 
 ### Installed-plugin smoke expectation
 

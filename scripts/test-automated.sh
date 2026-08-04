@@ -140,6 +140,7 @@ IDE_PORT_RANGE="${JETBRAINS_INSPECTION_PORTS:-63340 63341 63342 63343 63344 6334
 INSPECTION_API_PATH="/api/inspection"
 PROJECT_PATH_ENCODED=$(urlencode "$TEST_PROJECT_PATH")
 PROJECT_PARAM="project_path=$PROJECT_PATH_ENCODED&worktree_path=$PROJECT_PATH_ENCODED"
+EXPECTED_PLUGIN_VERSION=$(sed -n 's/^pluginVersion=//p' gradle.properties | head -n 1)
 
 port_candidates() {
     printf '%s\n%s\n' "$IDE_PORT" "$IDE_PORT_RANGE" | awk '
@@ -244,6 +245,7 @@ route_matches_project() {
 
 discover_project_route() {
     local identity
+    local identity_version
     local route_response
     local route
     local route_error
@@ -259,6 +261,11 @@ discover_project_route() {
             continue
         fi
         matched_ide_count=$((matched_ide_count + 1))
+        identity_version=$(echo "$identity" | jq -r '.plugin_version // ""')
+        if [ "$identity_version" != "$EXPECTED_PLUGIN_VERSION" ]; then
+            best_status="port $port: plugin version ${identity_version:-unknown} does not match expected $EXPECTED_PLUGIN_VERSION"
+            continue
+        fi
         route_response=$(api_get "$port" route "$PROJECT_PARAM" || true)
         route_error=$(echo "$route_response" | jq -r '.error // empty' 2>/dev/null || true)
         route=$(echo "$route_response" | jq -c '.route // empty' 2>/dev/null || true)
@@ -290,6 +297,28 @@ discover_project_route() {
         fi
     fi
     return 1
+}
+
+select_test_scope_file() {
+    local relative_path=""
+    local absolute_path=""
+
+    if git -C "$TEST_PROJECT_PATH" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        relative_path=$(git -C "$TEST_PROJECT_PATH" ls-files | awk '
+            /\.(py|kt|kts|java|groovy|js|jsx|ts|tsx|go|rs)$/ { print; exit }
+        ')
+    fi
+    if [ -n "$relative_path" ]; then
+        absolute_path="${TEST_PROJECT_PATH%/}/$relative_path"
+    else
+        absolute_path=$(find "$TEST_PROJECT_PATH" -type f 2>/dev/null | awk '
+            /\.(py|kt|kts|java|groovy|js|jsx|ts|tsx|go|rs)$/ &&
+            $0 !~ /\/(\.git|\.idea|\.venv|venv|node_modules|build|dist)\// { print; exit }
+        ')
+    fi
+
+    [ -n "$absolute_path" ] && [ -f "$absolute_path" ] || return 1
+    printf '%s' "$absolute_path"
 }
 
 wait_for_api() {
@@ -349,13 +378,25 @@ wait_for_project_ready() {
 }
 
 run_api_tests() {
+    local test_scope_file
+    local test_scope_file_encoded
+    local inspection_params
+
     echo ""
     echo "🧪 Running API Tests"
     echo "==================="
 
+    test_scope_file=$(select_test_scope_file) || {
+        echo "❌ No tracked source file found for bounded inspection proof"
+        return 1
+    }
+    test_scope_file_encoded=$(urlencode "$test_scope_file")
+    inspection_params="$PROJECT_PARAM&scope=files&files=$test_scope_file_encoded"
+    echo "   Bounded proof file: $test_scope_file"
+
     echo ""
     echo "📍 Triggering Inspection..."
-    TRIGGER_RESPONSE=$(api_get_current trigger "$PROJECT_PARAM")
+    TRIGGER_RESPONSE=$(api_get_current trigger "$inspection_params")
     TRIGGER_ERROR=$(echo "$TRIGGER_RESPONSE" | jq -r '.error // empty')
     if [ -n "$TRIGGER_ERROR" ]; then
         echo "❌ Trigger failed: $TRIGGER_ERROR"
@@ -366,7 +407,7 @@ run_api_tests() {
     echo "⏳ Waiting for inspection to complete..."
     WAIT_TIMEOUT_MS=180000
     WAIT_CLIENT_TIMEOUT=$((WAIT_TIMEOUT_MS / 1000 + 10))
-    WAIT_RESPONSE=$(api_get_current wait "$PROJECT_PARAM&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000" "$WAIT_CLIENT_TIMEOUT")
+    WAIT_RESPONSE=$(api_get_current wait "$inspection_params&timeout_ms=$WAIT_TIMEOUT_MS&poll_ms=1000" "$WAIT_CLIENT_TIMEOUT")
     WAIT_COMPLETED=$(echo "$WAIT_RESPONSE" | jq -r '.wait_completed // false')
     WAIT_REASON=$(echo "$WAIT_RESPONSE" | jq -r '.completion_reason // "unknown"')
     WAIT_TIMED_OUT=$(echo "$WAIT_RESPONSE" | jq -r '.timed_out // false')
@@ -388,7 +429,7 @@ run_api_tests() {
 
     echo ""
     echo "📍 Test 1: Inspection Results"
-    RESPONSE=$(api_get_current problems "$PROJECT_PARAM&severity=all")
+    RESPONSE=$(api_get_current problems "$inspection_params&severity=all")
     PROBLEMS_STATUS=$(echo "$RESPONSE" | jq -r '.status // "unknown"')
     METHOD=$(echo "$RESPONSE" | jq -r '.method // "unknown"')
     TOTAL_PROBLEMS=$(echo "$RESPONSE" | jq -r '.total_problems // 0')
@@ -415,7 +456,7 @@ run_api_tests() {
     echo ""
     echo "📍 Test 3: Severity Filtering"
     for severity in "error" "warning" "weak_warning" "info"; do
-        count=$(api_get_current problems "$PROJECT_PARAM&severity=$severity" | jq -r '.total_problems // 0')
+        count=$(api_get_current problems "$inspection_params&severity=$severity" | jq -r '.total_problems // 0')
         echo "   $severity: $count problems"
     done
 
