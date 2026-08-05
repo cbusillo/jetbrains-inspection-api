@@ -1,8 +1,8 @@
 # JetBrains Inspection API
 
 A plugin that exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants.
-It bundles an MCP server so AI clients can call the IDE’s real inspection engine instead of running duplicate linters,
-including IDE-only inspections such as PyCharm’s Odoo plugin checks.
+It bundles an MCP server so AI clients can call the IDE's classic inspection pipeline and enabled batch-capable tools,
+including IDE-only batch inspections such as PyCharm's Odoo plugin checks.
 
 ## Features
 
@@ -12,9 +12,9 @@ including IDE-only inspections such as PyCharm’s Odoo plugin checks.
 - **File/path filtering** for targeted inspection analysis
 - **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
 - **MCP integration** for seamless AI assistant access
-- **Comprehensive inspection framework** - mirrors PyCharm's "Inspect Code" functionality
-- **Complete inspection coverage** - detects JSCheckFunctionSignatures, ShellCheck, SpellCheck, and all enabled inspections
-- **IDE-only inspections** - bring PyCharm-specific checks (like Odoo plugin inspections) into your automated tooling
+- **JetBrains batch inspection framework** - drives the IDE's Inspect Code / InspectionProfile pipeline
+- **Batch-capable tool coverage** - reports enabled classic inspection-profile tools and local inspection tools that the IDE exposes for batch execution
+- **IDE-only batch inspections** - brings PyCharm-specific checks such as Odoo plugin inspections into automated tooling
 
 ## Quick Start
 
@@ -221,6 +221,7 @@ Typical response (truncated):
 Notes:
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list. Without a run-attributed snapshot, `/problems` does not promote a live tool-window scrape to current evidence; the verdict remains `UNKNOWN` even if a generic Problems/Inspection tree contains findings.
+- `GREEN` and `RED` cover run-attributed classic inspection-profile results and enabled local inspection tools that the IDE exposes for batch execution. They do not include every editor or Problems-view diagnostic source. LSP-backed or daemon-only diagnostics, such as PyCharm Ruff diagnostics, may appear in the editor or Problems view without being part of the API verdict unless the IDE also exposes those checks as batch-capable inspections.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `scope_not_covered`, `current_run_psi_churn`, `inspection_inputs_changed`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, `execution_not_proven`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
 - For `current_file`, `files`, and `changed_files` scopes, GREEN requires a successful bounded file-level inspection execution (the plugin runs enabled local inspection tools directly on each file and confirms at least one tool executed with zero errors). If no tool executes, any execution errors occur, or the 25-file/20-second bounds are exceeded, the result is `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`.
 - Empty `whole_project` and `directory` captures also fail closed as `UNKNOWN`/`execution_not_proven`: a settled empty Problems/Inspection Results presentation is not affirmative evidence that every file was inspected. Use `current_file`, `files`, or a `changed_files` scope of at most 25 files when a proven clean verdict is required. Real findings from broad scopes remain `RED`; only unsupported clean claims are withheld. Key diagnostics in `capture_diagnostic`: `execution_proof_established`, `execution_proof_executed_tool_count`, `execution_proof_error_count`, `execution_proof_skipped`, `execution_proof_skipped_reason`, `execution_proof_hit_file_limit`, and `execution_proof_hit_time_limit`.
@@ -636,7 +637,7 @@ envelope for agent workflows.
 - `/api/inspection/problems` reads the current snapshot without forcing a refresh first, so immediately fetched just-completed results are not made stale by an unrelated refresh tick.
 - If the project changed after the last inspection, `/api/inspection/status` sets `results_may_be_stale: true` and `/api/inspection/problems` returns `status: "stale_results"`. By default, the response includes cached metadata such as `cached_total_problems` and withholds `problems`; `include_stale=true` returns cached findings for diagnostics while keeping `status: "stale_results"`.
 - Fresh snapshots are tied to inspection run metadata and the scope actually inspected. A `/problems` query outside that captured scope returns `status: "scope_mismatch"` with an `UNKNOWN` verdict and requires a fresh compatible trigger. A PSI modification-count change can be reconciled only while its inspection run is still active; changes after completion make the snapshot stale.
-- Inspection Results windows are authoritative for run-specific capture. Generic Problems-window contents may provide diagnostics, but they cannot replace a settled clean Inspection Results capture or prove the result of a different run or profile.
+- Inspection Results windows are authoritative for run-specific capture. Generic Problems-window contents may provide editor, daemon, or LSP diagnostics for debugging, but they cannot replace run-attributed Inspection Results evidence or expand the verdict contract beyond classic inspection-profile and batch-capable local inspection tools.
 
 ## MCP Server Details
 
@@ -714,13 +715,12 @@ alone.
 
 ## Known Limitations
 
-### Inspection Detection Coverage
-- **Some inspections may not be detected**: The plugin extracts results from the IDE's inspection tree, but certain inspection categories (particularly "Entry Points" and some Java-specific inspections) may not be captured
-- **IDE-specific variations**: Detection completeness may vary between different JetBrains IDEs (IntelliJ IDEA vs. PyCharm vs. WebStorm)
-- **Workaround**: For complete coverage, manually review the IDE's "Problems" view in addition to API results
-- **Future improvement**: Enhanced tree traversal logic is planned to improve detection rates
-
-This limitation primarily affects Java projects in IntelliJ IDEA. PyCharm users should see more complete results.
+### Inspection Coverage Boundaries
+- **Verdict scope**: `GREEN` means no actionable findings were proven for the selected scope and filters within the plugin's batch-inspection contract; it does not mean every diagnostic source configured in the IDE is clean.
+- **LSP and editor diagnostics**: Editor-only, daemon-only, and LSP-backed diagnostics such as PyCharm Ruff warnings are outside the trusted verdict unless the IDE also exposes them as enabled batch-capable inspection tools.
+- **Inspection tree extraction**: Some classic inspection categories, particularly "Entry Points" and some Java-specific inspections, may not be captured from the IDE's inspection tree.
+- **IDE-specific variations**: Available batch-capable inspections and capture completeness vary between IntelliJ IDEA, PyCharm, WebStorm, and installed plugins.
+- **Additional checks**: Review the IDE editor or Problems view and run configured external linters separately when those diagnostic sources are required.
 
 ## Testing
 
