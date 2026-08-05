@@ -138,6 +138,12 @@ internal fun normalizeOptionalFilter(raw: String?): String? {
     return trimmed
 }
 
+internal fun prepareLifecycleProjectStore(openPath: Path): Path {
+    val projectStore = openPath.resolve(Project.DIRECTORY_STORE_FOLDER)
+    Files.createDirectories(projectStore)
+    return projectStore
+}
+
 internal enum class InspectionSnapshotOutcome(val apiValue: String) {
     PROBLEMS_FOUND("problems_found"),
     CLEAN_CONFIRMED("clean_confirmed"),
@@ -1509,7 +1515,8 @@ class InspectionHandler : HttpRequestHandler() {
     }
     internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, onOpened ->
         val openPath = canonicalTrustPath(path)
-        ProjectUtil.openOrImport(openPath.toString(), null, true)?.also(onOpened)
+        prepareLifecycleProjectStore(openPath)
+        ProjectUtil.openProject(openPath.toString(), null, true)?.also(onOpened)
     }
 
     private val resultsStore = InspectionResultsStore
