@@ -3149,31 +3149,26 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun resolveLifecycleOpenTarget(path: Path): LifecycleOpenTarget {
-        val projectRoot = lifecycleOpenProjectRoot(path)
+        val metadataProjectRoot = projectRootFromIdeaMetadataPath(path)
+        val explicitProjectFile = metadataProjectRoot == null &&
+            Files.isRegularFile(path) &&
+            path.fileName.toString().endsWith(".ipr")
+        val projectRoot = when {
+            metadataProjectRoot != null -> metadataProjectRoot
+            Files.isDirectory(path) -> path
+            explicitProjectFile -> path.parent
+            else -> null
+        }
             ?: throw BadRequestException(
                 "worktree_path",
                 "Parameter 'worktree_path' must point to an existing directory, .ipr project file, or file inside .idea.",
             )
-        val openPath = if (Files.isRegularFile(path) && path.fileName.toString().endsWith(".ipr")) {
-            path
-        } else {
-            projectRoot
-        }
         return LifecycleOpenTarget(
             path = path,
-            openPath = openPath,
+            openPath = if (explicitProjectFile) path else projectRoot,
             projectRoot = projectRoot,
             key = canonicalLifecycleOpenKey(projectRoot),
         )
-    }
-
-    private fun lifecycleOpenProjectRoot(path: Path): Path? {
-        projectRootFromIdeaMetadataPath(path)?.let { return it }
-        if (Files.isDirectory(path)) return path
-        if (!Files.isRegularFile(path)) return null
-        val fileName = path.fileName?.toString() ?: return null
-        if (fileName.endsWith(".ipr")) return path.parent
-        return null
     }
 
     private fun canonicalLifecycleOpenKey(path: Path): String {
