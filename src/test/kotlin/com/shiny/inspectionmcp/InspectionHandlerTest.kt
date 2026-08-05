@@ -85,7 +85,7 @@ class InspectionHandlerTest {
     private lateinit var mockApplication: Application
 
     @Test
-    fun `inspection handler opens projects without private OpenProjectTask APIs`() {
+    fun `inspection handler opens projects without private or interactive project APIs`() {
         val resourceName = InspectionHandler::class.java.name.replace('.', '/') + ".class"
         val classResource = requireNotNull(InspectionHandler::class.java.classLoader.getResource(resourceName))
         val classPath = when (classResource.protocol) {
@@ -122,8 +122,12 @@ class InspectionHandlerTest {
             "Lifecycle project opening must not use JetBrains private OpenProjectTask APIs.",
         )
         assertTrue(
+            disassembly.contains("com/intellij/ide/impl/ProjectUtil.openProject"),
+            "Lifecycle project opening must use the public noninteractive ProjectUtil open path.",
+        )
+        assertFalse(
             disassembly.contains("com/intellij/ide/impl/ProjectUtil.openOrImport"),
-            "Lifecycle project opening must use the public ProjectUtil open path.",
+            "Lifecycle project opening must not use the interactive open-or-import processor path.",
         )
         assertFalse(
             disassembly.contains("runProcessWithProgressSynchronously"),
@@ -133,6 +137,28 @@ class InspectionHandlerTest {
             disassembly.contains("com/intellij/openapi/progress/util/ProgressWindow"),
             "JetBrains global inspections require a non-modal ProgressWindow indicator.",
         )
+    }
+
+    @Test
+    fun `lifecycle project store prepares a fresh directory for direct opening`() {
+        val projectRoot = Files.createTempDirectory("inspection-project-store")
+
+        val projectStore = prepareLifecycleProjectStore(projectRoot)
+
+        assertEquals(projectRoot.resolve(Project.DIRECTORY_STORE_FOLDER), projectStore)
+        assertTrue(Files.isDirectory(projectStore))
+    }
+
+    @Test
+    fun `lifecycle project store preserves existing metadata`() {
+        val projectRoot = Files.createTempDirectory("inspection-existing-project-store")
+        val projectStore = projectRoot.resolve(Project.DIRECTORY_STORE_FOLDER)
+        Files.createDirectories(projectStore)
+        val metadata = projectStore.resolve("misc.xml")
+        Files.writeString(metadata, "<project />")
+
+        assertEquals(projectStore, prepareLifecycleProjectStore(projectRoot))
+        assertEquals("<project />", Files.readString(metadata))
     }
     
     @BeforeEach

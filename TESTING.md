@@ -95,8 +95,10 @@ to the separate-window mode. If auto-open stalls, treat it as a blocker: check
 for an unsupported IDE config layout, settings sync overwriting the config, or a
 missing inspection plugin. The
 plugin-side lifecycle open endpoint schedules project opening asynchronously and
-uses the worktree directory name as the frame project name, runs project
-configurators, and refreshes the VFS so cloned worktrees
+prepares a directory-based project store before using the noninteractive public
+project-open path. This avoids the IDE's Open/Attach/New Window prompt while
+using the worktree directory name as the frame project name, running project
+configurators, and refreshing the VFS so cloned worktrees
 with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
 PyCharm, and WebStorm. Current builds advertise the `lease_bound_v1` ownership
 protocol: the helper persists a lease before open, passes that `lease_id`, and
