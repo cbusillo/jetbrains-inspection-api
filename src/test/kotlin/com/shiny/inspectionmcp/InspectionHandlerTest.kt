@@ -4476,6 +4476,52 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open treats ipr-named idea metadata as project root`() {
+        val tempDir = Files.createTempDirectory("inspection-open-idea-ipr-file")
+        val metadataPath = tempDir.resolve(".idea/project.ipr")
+        Files.createDirectories(metadataPath.parent)
+        Files.writeString(metadataPath, "<project />")
+        val openedProject = mockProject(
+            name = "OpenedIdeaIprMetadata",
+            basePath = tempDir.toString(),
+            projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
+        )
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var trustedPath: Path? = null
+        var openedPath: Path? = null
+        handler.trustProjectPath = { path: Path -> trustedPath = path }
+        handler.openProjectPath = { path: Path, beforeInit ->
+            openedPath = path
+            beforeInit(openedProject)
+            openedProject
+        }
+
+        val response = processGetRequest(lifecycleOpenUri(metadataPath))
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(tempDir.toAbsolutePath().normalize(), trustedPath)
+        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+    }
+
+    @Test
+    fun `test lifecycle open rejects regular non-project file outside idea`() {
+        val tempDir = Files.createTempDirectory("inspection-open-non-project-file")
+        val regularFile = tempDir.resolve("notes.txt")
+        Files.writeString(regularFile, "not a project")
+        every { mockProjectManager.openProjects } returns emptyArray()
+
+        val response = processGetRequest(lifecycleOpenUri(regularFile))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertTrue(body.contains("\"parameter\": \"worktree_path\""))
+        assertTrue(body.contains(".ipr project file, or file inside .idea"))
+    }
+
+    @Test
     fun `test lifecycle open resolves idea directory to project root`() {
         val tempDir = Files.createTempDirectory("inspection-open-idea-dir")
         val ideaDir = tempDir.resolve(".idea")
