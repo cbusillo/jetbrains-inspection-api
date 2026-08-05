@@ -596,7 +596,7 @@ class InspectionHandlerTest {
     fun `test problems endpoint applies requested files scope to cached snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
-        mockLocalFile("/tmp/TestProject/src/Included.kt")
+        mockIncludedLocalFile()
         runPooledTasksInline()
         mockInspectionPrerequisites(mockProject)
         InspectionResultsStore.setSnapshot(
@@ -839,7 +839,7 @@ class InspectionHandlerTest {
     fun `test completed run snapshot becomes stale after psi change`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
-        mockLocalFile("/tmp/TestProject/src/Included.kt")
+        mockIncludedLocalFile()
         mockInspectionPrerequisites(mockProject)
         setInspectionRunState(projectKey(mockProject), InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false))
         val snapshotProblems = listOf(
@@ -935,7 +935,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -984,7 +983,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(snapshotProblems),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1028,7 +1026,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(
                 problems = emptyList(),
                 resolvedFiles = emptyList(),
@@ -1072,7 +1069,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1100,7 +1096,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 1),
             projectStateChangedDuringCapture = true,
@@ -1126,7 +1121,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1155,7 +1149,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1186,7 +1179,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1217,7 +1209,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = changedFilesSnapshot(listOf(changedFileProblem())),
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1262,7 +1253,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1304,7 +1294,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1347,7 +1336,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1396,7 +1384,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1446,7 +1433,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1488,7 +1474,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1524,7 +1509,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = snapshot.projectState,
             projectStateChangedDuringCapture = false,
@@ -1571,7 +1555,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 1),
             projectStateChangedDuringCapture = true,
@@ -1632,7 +1615,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1684,7 +1666,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1732,7 +1713,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -1775,7 +1755,6 @@ class InspectionHandlerTest {
         )
 
         publishInspectionSnapshot(
-            runId = 1L,
             snapshot = snapshot,
             captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             projectStateChangedDuringCapture = true,
@@ -3557,7 +3536,7 @@ class InspectionHandlerTest {
             VirtualFileVisitor.CONTINUE
         }
 
-        assertEquals(listOf(psiFile), invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY"))
+        assertEquals(listOf(psiFile), invokeDirectoryPsiFilesForInspectionEngine())
         verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
         verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
         verify(exactly = 1) {
@@ -3577,7 +3556,7 @@ class InspectionHandlerTest {
 
         mockkStatic(VfsUtilCore::class)
 
-        assertTrue(invokeScopedPsiFilesForInspectionEngine("directory", "src", "PY").isEmpty())
+        assertTrue(invokeDirectoryPsiFilesForInspectionEngine().isEmpty())
         verify(exactly = 1) { localFileSystem.findFileByPath("/tmp/TestProject/src") }
         verify(exactly = 0) { localFileSystem.findFileByPath("/tmp/TestProject") }
         verify(exactly = 0) {
@@ -6512,11 +6491,7 @@ class InspectionHandlerTest {
     }
 
     @Suppress("UNCHECKED_CAST")
-    private fun invokeScopedPsiFilesForInspectionEngine(
-        scopeParam: String,
-        directoryParam: String?,
-        ideProductCode: String?,
-    ): List<PsiFile> {
+    private fun invokeDirectoryPsiFilesForInspectionEngine(): List<PsiFile> {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "scopedPsiFilesForInspectionEngine",
             Project::class.java,
@@ -6532,18 +6507,17 @@ class InspectionHandlerTest {
         return method.invoke(
             handler,
             mockProject,
-            scopeParam,
-            directoryParam,
+            "directory",
+            "src",
             null,
             null,
             null,
             emptyList<Map<String, Any?>>(),
-            ideProductCode,
+            "PY",
         ) as List<PsiFile>
     }
 
     private fun publishInspectionSnapshot(
-        runId: Long,
         snapshot: InspectionResultsSnapshot,
         captureEndState: InspectionProjectStateSnapshot,
         projectStateChangedDuringCapture: Boolean,
@@ -6564,7 +6538,7 @@ class InspectionHandlerTest {
         method.invoke(
             handler,
             mockProject,
-            runId,
+            1L,
             snapshot,
             captureEndState,
             projectStateChangedDuringCapture,
@@ -6701,7 +6675,8 @@ class InspectionHandlerTest {
         enhancedTreeExtractorFactory = { extractor }
     }
 
-    private fun mockLocalFile(path: String): VirtualFile {
+    private fun mockIncludedLocalFile(): VirtualFile {
+        val path = "/tmp/TestProject/src/Included.kt"
         val file = mockk<VirtualFile>()
         val localFileSystem = mockk<LocalFileSystem>()
         mockkStatic(LocalFileSystem::class)

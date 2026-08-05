@@ -2164,7 +2164,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val includeUnversioned = parseBooleanParameter(parameters, "include_unversioned", defaultValue = true)
                     val changedFilesMode = parseChangedFilesMode(parameters)
                     val maxFiles = parseOptionalIntParameter(parameters, "max_files", min = 1)
-                    val expectedRunId = parseOptionalPositiveLongParameter(parameters, "inspection_run_id")
+                    val expectedRunId = parseOptionalInspectionRunId(parameters)
                     val projectName = extractProjectSelector(urlDecoder, request)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
@@ -2304,7 +2304,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val projectName = extractProjectSelector(urlDecoder, request)
                     val timeoutMs = parameters["timeout_ms"]?.firstOrNull()?.toLongOrNull()
                     val pollMs = parameters["poll_ms"]?.firstOrNull()?.toLongOrNull()
-                    val expectedRunId = parseOptionalPositiveLongParameter(parameters, "inspection_run_id")
+                    val expectedRunId = parseOptionalInspectionRunId(parameters)
                     ApplicationManager.getApplication().executeOnPooledThread {
                         try {
                             val result = waitForInspection(projectName, timeoutMs, pollMs, expectedRunId, requestAttribution)
@@ -2464,10 +2464,8 @@ class InspectionHandler : HttpRequestHandler() {
         return value
     }
 
-    private fun parseOptionalPositiveLongParameter(
-        parameters: Map<String, List<String>>,
-        name: String,
-    ): Long? {
+    private fun parseOptionalInspectionRunId(parameters: Map<String, List<String>>): Long? {
+        val name = "inspection_run_id"
         val raw = parameters[name]?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
         return raw.toLongOrNull()?.takeIf { it > 0 }
             ?: throw BadRequestException(name, "Parameter '$name' must be a positive integer.")
