@@ -160,6 +160,16 @@ class InspectionHandlerTest {
         assertEquals(projectStore, prepareLifecycleProjectStore(projectRoot))
         assertEquals("<project />", Files.readString(metadata))
     }
+
+    @Test
+    fun `lifecycle project store skips explicit ipr project file`() {
+        val projectRoot = Files.createTempDirectory("inspection-ipr-project-store")
+        val projectFilePath = projectRoot.resolve("project.ipr")
+        Files.writeString(projectFilePath, "<project />")
+
+        assertNull(prepareLifecycleProjectStoreIfDirectory(projectFilePath))
+        assertFalse(Files.exists(projectRoot.resolve(Project.DIRECTORY_STORE_FOLDER)))
+    }
     
     @BeforeEach
     fun setup() {
@@ -4052,7 +4062,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             firstArg<Runnable>().run()
         }
+        var trustedPath: Path? = null
         var openedPath: Path? = null
+        handler.trustProjectPath = { path: Path -> trustedPath = path }
         handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
             beforeInit(openedProject)
@@ -4413,7 +4425,9 @@ class InspectionHandlerTest {
         every { mockApplication.invokeLater(any()) } answers {
             firstArg<Runnable>().run()
         }
+        var trustedPath: Path? = null
         var openedPath: Path? = null
+        handler.trustProjectPath = { path: Path -> trustedPath = path }
         handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
             beforeInit(openedProject)
@@ -4426,7 +4440,8 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"opening\""))
         assertTrue(body.contains("\"opening_scheduled\": true"))
-        assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
+        assertEquals(tempDir.toAbsolutePath().normalize(), trustedPath)
+        assertEquals(projectFilePath.toAbsolutePath().normalize(), openedPath)
     }
 
     @Test

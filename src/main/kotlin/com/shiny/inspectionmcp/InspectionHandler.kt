@@ -144,6 +144,13 @@ internal fun prepareLifecycleProjectStore(openPath: Path): Path {
     return projectStore
 }
 
+internal fun prepareLifecycleProjectStoreIfDirectory(openPath: Path): Path? {
+    if (!Files.isDirectory(openPath)) {
+        return null
+    }
+    return prepareLifecycleProjectStore(openPath)
+}
+
 internal enum class InspectionSnapshotOutcome(val apiValue: String) {
     PROBLEMS_FOUND("problems_found"),
     CLEAN_CONFIRMED("clean_confirmed"),
@@ -1515,7 +1522,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
     internal var openProjectPath: (Path, (Project) -> Unit) -> Project? = { path, onOpened ->
         val openPath = canonicalTrustPath(path)
-        prepareLifecycleProjectStore(openPath)
+        prepareLifecycleProjectStoreIfDirectory(openPath)
         ProjectUtil.openProject(openPath.toString(), null, true)?.also(onOpened)
     }
 
@@ -2662,7 +2669,12 @@ class InspectionHandler : HttpRequestHandler() {
                     if (isUnresolvedLifecycleOpenActive(project)) {
                         val projectRoot = Paths.get(entry.key)
                         return lifecycleOpenStateUnknown(
-                            LifecycleOpenTarget(path, projectRoot, projectRoot, entry.key),
+                            LifecycleOpenTarget(
+                                path = path,
+                                openPath = projectRoot,
+                                projectRoot = projectRoot,
+                                key = entry.key,
+                            ),
                             project,
                         )
                     }
@@ -2732,8 +2744,8 @@ class InspectionHandler : HttpRequestHandler() {
                     LifecycleOpenRouteVisibility.hide(target.key)
                     routeHidden = true
                     val openedProjectCandidate = AtomicReference<Project?>()
-                    trustProjectPath(target.openPath)
-                    refreshProjectRoot(target.openPath.toString())
+                    trustProjectPath(target.projectRoot)
+                    refreshProjectRoot(target.projectRoot.toString())
                     opened = openProjectPath(target.openPath) { project ->
                         openedProjectCandidate.compareAndSet(null, project)
                     }
@@ -2750,7 +2762,7 @@ class InspectionHandler : HttpRequestHandler() {
                     LifecycleOpenRouteVisibility.reveal(target.key)
                     routeHidden = false
                     if (opened != null) {
-                        refreshProjectRoot(target.openPath.toString())
+                        refreshProjectRoot(target.projectRoot.toString())
                         keepOpeningGuard = true
                         releaseLifecycleOpenGuardWhenUsable(target.key, opened, request)
                     }
@@ -3142,9 +3154,14 @@ class InspectionHandler : HttpRequestHandler() {
                 "worktree_path",
                 "Parameter 'worktree_path' must point to an existing directory, .ipr project file, or file inside .idea.",
             )
+        val openPath = if (Files.isRegularFile(path) && path.fileName.toString().endsWith(".ipr")) {
+            path
+        } else {
+            projectRoot
+        }
         return LifecycleOpenTarget(
             path = path,
-            openPath = projectRoot,
+            openPath = openPath,
             projectRoot = projectRoot,
             key = canonicalLifecycleOpenKey(projectRoot),
         )

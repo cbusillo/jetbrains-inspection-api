@@ -96,7 +96,9 @@ for an unsupported IDE config layout, settings sync overwriting the config, or a
 missing inspection plugin. The
 plugin-side lifecycle open endpoint schedules project opening asynchronously and
 prepares a directory-based project store before using the noninteractive public
-project-open path. This avoids the IDE's Open/Attach/New Window prompt while
+project-open path for directory inputs. Explicit `.ipr` inputs preserve the
+requested file-based project path and use its containing directory for trust,
+routing, readiness, and lifecycle ownership. This avoids the IDE's Open/Attach/New Window prompt while
 using the worktree directory name as the frame project name, running project
 configurators, and refreshing the VFS so cloned worktrees
 with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
