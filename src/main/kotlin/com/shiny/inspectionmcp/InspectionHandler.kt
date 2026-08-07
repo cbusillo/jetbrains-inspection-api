@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
+import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
@@ -5854,6 +5855,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     try {
                                         val proofRun = runBoundedExecutionProof(
                                             globalContext,
+                                            profile,
                                             project,
                                             capturedScopeFiles,
                                         ) { checkInspectionRunCancellation(key, runId) }
@@ -8450,6 +8452,7 @@ class InspectionHandler : HttpRequestHandler() {
     @Suppress("UnstableApiUsage")
     private fun runBoundedExecutionProof(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
         cancellationCheck: () -> Unit,
@@ -8498,6 +8501,10 @@ class InspectionHandler : HttpRequestHandler() {
             cancellationCheck()
             for (psiFile in scopeFiles) {
                 cancellationCheck()
+                val enabledForFile = app.runReadAction<Boolean, Exception> {
+                    HighlightDisplayKey.find(shortName)?.let { key -> profile.isToolEnabled(key, psiFile) } ?: false
+                }
+                if (!enabledForFile) continue
                 if (System.currentTimeMillis() - proofStartMs > maxTimeMs) {
                     hitTimeLimit = true
                     break@outer
