@@ -3861,12 +3861,53 @@ class InspectionSnapshotStateTest {
             ),
         )
 
-        // Non-empty: always PROBLEMS_FOUND regardless of proof
+        // Non-empty findings are decisive because execution proof was established.
         assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
         assertEquals(1, snapshot.problems.size)
         // Proof diagnostic should be present in the snapshot (Fix 7)
         assertNotNull(snapshot.captureDiagnostic)
         assertEquals(true, snapshot.captureDiagnostic?.get("execution_proof_established"))
+    }
+
+    @Test
+    @DisplayName("Non-empty findings fail closed when required execution proof is incomplete")
+    fun testNonEmptyFindingsFailClosedWithoutExecutionProof() {
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = listOf(
+                    mapOf(
+                        "description" to "Unresolved reference",
+                        "file" to "/tmp/TestProject/src/main.py",
+                        "line" to 3,
+                        "severity" to "warning",
+                        "inspectionType" to "PyUnresolvedReferencesInspection",
+                    ),
+                ),
+                bestSource = "global_context",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/main.py"),
+                ),
+                captureDiagnostic = mapOf(
+                    "execution_proof_skipped" to false,
+                    "execution_proof_established" to false,
+                    "execution_proof_hit_time_limit" to true,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                executionProofRequired = true,
+                executionProofEstablished = false,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+        assertTrue(snapshot.problems.isEmpty())
     }
 
     // ---- Fix 5: No scope PSI files → unproven ----

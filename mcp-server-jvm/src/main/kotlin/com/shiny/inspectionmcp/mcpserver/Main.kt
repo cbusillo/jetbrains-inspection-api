@@ -1192,6 +1192,10 @@ internal class ToolExecutor(
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
             "inspection_inputs_changed" ->
                 "Rerun inspection after project files, VCS state, and inspection settings finish changing."
+            "language_sdk_missing" ->
+                "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+            "project_analysis_not_ready" ->
+                "Wait for the configured language SDK and background analysis to settle, then rerun inspection."
             "timeout" ->
                 "Wait for indexing/scanning to settle or rerun with a larger timeout."
             "profile_resolution_error" ->
