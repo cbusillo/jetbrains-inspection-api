@@ -223,14 +223,13 @@ but must still end in a trustworthy RED with cleanup `closed`.
 ./scripts/dogfood-red-lane-smoke.sh \
   --product webstorm \
   --ide "WebStorm" \
-  --ide-app "WebStorm 2026.2 EAP" \
+  --ide-app "WebStorm" \
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
 Use `--ide` for the inspection identity selector and `--ide-app` for the exact
-macOS app bundle to launch. This matters for EAP installs such as
-`WebStorm 2026.2 EAP`, where the app bundle name is more specific than the
-product selector.
+macOS app bundle to launch. Keep the bundle selector aligned with the installed
+application name even when channel and version selectors identify an EAP line.
 
 This is a live IDE smoke, not a normal CI unit test. `./scripts/test-all.sh`
 runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
@@ -357,7 +356,7 @@ evidence for:
 - `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure`
 - `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
-  2026.2 EAP selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
+  stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - The exec-harness worktree scenario in
   `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`, with
   `JETBRAINS_INSPECTION_API_REPO` pointing at this checkout,

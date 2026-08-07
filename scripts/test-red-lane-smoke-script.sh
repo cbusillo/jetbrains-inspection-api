@@ -150,7 +150,7 @@ run_case() {
 		--product "$product" \
 		--helper "$HELPER" \
 		--work-root "$TMP_DIR/work" \
-		--ide-channel eap \
+		--ide-channel stable \
 		--ide-version 2026.2 \
 		--json-out "$json_out"
 
@@ -162,7 +162,7 @@ run_case() {
     .bucket == "red_confirmed" and
     .product == $product and
     .ide == $expected_ide and
-    .ide_channel == "eap" and
+    .ide_channel == "stable" and
     .ide_version == "2026.2" and
     .verdict == "RED" and
     .total_problems == 1 and

@@ -771,9 +771,9 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
 ./scripts/release-compatibility-gate.sh
-./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
-./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
-./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm 2026.2 EAP" --ide-channel eap --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
+./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
+./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
+./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ```
 
 For normal agent-facing worktree proof, run the maintained installed-IDE
@@ -783,7 +783,7 @@ It copies the red-lane fixture into an isolated workspace and requires the
 helper to prove a `RED` result, cleanup, and exact route matching in the latest
 installed stable IntelliJ IDEA. The 2026.2 fixture in
 `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json` is an
-exact EAP compatibility gate; use it only when the matching 2026.2 EAP app and
+exact 2026.2 compatibility gate; use it only when the matching 2026.2 app and
 config directory are installed. Set `JETBRAINS_INSPECTION_API_REPO` to this
 checkout and `CODE_EXEC_HARNESS_ROOT` to the checkout that contains
 `tools/code-exec-harness` when running either scenario directly. Set

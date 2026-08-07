@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.13.23</version>
+    <version>1.14.0</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -27,6 +27,13 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.0</b>
+        <ul>
+            <li>Fails closed until Python SDK-backed project analysis is stable, returning an inconclusive result instead of a false clean or partial finding result.</li>
+            <li>Honors scoped inspection-profile enablement for each file before executing local inspection tools.</li>
+            <li>Strengthens native broad-scope execution proof with exact requested-file coverage and correlated inspection-run diagnostics.</li>
+            <li>Simplifies fixed request and test helper parameters without changing validation behavior.</li>
+        </ul>
         <b>Version 1.13.3</b>
         <ul>
             <li>Adds JetBrains 2026.2 compatibility metadata and release verification coverage.</li>
