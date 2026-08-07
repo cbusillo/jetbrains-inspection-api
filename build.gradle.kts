@@ -191,9 +191,10 @@ tasks {
                 report.readLines()
                     .filter(String::isNotBlank)
                     .filterNot { usage ->
-                        usage.contains("com.intellij.codeInspection.ex.GlobalInspectionContextImpl")
+                        usage.contains("com.intellij.codeInspection.ex.GlobalInspectionContextImpl") ||
+                            usage.contains("com.intellij.codeInspection.ex.InspectListener")
                     }
-                    .map { usage -> "${report.relativeTo(project.projectDir)}: $usage" }
+                    .map { usage -> "${report.relativeTo(verificationReportsDirectory.get().asFile)}: $usage" }
             }
             if (unexpectedUsages.isNotEmpty()) {
                 throw GradleException(
