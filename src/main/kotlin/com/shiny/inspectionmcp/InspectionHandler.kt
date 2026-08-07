@@ -1,7 +1,6 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
-import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
@@ -20,7 +19,6 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.fileTypes.FileTypeManager
-import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
@@ -6803,12 +6801,10 @@ class InspectionHandler : HttpRequestHandler() {
                 val sdkUpdateStates = validPythonSdks.map(::pythonSdkUpdateScheduled)
                 val updatingSdkCount = sdkUpdateStates.count { state -> state == true }
                 val updateStateUnavailable = sdkUpdateStates.any { state -> state == null }
-                val daemonRunning = DaemonCodeAnalyzer.getInstance(project).isRunning
                 val reason = when {
                     missingSdkFileCount > 0 -> "python_sdk_missing"
                     updateStateUnavailable -> "python_sdk_update_state_unavailable"
                     updatingSdkCount > 0 -> "python_sdk_updating"
-                    daemonRunning -> "project_analysis_running"
                     else -> "ready"
                 }
                 InspectionProjectAnalysisReadiness(
@@ -6819,7 +6815,6 @@ class InspectionHandler : HttpRequestHandler() {
                     pythonSdkCount = validPythonSdks.size,
                     missingSdkFileCount = missingSdkFileCount,
                     updatingSdkCount = updatingSdkCount,
-                    daemonRunning = daemonRunning,
                     sdkUpdateStateUnavailable = updateStateUnavailable,
                 )
             }
@@ -6878,12 +6873,9 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun pythonSdkUpdateScheduled(sdk: Sdk): Boolean? {
         val updaterClassName = "com.jetbrains.python.sdk.PythonSdkUpdater"
-        val updaterClass = runCatching { Class.forName(updaterClassName) }.getOrNull()
-            ?: PluginManagerCore.getPluginDescriptorOrPlatformByClassName(updaterClassName)?.let { descriptor ->
-                runCatching {
-                    Class.forName(updaterClassName, false, descriptor.pluginClassLoader)
-                }.getOrNull()
-            }
+        val updaterClass = runCatching {
+            Class.forName(updaterClassName, false, sdk.sdkType.javaClass.classLoader)
+        }.getOrNull()
             ?: return null
         val method = try {
             updaterClass.getMethod("isUpdateScheduled", Sdk::class.java)

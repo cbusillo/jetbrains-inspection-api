@@ -571,16 +571,22 @@ if wait_for_api; then
         sleep 15
 
         # Run tests
-        run_api_tests
-        TEST_RESULT=$?
+        if run_api_tests; then
+            TEST_RESULT=0
+        else
+            TEST_RESULT=$?
+        fi
 
         # If no problems detected, try once more after waiting
         if [ "$TEST_RESULT" -ne 0 ]; then
             echo ""
             echo "🔄 Retrying after additional wait..."
             sleep 15
-            run_api_tests
-            TEST_RESULT=$?
+            if run_api_tests; then
+                TEST_RESULT=0
+            else
+                TEST_RESULT=$?
+            fi
         fi
     fi
 else
