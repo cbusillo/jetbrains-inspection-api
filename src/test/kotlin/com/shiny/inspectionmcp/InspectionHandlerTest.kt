@@ -215,6 +215,13 @@ class InspectionHandlerTest {
         handler.inspectionRunExpirationMs = 300000L
         handler.inspectionProcessRunner = { task, _ -> task.run() }
         handler.inspectionIndicatorFactory = { mockk(relaxed = true) }
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            InspectionProjectAnalysisReadiness(
+                required = false,
+                ready = true,
+                reason = "python_not_in_scope",
+            )
+        }
         handler.lifecycleCloseExecutor = { task -> task.run() }
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
@@ -336,6 +343,102 @@ class InspectionHandlerTest {
         assertEquals(false, status["capture_incomplete"])
         assertEquals(false, status["results_may_be_stale"])
         assertEquals(0, status["total_problems"])
+    }
+
+    @Test
+    fun `test python scope without sdk publishes capture incomplete before inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            InspectionProjectAnalysisReadiness(
+                required = true,
+                ready = false,
+                reason = "python_sdk_missing",
+                pythonFileCount = 2,
+                missingSdkFileCount = 2,
+            )
+        }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val body = response.content().toString(Charsets.UTF_8)
+        val status = buildInspectionStatus()
+        val statusResponse = processGetRequest("/api/inspection/status")
+        val statusBody = statusResponse.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"scope\": \"whole_project\""), body)
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals(true, status["capture_incomplete"])
+        assertEquals("language_sdk_missing", status["capture_incomplete_reason"])
+        assertEquals("project_analysis_readiness", status["results_source"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals(0, status["total_problems"])
+        assertTrue(statusBody.contains("\"classification\": \"configuration_blocked\""), statusBody)
+        assertTrue(statusBody.contains("\"code\": \"language_sdk_missing\""), statusBody)
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test python analysis requires two identical SDK-backed snapshots`() {
+        val readiness = InspectionProjectAnalysisReadiness(
+            required = true,
+            ready = true,
+            reason = "ready",
+            pythonFileCount = 1,
+            pythonSdkCount = 1,
+        )
+        val fingerprint = projectInputsFingerprint(profileName = "qualification-identical")
+        val snapshot = changedFilesSnapshot(
+            problems = listOf(changedFileProblem(file = "/tmp/TestProject/qualification-identical.py")),
+            resolvedFiles = listOf("/tmp/TestProject/qualification-identical.py"),
+        )
+
+        val first = qualifyProjectAnalysisSnapshot(snapshot, readiness, fingerprint)
+        val second = qualifyProjectAnalysisSnapshot(snapshot, readiness, fingerprint)
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, first.outcome)
+        assertEquals(CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY, first.captureIncompleteReason)
+        assertTrue(first.problems.isEmpty())
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, second.outcome)
+        assertEquals(1, second.problems.size)
+    }
+
+    @Test
+    fun `test python analysis fingerprint change resets qualification`() {
+        val readiness = InspectionProjectAnalysisReadiness(
+            required = true,
+            ready = true,
+            reason = "ready",
+            pythonFileCount = 1,
+            pythonSdkCount = 1,
+        )
+        val snapshot = changedFilesSnapshot(
+            problems = listOf(changedFileProblem(file = "/tmp/TestProject/qualification-reset.py")),
+            resolvedFiles = listOf("/tmp/TestProject/qualification-reset.py"),
+        )
+        val firstFingerprint = projectInputsFingerprint(profileName = "qualification-reset")
+        val changedFingerprint = firstFingerprint.copy(
+            moduleSdkStates = listOf("TestProject\u0000Updated SDK\u0000Python SDK\u00003.14\u0000/tmp/python-3.14"),
+        )
+
+        qualifyProjectAnalysisSnapshot(snapshot, readiness, firstFingerprint)
+        val result = qualifyProjectAnalysisSnapshot(snapshot, readiness, changedFingerprint)
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, result.outcome)
+        assertEquals(CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY, result.captureIncompleteReason)
+        assertTrue(result.problems.isEmpty())
     }
 
     @Test
@@ -1626,10 +1729,10 @@ class InspectionHandlerTest {
             key,
             InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
         )
-        val completedStatus = buildInspectionStatus()
-
         assertEquals(10L, publishedSnapshot.projectState.psiModificationCount)
-        assertEquals(true, completedStatus["results_may_be_stale"])
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, publishedSnapshot.outcome)
+        assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, publishedSnapshot.captureIncompleteReason)
+        assertTrue(publishedSnapshot.problems.isEmpty())
     }
 
     @Test
@@ -1640,7 +1743,9 @@ class InspectionHandlerTest {
         val key = projectKey(mockProject)
         InspectionResultsStore.clear(key)
         val inputFingerprint = projectInputsFingerprint()
-        val changedFingerprint = inputFingerprint.copy(projectSdkVersion = "3.14")
+        val changedFingerprint = inputFingerprint.copy(
+            moduleSdkStates = listOf("TestProject\u0000Updated SDK\u0000Python SDK\u00003.14\u0000/tmp/python-3.14"),
+        )
         val contentTracker = FakeInspectionProjectContentTracker()
         handler.projectInputsFingerprintProvider = { _, _ -> changedFingerprint }
         val snapshotProblems = listOf(
@@ -3852,6 +3957,13 @@ class InspectionHandlerTest {
             moduleRootManagers.getValue(firstArg())
         }
         val productionHandler = InspectionHandler()
+        productionHandler.projectAnalysisReadinessProvider = { _, _ ->
+            InspectionProjectAnalysisReadiness(
+                required = false,
+                ready = true,
+                reason = "python_not_in_scope",
+            )
+        }
         val targetKey = tempDir.toRealPath().toString()
 
         try {
@@ -6548,6 +6660,22 @@ class InspectionHandlerTest {
         )
     }
 
+    private fun qualifyProjectAnalysisSnapshot(
+        snapshot: InspectionResultsSnapshot,
+        readiness: InspectionProjectAnalysisReadiness,
+        fingerprint: InspectionProjectInputsFingerprint,
+    ): InspectionResultsSnapshot {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "qualifyProjectAnalysisSnapshot",
+            Project::class.java,
+            InspectionResultsSnapshot::class.java,
+            InspectionProjectAnalysisReadiness::class.java,
+            InspectionProjectInputsFingerprint::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, mockProject, snapshot, readiness, fingerprint) as InspectionResultsSnapshot
+    }
+
     private fun projectInputsFingerprint(
         profileName: String = "RedLane",
         rootPaths: List<String> = listOf("/tmp/TestProject"),
@@ -6559,6 +6687,7 @@ class InspectionHandlerTest {
             projectSdkTypeName = "Python SDK",
             projectSdkVersion = "3.13",
             projectSdkHomePath = "/tmp/python",
+            moduleSdkStates = listOf("TestProject\u0000Test SDK\u0000Python SDK\u00003.13\u0000/tmp/python"),
             requestedProfileName = profileName,
             resolvedProfileName = profileName,
             profileToolStates = listOf("CurrentRunInspection|null|true|WARNING|null"),

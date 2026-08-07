@@ -1,6 +1,7 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeInsight.daemon.DaemonCodeAnalyzer
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
@@ -17,6 +18,8 @@ import com.intellij.openapi.actionSystem.CommonDataKeys
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.fileTypes.FileTypeManager
+import com.intellij.ide.plugins.PluginManagerCore
 import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.module.ModuleUtilCore
@@ -32,6 +35,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.Disposable
 import com.intellij.openapi.util.Disposer
@@ -47,6 +51,8 @@ import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiManager
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.search.scope.packageSet.NamedScopeManager
 import com.intellij.psi.search.scope.packageSet.NamedScopesHolder
 import com.intellij.psi.util.PsiModificationTracker
@@ -98,6 +104,7 @@ import javax.swing.tree.TreeNode
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
+private const val BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
@@ -180,6 +187,8 @@ internal enum class CaptureIncompleteReason(val apiValue: String) {
     INSPECTION_TRIGGER_EMPTY_MODEL("inspection_trigger_empty_model"),
     TIMEOUT("timeout"),
     PROFILE_RESOLUTION_ERROR("profile_resolution_error"),
+    LANGUAGE_SDK_MISSING("language_sdk_missing"),
+    PROJECT_ANALYSIS_NOT_READY("project_analysis_not_ready"),
     SCOPE_NOT_COVERED("scope_not_covered"),
     HELPER_PLUGIN_ERROR("helper_plugin_error"),
     EXECUTION_NOT_PROVEN("execution_not_proven"),
@@ -198,11 +207,32 @@ internal data class InspectionProjectInputsFingerprint(
     val projectSdkTypeName: String?,
     val projectSdkVersion: String?,
     val projectSdkHomePath: String?,
+    val moduleSdkStates: List<String>,
     val requestedProfileName: String?,
     val resolvedProfileName: String?,
     val profileToolStates: List<String>,
     val namedScopeDefinitions: List<String>,
     val profileConfigurationHash: String,
+)
+
+internal data class InspectionProjectAnalysisReadiness(
+    val required: Boolean,
+    val ready: Boolean,
+    val reason: String,
+    val pythonFileCount: Int = 0,
+    val pythonSdkCount: Int = 0,
+    val missingSdkFileCount: Int = 0,
+    val updatingSdkCount: Int = 0,
+    val daemonRunning: Boolean = false,
+    val sdkUpdateStateUnavailable: Boolean = false,
+)
+
+private data class InspectionAnalysisQualification(
+    val inputFingerprint: InspectionProjectInputsFingerprint,
+    val captureScope: InspectionCaptureScope,
+    val outcome: InspectionSnapshotOutcome,
+    val problemIdentityCounts: Map<InspectionProblemIdentity, Int>,
+    val qualified: Boolean,
 )
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
@@ -458,9 +488,22 @@ internal fun buildScopeFileDiagnosticPayload(
 internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
     val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
-    // Defense-in-depth: CLEAN_CONFIRMED is structurally impossible when execution proof is required but not established.
-    val executionProofBlocksClean = input.executionProofRequired && input.executionProofEstablished != true
+    val executionProofBlocksDecisive = input.executionProofRequired && input.executionProofEstablished != true
     return when {
+        executionProofBlocksDecisive -> InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = input.snapshotTimeMs,
+            projectState = input.projectState,
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = if (input.viewReadyOk) "inspection_view" else "tool_window",
+            note = "Inspection execution proof was required but not established, so findings or a clean result could not be confirmed.",
+            captureScope = input.captureScope,
+            captureDiagnostic = input.captureDiagnostic,
+            captureIncompleteReason = captureIncompleteReason,
+            runId = input.runId,
+            triggerTimeMs = input.triggerTimeMs,
+        )
+
         input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
             problems = input.bestResults,
             timestamp = input.snapshotTimeMs,
@@ -473,7 +516,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             triggerTimeMs = input.triggerTimeMs,
         )
 
-        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED && scopeFileDiagnosticsComplete && !executionProofBlocksClean -> InspectionResultsSnapshot(
+        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED && scopeFileDiagnosticsComplete -> InspectionResultsSnapshot(
             problems = emptyList(),
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
@@ -494,8 +537,6 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             note = when {
                 !scopeFileDiagnosticsComplete ->
                     "Inspection scope diagnostics did not cover every resolved file, so a clean result could not be proven."
-                executionProofBlocksClean ->
-                    "Inspection execution proof was required but not established, so a clean result could not be confirmed."
                 else -> input.emptyNote
             },
             captureScope = input.captureScope,
@@ -1457,6 +1498,14 @@ class InspectionHandler : HttpRequestHandler() {
         val targetInsideContent: Boolean = false,
         val contentRootInsideTarget: Boolean = false,
         val contentRoots: List<String> = emptyList(),
+        val analysisRequired: Boolean = false,
+        val analysisReady: Boolean = true,
+        val analysisReason: String = "not_required",
+        val pythonFileCount: Int = 0,
+        val pythonSdkCount: Int = 0,
+        val missingSdkFileCount: Int = 0,
+        val updatingSdkCount: Int = 0,
+        val daemonRunning: Boolean = false,
     )
 
     private data class LifecycleCloseAttempt(
@@ -1470,6 +1519,8 @@ class InspectionHandler : HttpRequestHandler() {
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
     private val inspectionRunControlsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunControl>()
+    private val analysisQualificationsByProject =
+        java.util.concurrent.ConcurrentHashMap<String, InspectionAnalysisQualification>()
     private val leasesByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, InspectionProjectLease>()
     private val openingProjectRequests = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenRequest>()
     private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
@@ -1500,6 +1551,10 @@ class InspectionHandler : HttpRequestHandler() {
     internal var projectInputsFingerprintProvider:
         (Project, String?) -> InspectionProjectInputsFingerprint? = { project, profileName ->
             captureInspectionProjectInputs(project, profileName)
+        }
+    internal var projectAnalysisReadinessProvider:
+        (Project, InspectionCaptureScope?) -> InspectionProjectAnalysisReadiness = { project, captureScope ->
+            inspectProjectAnalysisReadiness(project, captureScope)
         }
     internal var projectContentTrackerFactory:
         (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
@@ -1716,6 +1771,10 @@ class InspectionHandler : HttpRequestHandler() {
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
             "inspection_inputs_changed" ->
                 "Rerun inspection after project files, VCS state, and inspection settings finish changing."
+            "language_sdk_missing" ->
+                "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
+            "project_analysis_not_ready" ->
+                "Wait for the configured language SDK and background analysis to settle, then rerun inspection."
             "stale_results" ->
                 "Rerun inspection; stale cached findings must not be treated as current."
             "timeout" ->
@@ -1944,6 +2003,7 @@ class InspectionHandler : HttpRequestHandler() {
             "inspection_api_unavailable",
             "missing_session_id",
             "no_project",
+            "language_sdk_missing",
             "profile_resolution_error",
             SCOPE_SEMANTIC_COVERAGE_MISSING_REASON,
             "ide_selection_required",
@@ -1957,6 +2017,7 @@ class InspectionHandler : HttpRequestHandler() {
             "close_failed",
             "current_run_psi_churn",
             "inspection_inputs_changed",
+            "project_analysis_not_ready",
             "inspection_in_progress",
             "inspection_still_running",
             "interrupted",
@@ -3073,12 +3134,29 @@ class InspectionHandler : HttpRequestHandler() {
                                     canonicalContentRoot.startsWith(targetPath)
                             }.getOrDefault(false)
                         }
-                        val reason = when {
+                        val contentReason = when {
                             contentRoots.isEmpty() -> "no_content_roots"
                             nonFallbackTargetCoverage -> "ready"
                             unrelatedContentRoot || (!targetInsideContent && !contentRootInsideTarget) ->
                                 "content_roots_outside_target"
                             else -> "ready"
+                        }
+                        val analysisReadiness = if (contentReason == "ready") {
+                            projectAnalysisReadinessProvider(
+                                project,
+                                InspectionCaptureScope(scopeParam = "whole_project"),
+                            )
+                        } else {
+                            InspectionProjectAnalysisReadiness(
+                                required = false,
+                                ready = true,
+                                reason = "content_not_ready",
+                            )
+                        }
+                        val reason = if (contentReason == "ready" && !analysisReadiness.ready) {
+                            analysisReadiness.reason
+                        } else {
+                            contentReason
                         }
                         LifecycleContentRootReadiness(
                             ready = reason == "ready",
@@ -3093,6 +3171,14 @@ class InspectionHandler : HttpRequestHandler() {
                             targetInsideContent = targetInsideContent,
                             contentRootInsideTarget = contentRootInsideTarget,
                             contentRoots = contentRoots.take(MAX_SCOPE_FILE_DIAGNOSTICS),
+                            analysisRequired = analysisReadiness.required,
+                            analysisReady = analysisReadiness.ready,
+                            analysisReason = analysisReadiness.reason,
+                            pythonFileCount = analysisReadiness.pythonFileCount,
+                            pythonSdkCount = analysisReadiness.pythonSdkCount,
+                            missingSdkFileCount = analysisReadiness.missingSdkFileCount,
+                            updatingSdkCount = analysisReadiness.updatingSdkCount,
+                            daemonRunning = analysisReadiness.daemonRunning,
                         )
                     }
                 }
@@ -3114,6 +3200,14 @@ class InspectionHandler : HttpRequestHandler() {
             "target_inside_content" to readiness.targetInsideContent,
             "content_root_inside_target" to readiness.contentRootInsideTarget,
             "content_roots" to readiness.contentRoots,
+            "analysis_required" to readiness.analysisRequired,
+            "analysis_ready" to readiness.analysisReady,
+            "analysis_reason" to readiness.analysisReason,
+            "python_file_count" to readiness.pythonFileCount,
+            "python_sdk_count" to readiness.pythonSdkCount,
+            "missing_sdk_file_count" to readiness.missingSdkFileCount,
+            "updating_sdk_count" to readiness.updatingSdkCount,
+            "daemon_running" to readiness.daemonRunning,
         )
     }
 
@@ -4596,11 +4690,73 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun qualifyProjectAnalysisSnapshot(
+        project: Project,
+        snapshot: InspectionResultsSnapshot,
+        analysisReadiness: InspectionProjectAnalysisReadiness,
+        inputFingerprint: InspectionProjectInputsFingerprint?,
+    ): InspectionResultsSnapshot {
+        if (
+            !analysisReadiness.required ||
+            !analysisReadiness.ready ||
+            inputFingerprint == null ||
+            snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+        ) {
+            return snapshot
+        }
+        val captureScope = snapshot.captureScope ?: return snapshot
+        val qualificationKey = listOf(
+            projectInstanceId(project),
+            captureScope.scopeParam.orEmpty(),
+            captureScope.resolvedDirectory.orEmpty(),
+            captureScope.resolvedCurrentFile.orEmpty(),
+            captureScope.resolvedFiles.orEmpty().sorted().joinToString("\u0000"),
+        ).joinToString("\u0001")
+        val problemIdentities = inspectionProblemIdentityCounts(snapshot.problems)
+        val previous = analysisQualificationsByProject[qualificationKey]
+        val sameEnvironment = previous != null &&
+            previous.inputFingerprint == inputFingerprint &&
+            previous.captureScope == captureScope
+        if (sameEnvironment && previous.qualified) {
+            return snapshot
+        }
+        val resultMatched = sameEnvironment &&
+            previous.outcome == snapshot.outcome &&
+            previous.problemIdentityCounts == problemIdentities
+        analysisQualificationsByProject[qualificationKey] = InspectionAnalysisQualification(
+            inputFingerprint = inputFingerprint,
+            captureScope = captureScope,
+            outcome = snapshot.outcome,
+            problemIdentityCounts = problemIdentities,
+            qualified = resultMatched,
+        )
+        if (resultMatched) {
+            return snapshot
+        }
+        return snapshot.copy(
+            problems = emptyList(),
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "project_analysis_qualification",
+            note = "Project analysis results are not yet stable across identical SDK-backed inspection runs.",
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                "analysis_qualification_required" to true,
+                "analysis_qualification_previous_available" to (previous != null),
+                "analysis_qualification_environment_matched" to sameEnvironment,
+                "analysis_qualification_result_matched" to resultMatched,
+                "analysis_reason" to analysisReadiness.reason,
+                "python_file_count" to analysisReadiness.pythonFileCount,
+                "python_sdk_count" to analysisReadiness.pythonSdkCount,
+                "exit_reason" to CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY.apiValue,
+            ),
+            captureIncompleteReason = CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY,
+        )
+    }
+
     private fun unverifiedChurnSnapshot(
         snapshot: InspectionResultsSnapshot,
         failure: String,
     ): InspectionResultsSnapshot {
-        return if (snapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED) {
+        return if (snapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
             inspectionInputValidationFailureSnapshot(snapshot, failure)
         } else {
             snapshot
@@ -5402,6 +5558,71 @@ class InspectionHandler : HttpRequestHandler() {
                                 "fingerprints_matched" to (initialFingerprint == confirmedFingerprint),
                             ),
                             captureIncompleteReason = preflightFailureReason,
+                            runId = runId,
+                            triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                        ),
+                    )
+                    return
+                }
+            }
+            val analysisReadiness = projectAnalysisReadinessProvider(project, effectiveCaptureScope)
+            if (analysisReadiness.required && !analysisReadiness.ready) {
+                projectContentTracker?.close()
+                projectContentTracker = null
+                val incompleteReason = if (analysisReadiness.reason == "python_sdk_missing") {
+                    CaptureIncompleteReason.LANGUAGE_SDK_MISSING
+                } else {
+                    CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY
+                }
+                resultsStore.setSnapshot(
+                    key,
+                    InspectionResultsSnapshot(
+                        problems = emptyList(),
+                        timestamp = System.currentTimeMillis(),
+                        projectState = inspectionInputState,
+                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                        source = "project_analysis_readiness",
+                        note = "The selected files' language SDK or analysis state is not ready for a trustworthy inspection.",
+                        captureScope = effectiveCaptureScope,
+                        captureDiagnostic = mapOf(
+                            "analysis_required" to analysisReadiness.required,
+                            "analysis_ready" to analysisReadiness.ready,
+                            "analysis_reason" to analysisReadiness.reason,
+                            "python_file_count" to analysisReadiness.pythonFileCount,
+                            "python_sdk_count" to analysisReadiness.pythonSdkCount,
+                            "missing_sdk_file_count" to analysisReadiness.missingSdkFileCount,
+                            "updating_sdk_count" to analysisReadiness.updatingSdkCount,
+                            "daemon_running" to analysisReadiness.daemonRunning,
+                            "sdk_update_state_unavailable" to analysisReadiness.sdkUpdateStateUnavailable,
+                            "exit_reason" to incompleteReason.apiValue,
+                        ),
+                        captureIncompleteReason = incompleteReason,
+                        runId = runId,
+                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                    ),
+                )
+                return
+            }
+            if (analysisReadiness.required && inspectionInputFingerprint == null) {
+                inspectionInputFingerprint = projectInputsFingerprintProvider(project, requestedProfileName)
+                if (inspectionInputFingerprint == null) {
+                    resultsStore.setSnapshot(
+                        key,
+                        InspectionResultsSnapshot(
+                            problems = emptyList(),
+                            timestamp = System.currentTimeMillis(),
+                            projectState = inspectionInputState,
+                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                            source = "project_analysis_readiness",
+                            note = "Project analysis inputs could not be fingerprinted before inspection.",
+                            captureScope = effectiveCaptureScope,
+                            captureDiagnostic = mapOf(
+                                "analysis_required" to true,
+                                "analysis_ready" to true,
+                                "analysis_reason" to analysisReadiness.reason,
+                                "exit_reason" to CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY.apiValue,
+                            ),
+                            captureIncompleteReason = CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY,
                             runId = runId,
                             triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                         ),
@@ -6262,10 +6483,16 @@ class InspectionHandler : HttpRequestHandler() {
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
                         }
+                        val qualifiedSnapshot = qualifyProjectAnalysisSnapshot(
+                            project = project,
+                            snapshot = snapshot,
+                            analysisReadiness = analysisReadiness,
+                            inputFingerprint = inspectionInputFingerprint,
+                        )
                         publishInspectionSnapshot(
                             project = project,
                             runId = runId,
-                            snapshot = snapshot,
+                            snapshot = qualifiedSnapshot,
                             captureEndState = captureEndState,
                             projectStateChangedDuringCapture = projectStateChangedDuringCapture,
                             inspectionInputFingerprint = inspectionInputFingerprint,
@@ -6529,6 +6756,155 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
+    private fun inspectProjectAnalysisReadiness(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+    ): InspectionProjectAnalysisReadiness {
+        if (project.isDisposed) {
+            return InspectionProjectAnalysisReadiness(
+                required = true,
+                ready = false,
+                reason = "project_disposed",
+            )
+        }
+        return runCatching {
+            ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
+                val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
+                if (!pythonFileType.name.contains("python", ignoreCase = true)) {
+                    return@runReadAction InspectionProjectAnalysisReadiness(
+                        required = false,
+                        ready = true,
+                        reason = "python_support_unavailable",
+                    )
+                }
+
+                val pythonFiles = resolvePythonScopeFiles(project, captureScope)
+                if (pythonFiles.isEmpty()) {
+                    return@runReadAction InspectionProjectAnalysisReadiness(
+                        required = false,
+                        ready = true,
+                        reason = "python_not_in_scope",
+                    )
+                }
+
+                val projectSdk = ProjectRootManager.getInstance(project).projectSdk
+                val sdkByFile = pythonFiles.associateWith { file ->
+                    ModuleUtilCore.findModuleForFile(file, project)
+                        ?.let { module -> ModuleRootManager.getInstance(module).sdk }
+                        ?: projectSdk
+                }
+                val validPythonSdks = sdkByFile.values
+                    .filterNotNull()
+                    .filter(::isPythonSdk)
+                    .distinctBy(::inspectionSdkIdentity)
+                val missingSdkFileCount = sdkByFile.count { (_, sdk) -> sdk == null || !isPythonSdk(sdk) }
+                val sdkUpdateStates = validPythonSdks.map(::pythonSdkUpdateScheduled)
+                val updatingSdkCount = sdkUpdateStates.count { state -> state == true }
+                val updateStateUnavailable = sdkUpdateStates.any { state -> state == null }
+                val daemonRunning = DaemonCodeAnalyzer.getInstance(project).isRunning
+                val reason = when {
+                    missingSdkFileCount > 0 -> "python_sdk_missing"
+                    updateStateUnavailable -> "python_sdk_update_state_unavailable"
+                    updatingSdkCount > 0 -> "python_sdk_updating"
+                    daemonRunning -> "project_analysis_running"
+                    else -> "ready"
+                }
+                InspectionProjectAnalysisReadiness(
+                    required = true,
+                    ready = reason == "ready",
+                    reason = reason,
+                    pythonFileCount = pythonFiles.size,
+                    pythonSdkCount = validPythonSdks.size,
+                    missingSdkFileCount = missingSdkFileCount,
+                    updatingSdkCount = updatingSdkCount,
+                    daemonRunning = daemonRunning,
+                    sdkUpdateStateUnavailable = updateStateUnavailable,
+                )
+            }
+        }.getOrElse {
+            InspectionProjectAnalysisReadiness(
+                required = true,
+                ready = false,
+                reason = "analysis_readiness_unavailable",
+            )
+        }
+    }
+
+    private fun resolvePythonScopeFiles(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+    ): List<VirtualFile> {
+        val resolvedFiles = captureScope?.resolvedFiles
+        if (resolvedFiles != null) {
+            return resolvedFiles.mapNotNull { path ->
+                LocalFileSystem.getInstance().findFileByPath(path)
+            }.filter(::isPythonFile)
+        }
+
+        val scopeKind = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        val resolvedDirectory = captureScope?.resolvedDirectory?.let(::normalizeFileSystemPath)
+        return FilenameIndex.getAllFilesByExt(project, "py", GlobalSearchScope.projectScope(project))
+            .asSequence()
+            .filter { file ->
+                scopeKind != "directory" ||
+                    resolvedDirectory == null ||
+                    normalizeFileSystemPath(file.path)?.let { path ->
+                        path == resolvedDirectory || path.startsWith("$resolvedDirectory/")
+                    } == true
+            }
+            .distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }
+            .toList()
+    }
+
+    private fun isPythonFile(file: VirtualFile): Boolean {
+        return file.isValid && !file.isDirectory && file.extension.equals("py", ignoreCase = true)
+    }
+
+    private fun isPythonSdk(sdk: Sdk): Boolean {
+        return listOfNotNull(sdk.sdkType.name, sdk.name, sdk.versionString)
+            .any { value -> value.contains("python", ignoreCase = true) }
+    }
+
+    private fun inspectionSdkIdentity(sdk: Sdk): String {
+        return listOf(
+            sdk.name,
+            sdk.sdkType.name,
+            sdk.versionString.orEmpty(),
+            sdk.homePath?.let(::normalizeFileSystemPath).orEmpty(),
+        ).joinToString("\u0000")
+    }
+
+    private fun pythonSdkUpdateScheduled(sdk: Sdk): Boolean? {
+        val updaterClassName = "com.jetbrains.python.sdk.PythonSdkUpdater"
+        val updaterClass = runCatching { Class.forName(updaterClassName) }.getOrNull()
+            ?: PluginManagerCore.getPluginDescriptorOrPlatformByClassName(updaterClassName)?.let { descriptor ->
+                runCatching {
+                    Class.forName(updaterClassName, false, descriptor.pluginClassLoader)
+                }.getOrNull()
+            }
+            ?: return null
+        val method = try {
+            updaterClass.getMethod("isUpdateScheduled", Sdk::class.java)
+        } catch (_: NoSuchMethodException) {
+            return false
+        }
+        return runCatching { method.invoke(null, sdk) as? Boolean }.getOrNull()
+    }
+
+    private fun captureModuleSdkStates(project: Project): List<String> {
+        val projectSdk = ProjectRootManager.getInstance(project).projectSdk
+        return ModuleManager.getInstance(project).modules.map { module ->
+            val sdk = ModuleRootManager.getInstance(module).sdk ?: projectSdk
+            listOf(
+                module.name,
+                sdk?.name.orEmpty(),
+                sdk?.sdkType?.name.orEmpty(),
+                sdk?.versionString.orEmpty(),
+                sdk?.homePath?.let(::normalizeFileSystemPath).orEmpty(),
+            ).joinToString("\u0000")
+        }.sorted()
+    }
+
     private fun captureInspectionProjectInputs(
         project: Project,
         profileName: String?,
@@ -6631,6 +7007,7 @@ class InspectionHandler : HttpRequestHandler() {
                     projectSdkTypeName = runCatching { sdk?.sdkType?.name }.getOrNull(),
                     projectSdkVersion = runCatching { sdk?.versionString }.getOrNull(),
                     projectSdkHomePath = runCatching { sdk?.homePath }.getOrNull()?.let(::normalizeFileSystemPath),
+                    moduleSdkStates = captureModuleSdkStates(project),
                     requestedProfileName = profileName,
                     resolvedProfileName = resolvedProfileName,
                     profileToolStates = profileToolStates,
@@ -8098,7 +8475,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val maxFiles = 25
-        val maxTimeMs = 20_000L
+        val maxTimeMs = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS
         val proofStartMs = System.currentTimeMillis()
         if (scopeFiles.size > maxFiles) {
             return BoundedExecutionProofResult(

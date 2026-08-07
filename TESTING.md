@@ -113,6 +113,11 @@ must cover a user project appearing between open acceptance and IDE-thread
 execution, and must prove that such a project receives no close token.
 Helper-owned routes expose `lifecycle_readiness`; readiness requires a content
 root covering the requested worktree after project configuration stabilizes.
+For project scopes containing Python files, readiness also requires a resolved
+Python SDK with no scheduled SDK refresh and no active daemon analysis. Missing
+SDKs report `language_sdk_missing`; SDK refresh, analysis, or unreadable update
+state reports `project_analysis_not_ready`. Neither state may publish decisive
+GREEN or RED findings.
 If configurators remove the initial raw-directory module, the plugin repairs
 the exact lease-bound helper-owned project with a non-persistent fallback module
 and reports `fallback_module_count`; the fallback must not create tracked
