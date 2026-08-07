@@ -105,11 +105,8 @@ class NativeInspectionExecutionProofTest {
         val result = collector.result()
         assertTrue(result.proofEstablished)
         assertFalse(result.proofClean)
-        assertEquals("native_inspection_reported_problems", result.proofBlockReason)
-        assertEquals(
-            "native_inspection_reported_problems",
-            nativeInspectionProofNotEstablishedReason(result),
-        )
+        assertNull(result.proofBlockReason)
+        assertNull(nativeInspectionProofNotEstablishedReason(result))
     }
 
     @Test

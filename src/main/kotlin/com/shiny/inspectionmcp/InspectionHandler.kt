@@ -6368,7 +6368,7 @@ class InspectionHandler : HttpRequestHandler() {
                             buildNativeProofDiagnostic(nativeProof)
                         val executionProofEstablished = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofEstablished
-                            InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofClean
+                            InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofEstablished
                             InspectionExecutionProofMode.NONE -> null
                         }
                         val captureDiagnostic = if (bestResults.isEmpty()) {

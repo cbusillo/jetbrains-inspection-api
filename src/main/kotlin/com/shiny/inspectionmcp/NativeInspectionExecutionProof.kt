@@ -53,7 +53,6 @@ internal data class NativeInspectionExecutionProofResult(
             missingExpectedFileCount > 0 -> "native_inspection_scope_incomplete"
             unexpectedAnalyzedFileCount > 0 -> "native_inspection_scope_mismatch"
             inspectionFinishedCount == 0 -> "native_inspection_no_tools_completed"
-            reportedProblemCount > 0 -> "native_inspection_reported_problems"
             else -> null
         }
 }
@@ -62,7 +61,7 @@ internal fun nativeInspectionProofNotEstablishedReason(
     proof: NativeInspectionExecutionProofResult?,
 ): String? = when {
     proof == null -> "native_attestation_missing"
-    proof.proofClean -> null
+    proof.proofEstablished -> null
     else -> proof.proofBlockReason ?: "native_attestation_incomplete"
 }
 
