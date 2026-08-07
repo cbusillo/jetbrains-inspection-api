@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
@@ -3413,14 +3414,14 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("execution proof modes fail closed for broad scopes")
+    @DisplayName("execution proof modes use native attestation for broad scopes")
     fun testExecutionProofModesByScope() {
         assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("current_file"))
         assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("files"))
         assertEquals(InspectionExecutionProofMode.EXACT_BOUNDED, inspectionExecutionProofMode("changed_files"))
-        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode("directory"))
-        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode("whole_project"))
-        assertEquals(InspectionExecutionProofMode.UNAVAILABLE, inspectionExecutionProofMode(null))
+        assertEquals(InspectionExecutionProofMode.NATIVE_ATTESTED, inspectionExecutionProofMode("directory"))
+        assertEquals(InspectionExecutionProofMode.NATIVE_ATTESTED, inspectionExecutionProofMode("whole_project"))
+        assertEquals(InspectionExecutionProofMode.NATIVE_ATTESTED, inspectionExecutionProofMode(null))
     }
 
     @Test
@@ -3452,8 +3453,8 @@ class InspectionSnapshotStateTest {
                 runId = 3L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false,
+                executionProofRequired = true,
+                executionProofEstablished = false,
             ),
         )
 
@@ -3490,13 +3491,49 @@ class InspectionSnapshotStateTest {
                 runId = 4L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false,
+                executionProofRequired = true,
+                executionProofEstablished = false,
             ),
         )
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
         assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+    }
+
+    @Test
+    @DisplayName("native broad-scope proof can confirm a clean snapshot")
+    fun testNativeBroadScopeProofCanConfirmCleanSnapshot() {
+        val diagnostic = mapOf(
+            "exit_reason" to "settled",
+            "view_ready_ok" to true,
+            "observed_inspection_view" to true,
+            "observed_settled_empty_inspection_view" to true,
+            "execution_proof_mode" to "native_attested",
+            "execution_proof_established" to true,
+            "execution_proof_clean" to true,
+            "execution_proof_native_file_analyzed_count" to 42,
+            "execution_proof_native_inspection_finished_count" to 300,
+        )
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 61L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+                captureDiagnostic = diagnostic,
+                runId = 5L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                executionProofRequired = true,
+                executionProofEstablished = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
+        assertNull(snapshot.captureIncompleteReason)
     }
 
     @Test
@@ -3636,8 +3673,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false,
+                executionProofRequired = true,
+                executionProofEstablished = false,
             ),
         )
 
@@ -3677,8 +3714,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false,
+                executionProofRequired = true,
+                executionProofEstablished = false,
             ),
         )
 
@@ -3819,8 +3856,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = true,
+                executionProofRequired = true,
+                executionProofEstablished = true,
             ),
         )
 
@@ -3864,8 +3901,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false,
+                executionProofRequired = true,
+                executionProofEstablished = false,
             ),
         )
 
@@ -3903,8 +3940,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = false, // proof not established
+                executionProofRequired = true,
+                executionProofEstablished = false, // proof not established
             ),
         )
 
@@ -3943,8 +3980,8 @@ class InspectionSnapshotStateTest {
                 runId = runState.runId,
                 triggerTimeMs = runState.triggerTimeMs,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = true, // proof established!
+                executionProofRequired = true,
+                executionProofEstablished = true, // proof established!
             ),
         )
 
@@ -4020,8 +4057,8 @@ class InspectionSnapshotStateTest {
                 runId = 1L,
                 triggerTimeMs = null,
                 viewReadyOk = true,
-                boundedProofRequired = true,
-                boundedProofEstablished = true,
+                executionProofRequired = true,
+                executionProofEstablished = true,
             ),
         )
 

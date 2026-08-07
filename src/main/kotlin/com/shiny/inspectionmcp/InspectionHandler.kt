@@ -4,6 +4,9 @@ import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
+import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
+import com.intellij.codeInspection.ex.GlobalInspectionContextEx
+import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
@@ -42,10 +45,12 @@ import com.intellij.openapi.vfs.newvfs.events.VFilePropertyChangeEvent
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.psi.PsiDocumentManager
+import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiManager
 import com.intellij.psi.search.scope.packageSet.NamedScopeManager
 import com.intellij.psi.search.scope.packageSet.NamedScopesHolder
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.util.messages.MessageBusConnection
 import com.intellij.packageDependencies.DependencyValidationManager
 import com.intellij.profile.ProfileChangeAdapter
 import com.shiny.inspectionmcp.core.filterProblems
@@ -288,8 +293,8 @@ internal data class InspectionCaptureSnapshotInput(
     val triggerTimeMs: Long?,
     val viewReadyOk: Boolean,
     // Defense-in-depth: bounded proof tracking to prevent false CLEAN_CONFIRMED
-    val boundedProofRequired: Boolean = false,
-    val boundedProofEstablished: Boolean? = null,
+    val executionProofRequired: Boolean = false,
+    val executionProofEstablished: Boolean? = null,
 )
 
 internal data class BoundedExecutionProofResult(
@@ -311,14 +316,14 @@ internal data class BoundedExecutionProofResult(
 
 internal enum class InspectionExecutionProofMode {
     EXACT_BOUNDED,
-    UNAVAILABLE,
+    NATIVE_ATTESTED,
     NONE,
 }
 
 internal fun inspectionExecutionProofMode(scopeParam: String?): InspectionExecutionProofMode {
     return when (scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }) {
         "current_file", "files", "changed_files" -> InspectionExecutionProofMode.EXACT_BOUNDED
-        "directory", "whole_project", "all" -> InspectionExecutionProofMode.UNAVAILABLE
+        "directory", "whole_project", "all" -> InspectionExecutionProofMode.NATIVE_ATTESTED
         else -> InspectionExecutionProofMode.NONE
     }
 }
@@ -454,7 +459,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
     val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
     // Defense-in-depth: CLEAN_CONFIRMED is structurally impossible when execution proof is required but not established.
-    val boundedProofBlocksClean = input.boundedProofRequired && input.boundedProofEstablished != true
+    val executionProofBlocksClean = input.executionProofRequired && input.executionProofEstablished != true
     return when {
         input.bestResults.isNotEmpty() -> InspectionResultsSnapshot(
             problems = input.bestResults,
@@ -468,7 +473,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             triggerTimeMs = input.triggerTimeMs,
         )
 
-        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED && scopeFileDiagnosticsComplete && !boundedProofBlocksClean -> InspectionResultsSnapshot(
+        input.emptyOutcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED && scopeFileDiagnosticsComplete && !executionProofBlocksClean -> InspectionResultsSnapshot(
             problems = emptyList(),
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
@@ -489,7 +494,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             note = when {
                 !scopeFileDiagnosticsComplete ->
                     "Inspection scope diagnostics did not cover every resolved file, so a clean result could not be proven."
-                boundedProofBlocksClean ->
+                executionProofBlocksClean ->
                     "Inspection execution proof was required but not established, so a clean result could not be confirmed."
                 else -> input.emptyNote
             },
@@ -894,8 +899,8 @@ internal fun inspectionCaptureScopeCoversRequest(
 ): Boolean {
     val captureKind = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
     val requestKind = requestScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
-    if (captureScope == null || captureKind == "whole_project") return true
-    if (requestKind == "whole_project") return false
+    if (captureScope == null || captureKind in setOf("whole_project", "all")) return true
+    if (requestKind in setOf("whole_project", "all")) return false
 
     fun normalizedFiles(scope: InspectionCaptureScope): Set<String> {
         return scope.resolvedFiles.orEmpty().mapNotNull(::normalizeFileSystemPath).toSet()
@@ -942,7 +947,7 @@ internal fun inspectionCaptureScopeCoversRequest(
 internal fun inspectionCaptureScopeHasProof(captureScope: InspectionCaptureScope?): Boolean {
     if (captureScope == null) return true
     return when (captureScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }) {
-        "whole_project" -> true
+        "whole_project", "all" -> true
         "files" -> captureScope.resolvedFiles?.isNotEmpty() == true
         "directory" -> !captureScope.resolvedDirectory.isNullOrBlank()
         "current_file" -> !captureScope.resolvedCurrentFile.isNullOrBlank()
@@ -1369,6 +1374,7 @@ internal fun classifyCaptureIncompleteReason(
     val finalInputValidation = diagnostic["final_input_validation"] as? String
     val executionProofSkipped = diagnostic["execution_proof_skipped"] as? Boolean
     val executionProofEstablished = diagnostic["execution_proof_established"] as? Boolean
+    val executionProofClean = diagnostic["execution_proof_clean"] as? Boolean
 
     return when {
         finalInputValidation == "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
@@ -1380,6 +1386,7 @@ internal fun classifyCaptureIncompleteReason(
             CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL
         executionProofSkipped == true -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN
         executionProofEstablished == false -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN
+        executionProofClean == false -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN
         observedNonEmptyInspectionTree == true -> CaptureIncompleteReason.NON_EMPTY_UNMAPPED_TREE
         inspectionViewUpdating == true &&
             (unreadableProblemStateObservationCount > 0 || nullRootChildObservationCount > 0) ->
@@ -1497,6 +1504,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var projectContentTrackerFactory:
         (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
             createProjectContentTracker(project, fingerprint)
+        }
+    internal var nativeGlobalInspectionContextFactory:
+        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> NativeAttestedGlobalInspectionContext =
+        { inspectionManager, project, collector ->
+            createAttestedGlobalInspectionContext(inspectionManager, project, collector)
         }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
@@ -1677,6 +1689,26 @@ class InspectionHandler : HttpRequestHandler() {
         if (diagnostic?.get("observed_non_empty_inspection_tree") == true) {
             return "Treat this as a plugin/helper capture bug and include capture_diagnostic when reporting it."
         }
+        val executionProofReason =
+            diagnostic?.get("execution_proof_block_reason") as? String
+                ?: diagnostic?.get("execution_proof_skipped_reason") as? String
+        if (reason == "execution_not_proven") {
+            return when (executionProofReason) {
+                "native_attestation_context_creation_failed" ->
+                    "Update or reinstall the inspection plugin, restart the IDE, and include execution_proof diagnostics if native attestation remains unavailable."
+                "native_inspection_failures", "native_inspection_reported_problems" ->
+                    "Treat this as a plugin or inspection-tool failure and include execution_proof diagnostics; do not report GREEN."
+                "native_inspection_scope_empty",
+                "native_inspection_scope_incomplete",
+                "native_inspection_scope_mismatch",
+                "native_inspection_no_tools_completed",
+                "native_inspection_no_files_analyzed",
+                ->
+                    "Check the requested scope and active inspection profile; no affirmative native execution was observed, so do not report GREEN."
+                else ->
+                    "Do not report GREEN. Use execution_proof diagnostics to resolve the missing execution evidence, and rerun only when the caller retry policy permits it."
+            }
+        }
         return when (reason) {
             "view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results" ->
                 "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
@@ -1694,8 +1726,6 @@ class InspectionHandler : HttpRequestHandler() {
                 "Open the exact worktree in the configured JetBrains IDE with the inspection plugin installed."
             "profile_resolution_error" ->
                 "Check that the requested inspection profile exists and is loaded in the target IDE project, then rerun inspection."
-            "execution_not_proven" ->
-                "Use current_file, files, or a changed_files scope of at most 25 files for bounded proof; do not treat an unproven whole-project or directory result as clean."
             "inspection_proof_failed" ->
                 "Resolve the route/profile/scope proof failure, then trigger and wait for a fresh inspection before reporting GREEN or RED."
             "scope_mismatch" ->
@@ -1884,7 +1914,9 @@ class InspectionHandler : HttpRequestHandler() {
             "project_key_hash" to projectKey?.let { "sha256:${sha256(it)}" },
             "inspection_run_id" to inspectionRunId,
             "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
+            "plugin_build_dirty" to identity["plugin_build_dirty"],
             "plugin_version" to identity["plugin_version"],
+            "inspection_execution_proof_version" to identity["inspection_execution_proof_version"],
             "ide_product_code" to identity["ide_product_code"],
             "ide_version" to identity["ide_version"],
             "ide_channel" to identity["ide_channel"],
@@ -3599,6 +3631,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "plugin_build_short_commit" to null,
                 "plugin_build_dirty" to null,
                 "plugin_build_time" to null,
+                "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
@@ -3641,6 +3674,8 @@ class InspectionHandler : HttpRequestHandler() {
             "pid" to identity["pid"],
             "plugin_version" to identity["plugin_version"],
             "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
+            "plugin_build_dirty" to identity["plugin_build_dirty"],
+            "inspection_execution_proof_version" to identity["inspection_execution_proof_version"],
         ).filterValues { value -> value != null }
     }
 
@@ -4603,7 +4638,11 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun supportsStableInputValidation(captureScope: InspectionCaptureScope?): Boolean {
         val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
-        return scope == "whole_project" || scope == "all" || scope == "changed_files" || scope == "current_file"
+        return scope == "whole_project" ||
+            scope == "all" ||
+            scope == "directory" ||
+            scope == "changed_files" ||
+            scope == "current_file"
     }
 
     private fun changedFilesCaptureScopeMatchesCurrent(
@@ -5199,6 +5238,9 @@ class InspectionHandler : HttpRequestHandler() {
         var captureScheduled = false
         var projectContentTracker: InspectionProjectContentTracker? = null
         var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
+        var nativeGlobalContext: GlobalInspectionContextImpl? = null
+        var nativeInspectionManager: InspectionManagerEx? = null
+        var nativeProofConnection: MessageBusConnection? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
                 return
@@ -5447,15 +5489,65 @@ class InspectionHandler : HttpRequestHandler() {
             val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
 
             @Suppress("USELESS_CAST")
-            val inspectionManager = InspectionManager.getInstance(project) as com.intellij.codeInspection.ex.InspectionManagerEx
-            
-            @Suppress("UnstableApiUsage", "USELESS_CAST")
-            val globalContext = inspectionManager.createNewGlobalContext() as com.intellij.codeInspection.ex.GlobalInspectionContextImpl
+            val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+            var nativeScopeEnumerationFailure: Throwable? = null
+            val nativeExpectedFilePaths = if (executionProofMode == InspectionExecutionProofMode.NATIVE_ATTESTED) {
+                try {
+                    nativeInspectionExpectedFilePaths(scope)
+                } catch (error: Throwable) {
+                    nativeScopeEnumerationFailure = error
+                    emptySet()
+                }
+            } else {
+                emptySet()
+            }
+            val nativeProofCollector = if (executionProofMode == InspectionExecutionProofMode.NATIVE_ATTESTED) {
+                NativeInspectionExecutionProofCollector(project, nativeExpectedFilePaths).also { collector ->
+                    if (nativeScopeEnumerationFailure != null) {
+                        collector.markUnavailable("native_scope_enumeration_failed")
+                        logger.warn(
+                            "Native inspection scope enumeration failed; inspection remains fail-closed.",
+                            nativeScopeEnumerationFailure,
+                        )
+                    }
+                }
+            } else {
+                null
+            }
+            val globalContext = if (nativeProofCollector == null) {
+                inspectionManager.createNewGlobalContext()
+            } else {
+                try {
+                    val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
+                    context.openSynchronousFileTraversalGate()
+                    nativeProofConnection = project.messageBus.connect().apply {
+                        subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
+                    }
+                    nativeGlobalContext = context
+                    nativeInspectionManager = inspectionManager
+                    context
+                } catch (error: Throwable) {
+                    runCatching { nativeProofConnection?.disconnect() }
+                    nativeProofConnection = null
+                    nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
+                    logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
+                    inspectionManager.createNewGlobalContext()
+                }
+            }
             globalContext.setExternalProfile(profile)
             globalContext.currentScope = scope
-            
-            @Suppress("UnstableApiUsage")
-            globalContext.performInspectionsWithProgress(scope, false, false)
+            try {
+                @Suppress("UnstableApiUsage")
+                globalContext.performInspectionsWithProgress(scope, false, false)
+                nativeProofCollector?.markCompletedNormally()
+            } catch (error: Throwable) {
+                nativeProofCollector?.markUnavailable("native_inspection_aborted")
+                throw error
+            } finally {
+                runCatching { nativeProofConnection?.disconnect() }
+                    .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
+                nativeProofConnection = null
+            }
             ProgressManager.checkCanceled()
 
             try {
@@ -5559,20 +5651,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     }
                                 }
                             }
-                            InspectionExecutionProofMode.UNAVAILABLE -> {
-                                val scopeKind = effectiveCaptureScope.scopeParam
-                                    ?.trim()
-                                    ?.lowercase()
-                                    .orEmpty()
-                                    .ifBlank { "whole_project" }
-                                boundedProof = BoundedExecutionProofResult(
-                                    proofProblems = emptyList(),
-                                    enabledLocalToolCount = contextExtraction.enabledToolCount,
-                                    executedToolCount = 0,
-                                    totalDescriptorCount = 0,
-                                    skippedReason = "${scopeKind}_execution_not_proven",
-                                )
-                            }
+                            InspectionExecutionProofMode.NATIVE_ATTESTED -> Unit
                             InspectionExecutionProofMode.NONE -> Unit
                         }
 
@@ -6025,8 +6104,11 @@ class InspectionHandler : HttpRequestHandler() {
                         val projectStateChangedDuringCapture = captureEndState != inspectionInputState
                         val snapshotState = inspectionInputState
                         val ideProductCode = safeInspectionIdentity()["ide_product_code"] as? String
+                        val nativeProof = nativeProofCollector?.result()
                         // Proof-not-established reason covers skipped, hit-file-limit, hit-time-limit, and error cases
                         val proofNotEstablishedReason = when {
+                            executionProofMode == InspectionExecutionProofMode.NATIVE_ATTESTED ->
+                                nativeInspectionProofNotEstablishedReason(nativeProof)
                             boundedProof == null -> null
                             boundedProof.proofEstablished -> null
                             boundedProof.skippedReason != null -> boundedProof.skippedReason
@@ -6061,7 +6143,13 @@ class InspectionHandler : HttpRequestHandler() {
                             "capture_end_unsaved_project_documents" to captureEndState.unsavedProjectDocuments,
                         )
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
-                        val proofDiagnostic = buildProofDiagnostic(boundedProof)
+                        val proofDiagnostic = buildProofDiagnostic(boundedProof) +
+                            buildNativeProofDiagnostic(nativeProof)
+                        val executionProofEstablished = when (executionProofMode) {
+                            InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofEstablished
+                            InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofClean
+                            InspectionExecutionProofMode.NONE -> null
+                        }
                         val captureDiagnostic = if (bestResults.isEmpty()) {
                             val lastObservation = lastViewObservation
                             val stableForMs = captureEndMs - lastChangeMs
@@ -6137,8 +6225,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                                 viewReadyOk = viewReadyOk,
-                                boundedProofRequired = requiresExecutionProof,
-                                boundedProofEstablished = boundedProof?.proofEstablished,
+                                executionProofRequired = requiresExecutionProof,
+                                executionProofEstablished = executionProofEstablished,
                             )
                         )
                         if (snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE && bestResults.isEmpty()) {
@@ -6222,6 +6310,26 @@ class InspectionHandler : HttpRequestHandler() {
             logger.warn("Inspection execution failed for ${project.name}", error)
             publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
         } finally {
+            runCatching { nativeProofConnection?.disconnect() }
+                .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
+            nativeGlobalContext?.let { context ->
+                val closeSucceeded = runCatching {
+                    val closeAction = Runnable { context.close(false) }
+                    val application = ApplicationManager.getApplication()
+                    if (application.isDispatchThread) {
+                        closeAction.run()
+                    } else {
+                        application.invokeAndWait(closeAction)
+                    }
+                }
+                    .onFailure { error -> logger.warn("Native inspection context cleanup failed for ${project.name}", error) }
+                    .isSuccess
+                if (!closeSucceeded) {
+                    runCatching { context.cleanup() }
+                        .onFailure { error -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", error) }
+                }
+                nativeInspectionManager?.runningContexts?.remove(context)
+            }
             projectContentTracker?.close()
             if (!captureScheduled) {
                 finishInspectionRun(key, runId)
@@ -6722,6 +6830,16 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: Exception) {
             null
         }
+    }
+
+    private fun nativeInspectionExpectedFilePaths(scope: AnalysisScope): Set<String> {
+        val paths = linkedSetOf<String>()
+        scope.accept(object : PsiElementVisitor() {
+            override fun visitFile(file: com.intellij.psi.PsiFile) {
+                file.virtualFile?.path?.let(paths::add)
+            }
+        })
+        return paths
     }
 
     private fun inspectCaptureScopeFiles(
@@ -7887,6 +8005,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun buildProofDiagnostic(proof: BoundedExecutionProofResult?): Map<String, Any?> {
         proof ?: return emptyMap()
         return mapOf(
+            "execution_proof_mode" to "exact_bounded",
             "execution_proof_enabled_local_tool_count" to proof.enabledLocalToolCount,
             "execution_proof_executed_tool_count" to proof.executedToolCount,
             "execution_proof_descriptor_count" to proof.totalDescriptorCount,
@@ -7896,6 +8015,34 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_hit_time_limit" to proof.hitTimeLimit,
             "execution_proof_skipped" to (proof.skippedReason != null),
             "execution_proof_skipped_reason" to proof.skippedReason,
+            "execution_proof_established" to proof.proofEstablished,
+            "execution_proof_clean" to proof.proofClean,
+        ).filterValues { it != null }
+    }
+
+    private fun buildNativeProofDiagnostic(proof: NativeInspectionExecutionProofResult?): Map<String, Any?> {
+        proof ?: return emptyMap()
+        return mapOf(
+            "execution_proof_mode" to "native_attested",
+            "execution_proof_native_completed_normally" to proof.completedNormally,
+            "execution_proof_native_expected_file_count" to proof.expectedFileCount,
+            "execution_proof_native_file_analyzed_count" to proof.fileAnalyzedCount,
+            "execution_proof_native_unique_analyzed_file_count" to proof.uniqueAnalyzedFileCount,
+            "execution_proof_native_missing_expected_file_count" to proof.missingExpectedFileCount,
+            "execution_proof_native_unexpected_analyzed_file_count" to proof.unexpectedAnalyzedFileCount,
+            "execution_proof_native_inspection_finished_count" to proof.inspectionFinishedCount,
+            "execution_proof_native_local_inspection_finished_count" to proof.localInspectionFinishedCount,
+            "execution_proof_native_global_simple_inspection_finished_count" to proof.globalSimpleInspectionFinishedCount,
+            "execution_proof_native_global_inspection_finished_count" to proof.globalInspectionFinishedCount,
+            "execution_proof_native_other_inspection_finished_count" to proof.otherInspectionFinishedCount,
+            "execution_proof_native_activity_finished_count" to proof.activityFinishedCount,
+            "execution_proof_native_reported_problem_count" to proof.reportedProblemCount,
+            "execution_proof_native_completed_tool_count" to proof.completedToolCount,
+            "execution_proof_native_failed_tool_count" to proof.failedToolCount,
+            "execution_proof_error_count" to proof.inspectionFailureCount,
+            "execution_proof_skipped" to (proof.skippedReason != null),
+            "execution_proof_skipped_reason" to proof.skippedReason,
+            "execution_proof_block_reason" to proof.proofBlockReason,
             "execution_proof_established" to proof.proofEstablished,
             "execution_proof_clean" to proof.proofClean,
         ).filterValues { it != null }

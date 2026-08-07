@@ -3779,6 +3779,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_instance_id\""))
+        assertTrue(body.contains("\"inspection_execution_proof_version\": 2"))
     }
 
     @Test
