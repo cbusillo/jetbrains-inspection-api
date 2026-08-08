@@ -176,9 +176,10 @@ class InspectionHandlerTest {
 
     @Test
     fun `directory scope ancestry uses native path components`() {
-        val directory = Files.createTempDirectory("inspection-directory-scope")
+        val root = Files.createTempDirectory("inspection-directory-scope")
+        val directory = root.resolve("app")
         val child = directory.resolve("nested").resolve("selected.py")
-        val sibling = directory.resolveSibling("inspection-directory-scope-sibling").resolve("selected.py")
+        val sibling = root.resolve("application").resolve("selected.py")
 
         assertTrue(inspectionPathWithinDirectory(child.toString(), directory.toString()))
         assertFalse(inspectionPathWithinDirectory(sibling.toString(), directory.toString()))
@@ -356,6 +357,76 @@ class InspectionHandlerTest {
         assertEquals(false, status["capture_incomplete"])
         assertEquals(false, status["results_may_be_stale"])
         assertEquals(0, status["total_problems"])
+    }
+
+    @Test
+    fun `test changed file disappearing before preflight fails closed with scope evidence`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        val queuedTasks = mutableListOf<Runnable>()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            queuedTasks += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val changedPath = "/tmp/TestProject/src/Disappeared.kt"
+        mockChangedFiles(listOf(changedPath))
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(changedPath) } returns null
+        var analysisReadinessCalls = 0
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            analysisReadinessCalls += 1
+            error("Unavailable changed-file evidence must fail before language analysis.")
+        }
+
+        try {
+            val uri = "/api/inspection/trigger?scope=changed_files&include_unversioned=false"
+            val urlDecoder = QueryStringDecoder(uri)
+            val request = mockk<FullHttpRequest>()
+            val context = mockk<ChannelHandlerContext>()
+            val responseSlot = slot<Any>()
+            every { request.uri() } returns uri
+            every { context.writeAndFlush(capture(responseSlot)) } returns mockk(relaxed = true)
+
+            assertTrue(handler.process(urlDecoder, request, context))
+            assertEquals(1, queuedTasks.size)
+            queuedTasks.removeAt(0).run()
+
+            val response = responseSlot.captured as FullHttpResponse
+            assertEquals(HttpResponseStatus.OK, response.status())
+            assertEquals(1, queuedTasks.size)
+
+            queuedTasks.removeAt(0).run()
+
+            val status = buildInspectionStatus()
+            val statusResponse = processGetRequest("/api/inspection/status")
+            val statusBody = statusResponse.content().toString(Charsets.UTF_8)
+            assertEquals("capture_incomplete", status["snapshot_outcome"])
+            assertEquals("project_analysis_not_ready", status["capture_incomplete_reason"])
+            assertEquals("project_analysis_readiness", status["results_source"])
+            @Suppress("UNCHECKED_CAST")
+            val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+            assertEquals("inspection_preflight", diagnostic["readiness_stage"])
+            assertEquals("changed_files", diagnostic["requested_scope"])
+            assertEquals("changed_files", diagnostic["resolved_scope"])
+            assertEquals(1, diagnostic["resolved_scope_file_count"])
+            assertEquals("scope_resolution_unavailable", diagnostic["analysis_state"])
+            assertEquals(false, diagnostic["inspection_started"])
+            assertEquals("tool", diagnostic["outcome_ownership"])
+            assertEquals(1, diagnostic["scope_resolution_missing_file_count"])
+            assertEquals(listOf(changedPath), diagnostic["scope_resolution_missing_files"])
+            assertTrue(statusBody.contains("\"code\": \"project_analysis_not_ready\""), statusBody)
+            assertEquals(0, analysisReadinessCalls)
+            assertEquals(false, inspectionRunState(projectKey(mockProject))?.inProgress)
+            verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        } finally {
+            unmockkStatic(LocalFileSystem::class)
+        }
     }
 
     @Test

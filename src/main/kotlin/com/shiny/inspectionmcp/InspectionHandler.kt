@@ -5446,10 +5446,33 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             val changedFilesScopeFiles = if (captureScope.scopeParam?.lowercase()?.trim() == "changed_files") {
-                captureScope.resolvedFiles.orEmpty().map { path ->
-                    LocalFileSystem.getInstance().findFileByPath(path)
-                        ?: throw IllegalStateException("Validated changed file '$path' is no longer available.")
+                val missingPaths = mutableListOf<String>()
+                val resolvedFiles = captureScope.resolvedFiles.orEmpty().mapNotNull { path ->
+                    LocalFileSystem.getInstance().findFileByPath(path) ?: run {
+                        missingPaths += path
+                        null
+                    }
                 }
+                if (missingPaths.isNotEmpty()) {
+                    publishProjectAnalysisReadinessFailure(
+                        key = key,
+                        runId = runId,
+                        projectState = inspectionInputState,
+                        requestedScope = captureScope,
+                        resolvedScope = captureScope,
+                        readiness = InspectionProjectAnalysisReadiness(
+                            required = true,
+                            ready = false,
+                            reason = "scope_resolution_unavailable",
+                        ),
+                        additionalDiagnostic = mapOf(
+                            "scope_resolution_missing_file_count" to missingPaths.size,
+                            "scope_resolution_missing_files" to missingPaths.take(MAX_SCOPE_FILE_DIAGNOSTICS),
+                        ),
+                    )
+                    return
+                }
+                resolvedFiles
             } else {
                 null
             }
@@ -5562,40 +5585,13 @@ class InspectionHandler : HttpRequestHandler() {
             if (analysisReadiness.required && !analysisReadiness.ready) {
                 projectContentTracker?.close()
                 projectContentTracker = null
-                val incompleteReason = if (
-                    analysisReadiness.reason == "python_sdk_missing" ||
-                    analysisReadiness.reason == "python_support_unavailable"
-                ) {
-                    CaptureIncompleteReason.LANGUAGE_SDK_MISSING
-                } else {
-                    CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY
-                }
-                resultsStore.setSnapshot(
-                    key,
-                    InspectionResultsSnapshot(
-                        problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
-                        projectState = inspectionInputState,
-                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                        source = "project_analysis_readiness",
-                        note = "The selected files' language SDK or analysis state is not ready for a trustworthy inspection.",
-                        captureScope = effectiveCaptureScope,
-                        captureDiagnostic = analysisReadinessDiagnostic + mapOf(
-                            "analysis_required" to analysisReadiness.required,
-                            "analysis_ready" to analysisReadiness.ready,
-                            "analysis_reason" to analysisReadiness.reason,
-                            "python_file_count" to analysisReadiness.pythonFileCount,
-                            "python_sdk_count" to analysisReadiness.pythonSdkCount,
-                            "missing_sdk_file_count" to analysisReadiness.missingSdkFileCount,
-                            "updating_sdk_count" to analysisReadiness.updatingSdkCount,
-                            "daemon_running" to analysisReadiness.daemonRunning,
-                            "sdk_update_state_unavailable" to analysisReadiness.sdkUpdateStateUnavailable,
-                            "exit_reason" to incompleteReason.apiValue,
-                        ),
-                        captureIncompleteReason = incompleteReason,
-                        runId = runId,
-                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                    ),
+                publishProjectAnalysisReadinessFailure(
+                    key = key,
+                    runId = runId,
+                    projectState = inspectionInputState,
+                    requestedScope = captureScope,
+                    resolvedScope = effectiveCaptureScope,
+                    readiness = analysisReadiness,
                 )
                 return
             }
@@ -6909,6 +6905,58 @@ class InspectionHandler : HttpRequestHandler() {
             "inspection_started" to inspectionStarted,
             "outcome_ownership" to outcomeOwnership,
         ).filterValues { it != null }
+    }
+
+    private fun publishProjectAnalysisReadinessFailure(
+        key: String,
+        runId: Long,
+        projectState: InspectionProjectStateSnapshot,
+        requestedScope: InspectionCaptureScope,
+        resolvedScope: InspectionCaptureScope,
+        readiness: InspectionProjectAnalysisReadiness,
+        additionalDiagnostic: Map<String, Any?> = emptyMap(),
+    ) {
+        val incompleteReason = if (
+            readiness.reason == "python_sdk_missing" ||
+            readiness.reason == "python_support_unavailable"
+        ) {
+            CaptureIncompleteReason.LANGUAGE_SDK_MISSING
+        } else {
+            CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY
+        }
+        val diagnostic = projectAnalysisReadinessDiagnostic(
+            requestedScope = requestedScope,
+            resolvedScope = resolvedScope,
+            readiness = readiness,
+            inspectionStarted = false,
+        ) + mapOf(
+            "analysis_required" to readiness.required,
+            "analysis_ready" to readiness.ready,
+            "analysis_reason" to readiness.reason,
+            "python_file_count" to readiness.pythonFileCount,
+            "python_sdk_count" to readiness.pythonSdkCount,
+            "missing_sdk_file_count" to readiness.missingSdkFileCount,
+            "updating_sdk_count" to readiness.updatingSdkCount,
+            "daemon_running" to readiness.daemonRunning,
+            "sdk_update_state_unavailable" to readiness.sdkUpdateStateUnavailable,
+            "exit_reason" to incompleteReason.apiValue,
+        ) + additionalDiagnostic
+        resultsStore.setSnapshot(
+            key,
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = projectState,
+                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                source = "project_analysis_readiness",
+                note = "The selected files' language SDK, scope, or analysis state is not ready for a trustworthy inspection.",
+                captureScope = resolvedScope,
+                captureDiagnostic = diagnostic,
+                captureIncompleteReason = incompleteReason,
+                runId = runId,
+                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+            ),
+        )
     }
 
     private fun isPythonFile(file: VirtualFile): Boolean {
