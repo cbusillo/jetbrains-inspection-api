@@ -10,6 +10,7 @@ import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.time.Instant
 import java.util.Properties
 
@@ -180,27 +181,48 @@ tasks {
     }
 
     withType<VerifyPluginTask> {
+        val verifierPluginVersion = project.property("pluginVersion").toString()
+        val allowlistName = if (
+            Regex("^[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.[1-9][0-9]*$").matches(verifierPluginVersion)
+        ) {
+            "canary-internal-api-allowlist.txt"
+        } else {
+            "stable-internal-api-allowlist.txt"
+        }
+        val allowlistScriptPath = project.layout.projectDirectory
+            .file("scripts/verify-internal-api-allowlist.py").asFile.absolutePath
+        val allowlistManifestPath = project.layout.projectDirectory
+            .file("config/plugin-verifier/$allowlistName").asFile.absolutePath
+        val workingDirectoryPath = project.layout.projectDirectory.asFile.absolutePath
+        inputs.file(allowlistScriptPath).withPropertyName("internalApiAllowlistScript")
+        inputs.file(allowlistManifestPath).withPropertyName("internalApiAllowlistManifest")
         doLast {
             val internalApiReports = verificationReportsDirectory.get().asFileTree.matching {
-                include("**/plugins/com.shiny.inspection.api/**/internal-api-usages.txt")
-            }.files
+                include("**/plugins/com.shiny.inspection.api/$verifierPluginVersion/internal-api-usages.txt")
+            }.files.sortedBy { it.absolutePath }
             if (internalApiReports.isEmpty()) {
                 throw GradleException("Plugin Verifier did not produce internal API usage reports for the known exemption.")
             }
-            val unexpectedUsages = internalApiReports.flatMap { report ->
-                report.readLines()
-                    .filter(String::isNotBlank)
-                    .filterNot { usage ->
-                        usage.contains("com.intellij.codeInspection.ex.GlobalInspectionContextImpl") ||
-                            usage.contains("com.intellij.codeInspection.ex.InspectListener")
-                    }
-                    .map { usage -> "${report.relativeTo(verificationReportsDirectory.get().asFile)}: $usage" }
+            val command = mutableListOf(
+                "python3",
+                allowlistScriptPath,
+                "--manifest",
+                allowlistManifestPath,
+            )
+            internalApiReports.forEach { report ->
+                command.add("--report")
+                command.add(report.absolutePath)
             }
-            if (unexpectedUsages.isNotEmpty()) {
-                throw GradleException(
-                    "Plugin Verifier found unapproved internal API usage:\n" +
-                        unexpectedUsages.joinToString("\n"),
-                )
+            val process = ProcessBuilder(command)
+                .directory(File(workingDirectoryPath))
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (process.waitFor() != 0) {
+                throw GradleException(output.ifEmpty { "Internal API allowlist validation failed." })
+            }
+            if (output.isNotEmpty()) {
+                println(output)
             }
         }
     }
@@ -309,6 +331,34 @@ tasks {
     
     publishPlugin {
         token.set(System.getenv("PUBLISH_TOKEN"))
+        val marketplaceChannel = providers.gradleProperty("marketplaceChannel").orNull
+        val publishingVersion = project.property("pluginVersion").toString()
+        val publicationPolicyScriptPath = project.layout.projectDirectory
+            .file("scripts/validate-marketplace-publication.sh").asFile.absolutePath
+        val workingDirectoryPath = project.layout.projectDirectory.asFile.absolutePath
+        if (marketplaceChannel != null) {
+            channels.set(listOf(marketplaceChannel))
+        }
+        doFirst {
+            val command = mutableListOf(
+                "bash",
+                publicationPolicyScriptPath,
+                "--version",
+                publishingVersion,
+            )
+            if (marketplaceChannel != null) {
+                command.add("--channel")
+                command.add(marketplaceChannel)
+            }
+            val process = ProcessBuilder(command)
+                .directory(File(workingDirectoryPath))
+                .redirectErrorStream(true)
+                .start()
+            val output = process.inputStream.bufferedReader().use { it.readText() }.trim()
+            if (process.waitFor() != 0) {
+                throw GradleException(output.removePrefix("ERROR: "))
+            }
+        }
     }
 }
 

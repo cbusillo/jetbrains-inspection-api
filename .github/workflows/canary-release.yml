@@ -1,0 +1,201 @@
+---
+name: Canary Release
+
+"on":
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing isolated tag in canary/vX.Y.Z-canary.N format"
+        required: true
+        type: string
+
+run-name: "Canary ${{ inputs.tag }}"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      version: ${{ steps.canary_version.outputs.version }}
+
+    steps:
+      - name: Verify trusted workflow ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
+      - name: Check out trusted publication controls
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          path: trusted
+
+      - name: Check out canary source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag }}
+          path: source
+
+      - name: Validate canary source metadata
+        id: canary_version
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          MARKETPLACE_CHANNEL: canary
+        run: |
+          version="$(trusted/scripts/validate-canary-release-version.sh \
+            --repo source \
+            --tag "$CANARY_TAG" \
+            --channel "$MARKETPLACE_CHANNEL")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify exact canary tag and branch isolation
+        id: source
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        working-directory: source
+        run: |
+          git fetch origin "refs/tags/$CANARY_TAG:refs/tags/$CANARY_TAG" "$DEFAULT_BRANCH"
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")"
+          ../trusted/scripts/verify-canary-branch-isolation.sh "$DEFAULT_BRANCH"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v5
+        with:
+          java-version: "21"
+          distribution: "temurin"
+          cache: "gradle"
+
+      - name: Grant execute permission for Gradle
+        working-directory: source
+        run: chmod +x gradlew
+
+      - name: Run canary commit gate
+        working-directory: source
+        run: ./scripts/commit-gate.sh --ci
+
+      - name: Run canary release compatibility gate
+        working-directory: source
+        run: ./scripts/release-compatibility-gate.sh
+
+      - name: Verify exact canary internal API manifest
+        shell: bash
+        run: |
+          mapfile -t reports < <(find source/build/reports/pluginVerifier \
+            -path "*/plugins/com.shiny.inspection.api/${{ steps.canary_version.outputs.version }}/internal-api-usages.txt" \
+            -type f -print | sort)
+          if [ "${#reports[@]}" -eq 0 ]; then
+            echo "Plugin Verifier did not produce canary internal API reports."
+            exit 1
+          fi
+          command=(
+            python3 trusted/scripts/verify-internal-api-allowlist.py
+            --manifest source/config/plugin-verifier/canary-internal-api-allowlist.txt
+          )
+          for report in "${reports[@]}"; do
+            command+=(--report "$report")
+          done
+          "${command[@]}"
+
+      - name: Upload canary plugin artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: canary-plugin-${{ steps.canary_version.outputs.version }}
+          path: source/build/distributions/jetbrains-inspection-api-${{ steps.canary_version.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: canary-test-results
+          path: |
+            source/build/reports/tests/test/
+            source/inspection-core/build/reports/tests/test/
+            source/mcp-server-jvm/build/reports/tests/test/
+          retention-days: 7
+
+  publish:
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: canary-marketplace
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify trusted workflow ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
+      - name: Check out trusted publication controls
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+          path: trusted
+
+      - name: Download canary plugin artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: canary-plugin-${{ needs.build.outputs.version }}
+          path: artifact
+
+      - name: Revalidate canary tag provenance
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        working-directory: trusted
+        run: |
+          git fetch origin "refs/tags/$CANARY_TAG:refs/tags/$CANARY_TAG"
+          test "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+
+      - name: Validate trusted canary artifact
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          MARKETPLACE_CHANNEL: canary
+        run: |
+          trusted/scripts/validate-canary-artifact.sh \
+            --archive "artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip" \
+            --tag "$CANARY_TAG" \
+            --channel "$MARKETPLACE_CHANNEL"
+
+      - name: Verify canary Marketplace token
+        env:
+          CANARY_PUBLISH_TOKEN: ${{ secrets.CANARY_PUBLISH_TOKEN }}
+        run: |
+          if [ -z "$CANARY_PUBLISH_TOKEN" ]; then
+            echo "CANARY_PUBLISH_TOKEN is not set in the canary-marketplace environment."
+            exit 1
+          fi
+
+      - name: Create GitHub prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ inputs.tag }}
+          name: Canary ${{ inputs.tag }}
+          body: |
+            Branch-only canary for Marketplace review.
+
+            Source commit: ${{ needs.build.outputs.source_sha }}
+            Marketplace channel: canary
+          draft: false
+          prerelease: true
+          files: artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip
+
+      - name: Publish trusted artifact to JetBrains Marketplace canary channel
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          PUBLISH_TOKEN: ${{ secrets.CANARY_PUBLISH_TOKEN }}
+          MARKETPLACE_CHANNEL: canary
+        run: |
+          trusted/scripts/publish-canary-artifact.sh \
+            --archive "artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip" \
+            --tag "$CANARY_TAG" \
+            --channel "$MARKETPLACE_CHANNEL"

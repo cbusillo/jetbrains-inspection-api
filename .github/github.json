@@ -19,7 +19,7 @@
         "./scripts/test-release-contracts.sh",
         "./gradlew buildPlugin"
       ],
-      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml",
+      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/canary-release.yml",
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test",
@@ -33,6 +33,9 @@
       "verifyPluginCompatibility": "./gradlew verifyPlugin",
       "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
       "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
+      "validateCanaryReleaseVersion": "./scripts/validate-canary-release-version.sh --tag canary/vX.Y.Z-canary.N --channel canary",
+      "publishCanaryArtifact": "PUBLISH_TOKEN=$CANARY_PUBLISH_TOKEN MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary",
+      "canaryPublishEnvironment": "canary-marketplace",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
@@ -80,7 +83,8 @@
     "CodeQL",
     "Dependabot Updates",
     "Dependency Graph",
-    "Release"
+    "Release",
+    "Canary Release"
   ],
   "requiredStatusChecks": ["commit-gate"],
   "codeScanningMergeProtection": {

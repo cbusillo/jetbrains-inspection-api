@@ -763,6 +763,43 @@ current default-branch commit, repeats the version check, runs plugin structure
 and compatibility verification, creates the GitHub Release, and then publishes
 to JetBrains Marketplace (requires `PUBLISH_TOKEN`).
 
+Canary publication is a separate branch-only path and does not change Stable's
+plugin ID, `vX.Y.Z` tags, version validator, workflow, or default Marketplace
+channel. A canary branch uses version `X.Y.Z-canary.N` in both version files and
+an isolated `canary/vX.Y.Z-canary.N` tag. Pushing that tag does not publish
+anything. An operator must explicitly dispatch `.github/workflows/canary-release.yml`
+from the default branch with the existing tag as input. The workflow builds and
+verifies the branch-only source without Marketplace secrets, then a separate
+trusted job downloads the resulting zip and publishes only that artifact.
+
+The publish job uses the `canary-marketplace` GitHub environment, which must be
+restricted to the default branch and require reviewer approval, plus the
+environment-only `CANARY_PUBLISH_TOKEN`. Both jobs pin trusted controls to the
+workflow dispatch commit; the publish job revalidates the tag SHA and archive
+before creating a GitHub prerelease or uploading. It requires the explicit
+`canary` channel and validates the embedded plugin ID/version. For a
+manual recovery or diagnostic upload, run the trusted default-branch script
+against an already-built canary zip:
+
+```bash
+PUBLISH_TOKEN="$CANARY_PUBLISH_TOKEN" MARKETPLACE_CHANNEL=canary \
+  ./scripts/publish-canary-artifact.sh \
+    --archive /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip \
+    --tag canary/v1.14.0-canary.1 \
+    --channel canary
+```
+
+The artifact publisher fails before network upload when the tag, zip name,
+embedded plugin ID/version, token, or channel is wrong. Canary product code and
+its exact `canary-internal-api-allowlist.txt` changes stay on the experimental
+branch; they are not hidden behind a Stable runtime flag. Recovery is to stop
+dispatching the canary workflow, withdraw the canary-channel Marketplace update
+if one exists, delete any orphaned GitHub prerelease from a failed upload, and
+delete the experimental branch after preserving verifier evidence. Stable
+artifacts and Stable Marketplace submissions are never
+replaced or resubmitted by this path. Do not dispatch a canary publication while
+a Stable Marketplace submission is still awaiting review.
+
 Before publishing a compatibility-range update, capture release evidence for the
 target IDE line:
 
