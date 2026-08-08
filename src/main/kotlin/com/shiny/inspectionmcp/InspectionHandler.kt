@@ -929,6 +929,12 @@ private fun normalizeFileSystemPath(value: String?): String? {
     }
 }
 
+internal fun inspectionPathWithinDirectory(filePath: String, directoryPath: String): Boolean {
+    return runCatching {
+        Paths.get(filePath).startsWith(Paths.get(directoryPath))
+    }.getOrDefault(false)
+}
+
 private fun looksLikePath(value: String): Boolean {
     return value.contains('/') || value.contains('\\') || value.startsWith("~") || value.startsWith(".")
 }
@@ -3140,26 +3146,9 @@ class InspectionHandler : HttpRequestHandler() {
                                 "content_roots_outside_target"
                             else -> "ready"
                         }
-                        val analysisReadiness = if (contentReason == "ready") {
-                            projectAnalysisReadinessProvider(
-                                project,
-                                InspectionCaptureScope(scopeParam = "whole_project"),
-                            )
-                        } else {
-                            InspectionProjectAnalysisReadiness(
-                                required = false,
-                                ready = true,
-                                reason = "content_not_ready",
-                            )
-                        }
-                        val reason = if (contentReason == "ready" && !analysisReadiness.ready) {
-                            analysisReadiness.reason
-                        } else {
-                            contentReason
-                        }
                         LifecycleContentRootReadiness(
-                            ready = reason == "ready",
-                            reason = reason,
+                            ready = contentReason == "ready",
+                            reason = contentReason,
                             targetKey = targetKey,
                             contentRootCount = contentRoots.size,
                             sourceRootCount = sourceRootCount,
@@ -3170,14 +3159,13 @@ class InspectionHandler : HttpRequestHandler() {
                             targetInsideContent = targetInsideContent,
                             contentRootInsideTarget = contentRootInsideTarget,
                             contentRoots = contentRoots.take(MAX_SCOPE_FILE_DIAGNOSTICS),
-                            analysisRequired = analysisReadiness.required,
-                            analysisReady = analysisReadiness.ready,
-                            analysisReason = analysisReadiness.reason,
-                            pythonFileCount = analysisReadiness.pythonFileCount,
-                            pythonSdkCount = analysisReadiness.pythonSdkCount,
-                            missingSdkFileCount = analysisReadiness.missingSdkFileCount,
-                            updatingSdkCount = analysisReadiness.updatingSdkCount,
-                            daemonRunning = analysisReadiness.daemonRunning,
+                            analysisRequired = false,
+                            analysisReady = true,
+                            analysisReason = if (contentReason == "ready") {
+                                "deferred_to_inspection_scope"
+                            } else {
+                                "content_not_ready"
+                            },
                         )
                     }
                 }
@@ -5565,10 +5553,19 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
             val analysisReadiness = projectAnalysisReadinessProvider(project, effectiveCaptureScope)
+            val analysisReadinessDiagnostic = projectAnalysisReadinessDiagnostic(
+                requestedScope = captureScope,
+                resolvedScope = effectiveCaptureScope,
+                readiness = analysisReadiness,
+                inspectionStarted = false,
+            )
             if (analysisReadiness.required && !analysisReadiness.ready) {
                 projectContentTracker?.close()
                 projectContentTracker = null
-                val incompleteReason = if (analysisReadiness.reason == "python_sdk_missing") {
+                val incompleteReason = if (
+                    analysisReadiness.reason == "python_sdk_missing" ||
+                    analysisReadiness.reason == "python_support_unavailable"
+                ) {
                     CaptureIncompleteReason.LANGUAGE_SDK_MISSING
                 } else {
                     CaptureIncompleteReason.PROJECT_ANALYSIS_NOT_READY
@@ -5583,7 +5580,7 @@ class InspectionHandler : HttpRequestHandler() {
                         source = "project_analysis_readiness",
                         note = "The selected files' language SDK or analysis state is not ready for a trustworthy inspection.",
                         captureScope = effectiveCaptureScope,
-                        captureDiagnostic = mapOf(
+                        captureDiagnostic = analysisReadinessDiagnostic + mapOf(
                             "analysis_required" to analysisReadiness.required,
                             "analysis_ready" to analysisReadiness.ready,
                             "analysis_reason" to analysisReadiness.reason,
@@ -5615,7 +5612,7 @@ class InspectionHandler : HttpRequestHandler() {
                             source = "project_analysis_readiness",
                             note = "Project analysis inputs could not be fingerprinted before inspection.",
                             captureScope = effectiveCaptureScope,
-                            captureDiagnostic = mapOf(
+                            captureDiagnostic = analysisReadinessDiagnostic + mapOf(
                                 "analysis_required" to true,
                                 "analysis_ready" to true,
                                 "analysis_reason" to analysisReadiness.reason,
@@ -5642,6 +5639,7 @@ class InspectionHandler : HttpRequestHandler() {
                         source = "empty_changed_files",
                         note = "No changed files matched the requested inspection scope.",
                         captureScope = effectiveCaptureScope,
+                        captureDiagnostic = analysisReadinessDiagnostic,
                         runId = runId,
                         triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
                     ),
@@ -5671,7 +5669,9 @@ class InspectionHandler : HttpRequestHandler() {
                 files = captureScope.files,
                 resolvedCurrentFile = captureScope.resolvedCurrentFile,
                 resolvedChangedFiles = changedFilesScopeFiles,
-            ) + mapOf(
+            ) + analysisReadinessDiagnostic.mapValues { (key, value) ->
+                if (key == "inspection_started") true else value
+            } + mapOf(
                 "dumb_after_sync" to dumbAfterSync,
                 "dispatch_thread_before_inspection" to ApplicationManager.getApplication().isDispatchThread,
             )
@@ -6769,21 +6769,28 @@ class InspectionHandler : HttpRequestHandler() {
         }
         return runCatching {
             ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
-                val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
-                if (!pythonFileType.name.contains("python", ignoreCase = true)) {
+                val pythonFiles = resolvePythonScopeFiles(project, captureScope)
+                if (pythonFiles == null) {
                     return@runReadAction InspectionProjectAnalysisReadiness(
-                        required = false,
-                        ready = true,
-                        reason = "python_support_unavailable",
+                        required = true,
+                        ready = false,
+                        reason = "scope_resolution_unavailable",
                     )
                 }
-
-                val pythonFiles = resolvePythonScopeFiles(project, captureScope)
                 if (pythonFiles.isEmpty()) {
                     return@runReadAction InspectionProjectAnalysisReadiness(
                         required = false,
                         ready = true,
                         reason = "python_not_in_scope",
+                    )
+                }
+                val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
+                if (!pythonFileType.name.contains("python", ignoreCase = true)) {
+                    return@runReadAction InspectionProjectAnalysisReadiness(
+                        required = true,
+                        ready = false,
+                        reason = "python_support_unavailable",
+                        pythonFileCount = pythonFiles.size,
                     )
                 }
 
@@ -6830,27 +6837,78 @@ class InspectionHandler : HttpRequestHandler() {
     private fun resolvePythonScopeFiles(
         project: Project,
         captureScope: InspectionCaptureScope?,
-    ): List<VirtualFile> {
-        val resolvedFiles = captureScope?.resolvedFiles
-        if (resolvedFiles != null) {
-            return resolvedFiles.mapNotNull { path ->
-                LocalFileSystem.getInstance().findFileByPath(path)
-            }.filter(::isPythonFile)
-        }
-
+    ): List<VirtualFile>? {
         val scopeKind = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        if (scopeKind in setOf("files", "changed_files", "current_file")) {
+            val resolvedFiles = captureScope?.resolvedFiles ?: return null
+            if (scopeKind != "changed_files" && resolvedFiles.isEmpty()) return null
+            val localFileSystem = LocalFileSystem.getInstance()
+            val scopeFiles = resolvedFiles.map { path ->
+                val file = localFileSystem.findFileByPath(path) ?: return null
+                if (!file.isValid || file.isDirectory) return null
+                file
+            }
+            return scopeFiles.distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }
+                .filter(::isPythonFile)
+        }
         val resolvedDirectory = captureScope?.resolvedDirectory?.let(::normalizeFileSystemPath)
+        if (scopeKind == "directory") {
+            val directory = resolvedDirectory?.let { path ->
+                LocalFileSystem.getInstance().findFileByPath(path)
+            } ?: return null
+            if (!directory.isValid || !directory.isDirectory) return null
+        }
         return FilenameIndex.getAllFilesByExt(project, "py", GlobalSearchScope.projectScope(project))
             .asSequence()
             .filter { file ->
                 scopeKind != "directory" ||
                     resolvedDirectory == null ||
                     normalizeFileSystemPath(file.path)?.let { path ->
-                        path == resolvedDirectory || path.startsWith("$resolvedDirectory/")
+                        inspectionPathWithinDirectory(path, resolvedDirectory)
                     } == true
             }
             .distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }
             .toList()
+    }
+
+    private fun projectAnalysisReadinessDiagnostic(
+        requestedScope: InspectionCaptureScope,
+        resolvedScope: InspectionCaptureScope,
+        readiness: InspectionProjectAnalysisReadiness,
+        inspectionStarted: Boolean,
+    ): Map<String, Any?> {
+        val requestedScopeKind = requestedScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        val resolvedScopeKind = resolvedScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
+        val languageSupportState = when (readiness.reason) {
+            "python_support_unavailable" -> "unavailable"
+            "python_not_in_scope", "scope_resolution_unavailable" -> "not_evaluated"
+            else -> "available"
+        }
+        val sdkAssignmentState = when {
+            !readiness.required -> "not_required"
+            readiness.missingSdkFileCount > 0 || readiness.reason == "python_sdk_missing" -> "missing"
+            readiness.pythonSdkCount > 0 -> "assigned"
+            else -> "unknown"
+        }
+        val outcomeOwnership = when (readiness.reason) {
+            "python_sdk_missing", "python_support_unavailable" -> "configuration"
+            "python_sdk_updating", "project_disposed" -> "environment"
+            "python_sdk_update_state_unavailable", "analysis_readiness_unavailable", "scope_resolution_unavailable" -> "tool"
+            else -> "none"
+        }
+        return mapOf(
+            "readiness_stage" to "inspection_preflight",
+            "requested_scope" to requestedScopeKind,
+            "resolved_scope" to resolvedScopeKind,
+            "resolved_scope_file_count" to resolvedScope.resolvedFiles?.size,
+            "resolved_scope_directory" to resolvedScope.resolvedDirectory,
+            "selected_python_file_count" to readiness.pythonFileCount,
+            "language_support_state" to languageSupportState,
+            "sdk_assignment_state" to sdkAssignmentState,
+            "analysis_state" to readiness.reason,
+            "inspection_started" to inspectionStarted,
+            "outcome_ownership" to outcomeOwnership,
+        ).filterValues { it != null }
     }
 
     private fun isPythonFile(file: VirtualFile): Boolean {
@@ -7410,16 +7468,16 @@ class InspectionHandler : HttpRequestHandler() {
     ): InspectionCaptureScope {
         val scopeKind = captureScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
         val resolvedFiles = when (scopeKind) {
-            "files" -> resolveRequestedFiles(project, captureScope.files.orEmpty()).map { it.path }
+            "files" -> captureScope.resolvedFiles
+                ?: resolveRequestedFiles(project, captureScope.files.orEmpty()).map { it.path }
             "changed_files" -> (resolvedChangedFiles ?: resolveChangedFilesScopeFiles(
                 project = project,
                 includeUnversioned = captureScope.includeUnversioned,
                 changedFilesMode = captureScope.changedFilesMode,
                 maxFiles = captureScope.maxFiles,
             )).map { it.path }
-            "current_file" -> listOfNotNull(captureScope.resolvedCurrentFile).filter { path ->
-                runCatching { LocalFileSystem.getInstance().findFileByPath(path)?.isValid == true }.getOrDefault(false)
-            }
+            "current_file" -> captureScope.resolvedFiles
+                ?: listOfNotNull(captureScope.resolvedCurrentFile)
             else -> null
         }?.mapNotNull(::normalizeFileSystemPath)?.distinct()
 
