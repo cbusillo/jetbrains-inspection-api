@@ -332,8 +332,34 @@ commit gate, runs `buildPlugin`, `verifyPluginStructure`, and `verifyPlugin`,
 creates the GitHub Release, then publishes to JetBrains Marketplace. The
 workflow also rejects tags that do not point at the current default-branch
 commit. `verifyPlugin` treats internal API usage as a release failure except
-for the existing `GlobalInspectionContextImpl` Marketplace exemption enforced
-by the verifier report allowlist in `build.gradle.kts`.
+for the existing inspection-engine Marketplace exemption. Every configured IDE
+report must match the exact, sorted canonical findings in
+`config/plugin-verifier/stable-internal-api-allowlist.txt`; additional findings,
+missing expected findings, malformed report lines, or absent reports fail the
+build. This replaces broad class-name substring acceptance.
+
+When an intentional Stable implementation change alters verifier findings,
+review the complete `missing`/`unexpected` diff from `verifyPlugin`, update the
+manifest with the sorted canonical first sentence of each approved finding, and
+rerun `./gradlew verifyPlugin` across every configured IDE. Never add a broader
+class-name pattern to make a report pass.
+
+Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
+`.github/workflows/canary-release.yml` must be dispatched explicitly from the
+default branch with an existing isolated tag. Its build job checks out trusted
+controls separately from branch-only source, runs without Marketplace secrets,
+and requires exact findings from
+`config/plugin-verifier/canary-internal-api-allowlist.txt`. The publish job uses
+the default-branch-only, reviewer-approved `canary-marketplace` environment,
+pins trusted controls to the dispatch SHA, revalidates the tag SHA and verified
+zip, and uploads through the
+trusted `scripts/publish-canary-artifact.sh` with the environment-only
+`CANARY_PUBLISH_TOKEN` and explicit `canary` channel. The release contract tests
+cover malformed versions, Stable/canary workflow separation, branch isolation,
+artifact identity, absent or wrong channels, and unexpected internal APIs.
+The canary manifest is branch-owned, reviewable evidence: #273 may change its
+exact entries for intended private usages, but must not change the Stable
+manifest or replace exact matching with a broader rule.
 
 `./scripts/test-all.sh` reports the configured JaCoCo contracts accurately:
 plugin coverage is a 0% minimum report-only signal because IntelliJ classloader
