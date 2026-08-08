@@ -28,15 +28,17 @@ jobs:
         run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
 
       - name: Check out trusted publication controls
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: trusted
 
       - name: Check out canary source
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ inputs.tag }}
           path: source
 
@@ -65,11 +67,10 @@ jobs:
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v5
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
           java-version: "21"
           distribution: "temurin"
-          cache: "gradle"
 
       - name: Grant execute permission for Gradle
         working-directory: source
@@ -83,27 +84,8 @@ jobs:
         working-directory: source
         run: ./scripts/release-compatibility-gate.sh
 
-      - name: Verify exact canary internal API manifest
-        shell: bash
-        run: |
-          mapfile -t reports < <(find source/build/reports/pluginVerifier \
-            -path "*/plugins/com.shiny.inspection.api/${{ steps.canary_version.outputs.version }}/internal-api-usages.txt" \
-            -type f -print | sort)
-          if [ "${#reports[@]}" -eq 0 ]; then
-            echo "Plugin Verifier did not produce canary internal API reports."
-            exit 1
-          fi
-          command=(
-            python3 trusted/scripts/verify-internal-api-allowlist.py
-            --manifest source/config/plugin-verifier/canary-internal-api-allowlist.txt
-          )
-          for report in "${reports[@]}"; do
-            command+=(--report "$report")
-          done
-          "${command[@]}"
-
       - name: Upload canary plugin artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: canary-plugin-${{ steps.canary_version.outputs.version }}
           path: source/build/distributions/jetbrains-inspection-api-${{ steps.canary_version.outputs.version }}.zip
@@ -111,7 +93,7 @@ jobs:
           retention-days: 7
 
       - name: Upload test results
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
         with:
           name: canary-test-results
@@ -121,12 +103,80 @@ jobs:
             source/mcp-server-jvm/build/reports/tests/test/
           retention-days: 7
 
-  publish:
+  verify:
     needs: [build]
+    runs-on: ubuntu-latest
+    outputs:
+      archive_sha256: ${{ steps.archive_digest.outputs.sha256 }}
+    permissions:
+      contents: read
+
+    steps:
+      - name: Verify trusted workflow ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
+      - name: Check out trusted verification controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: trusted
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "21"
+          distribution: "temurin"
+
+      - name: Download canary plugin artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: canary-plugin-${{ needs.build.outputs.version }}
+          path: artifact
+
+      - name: Revalidate canary tag provenance
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        working-directory: trusted
+        run: |
+          git fetch origin "refs/tags/$CANARY_TAG:refs/tags/$CANARY_TAG"
+          test "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+
+      - name: Independently verify canary artifact
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          MARKETPLACE_CHANNEL: canary
+        run: |
+          trusted/scripts/verify-canary-artifact.sh \
+            --archive "artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip" \
+            --tag "$CANARY_TAG" \
+            --channel "$MARKETPLACE_CHANNEL"
+
+      - name: Record verified artifact digest
+        id: archive_digest
+        run: |
+          archive="artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip"
+          echo "sha256=$(shasum -a 256 "$archive" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Upload trusted Plugin Verifier reports
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: always()
+        with:
+          name: canary-plugin-verifier-${{ needs.build.outputs.version }}
+          path: trusted/build/reports/pluginVerifier/
+          if-no-files-found: warn
+          retention-days: 30
+
+  publish:
+    needs: [build, verify]
     runs-on: ubuntu-latest
     environment: canary-marketplace
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Verify trusted workflow ref
@@ -135,14 +185,15 @@ jobs:
         run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
 
       - name: Check out trusted publication controls
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
+          persist-credentials: false
           ref: ${{ github.sha }}
           path: trusted
 
       - name: Download canary plugin artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: canary-plugin-${{ needs.build.outputs.version }}
           path: artifact
@@ -159,12 +210,16 @@ jobs:
       - name: Validate trusted canary artifact
         env:
           CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
           MARKETPLACE_CHANNEL: canary
         run: |
+          archive="artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip"
           trusted/scripts/validate-canary-artifact.sh \
-            --archive "artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip" \
+            --archive "$archive" \
             --tag "$CANARY_TAG" \
             --channel "$MARKETPLACE_CHANNEL"
+          actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"
 
       - name: Verify canary Marketplace token
         env:
@@ -175,27 +230,63 @@ jobs:
             exit 1
           fi
 
-      - name: Create GitHub prerelease
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.tag }}
-          name: Canary ${{ inputs.tag }}
-          body: |
-            Branch-only canary for Marketplace review.
-
-            Source commit: ${{ needs.build.outputs.source_sha }}
-            Marketplace channel: canary
-          draft: false
-          prerelease: true
-          files: artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip
-
       - name: Publish trusted artifact to JetBrains Marketplace canary channel
         env:
           CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
           PUBLISH_TOKEN: ${{ secrets.CANARY_PUBLISH_TOKEN }}
           MARKETPLACE_CHANNEL: canary
         run: |
           trusted/scripts/publish-canary-artifact.sh \
             --archive "artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip" \
             --tag "$CANARY_TAG" \
-            --channel "$MARKETPLACE_CHANNEL"
+            --channel "$MARKETPLACE_CHANNEL" \
+            --expected-sha256 "$EXPECTED_ARCHIVE_SHA256"
+
+  release:
+    needs: [build, verify, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Verify trusted workflow ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
+      - name: Download verified canary plugin artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: canary-plugin-${{ needs.build.outputs.version }}
+          path: artifact
+
+      - name: Revalidate verified artifact digest
+        env:
+          EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}
+        run: |
+          archive="artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip"
+          actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"
+
+      - name: Create GitHub prerelease
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        run: |
+          archive="artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip"
+          notes_file="$(mktemp)"
+          trap 'rm -f "$notes_file"' EXIT
+          cat > "$notes_file" <<EOF
+          Branch-only canary for Marketplace review.
+
+          Source commit: $SOURCE_SHA
+          Marketplace channel: canary
+          EOF
+          gh release create "$CANARY_TAG" "$archive" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Canary $CANARY_TAG" \
+            --notes-file "$notes_file" \
+            --prerelease \
+            --verify-tag

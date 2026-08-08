@@ -346,20 +346,31 @@ class-name pattern to make a report pass.
 
 Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
 `.github/workflows/canary-release.yml` must be dispatched explicitly from the
-default branch with an existing isolated tag. Its build job checks out trusted
-controls separately from branch-only source, runs without Marketplace secrets,
-and requires exact findings from
-`config/plugin-verifier/canary-internal-api-allowlist.txt`. The publish job uses
-the default-branch-only, reviewer-approved `canary-marketplace` environment,
-pins trusted controls to the dispatch SHA, revalidates the tag SHA and verified
-zip, and uploads through the
+default branch with an existing isolated tag. Its build job treats the source,
+Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
+credentials, uses no Gradle cache, and runs without Marketplace secrets. A fresh
+verification job checks out only trusted controls, downloads the built zip,
+independently runs Plugin Verifier against that artifact, and requires every
+artifact-derived report to match the trusted default-branch
+`config/plugin-verifier/canary-internal-api-allowlist.txt`. The verification job
+records the artifact digest and uploads its reports. Only then may the fresh
+publish job enter the default-branch-only, reviewer-approved
+`canary-marketplace` environment. It revalidates the tag SHA, archive identity,
+and verified digest, then uploads through the
 trusted `scripts/publish-canary-artifact.sh` with the environment-only
-`CANARY_PUBLISH_TOKEN` and explicit `canary` channel. The release contract tests
+`CANARY_PUBLISH_TOKEN`, explicit `canary` channel, and required verified SHA-256.
+That environment job has read-only repository permission. A separate write-only
+GitHub release job creates the prerelease only after Marketplace upload succeeds
+and rechecks the verified digest without receiving the Marketplace token. The release contract tests
 cover malformed versions, Stable/canary workflow separation, branch isolation,
-artifact identity, absent or wrong channels, and unexpected internal APIs.
-The canary manifest is branch-owned, reviewable evidence: #273 may change its
-exact entries for intended private usages, but must not change the Stable
-manifest or replace exact matching with a broader rule.
+artifact identity, absent or wrong channels, unexpected internal APIs, and an
+adversarial attempt to replace trusted verifier controls and reports.
+The canary manifest is trusted, reviewable evidence. An intended canary finding
+must first update that default-branch manifest through review; the experimental
+branch must not modify the Stable manifest or replace exact matching with a
+broader rule. Manual verification and recovery publication must run from a
+separate, clean checkout pinned to the reviewed default-branch dispatch commit,
+never from the canary source worktree.
 
 `./scripts/test-all.sh` reports the configured JaCoCo contracts accurately:
 plugin coverage is a 0% minimum report-only signal because IntelliJ classloader

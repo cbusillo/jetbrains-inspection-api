@@ -39,6 +39,8 @@ if ! [[ "$TAG" =~ ^canary/v([0-9]+\.[0-9]+\.[0-9]+)-canary\.([1-9][0-9]*)$ ]]; t
 fi
 
 VERSION="${BASH_REMATCH[1]}-canary.${BASH_REMATCH[2]}"
+EXPECTED_SINCE_BUILD="251"
+EXPECTED_UNTIL_BUILD="262.*"
 "$ROOT/scripts/validate-marketplace-publication.sh" \
   --version "$VERSION" \
   --channel "$CHANNEL"
@@ -71,13 +73,19 @@ if ! unzip -p "$TEMP_DIR/plugin.jar" META-INF/plugin.xml > "$TEMP_DIR/plugin.xml
   exit 1
 fi
 
-python3 - "$TEMP_DIR/plugin.xml" "$VERSION" <<'PY'
+python3 - \
+  "$TEMP_DIR/plugin.xml" \
+  "$VERSION" \
+  "$EXPECTED_SINCE_BUILD" \
+  "$EXPECTED_UNTIL_BUILD" <<'PY'
 from pathlib import Path
 import sys
 import xml.etree.ElementTree as ET
 
 plugin_xml_path = Path(sys.argv[1])
 expected_version = sys.argv[2]
+expected_since_build = sys.argv[3]
+expected_until_build = sys.argv[4]
 
 try:
     plugin_root = ET.parse(plugin_xml_path).getroot()
@@ -85,11 +93,22 @@ except ET.ParseError as error:
     raise SystemExit(f"ERROR: Canary archive plugin.xml is not valid XML: {error}") from error
 plugin_id = (plugin_root.findtext("id") or "").strip()
 plugin_version = (plugin_root.findtext("version") or "").strip()
+idea_version = plugin_root.find("idea-version")
 if plugin_id != "com.shiny.inspection.api":
     raise SystemExit("ERROR: Canary archive does not preserve plugin ID com.shiny.inspection.api.")
 if plugin_version != expected_version:
     actual = plugin_version or "<missing>"
     raise SystemExit(
         f"ERROR: Canary archive version {actual} does not match tag version {expected_version}."
+    )
+if idea_version is None:
+    raise SystemExit("ERROR: Canary archive does not declare an idea-version compatibility range.")
+since_build = (idea_version.get("since-build") or "").strip()
+until_build = (idea_version.get("until-build") or "").strip()
+if since_build != expected_since_build or until_build != expected_until_build:
+    raise SystemExit(
+        "ERROR: Canary archive compatibility range "
+        f"{since_build or '<missing>'}..{until_build or '<missing>'} does not match "
+        f"trusted range {expected_since_build}..{expected_until_build}."
     )
 PY
