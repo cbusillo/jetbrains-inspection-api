@@ -4,6 +4,7 @@ import com.intellij.ide.plugins.advertiser.PluginData;
 import com.intellij.ide.plugins.IdeaPluginDescriptor;
 import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.extensions.PluginId;
+import com.intellij.openapi.progress.ProcessCanceledException;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.updateSettings.impl.pluginsAdvertisement.NoSuggestions;
 import com.intellij.openapi.updateSettings.impl.pluginsAdvertisement.PluginAdvertisedByFileName;
@@ -18,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 final class PrivatePluginRecommendationProbe {
     private static final int SCHEMA_VERSION = 1;
@@ -27,25 +29,40 @@ final class PrivatePluginRecommendationProbe {
     }
 
     static Map<String, Object> probe(Project project, List<VirtualFile> files) {
-        PluginAdvertiserExtensionsStateService service =
-            PluginAdvertiserExtensionsStateService.Companion.getInstance();
-        PluginAdvertiserExtensionsStateService.ExtensionDataProvider provider =
-            service.createExtensionDataProvider(project);
-        List<Map<String, Object>> fileResults = new ArrayList<>(files.size());
+        PluginAdvertiserExtensionsStateService.ExtensionDataProvider provider;
+        try {
+            PluginAdvertiserExtensionsStateService service =
+                PluginAdvertiserExtensionsStateService.Companion.getInstance();
+            provider = service.createExtensionDataProvider(project);
+        } catch (LinkageError error) {
+            return setupFailureResponse(files, error);
+        } catch (RuntimeException error) {
+            rethrowIfCanceled(error);
+            return setupFailureResponse(files, error);
+        }
 
+        List<Map<String, Object>> fileResults = new ArrayList<>(files.size());
         for (VirtualFile file : files) {
             fileResults.add(probeFile(provider, file));
         }
+        return aggregateResponse(files.size(), fileResults);
+    }
 
+    static Map<String, Object> aggregateResponse(
+        int filesRequested,
+        List<Map<String, Object>> fileResults
+    ) {
         long unavailableCount = fileResults.stream()
             .filter(result -> "unavailable".equals(result.get("state")))
             .count();
         long partialCount = fileResults.stream()
             .filter(result -> "partial".equals(result.get("state")))
             .count();
-        String coverage = unavailableCount == 0
-            ? partialCount == 0 ? "available" : "partial"
-            : unavailableCount == fileResults.size() ? "unavailable" : "partial";
+        String coverage = fileResults.isEmpty()
+            ? "unavailable"
+            : unavailableCount == 0
+                ? partialCount == 0 ? "available" : "partial"
+                : unavailableCount == fileResults.size() ? "unavailable" : "partial";
 
         Map<String, Object> response = new LinkedHashMap<>();
         response.put("status", "ok");
@@ -55,7 +72,7 @@ final class PrivatePluginRecommendationProbe {
         response.put("platform_line", "262");
         response.put("read_only", true);
         response.put("coverage", coverage);
-        response.put("files_requested", files.size());
+        response.put("files_requested", filesRequested);
         response.put("files", fileResults);
         return response;
     }
@@ -64,16 +81,18 @@ final class PrivatePluginRecommendationProbe {
         PluginAdvertiserExtensionsStateService.ExtensionDataProvider provider,
         VirtualFile file
     ) {
-        PluginAdvertiserSuggestion suggestion;
         try {
-            suggestion = provider.requestExtensionData$intellij_platform_ide_impl(
+            PluginAdvertiserSuggestion suggestion = provider.requestExtensionData$intellij_platform_ide_impl(
                 file.getName(),
                 file.getFileType()
             );
-        } catch (LinkageError | RuntimeException error) {
-            return unavailableFile(file, "private_api_failure", error.getClass().getSimpleName());
+            return describeSuggestion(file, suggestion);
+        } catch (LinkageError error) {
+            return unavailableFile(file, "private_api_failure", failureDetail(error));
+        } catch (RuntimeException error) {
+            rethrowIfCanceled(error);
+            return unavailableFile(file, "private_api_failure", failureDetail(error));
         }
-        return describeSuggestion(file, suggestion);
     }
 
     static Map<String, Object> describeSuggestion(VirtualFile file, PluginAdvertiserSuggestion suggestion) {
@@ -130,11 +149,27 @@ final class PrivatePluginRecommendationProbe {
     }
 
     private static Map<String, Object> unavailableFile(VirtualFile file, String reason, String detail) {
-        Map<String, Object> result = baseFile(file);
+        Map<String, Object> result = safeBaseFile(file);
         result.put("state", "unavailable");
         result.put("reason", reason);
         result.put("detail", detail);
         return result;
+    }
+
+    private static Map<String, Object> setupFailureResponse(List<VirtualFile> files, Throwable error) {
+        String detail = failureDetail(error);
+        List<Map<String, Object>> fileResults = files.stream()
+            .map(file -> unavailableFile(file, "private_api_setup_failure", detail))
+            .toList();
+        Map<String, Object> response = aggregateResponse(files.size(), fileResults);
+        response.put("reason", "private_api_setup_failure");
+        response.put("detail", detail);
+        return response;
+    }
+
+    private static String failureDetail(Throwable error) {
+        String simpleName = error.getClass().getSimpleName();
+        return simpleName.isBlank() ? error.getClass().getName() : simpleName;
     }
 
     private static Map<String, Object> baseFile(VirtualFile file) {
@@ -143,6 +178,39 @@ final class PrivatePluginRecommendationProbe {
         result.put("name", file.getName());
         result.put("file_type", file.getFileType().getName());
         return result;
+    }
+
+    private static Map<String, Object> safeBaseFile(VirtualFile file) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("path", safeFileMetadata(file::getPath));
+        result.put("name", safeFileMetadata(file::getName));
+        result.put("file_type", safeFileMetadata(() -> file.getFileType().getName()));
+        return result;
+    }
+
+    private static String safeFileMetadata(Supplier<String> metadataReader) {
+        try {
+            return metadataReader.get();
+        } catch (LinkageError error) {
+            return null;
+        } catch (RuntimeException error) {
+            rethrowIfCanceled(error);
+            return null;
+        }
+    }
+
+    private static void rethrowIfCanceled(RuntimeException error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof ProcessCanceledException canceled) {
+                throw canceled;
+            }
+            Throwable cause = current.getCause();
+            if (cause == current) {
+                return;
+            }
+            current = cause;
+        }
     }
 
     private static List<Map<String, Object>> pluginMetadata(

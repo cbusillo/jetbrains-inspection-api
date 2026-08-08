@@ -905,6 +905,18 @@ internal class InspectionRunConflictException(
     val sessionId: String,
 ) : RuntimeException("Inspection run $runId is already in progress for this project.")
 
+internal fun requirePrivateRecommendationProjectContent(
+    project: Project,
+    files: List<VirtualFile>,
+) {
+    val projectFileIndex = ProjectFileIndex.getInstance(project)
+    val outsideProject = files.firstOrNull { file -> !projectFileIndex.isInContent(file) } ?: return
+    throw BadRequestException(
+        "files",
+        "File '${outsideProject.path}' must be inside the selected project content.",
+    )
+}
+
 internal fun projectKey(project: Project): String {
     val basePath = runCatching { project.basePath }.getOrNull()
     normalizeFileSystemPath(basePath)?.let { return "path:$it" }
@@ -2353,14 +2365,7 @@ class InspectionHandler : HttpRequestHandler() {
                             ) { project ->
                                 val resolvedFiles = resolveRequestedFilesStrict(project, filesList)
                                 val probeResult = ApplicationManager.getApplication().runReadAction<Map<String, Any?>, Exception> {
-                                    val projectFileIndex = ProjectFileIndex.getInstance(project)
-                                    val outsideProject = resolvedFiles.firstOrNull { file -> !projectFileIndex.isInContent(file) }
-                                    if (outsideProject != null) {
-                                        throw BadRequestException(
-                                            "files",
-                                            "File '${outsideProject.path}' must be inside the selected project content.",
-                                        )
-                                    }
+                                    requirePrivateRecommendationProjectContent(project, resolvedFiles)
                                     PrivatePluginRecommendationProbe.probe(project, resolvedFiles)
                                 }.toMutableMap()
                                 probeResult["session_id"] = InspectionIdeSession.sessionId
@@ -2369,6 +2374,8 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                         } catch (error: BadRequestException) {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+                        } catch (error: com.intellij.openapi.progress.ProcessCanceledException) {
+                            throw error
                         } catch (error: Exception) {
                             logger.warn(
                                 "Private plugin recommendation probe failed request_id=${requestAttribution.requestId}",
