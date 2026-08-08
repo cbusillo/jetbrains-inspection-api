@@ -255,6 +255,14 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
 
+      - name: Check out trusted publication controls
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          path: trusted
+
       - name: Download verified canary plugin artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -268,6 +276,15 @@ jobs:
           archive="artifact/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip"
           actual_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
           test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"
+
+      - name: Revalidate canary tag provenance
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        working-directory: trusted
+        run: |
+          git fetch origin "refs/tags/$CANARY_TAG:refs/tags/$CANARY_TAG"
+          test "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
 
       - name: Create GitHub prerelease
         env:

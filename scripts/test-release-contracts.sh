@@ -679,8 +679,10 @@ if publish.index("EXPECTED_ARCHIVE_SHA256") > publish.index("Verify canary Marke
 
 release_steps = [
     "Verify trusted workflow ref",
+    "Check out trusted publication controls",
     "Download verified canary plugin artifact",
     "Revalidate verified artifact digest",
+    "Revalidate canary tag provenance",
     "Create GitHub prerelease",
 ]
 if [release.index(step) for step in release_steps] != sorted(release.index(step) for step in release_steps):
@@ -689,8 +691,14 @@ if "needs: [build, verify, publish]" not in release:
     raise SystemExit("GitHub prerelease creation must follow successful Marketplace publication")
 if "contents: write" not in release or "CANARY_PUBLISH_TOKEN" in release:
     raise SystemExit("GitHub release authority must remain isolated from Marketplace authority")
+if "path: source" in release or "working-directory: source" in release:
+    raise SystemExit("GitHub release job must not check out branch-controlled source")
+if "persist-credentials: false" not in release:
+    raise SystemExit("GitHub release trusted checkout must not persist credentials")
 if 'test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"' not in release:
     raise SystemExit("GitHub prerelease must use the independently verified artifact")
+if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in release:
+    raise SystemExit("GitHub prerelease must enforce the verified source tag digest")
 PY
 
   assert_contains scripts/test-all.sh 'Plugin JaCoCo verification (0% minimum; report-only signal)'
