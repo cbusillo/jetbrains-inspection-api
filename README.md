@@ -326,8 +326,9 @@ name when JetBrains provides it, installation state, and the file name or
 extension that triggered the recommendation. Already-enabled
 plugins are filtered to `state: "none"`; other private result types are reported
 as explicit partial coverage rather than expanding the private API surface.
-If private service/provider setup is unavailable, the endpoint keeps the same
-provenance, reports top-level `coverage: "unavailable"` with
+If the probe class cannot link before entry, or private service/provider setup
+is unavailable after entry, the endpoint keeps the same provenance, reports
+top-level `coverage: "unavailable"` with
 `reason: "private_api_setup_failure"`, and returns every requested file as
 `state: "unavailable"` instead of dropping the response. Failure rows include
 a bounded exception-class `detail`; file identity fields may be `null` only when

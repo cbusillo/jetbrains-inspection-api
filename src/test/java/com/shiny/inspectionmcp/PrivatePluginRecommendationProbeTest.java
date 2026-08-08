@@ -192,7 +192,7 @@ class PrivatePluginRecommendationProbeTest {
 
     @Test
     void aggregatesCoverageAndPrivateProvenance() {
-        Map<String, Object> result = PrivatePluginRecommendationProbe.aggregateResponse(
+        Map<String, Object> result = PrivatePluginRecommendationFallback.aggregateResponse(
             3,
             List.of(
                 Map.of("state", "recommended"),
@@ -200,11 +200,11 @@ class PrivatePluginRecommendationProbeTest {
                 Map.of("state", "unavailable")
             )
         );
-        Map<String, Object> unavailable = PrivatePluginRecommendationProbe.aggregateResponse(
+        Map<String, Object> unavailable = PrivatePluginRecommendationFallback.aggregateResponse(
             2,
             List.of(Map.of("state", "unavailable"), Map.of("state", "unavailable"))
         );
-        Map<String, Object> empty = PrivatePluginRecommendationProbe.aggregateResponse(0, List.of());
+        Map<String, Object> empty = PrivatePluginRecommendationFallback.aggregateResponse(0, List.of());
 
         assertEquals("ok", result.get("status"));
         assertEquals(1, result.get("schema_version"));

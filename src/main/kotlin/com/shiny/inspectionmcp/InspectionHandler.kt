@@ -2366,7 +2366,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 val resolvedFiles = resolveRequestedFilesStrict(project, filesList)
                                 val probeResult = ApplicationManager.getApplication().runReadAction<Map<String, Any?>, Exception> {
                                     requirePrivateRecommendationProjectContent(project, resolvedFiles)
-                                    PrivatePluginRecommendationProbe.probe(project, resolvedFiles)
+                                    PrivatePluginRecommendationBoundary.probe(project, resolvedFiles)
                                 }.toMutableMap()
                                 probeResult["session_id"] = InspectionIdeSession.sessionId
                                 probeResult["project_key"] = projectKey(project)
