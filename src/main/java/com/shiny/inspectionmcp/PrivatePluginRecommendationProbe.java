@@ -1,7 +1,6 @@
 package com.shiny.inspectionmcp;
 
 import com.intellij.ide.plugins.advertiser.PluginData;
-import com.intellij.ide.plugins.DisabledPluginsState;
 import com.intellij.ide.plugins.IdeaPluginDescriptor;
 import com.intellij.ide.plugins.PluginManagerCore;
 import com.intellij.openapi.extensions.PluginId;
@@ -169,9 +168,6 @@ final class PrivatePluginRecommendationProbe {
         IdeaPluginDescriptor installedPlugin = PluginManagerCore.getPlugin(pluginId);
         if (installedPlugin == null) {
             return "absent";
-        }
-        if (DisabledPluginsState.Companion.getDisabledIds().contains(pluginId)) {
-            return "disabled";
         }
         return PluginManagerCore.isLoaded(installedPlugin) ? "enabled" : "disabled";
     }
