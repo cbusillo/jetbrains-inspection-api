@@ -25,7 +25,18 @@ assert_not_contains() {
 }
 
 test_version_validator() {
-  ./scripts/validate-release-version.sh --tag "v$(sed -n 's/^pluginVersion=//p' gradle.properties)" >/dev/null
+  local current_version
+  current_version=$(sed -n 's/^pluginVersion=//p' gradle.properties)
+  if [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ./scripts/validate-release-version.sh --tag "v$current_version" >/dev/null
+  elif [[ "$current_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-canary\.[1-9][0-9]*$ ]]; then
+    ./scripts/validate-canary-release-version.sh \
+      --tag "canary/v$current_version" \
+      --channel canary \
+      >/dev/null
+  else
+    fail "unsupported current plugin version: $current_version"
+  fi
 
   if ./scripts/validate-release-version.sh --tag v0.0.0 >/dev/null 2>&1; then
     fail "version validator accepted a mismatched tag"
@@ -135,7 +146,7 @@ def write_archive(
     path: Path,
     plugin_id: str,
     version: str,
-    since_build: str = "251",
+    since_build: str = "262",
     until_build: str = "262.*",
 ) -> None:
     plugin_xml = (
@@ -404,7 +415,7 @@ with zipfile.ZipFile(plugin_jar, "w") as jar:
         "META-INF/plugin.xml",
         "<idea-plugin><id>com.shiny.inspection.api</id>"
         "<version>1.2.3-canary.1</version>"
-        '<idea-version since-build="251" until-build="262.*"/>'
+        '<idea-version since-build="262" until-build="262.*"/>'
         "</idea-plugin>",
     )
 with zipfile.ZipFile(archive, "w") as plugin_zip:

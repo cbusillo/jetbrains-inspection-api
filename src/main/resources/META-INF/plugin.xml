@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.14.0</version>
+    <version>1.14.0-canary.1</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -16,7 +16,7 @@
             <li>HTTP API access to inspection results</li>
             <li>Scope-based filtering (whole project, current file, directory)</li>
             <li>Trigger inspections programmatically and poll status</li>
-            <li>Works with JetBrains IDEs (2025.1-2026.2 compatible)</li>
+            <li>Private-API canary restricted to JetBrains IDEs on the 2026.2 platform line</li>
             <li>Bundled MCP server + setup command for Every Code, Codex CLI, Claude Code, and Gemini CLI</li>
             <li>IDE-only inspections (e.g., PyCharm’s Odoo plugin checks) are made available to automation</li>
         </ul>
@@ -27,6 +27,12 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.0-canary.1</b>
+        <ul>
+            <li>Adds a read-only 262-only experiment exposing IDE-derived plugin recommendations for explicitly selected project files.</li>
+            <li>Keeps recommendation metadata separate from inspection verdict, execution proof, freshness, retry, routing, and cleanup semantics.</li>
+            <li>Uses direct JetBrains private API references so Plugin Verifier reports the exact experimental dependency.</li>
+        </ul>
         <b>Version 1.14.0</b>
         <ul>
             <li>Fails closed until Python SDK-backed project analysis is stable, returning an inconclusive result instead of a false clean or partial finding result.</li>

@@ -57,6 +57,69 @@ class InspectionHandlerProcessTest {
     }
 
     @Test
+    @DisplayName("Plugin recommendation endpoint rejects arbitrary plugin IDs")
+    fun testPluginRecommendationEndpointRejectsPluginIdOnlyRequest() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/plugin-recommendations")
+        whenever(mockDecoder.parameters()).thenReturn(mapOf("plugin_id" to listOf("example.plugin")))
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+
+        assertTrue(result)
+        verify(mockContext).writeAndFlush(check {
+            val response = it as DefaultFullHttpResponse
+            val body = response.content().toString(Charsets.UTF_8)
+            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+            assertTrue(body.contains("\"parameter\": \"file\""))
+            assertFalse(body.contains("example.plugin"))
+        })
+    }
+
+    @Test
+    @DisplayName("Plugin recommendation endpoint enforces the file cap")
+    fun testPluginRecommendationEndpointEnforcesFileCap() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/plugin-recommendations")
+        whenever(mockDecoder.parameters()).thenReturn(
+            mapOf("file" to (1..26).map { index -> "fixture-$index.txt" })
+        )
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+
+        assertTrue(result)
+        verify(mockContext).writeAndFlush(check {
+            val response = it as DefaultFullHttpResponse
+            val body = response.content().toString(Charsets.UTF_8)
+            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+            assertTrue(body.contains("\"parameter\": \"files\""))
+            assertTrue(body.contains("At most 25"))
+        })
+    }
+
+    @Test
+    @DisplayName("Plugin recommendation session drift remains non-verdict metadata")
+    fun testPluginRecommendationSessionDriftHasNoInspectionVerdict() {
+        whenever(mockDecoder.path()).thenReturn("/api/inspection/plugin-recommendations")
+        whenever(mockDecoder.parameters()).thenReturn(
+            mapOf(
+                "session_id" to listOf("stale-session"),
+                "file" to listOf("main.go")
+            )
+        )
+
+        val result = handler.process(mockDecoder, mockRequest, mockContext)
+
+        assertTrue(result)
+        verify(mockContext).writeAndFlush(check {
+            val response = it as DefaultFullHttpResponse
+            val body = response.content().toString(Charsets.UTF_8)
+            assertEquals(HttpResponseStatus.CONFLICT, response.status())
+            assertTrue(body.contains("\"reason\": \"session_drift\""))
+            assertFalse(body.contains("inspection_verdict"))
+            assertFalse(body.contains("retry_policy"))
+            assertFalse(body.contains("lifecycle"))
+        })
+    }
+
+    @Test
     @DisplayName("Problems endpoint rejects invalid pagination parameters")
     fun testProblemsEndpointRejectsInvalidPaginationParameters() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")

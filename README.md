@@ -309,6 +309,30 @@ port can read fresh registry files, verify `heartbeat_ms` is within about 60
 seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
 `63340-63350` as a fallback.
 
+### Private Plugin Recommendation Canary
+
+**URL**: `GET /api/inspection/plugin-recommendations`
+
+This endpoint exists only in the 262-only `1.14.0-canary.1` experiment. It
+accepts one to 25 repeated `file` parameters or a comma/newline-separated
+`files` parameter. Files must resolve inside the selected project; the request
+does not accept plugin IDs.
+
+The response is read-only metadata with explicit
+`source: "jetbrains_private_plugin_advertiser_262"`,
+`api_status: "private_internal"`, and per-file states of `recommended`, `none`,
+`partial`, or `unavailable`. Recommendation rows include only the plugin ID,
+name when JetBrains provides it, installation state, and the file name or
+extension that triggered the recommendation. Already-enabled
+plugins are filtered to `state: "none"`; other private result types are reported
+as explicit partial coverage rather than expanding the private API surface.
+
+This endpoint is deliberately separate from inspection status and problems. It
+does not return or alter `inspection_verdict`, execution proof, freshness,
+retry policy, clean classification, route ownership, or lifecycle cleanup. It
+does not install, enable, disable, update, download, or prompt for plugins, and
+it is not exposed through the bundled MCP server or the external helper.
+
 ### Helper Lifecycle Endpoints
 
 The helper lifecycle endpoints are for automation that needs to open an exact

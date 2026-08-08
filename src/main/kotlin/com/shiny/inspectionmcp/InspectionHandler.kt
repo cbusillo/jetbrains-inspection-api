@@ -109,6 +109,7 @@ private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_cover
 private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
 private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
+private const val MAX_PRIVATE_PLUGIN_RECOMMENDATION_FILES = 25
 private val NON_SEMANTIC_SCOPE_FILE_VALUES = setOf("text", "plaintext", "textmate")
 private val NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS = setOf("plaintext", "textmate")
 private val PROJECT_METADATA_SCOPE_FILE_TYPES = setOf("ideamodule")
@@ -2308,6 +2309,82 @@ class InspectionHandler : HttpRequestHandler() {
                             sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
                         } catch (error: Exception) {
                             sendInternalServerError(context, requestAttribution, parameters, error)
+                        }
+                    }
+                }
+                "/api/inspection/plugin-recommendations" -> {
+                    val expectedSessionId = firstParameter(parameters, "session_id")
+                    if (expectedSessionId != null && expectedSessionId != InspectionIdeSession.sessionId) {
+                        sendJsonResponse(
+                            context,
+                            formatJsonManually(
+                                mapOf(
+                                    "status" to "error",
+                                    "error" to "IDE session changed",
+                                    "reason" to "session_drift",
+                                    "expected_session_id" to expectedSessionId,
+                                    "session_id" to InspectionIdeSession.sessionId,
+                                )
+                            ),
+                            HttpResponseStatus.CONFLICT,
+                        )
+                        return true
+                    }
+                    val filesList = requestedFiles(parameters)
+                    if (filesList.isEmpty()) {
+                        throw BadRequestException(
+                            "file",
+                            "At least one project file must be supplied with 'file' or 'files'.",
+                        )
+                    }
+                    if (filesList.size > MAX_PRIVATE_PLUGIN_RECOMMENDATION_FILES) {
+                        throw BadRequestException(
+                            "files",
+                            "At most $MAX_PRIVATE_PLUGIN_RECOMMENDATION_FILES project files may be requested.",
+                        )
+                    }
+                    val projectName = extractProjectSelector(urlDecoder, request)
+                    ApplicationManager.getApplication().executeOnPooledThread {
+                        try {
+                            withCurrentProject(
+                                context,
+                                projectName,
+                                refreshProjectState = false,
+                            ) { project ->
+                                val resolvedFiles = resolveRequestedFilesStrict(project, filesList)
+                                val probeResult = ApplicationManager.getApplication().runReadAction<Map<String, Any?>, Exception> {
+                                    val projectFileIndex = ProjectFileIndex.getInstance(project)
+                                    val outsideProject = resolvedFiles.firstOrNull { file -> !projectFileIndex.isInContent(file) }
+                                    if (outsideProject != null) {
+                                        throw BadRequestException(
+                                            "files",
+                                            "File '${outsideProject.path}' must be inside the selected project content.",
+                                        )
+                                    }
+                                    PrivatePluginRecommendationProbe.probe(project, resolvedFiles)
+                                }.toMutableMap()
+                                probeResult["session_id"] = InspectionIdeSession.sessionId
+                                probeResult["project_key"] = projectKey(project)
+                                sendJsonResponse(context, formatJsonManually(probeResult))
+                            }
+                        } catch (error: BadRequestException) {
+                            sendJsonResponse(context, formatBadRequest(error), HttpResponseStatus.BAD_REQUEST)
+                        } catch (error: Exception) {
+                            logger.warn(
+                                "Private plugin recommendation probe failed request_id=${requestAttribution.requestId}",
+                                error,
+                            )
+                            sendJsonResponse(
+                                context,
+                                formatJsonManually(
+                                    mapOf(
+                                        "status" to "error",
+                                        "error" to "Private plugin recommendation probe failed",
+                                        "reason" to "private_recommendation_error",
+                                    )
+                                ),
+                                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                            )
                         }
                     }
                 }

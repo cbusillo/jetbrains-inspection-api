@@ -59,6 +59,7 @@ import org.jdom.Element
 import org.jetbrains.concurrency.Promise
 import org.jetbrains.concurrency.resolvedPromise
 import org.jetbrains.concurrency.rejectedPromise
+import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -99,9 +100,15 @@ class InspectionHandlerTest {
             }
             else -> error("Unsupported InspectionHandler class resource: $classResource")
         }
-        val javap = sequenceOf(System.getenv("JAVA_HOME"), System.getProperty("java.home"))
+        val javaHomes = sequenceOf(System.getenv("JAVA_HOME"), System.getProperty("java.home"))
             .filterNotNull()
             .map { home -> Paths.get(home, "bin", "javap") }
+        val pathExecutables = System.getenv("PATH").orEmpty()
+            .split(File.pathSeparator)
+            .asSequence()
+            .filter { entry -> entry.isNotBlank() }
+            .map { entry -> Paths.get(entry, "javap") }
+        val javap = (javaHomes + pathExecutables)
             .firstOrNull(Files::isExecutable)
         assertNotNull(javap, "javap must be available from the test JDK")
         val process = ProcessBuilder(

@@ -153,7 +153,7 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     
     intellijPlatform {
-        intellijIdea("2025.1.1")
+        intellijIdea("2026.2")
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)
@@ -161,7 +161,7 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(21)
+    jvmToolchain(25)
 }
 
 tasks {
@@ -172,6 +172,7 @@ tasks {
     withType<JavaCompile> {
         sourceCompatibility = "21"
         targetCompatibility = "21"
+        options.release.set(21)
     }
     
     withType<KotlinCompile> {
@@ -379,7 +380,7 @@ intellijPlatform {
         }
         
         ideaVersion {
-            sinceBuild = "251"
+            sinceBuild = "262"
             untilBuild = "262.*"
         }
     }

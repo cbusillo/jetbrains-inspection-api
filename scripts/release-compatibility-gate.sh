@@ -18,30 +18,43 @@ java_major() {
   echo "$major"
 }
 
-is_java21() {
-  [ "$(java_major "$1")" = "21" ]
+required_java_major() {
+  local plugin_version
+  plugin_version=$(sed -n 's/^pluginVersion=//p' gradle.properties)
+  if [[ "$plugin_version" == *-canary.* ]]; then
+    echo 25
+  else
+    echo 21
+  fi
 }
 
 resolve_java_home() {
-  local candidate
+  local candidate required_major override_name override_value
+  required_major=$(required_java_major)
+  override_name="JAVA_HOME_$required_major"
+  override_value="${!override_name:-}"
 
-  if [ -n "${JAVA_HOME_21:-}" ] && is_java21 "$JAVA_HOME_21"; then
-    echo "$JAVA_HOME_21"
-    return 0
+  if [ -n "$override_value" ]; then
+    if [ "$(java_major "$override_value")" = "$required_major" ]; then
+      echo "$override_value"
+      return 0
+    fi
+    echo "ERROR: $override_name is set but not Java $required_major." >&2
+    return 1
   fi
-  if [ -n "${JAVA_HOME:-}" ] && is_java21 "$JAVA_HOME"; then
+  if [ -n "${JAVA_HOME:-}" ] && [ "$(java_major "$JAVA_HOME")" = "$required_major" ]; then
     echo "$JAVA_HOME"
     return 0
   fi
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    candidate=$(/usr/libexec/java_home -v 21 2>/dev/null || true)
-    if [ -n "$candidate" ] && is_java21 "$candidate"; then
+    candidate=$(/usr/libexec/java_home -v "$required_major" 2>/dev/null || true)
+    if [ -n "$candidate" ] && [ "$(java_major "$candidate")" = "$required_major" ]; then
       echo "$candidate"
       return 0
     fi
   else
-    for candidate in /usr/lib/jvm/java-21-* /usr/lib/jvm/java-21 /usr/lib/jvm/jdk-21*; do
-      if [ -d "$candidate" ] && is_java21 "$candidate"; then
+    for candidate in "/usr/lib/jvm/java-$required_major"-* "/usr/lib/jvm/java-$required_major" "/usr/lib/jvm/jdk-$required_major"*; do
+      if [ -d "$candidate" ] && [ "$(java_major "$candidate")" = "$required_major" ]; then
         echo "$candidate"
         return 0
       fi
@@ -51,7 +64,8 @@ resolve_java_home() {
 }
 
 JAVA_HOME=$(resolve_java_home) || {
-  echo "ERROR: Java 21 not found. Set JAVA_HOME_21." >&2
+  required_major=$(required_java_major)
+  echo "ERROR: Java $required_major not found. Set JAVA_HOME_$required_major." >&2
   exit 1
 }
 export JAVA_HOME

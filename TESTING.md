@@ -8,10 +8,14 @@ This project has three test surfaces:
 
 ## Prerequisites
 
-- Java 21 (required for Gradle builds)
+- Java 21 (required for Stable Gradle builds)
+- Java 25 for the 262-only private-API canary, because the selected platform
+  classes use Java 25 bytecode; the bundled runtime in a 2026.2 IDE is valid
 
 If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts.
+For the private-API canary, set `JAVA_HOME_25` when Java 25 is not discoverable;
+the 2026.2 IDE bundled runtime is a valid value.
 
 In the Every Code sandbox, Gradle may need escalated permissions. If you see
 "Operation not permitted" from NativeServices, re-run the command with
