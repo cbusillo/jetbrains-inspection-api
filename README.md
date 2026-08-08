@@ -769,30 +769,52 @@ channel. A canary branch uses version `X.Y.Z-canary.N` in both version files and
 an isolated `canary/vX.Y.Z-canary.N` tag. Pushing that tag does not publish
 anything. An operator must explicitly dispatch `.github/workflows/canary-release.yml`
 from the default branch with the existing tag as input. The workflow builds and
-verifies the branch-only source without Marketplace secrets, then a separate
-trusted job downloads the resulting zip and publishes only that artifact.
+tests the branch-only source without Marketplace secrets or persisted checkout
+credentials. That build workspace and all branch-produced verifier reports are
+discarded. A fresh trusted job downloads the resulting zip, independently runs
+Plugin Verifier against the artifact, and requires an exact match with the
+reviewed default-branch `canary-internal-api-allowlist.txt` before publication
+can proceed.
 
-The publish job uses the `canary-marketplace` GitHub environment, which must be
+The fresh publish job uses the `canary-marketplace` GitHub environment, which must be
 restricted to the default branch and require reviewer approval, plus the
 environment-only `CANARY_PUBLISH_TOKEN`. Both jobs pin trusted controls to the
-workflow dispatch commit; the publish job revalidates the tag SHA and archive
-before creating a GitHub prerelease or uploading. It requires the explicit
-`canary` channel and validates the embedded plugin ID/version. For a
-manual recovery or diagnostic upload, run the trusted default-branch script
-against an already-built canary zip:
+workflow dispatch commit; the trusted verification job records the independently
+verified archive digest, and the publish job revalidates the tag SHA, archive,
+and digest immediately before upload. It requires the
+explicit `canary` channel and validates the embedded plugin ID/version. A
+separate final job with GitHub contents write permission creates the prerelease
+only after Marketplace publication succeeds; the token-bearing Marketplace job
+has read-only repository permission. For a manual recovery or diagnostic
+upload, verify the already-built canary zip with
+trusted default-branch controls before running the publisher. Run both commands
+from a separate, clean checkout pinned to the reviewed default-branch dispatch
+commit, never from the canary source worktree:
 
 ```bash
+cd /path/to/clean/trusted-default-branch-checkout
+
+MARKETPLACE_CHANNEL=canary \
+  ./scripts/verify-canary-artifact.sh \
+    --archive /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip \
+    --tag canary/v1.14.0-canary.1 \
+    --channel canary
+
+verified_sha256="$(shasum -a 256 /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip | awk '{print $1}')"
 PUBLISH_TOKEN="$CANARY_PUBLISH_TOKEN" MARKETPLACE_CHANNEL=canary \
   ./scripts/publish-canary-artifact.sh \
     --archive /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip \
     --tag canary/v1.14.0-canary.1 \
-    --channel canary
+    --channel canary \
+    --expected-sha256 "$verified_sha256"
 ```
 
 The artifact publisher fails before network upload when the tag, zip name,
-embedded plugin ID/version, token, or channel is wrong. Canary product code and
-its exact `canary-internal-api-allowlist.txt` changes stay on the experimental
-branch; they are not hidden behind a Stable runtime flag. Recovery is to stop
+embedded plugin ID/version, token, or channel is wrong. Canary product code stays
+on the experimental branch and is not hidden behind a Stable runtime flag. Its
+intended private API findings must be reviewed into the trusted default-branch
+canary manifest before dispatch; the branch cannot supply the publication
+decision, verifier, manifest, or reports. Recovery is to stop
 dispatching the canary workflow, withdraw the canary-channel Marketplace update
 if one exists, delete any orphaned GitHub prerelease from a failed upload, and
 delete the experimental branch after preserving verifier evidence. Stable

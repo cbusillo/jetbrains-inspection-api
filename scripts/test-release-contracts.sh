@@ -99,13 +99,14 @@ test_canary_version_validator() {
 }
 
 test_canary_artifact_publication() {
-  local temp_dir fake_bin curl_log archive bad_archive bad_version_archive missing_jar_archive
+  local temp_dir fake_bin curl_log archive archive_sha256 bad_archive bad_version_archive bad_compatibility_archive missing_jar_archive
   temp_dir=$(mktemp -d)
   fake_bin="$temp_dir/bin"
   curl_log="$temp_dir/curl.log"
   archive="$temp_dir/jetbrains-inspection-api-1.2.3-canary.1.zip"
   bad_archive="$temp_dir/bad/jetbrains-inspection-api-1.2.3-canary.1.zip"
   bad_version_archive="$temp_dir/bad-version/jetbrains-inspection-api-1.2.3-canary.1.zip"
+  bad_compatibility_archive="$temp_dir/bad-compatibility/jetbrains-inspection-api-1.2.3-canary.1.zip"
   missing_jar_archive="$temp_dir/missing-jar/jetbrains-inspection-api-1.2.3-canary.1.zip"
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/scripts" "$fake_bin"
@@ -114,17 +115,34 @@ test_canary_artifact_publication() {
     scripts/validate-canary-artifact.sh \
     scripts/validate-marketplace-publication.sh \
     "$temp_dir/scripts/"
-  mkdir -p "$(dirname "$bad_archive")" "$(dirname "$bad_version_archive")" "$(dirname "$missing_jar_archive")"
-  python3 - "$archive" "$bad_archive" "$bad_version_archive" "$missing_jar_archive" <<'PY'
+  mkdir -p \
+    "$(dirname "$bad_archive")" \
+    "$(dirname "$bad_version_archive")" \
+    "$(dirname "$bad_compatibility_archive")" \
+    "$(dirname "$missing_jar_archive")"
+  python3 - \
+    "$archive" \
+    "$bad_archive" \
+    "$bad_version_archive" \
+    "$bad_compatibility_archive" \
+    "$missing_jar_archive" <<'PY'
 from io import BytesIO
 from pathlib import Path
 import sys
 import zipfile
 
-def write_archive(path: Path, plugin_id: str, version: str) -> None:
+def write_archive(
+    path: Path,
+    plugin_id: str,
+    version: str,
+    since_build: str = "251",
+    until_build: str = "262.*",
+) -> None:
     plugin_xml = (
         f"<idea-plugin><id>{plugin_id}</id>"
-        f"<version>{version}</version></idea-plugin>"
+        f"<version>{version}</version>"
+        f'<idea-version since-build="{since_build}" until-build="{until_build}"/>'
+        "</idea-plugin>"
     )
     plugin_jar = BytesIO()
     with zipfile.ZipFile(plugin_jar, "w") as jar:
@@ -138,9 +156,16 @@ def write_archive(path: Path, plugin_id: str, version: str) -> None:
 write_archive(Path(sys.argv[1]), "com.shiny.inspection.api", "1.2.3-canary.1")
 write_archive(Path(sys.argv[2]), "different.plugin.id", "1.2.3-canary.1")
 write_archive(Path(sys.argv[3]), "com.shiny.inspection.api", "1.2.3-canary.2")
-with zipfile.ZipFile(Path(sys.argv[4]), "w") as plugin_zip:
+write_archive(
+    Path(sys.argv[4]),
+    "com.shiny.inspection.api",
+    "1.2.3-canary.1",
+    until_build="271.*",
+)
+with zipfile.ZipFile(Path(sys.argv[5]), "w") as plugin_zip:
     plugin_zip.writestr("unexpected.txt", "missing plugin jar")
 PY
+  archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
   cat > "$fake_bin/curl" <<'CURL'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$CURL_LOG"
@@ -172,17 +197,27 @@ CURL
   fi
   [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for a mismatched version"
 
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$bad_compatibility_archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+    fail "canary artifact publisher accepted an untrusted compatibility range"
+  fi
+  [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for an untrusted compatibility range"
+
   if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$missing_jar_archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
     fail "canary artifact publisher accepted an archive without the plugin jar"
   fi
   [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for a missing plugin jar"
 
-  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN='' MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN='' MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 --expected-sha256 "$archive_sha256" >/dev/null 2>&1); then
     fail "canary artifact publisher accepted an absent token"
   fi
   [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl without a token"
 
-  (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 >/dev/null)
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 --expected-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1); then
+    fail "canary artifact publisher accepted an unverified artifact digest"
+  fi
+  [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for an unverified artifact digest"
+
+  (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 --expected-sha256 "$archive_sha256" >/dev/null)
   assert_contains "$curl_log" "xmlId=com.shiny.inspection.api"
   assert_contains "$curl_log" "file=@$archive"
   assert_contains "$curl_log" "channel=canary"
@@ -313,6 +348,94 @@ MANIFEST
   trap - RETURN
 }
 
+test_canary_verification_trust_boundary() {
+  local temp_dir trusted source archive gradle_log
+  temp_dir=$(mktemp -d)
+  trusted="$temp_dir/trusted"
+  source="$temp_dir/source"
+  archive="$temp_dir/jetbrains-inspection-api-1.2.3-canary.1.zip"
+  gradle_log="$temp_dir/gradle.log"
+  trap 'rm -rf "$temp_dir"' RETURN
+
+  mkdir -p \
+    "$trusted/scripts" \
+    "$trusted/config/plugin-verifier" \
+    "$source/trusted/scripts" \
+    "$source/build/reports/pluginVerifier/tampered" \
+    "$source/config/plugin-verifier"
+  cp \
+    scripts/validate-canary-artifact.sh \
+    scripts/validate-marketplace-publication.sh \
+    scripts/verify-canary-artifact.sh \
+    "$trusted/scripts/"
+  cp config/plugin-verifier/canary-internal-api-allowlist.txt \
+    "$trusted/config/plugin-verifier/"
+
+  cat > "$trusted/gradlew" <<'GRADLE'
+#!/usr/bin/env bash
+set -euo pipefail
+test "$PWD" = "$TRUSTED_ROOT"
+test -f config/plugin-verifier/canary-internal-api-allowlist.txt
+printf '%s\n' "$@" > "$GRADLE_LOG"
+GRADLE
+  chmod +x "$trusted/gradlew"
+
+  cat > "$source/trusted/scripts/verify-canary-artifact.sh" <<'MALICIOUS'
+#!/usr/bin/env bash
+touch "${TAMPER_MARKER:?}"
+exit 0
+MALICIOUS
+  chmod +x "$source/trusted/scripts/verify-canary-artifact.sh"
+  printf 'fabricated report\n' > \
+    "$source/build/reports/pluginVerifier/tampered/internal-api-usages.txt"
+  printf 'fabricated manifest\n' > \
+    "$source/config/plugin-verifier/canary-internal-api-allowlist.txt"
+
+  python3 - "$archive" <<'PY'
+from io import BytesIO
+from pathlib import Path
+import sys
+import zipfile
+
+archive = Path(sys.argv[1])
+plugin_jar = BytesIO()
+with zipfile.ZipFile(plugin_jar, "w") as jar:
+    jar.writestr(
+        "META-INF/plugin.xml",
+        "<idea-plugin><id>com.shiny.inspection.api</id>"
+        "<version>1.2.3-canary.1</version>"
+        '<idea-version since-build="251" until-build="262.*"/>'
+        "</idea-plugin>",
+    )
+with zipfile.ZipFile(archive, "w") as plugin_zip:
+    plugin_zip.writestr(
+        "jetbrains-inspection-api/lib/jetbrains-inspection-api-1.2.3-canary.1.jar",
+        plugin_jar.getvalue(),
+    )
+PY
+
+  (
+    export GRADLE_LOG="$gradle_log"
+    export TAMPER_MARKER="$temp_dir/tampered"
+    export TRUSTED_ROOT="$trusted"
+    cd "$source"
+    "$trusted/scripts/verify-canary-artifact.sh" \
+      --archive "$archive" \
+      --tag canary/v1.2.3-canary.1 \
+      --channel canary >/dev/null
+  )
+
+  [ ! -e "$temp_dir/tampered" ] || \
+    fail "canary verification executed branch-controlled trusted controls"
+  assert_contains "$gradle_log" "--no-build-cache"
+  assert_contains "$gradle_log" "verifyPlugin"
+  assert_contains "$gradle_log" "-PpluginVersion=1.2.3-canary.1"
+  assert_contains "$gradle_log" "-PpluginVerificationArchive=$archive"
+
+  rm -rf "$temp_dir"
+  trap - RETURN
+}
+
 write_gate_stub() {
   local path="$1"
   cat > "$path" <<'STUB'
@@ -408,6 +531,8 @@ test_static_contracts() {
   assert_contains scripts/release-compatibility-gate.sh 'buildPlugin verifyPluginStructure verifyPlugin'
   assert_contains build.gradle.kts 'stable-internal-api-allowlist.txt'
   assert_contains build.gradle.kts 'canary-internal-api-allowlist.txt'
+  assert_contains build.gradle.kts 'providers.gradleProperty("pluginVerificationArchive")'
+  assert_contains build.gradle.kts 'archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))'
   assert_contains build.gradle.kts 'scripts/validate-marketplace-publication.sh'
   assert_contains scripts/validate-marketplace-publication.sh 'Canary plugin versions require -PmarketplaceChannel=canary.'
   assert_contains scripts/validate-marketplace-publication.sh 'Stable plugin versions must use the default Marketplace channel.'
@@ -417,13 +542,21 @@ test_static_contracts() {
     --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
   ./scripts/verify-internal-api-allowlist.py \
     --manifest config/plugin-verifier/canary-internal-api-allowlist.txt >/dev/null
-  cmp -s \
-    config/plugin-verifier/stable-internal-api-allowlist.txt \
-    config/plugin-verifier/canary-internal-api-allowlist.txt || \
-    fail "canary allowlist diverged before branch-only canary implementation"
 
   python3 - <<'PY'
 from pathlib import Path
+import re
+
+build = Path("build.gradle.kts").read_text(encoding="utf-8")
+validator = Path("scripts/validate-canary-artifact.sh").read_text(encoding="utf-8")
+build_since = re.search(r'sinceBuild = "([^"]+)"', build)
+build_until = re.search(r'untilBuild = "([^"]+)"', build)
+validator_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', validator)
+validator_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', validator)
+if not all((build_since, build_until, validator_since, validator_until)):
+    raise SystemExit("trusted compatibility policy could not be resolved")
+if build_since.group(1) != validator_since.group(1) or build_until.group(1) != validator_until.group(1):
+    raise SystemExit("trusted artifact and Gradle compatibility policies diverged")
 
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 validate = workflow.index("Validate release version")
@@ -447,10 +580,15 @@ PY
   assert_contains .github/workflows/canary-release.yml 'MARKETPLACE_CHANNEL: canary'
   assert_contains .github/workflows/canary-release.yml 'CANARY_PUBLISH_TOKEN'
   assert_contains .github/workflows/canary-release.yml 'environment: canary-marketplace'
-  assert_contains .github/workflows/canary-release.yml 'prerelease: true'
+  assert_contains .github/workflows/canary-release.yml '--prerelease'
   assert_contains .github/workflows/canary-release.yml 'trusted/scripts/publish-canary-artifact.sh'
   assert_contains .github/workflows/canary-release.yml 'trusted/scripts/validate-canary-artifact.sh'
-  assert_contains .github/workflows/canary-release.yml 'source/config/plugin-verifier/canary-internal-api-allowlist.txt'
+  assert_contains .github/workflows/canary-release.yml 'trusted/scripts/verify-canary-artifact.sh'
+  assert_not_contains .github/workflows/canary-release.yml 'source/config/plugin-verifier/canary-internal-api-allowlist.txt'
+  assert_not_contains .github/workflows/canary-release.yml 'cache: "gradle"'
+  assert_contains .github/workflows/canary-release.yml 'if: always()'
+  assert_not_contains .github/workflows/canary-release.yml 'softprops/action-gh-release'
+  assert_contains scripts/publish-canary-artifact.sh '--expected-sha256'
   assert_not_contains .github/workflows/canary-release.yml 'generate-release-notes.sh'
   assert_not_contains .github/workflows/canary-release.yml '--tag "${{ inputs.tag }}"'
   assert_contains .github/workflows/canary-release.yml 'CANARY_TAG: ${{ inputs.tag }}'
@@ -460,10 +598,18 @@ PY
 
   python3 - <<'PY'
 from pathlib import Path
+import re
 
 workflow = Path(".github/workflows/canary-release.yml").read_text(encoding="utf-8")
-build = workflow.split("\n  build:\n", 1)[1].split("\n  publish:\n", 1)[0]
-publish = workflow.split("\n  publish:\n", 1)[1]
+build = workflow.split("\n  build:\n", 1)[1].split("\n  verify:\n", 1)[0]
+verify = workflow.split("\n  verify:\n", 1)[1].split("\n  publish:\n", 1)[0]
+publish = workflow.split("\n  publish:\n", 1)[1].split("\n  release:\n", 1)[0]
+release = workflow.split("\n  release:\n", 1)[1]
+
+for line in workflow.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
+        raise SystemExit(f"canary workflow action is not pinned to a full commit SHA: {stripped}")
 
 build_steps = [
     "Verify trusted workflow ref",
@@ -471,13 +617,38 @@ build_steps = [
     "Verify exact canary tag and branch isolation",
     "Run canary commit gate",
     "Run canary release compatibility gate",
-    "Verify exact canary internal API manifest",
     "Upload canary plugin artifact",
 ]
 if [build.index(step) for step in build_steps] != sorted(build.index(step) for step in build_steps):
     raise SystemExit("canary build workflow gate ordering is unsafe")
 if "CANARY_PUBLISH_TOKEN" in build:
     raise SystemExit("canary build job must not receive Marketplace secrets")
+if "verify-internal-api-allowlist.py" in build or "internal-api-usages.txt" in build:
+    raise SystemExit("canary build job must not make the trusted verification decision")
+if build.count("persist-credentials: false") != 2:
+    raise SystemExit("canary build checkouts must not persist credentials")
+
+verify_steps = [
+    "Verify trusted workflow ref",
+    "Check out trusted verification controls",
+    "Download canary plugin artifact",
+    "Revalidate canary tag provenance",
+    "Independently verify canary artifact",
+    "Record verified artifact digest",
+    "Upload trusted Plugin Verifier reports",
+]
+if [verify.index(step) for step in verify_steps] != sorted(verify.index(step) for step in verify_steps):
+    raise SystemExit("canary verification workflow gate ordering is unsafe")
+if "path: source" in verify or "working-directory: source" in verify:
+    raise SystemExit("trusted verification job must not check out branch-controlled source")
+if "CANARY_PUBLISH_TOKEN" in verify or "environment:" in verify:
+    raise SystemExit("trusted verification job must not receive publication authority")
+if "trusted/scripts/verify-canary-artifact.sh" not in verify:
+    raise SystemExit("trusted verification job must independently inspect the downloaded artifact")
+if "archive_sha256:" not in verify:
+    raise SystemExit("trusted verification job must bind publication to the verified artifact digest")
+if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in verify:
+    raise SystemExit("trusted verification must enforce the source tag digest")
 
 publish_steps = [
     "Verify trusted workflow ref",
@@ -485,13 +656,41 @@ publish_steps = [
     "Revalidate canary tag provenance",
     "Validate trusted canary artifact",
     "Verify canary Marketplace token",
-    "Create GitHub prerelease",
     "Publish trusted artifact to JetBrains Marketplace canary channel",
 ]
 if [publish.index(step) for step in publish_steps] != sorted(publish.index(step) for step in publish_steps):
     raise SystemExit("canary publish workflow gate ordering is unsafe")
 if "path: source" in publish or "working-directory: source" in publish:
     raise SystemExit("canary publish job must not check out or execute branch-controlled source")
+if "contents: read" not in publish or "contents: write" in publish:
+    raise SystemExit("Marketplace publication must not receive GitHub contents write authority")
+if "needs: [build, verify]" not in publish:
+    raise SystemExit("canary publication must depend on trusted artifact verification")
+if "EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}" not in publish:
+    raise SystemExit("canary publication must require the trusted verification digest")
+if 'test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"' not in publish:
+    raise SystemExit("canary publication must compare the downloaded artifact to the trusted digest")
+if '--expected-sha256 "$EXPECTED_ARCHIVE_SHA256"' not in publish:
+    raise SystemExit("Marketplace upload must recheck the independently verified artifact digest")
+if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in publish:
+    raise SystemExit("canary publication must enforce the source tag digest")
+if publish.index("EXPECTED_ARCHIVE_SHA256") > publish.index("Verify canary Marketplace token"):
+    raise SystemExit("verified artifact identity must be checked before publication authority")
+
+release_steps = [
+    "Verify trusted workflow ref",
+    "Download verified canary plugin artifact",
+    "Revalidate verified artifact digest",
+    "Create GitHub prerelease",
+]
+if [release.index(step) for step in release_steps] != sorted(release.index(step) for step in release_steps):
+    raise SystemExit("canary GitHub release workflow ordering is unsafe")
+if "needs: [build, verify, publish]" not in release:
+    raise SystemExit("GitHub prerelease creation must follow successful Marketplace publication")
+if "contents: write" not in release or "CANARY_PUBLISH_TOKEN" in release:
+    raise SystemExit("GitHub release authority must remain isolated from Marketplace authority")
+if 'test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"' not in release:
+    raise SystemExit("GitHub prerelease must use the independently verified artifact")
 PY
 
   assert_contains scripts/test-all.sh 'Plugin JaCoCo verification (0% minimum; report-only signal)'
@@ -505,6 +704,7 @@ test_canary_artifact_publication
 test_marketplace_publication_policy
 test_canary_branch_isolation
 test_internal_api_allowlist
+test_canary_verification_trust_boundary
 test_release_script_flow
 test_static_contracts
 

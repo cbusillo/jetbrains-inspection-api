@@ -182,6 +182,10 @@ tasks {
 
     withType<VerifyPluginTask> {
         val verifierPluginVersion = project.property("pluginVersion").toString()
+        val externalVerificationArchive = providers.gradleProperty("pluginVerificationArchive")
+        if (externalVerificationArchive.isPresent) {
+            archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))
+        }
         val allowlistName = if (
             Regex("^[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.[1-9][0-9]*$").matches(verifierPluginVersion)
         ) {
