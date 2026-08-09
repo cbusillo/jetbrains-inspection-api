@@ -774,7 +774,9 @@ an isolated `canary/vX.Y.Z-canary.N` tag. Pushing that tag does not publish
 anything. An operator must explicitly dispatch `.github/workflows/canary-release.yml`
 from the default branch with the existing tag as input. The workflow builds and
 tests the branch-only source without Marketplace secrets or persisted checkout
-credentials. That build workspace and all branch-produced verifier reports are
+credentials or Gradle build caching. The untrusted build runs tests and plugin
+structure validation but does not make the compatibility or private-API
+decision. That build workspace and all branch-produced verifier reports are
 discarded. A fresh trusted job downloads the resulting zip, independently runs
 Plugin Verifier against the artifact, and requires an exact match with the
 reviewed default-branch `canary-internal-api-allowlist.txt` before publication
@@ -789,11 +791,19 @@ and digest immediately before upload. It requires the
 explicit `canary` channel and validates the embedded plugin ID/version. A
 separate final job with GitHub contents write permission creates the prerelease
 only after Marketplace publication succeeds; the token-bearing Marketplace job
-has read-only repository permission. For a manual recovery or diagnostic
+has read-only repository permission. Dispatches are serialized by canary tag so
+two operators cannot race publication for the same candidate. Canary tags are
+treated as immutable publication inputs: every privileged job re-resolves the
+remote tag and fails if it no longer matches the source SHA produced by the
+unprivileged build. For a manual recovery or diagnostic
 upload, verify the already-built canary zip with
 trusted default-branch controls before running the publisher. Run both commands
 from a separate, clean checkout pinned to the reviewed default-branch dispatch
-commit, never from the canary source worktree:
+commit, never from the canary source worktree. The trusted verifier runs Gradle
+with Java 21; when the operator shell uses a newer Java runtime, set
+`JAVA_HOME_21` and the verifier selects that JDK automatically. Canary artifact
+verification is pinned to the reviewed 262 IDE build; Stable verification
+continues to cover the full supported range:
 
 ```bash
 cd /path/to/clean/trusted-default-branch-checkout
@@ -815,7 +825,8 @@ PUBLISH_TOKEN="$CANARY_PUBLISH_TOKEN" MARKETPLACE_CHANNEL=canary \
 
 The artifact publisher fails before network upload when the tag, zip name,
 embedded plugin ID/version, token, or channel is wrong. Canary product code stays
-on the experimental branch and is not hidden behind a Stable runtime flag. Its
+on the experimental branch, is compatible only with the 262 platform line, and
+is not hidden behind a Stable runtime flag. Its
 intended private API findings must be reviewed into the trusted default-branch
 canary manifest before dispatch; the branch cannot supply the publication
 decision, verifier, manifest, or reports. Recovery is to stop
@@ -823,8 +834,10 @@ dispatching the canary workflow, withdraw the canary-channel Marketplace update
 if one exists, delete any orphaned GitHub prerelease from a failed upload, and
 delete the experimental branch after preserving verifier evidence. Stable
 artifacts and Stable Marketplace submissions are never
-replaced or resubmitted by this path. Do not dispatch a canary publication while
-a Stable Marketplace submission is still awaiting review.
+cancelled, hidden, replaced, or resubmitted by this path. The custom `canary`
+channel may be submitted while a Stable update is awaiting review because the
+channels are separate plugin repositories; if Marketplace refuses concurrent
+review or upload, preserve the exact response and stop without changing Stable.
 
 Before publishing a compatibility-range update, capture release evidence for the
 target IDE line:

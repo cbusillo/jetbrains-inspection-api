@@ -39,7 +39,7 @@ if ! [[ "$TAG" =~ ^canary/v([0-9]+\.[0-9]+\.[0-9]+)-canary\.([1-9][0-9]*)$ ]]; t
 fi
 
 VERSION="${BASH_REMATCH[1]}-canary.${BASH_REMATCH[2]}"
-EXPECTED_SINCE_BUILD="251"
+EXPECTED_SINCE_BUILD="262"
 EXPECTED_UNTIL_BUILD="262.*"
 "$ROOT/scripts/validate-marketplace-publication.sh" \
   --version "$VERSION" \
