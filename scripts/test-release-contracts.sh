@@ -99,7 +99,7 @@ test_canary_version_validator() {
 }
 
 test_canary_artifact_publication() {
-  local temp_dir fake_bin curl_log archive archive_sha256 bad_archive bad_version_archive bad_compatibility_archive missing_jar_archive
+  local temp_dir fake_bin curl_log archive archive_sha256 bad_archive bad_version_archive bad_compatibility_archive dirty_archive wrong_source_archive missing_jar_archive source_sha
   temp_dir=$(mktemp -d)
   fake_bin="$temp_dir/bin"
   curl_log="$temp_dir/curl.log"
@@ -107,7 +107,11 @@ test_canary_artifact_publication() {
   bad_archive="$temp_dir/bad/jetbrains-inspection-api-1.2.3-canary.1.zip"
   bad_version_archive="$temp_dir/bad-version/jetbrains-inspection-api-1.2.3-canary.1.zip"
   bad_compatibility_archive="$temp_dir/bad-compatibility/jetbrains-inspection-api-1.2.3-canary.1.zip"
+  dirty_archive="$temp_dir/dirty/jetbrains-inspection-api-1.2.3-canary.1.zip"
+  wrong_source_archive="$temp_dir/wrong-source/jetbrains-inspection-api-1.2.3-canary.1.zip"
   missing_jar_archive="$temp_dir/missing-jar/jetbrains-inspection-api-1.2.3-canary.1.zip"
+  source_sha="0123456789abcdef0123456789abcdef01234567"
+  export CANARY_SOURCE_SHA="$source_sha"
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/scripts" "$fake_bin"
   cp \
@@ -119,12 +123,16 @@ test_canary_artifact_publication() {
     "$(dirname "$bad_archive")" \
     "$(dirname "$bad_version_archive")" \
     "$(dirname "$bad_compatibility_archive")" \
+    "$(dirname "$dirty_archive")" \
+    "$(dirname "$wrong_source_archive")" \
     "$(dirname "$missing_jar_archive")"
   python3 - \
     "$archive" \
     "$bad_archive" \
     "$bad_version_archive" \
     "$bad_compatibility_archive" \
+    "$dirty_archive" \
+    "$wrong_source_archive" \
     "$missing_jar_archive" <<'PY'
 from io import BytesIO
 from pathlib import Path
@@ -137,6 +145,8 @@ def write_archive(
     version: str,
     since_build: str = "262",
     until_build: str = "262.*",
+    build_commit: str = "0123456789abcdef0123456789abcdef01234567",
+    build_dirty: bool = False,
 ) -> None:
     plugin_xml = (
         f"<idea-plugin><id>{plugin_id}</id>"
@@ -144,9 +154,22 @@ def write_archive(
         f'<idea-version since-build="{since_build}" until-build="{until_build}"/>'
         "</idea-plugin>"
     )
+    state = "dirty" if build_dirty else "clean"
+    build_info = "\n".join(
+        [
+            f"plugin.version={version}",
+            f"plugin.build.commit={build_commit}",
+            f"plugin.build.short_commit={build_commit[:12]}",
+            f"plugin.build.dirty={str(build_dirty).lower()}",
+            f"plugin.build.fingerprint={build_commit}-{state}",
+            "plugin.build.time=2026-08-09T00\\:00\\:00Z",
+            "",
+        ]
+    )
     plugin_jar = BytesIO()
     with zipfile.ZipFile(plugin_jar, "w") as jar:
         jar.writestr("META-INF/plugin.xml", plugin_xml)
+        jar.writestr("com/shiny/inspectionmcp/inspection-build.properties", build_info)
     with zipfile.ZipFile(path, "w") as plugin_zip:
         plugin_zip.writestr(
             "jetbrains-inspection-api/lib/jetbrains-inspection-api-1.2.3-canary.1.jar",
@@ -162,7 +185,19 @@ write_archive(
     "1.2.3-canary.1",
     until_build="271.*",
 )
-with zipfile.ZipFile(Path(sys.argv[5]), "w") as plugin_zip:
+write_archive(
+    Path(sys.argv[5]),
+    "com.shiny.inspection.api",
+    "1.2.3-canary.1",
+    build_dirty=True,
+)
+write_archive(
+    Path(sys.argv[6]),
+    "com.shiny.inspection.api",
+    "1.2.3-canary.1",
+    build_commit="89abcdef0123456789abcdef0123456789abcdef",
+)
+with zipfile.ZipFile(Path(sys.argv[7]), "w") as plugin_zip:
     plugin_zip.writestr("unexpected.txt", "missing plugin jar")
 PY
   archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
@@ -171,6 +206,11 @@ PY
 printf '%s\n' "$@" > "$CURL_LOG"
 CURL
   chmod +x "$fake_bin/curl"
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary CANARY_SOURCE_SHA='' ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+    fail "canary artifact publisher accepted an absent source SHA"
+  fi
+  [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl without source provenance"
 
   if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-canary-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
     fail "canary artifact publisher accepted an absent channel"
@@ -202,6 +242,16 @@ CURL
   fi
   [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for an untrusted compatibility range"
 
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$dirty_archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+    fail "canary artifact publisher accepted dirty source provenance"
+  fi
+  [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for dirty source provenance"
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$wrong_source_archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+    fail "canary artifact publisher accepted a mismatched source commit"
+  fi
+  [ ! -e "$curl_log" ] || fail "canary artifact publisher invoked curl for a mismatched source commit"
+
   if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive "$missing_jar_archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
     fail "canary artifact publisher accepted an archive without the plugin jar"
   fi
@@ -222,6 +272,7 @@ CURL
   assert_contains "$curl_log" "file=@$archive"
   assert_contains "$curl_log" "channel=canary"
 
+  unset CANARY_SOURCE_SHA
   rm -rf "$temp_dir"
   trap - RETURN
 }
@@ -349,7 +400,7 @@ MANIFEST
 }
 
 test_canary_verification_trust_boundary() {
-  local temp_dir trusted source archive gradle_log java_home_21 java_home_25
+  local temp_dir trusted source archive gradle_log java_home_21 java_home_25 source_sha
   temp_dir=$(mktemp -d)
   trusted="$temp_dir/trusted"
   source="$temp_dir/source"
@@ -357,6 +408,7 @@ test_canary_verification_trust_boundary() {
   gradle_log="$temp_dir/gradle.log"
   java_home_21="$temp_dir/jdk-21"
   java_home_25="$temp_dir/jdk-25"
+  source_sha="0123456789abcdef0123456789abcdef01234567"
   trap 'rm -rf "$temp_dir"' RETURN
 
   mkdir -p \
@@ -408,13 +460,14 @@ MALICIOUS
   printf 'fabricated manifest\n' > \
     "$source/config/plugin-verifier/canary-internal-api-allowlist.txt"
 
-  python3 - "$archive" <<'PY'
+  python3 - "$archive" "$source_sha" <<'PY'
 from io import BytesIO
 from pathlib import Path
 import sys
 import zipfile
 
 archive = Path(sys.argv[1])
+source_sha = sys.argv[2]
 plugin_jar = BytesIO()
 with zipfile.ZipFile(plugin_jar, "w") as jar:
     jar.writestr(
@@ -423,6 +476,20 @@ with zipfile.ZipFile(plugin_jar, "w") as jar:
         "<version>1.2.3-canary.1</version>"
         '<idea-version since-build="262" until-build="262.*"/>'
         "</idea-plugin>",
+    )
+    jar.writestr(
+        "com/shiny/inspectionmcp/inspection-build.properties",
+        "\n".join(
+            [
+                "plugin.version=1.2.3-canary.1",
+                f"plugin.build.commit={source_sha}",
+                f"plugin.build.short_commit={source_sha[:12]}",
+                "plugin.build.dirty=false",
+                f"plugin.build.fingerprint={source_sha}-clean",
+                "plugin.build.time=2026-08-09T00\\:00\\:00Z",
+                "",
+            ]
+        ),
     )
 with zipfile.ZipFile(archive, "w") as plugin_zip:
     plugin_zip.writestr(
@@ -442,7 +509,8 @@ PY
     "$trusted/scripts/verify-canary-artifact.sh" \
       --archive "$archive" \
       --tag canary/v1.2.3-canary.1 \
-      --channel canary >/dev/null
+      --channel canary \
+      --source-sha "$source_sha" >/dev/null
   )
 
   [ ! -e "$temp_dir/tampered" ] || \
@@ -670,9 +738,9 @@ build_steps = [
     "Validate canary source metadata",
     "Verify exact canary tag and branch isolation",
     "Set up JDK 25",
-    "Prepare Gradle wrapper without source drift",
     "Run canary commit gate",
-    "Run canary structure gate",
+    "Restore exact source for artifact build",
+    "Build clean canary artifact",
     "Upload canary plugin artifact",
 ]
 if [build.index(step) for step in build_steps] != sorted(build.index(step) for step in build_steps):
@@ -683,14 +751,13 @@ if "verify-internal-api-allowlist.py" in build or "internal-api-usages.txt" in b
     raise SystemExit("canary build job must not make the trusted verification decision")
 if "release-compatibility-gate.sh" in build or " verifyPlugin\n" in build:
     raise SystemExit("canary build job must not run branch-controlled compatibility verification")
-if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache verifyPluginStructure" not in build:
+if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache buildPlugin verifyPluginStructure" not in build:
     raise SystemExit("canary build job must disable the Gradle build cache")
 if 'java-version: "25"' not in build:
     raise SystemExit("canary source build must provision Java 25")
-if "git config core.fileMode false" not in build or "chmod +x gradlew" not in build:
-    raise SystemExit("canary build must preserve clean provenance around the Gradle wrapper mode")
-if build.index("git config core.fileMode false") > build.index("chmod +x gradlew"):
-    raise SystemExit("canary build must ignore file-mode drift before making the wrapper executable")
+for clean_command in ["git reset --hard HEAD", "git clean -ffdx", "test -x gradlew", "git status --porcelain --untracked-files=all"]:
+    if clean_command not in build:
+        raise SystemExit(f"canary build must restore exact source before artifact creation: {clean_command}")
 if build.count("persist-credentials: false") != 2:
     raise SystemExit("canary build checkouts must not persist credentials")
 
@@ -713,6 +780,8 @@ if "persist-credentials: false" not in verify:
     raise SystemExit("trusted verification checkout must not persist credentials")
 if "trusted/scripts/verify-canary-artifact.sh" not in verify:
     raise SystemExit("trusted verification job must independently inspect the downloaded artifact")
+if '--source-sha "$EXPECTED_SOURCE_SHA"' not in verify:
+    raise SystemExit("trusted verification must inspect embedded clean source provenance")
 if "Set up JDK 21" not in verify or 'java-version: "21"' not in verify:
     raise SystemExit("trusted artifact verification must preserve Java 21")
 if "archive_sha256:" not in verify:
@@ -744,6 +813,8 @@ if 'test "$actual_sha256" = "$EXPECTED_ARCHIVE_SHA256"' not in publish:
     raise SystemExit("canary publication must compare the downloaded artifact to the trusted digest")
 if '--expected-sha256 "$EXPECTED_ARCHIVE_SHA256"' not in publish:
     raise SystemExit("Marketplace upload must recheck the independently verified artifact digest")
+if publish.count('--source-sha "$EXPECTED_SOURCE_SHA"') != 2:
+    raise SystemExit("Marketplace validation and upload must recheck embedded clean source provenance")
 if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in publish:
     raise SystemExit("canary publication must enforce the source tag digest")
 if publish.index("EXPECTED_ARCHIVE_SHA256") > publish.index("Verify canary Marketplace token"):

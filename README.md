@@ -775,14 +775,15 @@ anything. An operator must explicitly dispatch `.github/workflows/canary-release
 from the default branch with the existing tag as input. The workflow builds and
 tests the branch-only source without Marketplace secrets or persisted checkout
 credentials or Gradle build caching. The untrusted 262-only source build uses
-Java 25, ignores only checkout-local executable-bit differences before invoking
-the Gradle wrapper, and runs tests and plugin
-structure validation but does not make the compatibility or private-API
-decision. That build workspace and all branch-produced verifier reports are
-discarded. A fresh trusted job downloads the resulting zip, independently runs
-Plugin Verifier against the artifact, and requires an exact match with the
-reviewed default-branch `canary-internal-api-allowlist.txt` before publication
-can proceed.
+Java 25 and runs tests but does not make the compatibility or private-API
+decision. After the tests, the workflow resets the checkout to the immutable
+tag, deletes every generated or untracked file, and rebuilds the distributable
+and structure report without a Gradle build cache. That test workspace and all
+branch-produced verifier reports are discarded. A fresh trusted job downloads
+the resulting zip, requires the embedded source commit, clean-state marker, and
+fingerprint to match the tagged commit exactly, independently runs Plugin
+Verifier against the artifact, and requires an exact match with the reviewed
+default-branch `canary-internal-api-allowlist.txt` before publication can proceed.
 
 The fresh publish job uses the `canary-marketplace` GitHub environment, which must be
 restricted to the default branch and require reviewer approval, plus the
@@ -814,7 +815,8 @@ MARKETPLACE_CHANNEL=canary \
   ./scripts/verify-canary-artifact.sh \
     --archive /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip \
     --tag canary/v1.14.0-canary.1 \
-    --channel canary
+    --channel canary \
+    --source-sha 61e74b59d8adae9f684ff911c8baf6e3a6fe24f1
 
 verified_sha256="$(shasum -a 256 /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip | awk '{print $1}')"
 PUBLISH_TOKEN="$CANARY_PUBLISH_TOKEN" MARKETPLACE_CHANNEL=canary \
@@ -822,11 +824,13 @@ PUBLISH_TOKEN="$CANARY_PUBLISH_TOKEN" MARKETPLACE_CHANNEL=canary \
     --archive /path/to/jetbrains-inspection-api-1.14.0-canary.1.zip \
     --tag canary/v1.14.0-canary.1 \
     --channel canary \
-    --expected-sha256 "$verified_sha256"
+    --expected-sha256 "$verified_sha256" \
+    --source-sha 61e74b59d8adae9f684ff911c8baf6e3a6fe24f1
 ```
 
 The artifact publisher fails before network upload when the tag, zip name,
-embedded plugin ID/version, token, or channel is wrong. Canary product code stays
+embedded plugin ID/version, source commit, clean-state fingerprint, token, or
+channel is wrong. Canary product code stays
 on the experimental branch, is compatible only with the 262 platform line, and
 is not hidden behind a Stable runtime flag. Its
 intended private API findings must be reviewed into the trusted default-branch

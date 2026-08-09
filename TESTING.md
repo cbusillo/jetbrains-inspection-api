@@ -360,9 +360,10 @@ default branch with an existing isolated tag. Its build job treats the source,
 Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
 credentials, uses no Gradle cache, and runs without Marketplace secrets. Same-tag
 dispatches are serialized. The untrusted 262-only source build uses Java 25 and
-ignores only checkout-local Gradle-wrapper file-mode differences so embedded
-source provenance remains clean. A fresh verification job checks out only
-trusted controls, downloads the built zip,
+resets and cleans the exact tagged checkout after tests before rebuilding the
+artifact and structure report from scratch. A fresh verification job checks out
+only trusted controls, downloads the built zip, requires the embedded commit,
+clean-state marker, and fingerprint to match the tagged source exactly,
 independently runs Plugin Verifier against that artifact on the pinned reviewed
 262 IDE build, and requires every
 artifact-derived report to match the trusted default-branch
@@ -373,8 +374,9 @@ publish job enter the default-branch-only, reviewer-approved
 `canary-marketplace` environment. It revalidates the tag SHA, archive identity,
 and verified digest, then uploads through the
 trusted `scripts/publish-canary-artifact.sh` with the environment-only
-`CANARY_PUBLISH_TOKEN`, explicit `canary` channel, and required verified SHA-256.
-Artifact validation requires the canary's narrow `262..262.*` compatibility range.
+`CANARY_PUBLISH_TOKEN`, explicit `canary` channel, required source SHA, and
+verified SHA-256. Artifact validation requires the canary's narrow
+`262..262.*` compatibility range and clean tagged-source provenance.
 That environment job has read-only repository permission. A separate write-only
 GitHub release job creates the prerelease only after Marketplace upload succeeds
 and rechecks the verified digest without receiving the Marketplace token. The release contract tests
