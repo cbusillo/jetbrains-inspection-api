@@ -670,6 +670,7 @@ build_steps = [
     "Validate canary source metadata",
     "Verify exact canary tag and branch isolation",
     "Set up JDK 25",
+    "Prepare Gradle wrapper without source drift",
     "Run canary commit gate",
     "Run canary structure gate",
     "Upload canary plugin artifact",
@@ -686,6 +687,10 @@ if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache
     raise SystemExit("canary build job must disable the Gradle build cache")
 if 'java-version: "25"' not in build:
     raise SystemExit("canary source build must provision Java 25")
+if "git config core.fileMode false" not in build or "chmod +x gradlew" not in build:
+    raise SystemExit("canary build must preserve clean provenance around the Gradle wrapper mode")
+if build.index("git config core.fileMode false") > build.index("chmod +x gradlew"):
+    raise SystemExit("canary build must ignore file-mode drift before making the wrapper executable")
 if build.count("persist-credentials: false") != 2:
     raise SystemExit("canary build checkouts must not persist credentials")
 

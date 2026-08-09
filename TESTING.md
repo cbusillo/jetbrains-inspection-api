@@ -359,8 +359,10 @@ Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
 default branch with an existing isolated tag. Its build job treats the source,
 Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
 credentials, uses no Gradle cache, and runs without Marketplace secrets. Same-tag
-dispatches are serialized. The untrusted 262-only source build uses Java 25. A fresh
-verification job checks out only trusted controls, downloads the built zip,
+dispatches are serialized. The untrusted 262-only source build uses Java 25 and
+ignores only checkout-local Gradle-wrapper file-mode differences so embedded
+source provenance remains clean. A fresh verification job checks out only
+trusted controls, downloads the built zip,
 independently runs Plugin Verifier against that artifact on the pinned reviewed
 262 IDE build, and requires every
 artifact-derived report to match the trusted default-branch
