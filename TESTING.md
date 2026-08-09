@@ -360,9 +360,11 @@ default branch with an existing isolated tag. Its build job treats the source,
 Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
 credentials, uses no Gradle cache, and runs without Marketplace secrets. Same-tag
 dispatches are serialized. The untrusted 262-only source build uses Java 25 and
-resets and cleans the exact tagged checkout after tests before rebuilding the
-artifact and structure report from scratch. A fresh verification job checks out
-only trusted controls, downloads the built zip, requires the embedded commit,
+is discarded after tests. A separate fresh packaging runner checks out the
+captured source SHA, re-resolves the immutable tag, proves the checkout is clean,
+and rebuilds the artifact and structure report from scratch. A fresh
+verification job checks out only trusted controls, downloads the built zip,
+requires the embedded commit,
 clean-state marker, and fingerprint to match the tagged source exactly,
 independently runs Plugin Verifier against that artifact on the pinned reviewed
 262 IDE build, and requires every

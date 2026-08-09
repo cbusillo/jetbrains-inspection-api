@@ -776,14 +776,15 @@ from the default branch with the existing tag as input. The workflow builds and
 tests the branch-only source without Marketplace secrets or persisted checkout
 credentials or Gradle build caching. The untrusted 262-only source build uses
 Java 25 and runs tests but does not make the compatibility or private-API
-decision. After the tests, the workflow resets the checkout to the immutable
-tag, deletes every generated or untracked file, and rebuilds the distributable
-and structure report without a Gradle build cache. That test workspace and all
-branch-produced verifier reports are discarded. A fresh trusted job downloads
-the resulting zip, requires the embedded source commit, clean-state marker, and
-fingerprint to match the tagged commit exactly, independently runs Plugin
-Verifier against the artifact, and requires an exact match with the reviewed
-default-branch `canary-internal-api-allowlist.txt` before publication can proceed.
+decision. That runner is discarded. A separate fresh packaging runner checks
+out the captured immutable source commit directly, re-resolves the tag to the
+same SHA, proves the checkout is clean, and rebuilds the distributable and
+structure report without a Gradle build cache. A fresh trusted verification job
+downloads the resulting zip, requires the embedded source commit, clean-state
+marker, and fingerprint to match the tagged commit exactly, independently runs
+Plugin Verifier against the artifact, and requires an exact match with the
+reviewed default-branch `canary-internal-api-allowlist.txt` before publication
+can proceed.
 
 The fresh publish job uses the `canary-marketplace` GitHub environment, which must be
 restricted to the default branch and require reviewer approval, plus the

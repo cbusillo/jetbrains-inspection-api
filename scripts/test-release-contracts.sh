@@ -723,7 +723,8 @@ from pathlib import Path
 import re
 
 workflow = Path(".github/workflows/canary-release.yml").read_text(encoding="utf-8")
-build = workflow.split("\n  build:\n", 1)[1].split("\n  verify:\n", 1)[0]
+build = workflow.split("\n  build:\n", 1)[1].split("\n  package:\n", 1)[0]
+package = workflow.split("\n  package:\n", 1)[1].split("\n  verify:\n", 1)[0]
 verify = workflow.split("\n  verify:\n", 1)[1].split("\n  publish:\n", 1)[0]
 publish = workflow.split("\n  publish:\n", 1)[1].split("\n  release:\n", 1)[0]
 release = workflow.split("\n  release:\n", 1)[1]
@@ -739,9 +740,6 @@ build_steps = [
     "Verify exact canary tag and branch isolation",
     "Set up JDK 25",
     "Run canary commit gate",
-    "Restore exact source for artifact build",
-    "Build clean canary artifact",
-    "Upload canary plugin artifact",
 ]
 if [build.index(step) for step in build_steps] != sorted(build.index(step) for step in build_steps):
     raise SystemExit("canary build workflow gate ordering is unsafe")
@@ -751,15 +749,43 @@ if "verify-internal-api-allowlist.py" in build or "internal-api-usages.txt" in b
     raise SystemExit("canary build job must not make the trusted verification decision")
 if "release-compatibility-gate.sh" in build or " verifyPlugin\n" in build:
     raise SystemExit("canary build job must not run branch-controlled compatibility verification")
-if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache buildPlugin verifyPluginStructure" not in build:
+if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build:
     raise SystemExit("canary build job must disable the Gradle build cache")
 if 'java-version: "25"' not in build:
     raise SystemExit("canary source build must provision Java 25")
-for clean_command in ["git reset --hard HEAD", "git clean -ffdx", "test -x gradlew", "git status --porcelain --untracked-files=all"]:
-    if clean_command not in build:
-        raise SystemExit(f"canary build must restore exact source before artifact creation: {clean_command}")
 if build.count("persist-credentials: false") != 2:
     raise SystemExit("canary build checkouts must not persist credentials")
+
+package_steps = [
+    "Verify trusted workflow ref",
+    "Check out exact canary source",
+    "Revalidate exact canary source",
+    "Set up JDK 25",
+    "Build clean canary artifact",
+    "Upload canary plugin artifact",
+]
+if [package.index(step) for step in package_steps] != sorted(package.index(step) for step in package_steps):
+    raise SystemExit("canary packaging workflow gate ordering is unsafe")
+if "needs: [build]" not in package:
+    raise SystemExit("canary packaging must follow the untrusted test gate on a fresh runner")
+if "CANARY_PUBLISH_TOKEN" in package or "environment:" in package:
+    raise SystemExit("canary packaging must not receive publication authority")
+if "persist-credentials: false" not in package:
+    raise SystemExit("canary packaging checkout must not persist credentials")
+if 'ref: ${{ needs.build.outputs.source_sha }}' not in package:
+    raise SystemExit("canary packaging checkout must pin the captured source commit")
+for exact_source_check in [
+    'test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"',
+    'test "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"',
+    "test -x gradlew",
+    "git status --porcelain --untracked-files=all",
+]:
+    if exact_source_check not in package:
+        raise SystemExit(f"canary packaging must prove exact clean source: {exact_source_check}")
+if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in package or "--no-build-cache buildPlugin verifyPluginStructure" not in package:
+    raise SystemExit("canary packaging must rebuild without the Gradle build cache")
+if 'java-version: "25"' not in package:
+    raise SystemExit("canary packaging must provision Java 25")
 
 verify_steps = [
     "Verify trusted workflow ref",
@@ -786,6 +812,8 @@ if "Set up JDK 21" not in verify or 'java-version: "21"' not in verify:
     raise SystemExit("trusted artifact verification must preserve Java 21")
 if "archive_sha256:" not in verify:
     raise SystemExit("trusted verification job must bind publication to the verified artifact digest")
+if "needs: [build, package]" not in verify:
+    raise SystemExit("trusted verification must consume only the fresh packaging artifact")
 if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in verify:
     raise SystemExit("trusted verification must enforce the source tag digest")
 
@@ -805,7 +833,7 @@ if "contents: read" not in publish or "contents: write" in publish:
     raise SystemExit("Marketplace publication must not receive GitHub contents write authority")
 if "persist-credentials: false" not in publish:
     raise SystemExit("Marketplace publication checkout must not persist credentials")
-if "needs: [build, verify]" not in publish:
+if "needs: [build, package, verify]" not in publish:
     raise SystemExit("canary publication must depend on trusted artifact verification")
 if "EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}" not in publish:
     raise SystemExit("canary publication must require the trusted verification digest")
@@ -830,7 +858,7 @@ release_steps = [
 ]
 if [release.index(step) for step in release_steps] != sorted(release.index(step) for step in release_steps):
     raise SystemExit("canary GitHub release workflow ordering is unsafe")
-if "needs: [build, verify, publish]" not in release:
+if "needs: [build, package, verify, publish]" not in release:
     raise SystemExit("GitHub prerelease creation must follow successful Marketplace publication")
 if "contents: write" not in release or "CANARY_PUBLISH_TOKEN" in release:
     raise SystemExit("GitHub release authority must remain isolated from Marketplace authority")

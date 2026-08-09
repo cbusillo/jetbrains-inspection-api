@@ -82,26 +82,6 @@ jobs:
         working-directory: source
         run: ./scripts/commit-gate.sh --ci
 
-      - name: Restore exact source for artifact build
-        working-directory: source
-        run: |
-          git reset --hard HEAD
-          git clean -ffdx
-          test -x gradlew
-          test -z "$(git status --porcelain --untracked-files=all)"
-
-      - name: Build clean canary artifact
-        working-directory: source
-        run: ./gradlew --no-build-cache buildPlugin verifyPluginStructure
-
-      - name: Upload canary plugin artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: canary-plugin-${{ steps.canary_version.outputs.version }}
-          path: source/build/distributions/jetbrains-inspection-api-${{ steps.canary_version.outputs.version }}.zip
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Upload test results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: failure()
@@ -113,8 +93,60 @@ jobs:
             source/mcp-server-jvm/build/reports/tests/test/
           retention-days: 7
 
-  verify:
+  package:
     needs: [build]
+    runs-on: ubuntu-latest
+    env:
+      GRADLE_OPTS: "-Dorg.gradle.caching=false"
+    permissions:
+      contents: read
+
+    steps:
+      - name: Verify trusted workflow ref
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: test "$GITHUB_REF" = "refs/heads/$DEFAULT_BRANCH"
+
+      - name: Check out exact canary source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ needs.build.outputs.source_sha }}
+          path: source
+
+      - name: Revalidate exact canary source
+        env:
+          CANARY_TAG: ${{ inputs.tag }}
+          EXPECTED_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+        working-directory: source
+        run: |
+          git fetch origin "refs/tags/$CANARY_TAG:refs/tags/$CANARY_TAG"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_SOURCE_SHA"
+          test "$(git rev-parse "refs/tags/$CANARY_TAG^{commit}")" = "$EXPECTED_SOURCE_SHA"
+          test -x gradlew
+          test -z "$(git status --porcelain --untracked-files=all)"
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          java-version: "25"
+          distribution: "temurin"
+
+      - name: Build clean canary artifact
+        working-directory: source
+        run: ./gradlew --no-build-cache buildPlugin verifyPluginStructure
+
+      - name: Upload canary plugin artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: canary-plugin-${{ needs.build.outputs.version }}
+          path: source/build/distributions/jetbrains-inspection-api-${{ needs.build.outputs.version }}.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    needs: [build, package]
     runs-on: ubuntu-latest
     outputs:
       archive_sha256: ${{ steps.archive_digest.outputs.sha256 }}
@@ -184,7 +216,7 @@ jobs:
           retention-days: 30
 
   publish:
-    needs: [build, verify]
+    needs: [build, package, verify]
     runs-on: ubuntu-latest
     environment: canary-marketplace
     permissions:
@@ -260,7 +292,7 @@ jobs:
             --source-sha "$EXPECTED_SOURCE_SHA"
 
   release:
-    needs: [build, verify, publish]
+    needs: [build, package, verify, publish]
     runs-on: ubuntu-latest
     permissions:
       contents: write
