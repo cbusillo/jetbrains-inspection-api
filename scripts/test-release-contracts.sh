@@ -135,7 +135,7 @@ def write_archive(
     path: Path,
     plugin_id: str,
     version: str,
-    since_build: str = "251",
+    since_build: str = "262",
     until_build: str = "262.*",
 ) -> None:
     plugin_xml = (
@@ -349,17 +349,21 @@ MANIFEST
 }
 
 test_canary_verification_trust_boundary() {
-  local temp_dir trusted source archive gradle_log
+  local temp_dir trusted source archive gradle_log java_home_21 java_home_25
   temp_dir=$(mktemp -d)
   trusted="$temp_dir/trusted"
   source="$temp_dir/source"
   archive="$temp_dir/jetbrains-inspection-api-1.2.3-canary.1.zip"
   gradle_log="$temp_dir/gradle.log"
+  java_home_21="$temp_dir/jdk-21"
+  java_home_25="$temp_dir/jdk-25"
   trap 'rm -rf "$temp_dir"' RETURN
 
   mkdir -p \
     "$trusted/scripts" \
     "$trusted/config/plugin-verifier" \
+    "$java_home_21/bin" \
+    "$java_home_25/bin" \
     "$source/trusted/scripts" \
     "$source/build/reports/pluginVerifier/tampered" \
     "$source/config/plugin-verifier"
@@ -376,9 +380,22 @@ test_canary_verification_trust_boundary() {
 set -euo pipefail
 test "$PWD" = "$TRUSTED_ROOT"
 test -f config/plugin-verifier/canary-internal-api-allowlist.txt
+test "$JAVA_HOME" = "$EXPECTED_JAVA_HOME"
 printf '%s\n' "$@" > "$GRADLE_LOG"
 GRADLE
   chmod +x "$trusted/gradlew"
+
+  cat > "$java_home_21/bin/java" <<'JAVA21'
+#!/usr/bin/env bash
+echo 'openjdk version "21.0.11"' >&2
+JAVA21
+  chmod +x "$java_home_21/bin/java"
+
+  cat > "$java_home_25/bin/java" <<'JAVA25'
+#!/usr/bin/env bash
+echo 'openjdk version "25.0.2"' >&2
+JAVA25
+  chmod +x "$java_home_25/bin/java"
 
   cat > "$source/trusted/scripts/verify-canary-artifact.sh" <<'MALICIOUS'
 #!/usr/bin/env bash
@@ -404,7 +421,7 @@ with zipfile.ZipFile(plugin_jar, "w") as jar:
         "META-INF/plugin.xml",
         "<idea-plugin><id>com.shiny.inspection.api</id>"
         "<version>1.2.3-canary.1</version>"
-        '<idea-version since-build="251" until-build="262.*"/>'
+        '<idea-version since-build="262" until-build="262.*"/>'
         "</idea-plugin>",
     )
 with zipfile.ZipFile(archive, "w") as plugin_zip:
@@ -418,6 +435,9 @@ PY
     export GRADLE_LOG="$gradle_log"
     export TAMPER_MARKER="$temp_dir/tampered"
     export TRUSTED_ROOT="$trusted"
+    export JAVA_HOME="$java_home_25"
+    export JAVA_HOME_21="$java_home_21"
+    export EXPECTED_JAVA_HOME="$java_home_21"
     cd "$source"
     "$trusted/scripts/verify-canary-artifact.sh" \
       --archive "$archive" \
@@ -531,6 +551,8 @@ test_static_contracts() {
   assert_contains scripts/release-compatibility-gate.sh 'buildPlugin verifyPluginStructure verifyPlugin'
   assert_contains build.gradle.kts 'stable-internal-api-allowlist.txt'
   assert_contains build.gradle.kts 'canary-internal-api-allowlist.txt'
+  assert_contains build.gradle.kts 'if (isCanaryPluginVersion)'
+  assert_contains build.gradle.kts 'create(IntelliJPlatformType.IntellijIdeaUltimate, "262.9437.65")'
   assert_contains build.gradle.kts 'providers.gradleProperty("pluginVerificationArchive")'
   assert_contains build.gradle.kts 'archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))'
   assert_contains build.gradle.kts 'scripts/validate-marketplace-publication.sh'
@@ -544,6 +566,34 @@ test_static_contracts() {
     --manifest config/plugin-verifier/canary-internal-api-allowlist.txt >/dev/null
 
   python3 - <<'PY'
+from collections import Counter
+from pathlib import Path
+
+def entries(path: str) -> set[str]:
+    return {
+        line.strip()
+        for line in Path(path).read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+
+stable = entries("config/plugin-verifier/stable-internal-api-allowlist.txt")
+canary = entries("config/plugin-verifier/canary-internal-api-allowlist.txt")
+probe_findings = {
+    finding for finding in canary if "PrivatePluginRecommendationProbe" in finding
+}
+if len(canary) != 73:
+    raise SystemExit(f"canary artifact allowlist must contain exactly 73 findings, found {len(canary)}")
+if len(probe_findings) != 13:
+    raise SystemExit(f"canary allowlist must contain exactly 13 probe findings, found {len(probe_findings)}")
+if len(canary - probe_findings) != 60:
+    raise SystemExit("canary allowlist must preserve the reviewed 60-finding v1.14.0 baseline")
+expected_kinds = Counter({"class": 5, "field": 3, "method": 5})
+actual_kinds = Counter(finding.split()[1] for finding in probe_findings)
+if actual_kinds != expected_kinds:
+    raise SystemExit(f"unexpected canary finding kinds: {actual_kinds}")
+PY
+
+  python3 - <<'PY'
 from pathlib import Path
 import re
 
@@ -555,8 +605,10 @@ validator_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', validator)
 validator_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', validator)
 if not all((build_since, build_until, validator_since, validator_until)):
     raise SystemExit("trusted compatibility policy could not be resolved")
-if build_since.group(1) != validator_since.group(1) or build_until.group(1) != validator_until.group(1):
-    raise SystemExit("trusted artifact and Gradle compatibility policies diverged")
+if build_since.group(1) != "251" or build_until.group(1) != "262.*":
+    raise SystemExit("Stable Gradle compatibility policy changed")
+if validator_since.group(1) != "262" or validator_until.group(1) != "262.*":
+    raise SystemExit("canary artifact compatibility policy must remain 262-only")
 
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
 validate = workflow.index("Validate release version")
@@ -574,6 +626,8 @@ PY
   assert_contains .github/workflows/release.yml 'run: ./gradlew publishPlugin'
 
   assert_contains .github/workflows/canary-release.yml 'workflow_dispatch:'
+  assert_contains .github/workflows/canary-release.yml 'group: "canary-release-${{ inputs.tag }}"'
+  assert_contains .github/workflows/canary-release.yml 'cancel-in-progress: false'
   assert_contains .github/workflows/canary-release.yml 'Existing isolated tag in canary/vX.Y.Z-canary.N format'
   assert_not_contains .github/workflows/canary-release.yml 'tags:'
   assert_not_contains .github/workflows/canary-release.yml './scripts/validate-release-version.sh'
@@ -616,7 +670,7 @@ build_steps = [
     "Validate canary source metadata",
     "Verify exact canary tag and branch isolation",
     "Run canary commit gate",
-    "Run canary release compatibility gate",
+    "Run canary structure gate",
     "Upload canary plugin artifact",
 ]
 if [build.index(step) for step in build_steps] != sorted(build.index(step) for step in build_steps):
@@ -625,6 +679,10 @@ if "CANARY_PUBLISH_TOKEN" in build:
     raise SystemExit("canary build job must not receive Marketplace secrets")
 if "verify-internal-api-allowlist.py" in build or "internal-api-usages.txt" in build:
     raise SystemExit("canary build job must not make the trusted verification decision")
+if "release-compatibility-gate.sh" in build or " verifyPlugin\n" in build:
+    raise SystemExit("canary build job must not run branch-controlled compatibility verification")
+if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache verifyPluginStructure" not in build:
+    raise SystemExit("canary build job must disable the Gradle build cache")
 if build.count("persist-credentials: false") != 2:
     raise SystemExit("canary build checkouts must not persist credentials")
 
@@ -643,6 +701,8 @@ if "path: source" in verify or "working-directory: source" in verify:
     raise SystemExit("trusted verification job must not check out branch-controlled source")
 if "CANARY_PUBLISH_TOKEN" in verify or "environment:" in verify:
     raise SystemExit("trusted verification job must not receive publication authority")
+if "persist-credentials: false" not in verify:
+    raise SystemExit("trusted verification checkout must not persist credentials")
 if "trusted/scripts/verify-canary-artifact.sh" not in verify:
     raise SystemExit("trusted verification job must independently inspect the downloaded artifact")
 if "archive_sha256:" not in verify:
@@ -664,6 +724,8 @@ if "path: source" in publish or "working-directory: source" in publish:
     raise SystemExit("canary publish job must not check out or execute branch-controlled source")
 if "contents: read" not in publish or "contents: write" in publish:
     raise SystemExit("Marketplace publication must not receive GitHub contents write authority")
+if "persist-credentials: false" not in publish:
+    raise SystemExit("Marketplace publication checkout must not persist credentials")
 if "needs: [build, verify]" not in publish:
     raise SystemExit("canary publication must depend on trusted artifact verification")
 if "EXPECTED_ARCHIVE_SHA256: ${{ needs.verify.outputs.archive_sha256 }}" not in publish:

@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.GradleException
@@ -29,6 +30,8 @@ jacoco {
 
 group = "com.jetbrains.inspection"
 version = project.property("pluginVersion").toString()
+val isCanaryPluginVersion = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.[1-9][0-9]*$")
+    .matches(version.toString())
 
 abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
     @get:Internal
@@ -186,9 +189,7 @@ tasks {
         if (externalVerificationArchive.isPresent) {
             archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))
         }
-        val allowlistName = if (
-            Regex("^[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.[1-9][0-9]*$").matches(verifierPluginVersion)
-        ) {
+        val allowlistName = if (isCanaryPluginVersion) {
             "canary-internal-api-allowlist.txt"
         } else {
             "stable-internal-api-allowlist.txt"
@@ -386,7 +387,11 @@ intellijPlatform {
     
     pluginVerification {
         ides {
-            recommended()
+            if (isCanaryPluginVersion) {
+                create(IntelliJPlatformType.IntellijIdeaUltimate, "262.9437.65")
+            } else {
+                recommended()
+            }
         }
         failureLevel.set(listOf(
             VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,

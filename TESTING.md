@@ -356,17 +356,21 @@ Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
 `.github/workflows/canary-release.yml` must be dispatched explicitly from the
 default branch with an existing isolated tag. Its build job treats the source,
 Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
-credentials, uses no Gradle cache, and runs without Marketplace secrets. A fresh
+credentials, uses no Gradle cache, and runs without Marketplace secrets. Same-tag
+dispatches are serialized. A fresh
 verification job checks out only trusted controls, downloads the built zip,
-independently runs Plugin Verifier against that artifact, and requires every
+independently runs Plugin Verifier against that artifact on the pinned reviewed
+262 IDE build, and requires every
 artifact-derived report to match the trusted default-branch
 `config/plugin-verifier/canary-internal-api-allowlist.txt`. The verification job
-records the artifact digest and uploads its reports. Only then may the fresh
+uses Java 21, automatically selecting `JAVA_HOME_21` when invoked from a newer
+Java runtime, records the artifact digest, and uploads its reports. Only then may the fresh
 publish job enter the default-branch-only, reviewer-approved
 `canary-marketplace` environment. It revalidates the tag SHA, archive identity,
 and verified digest, then uploads through the
 trusted `scripts/publish-canary-artifact.sh` with the environment-only
 `CANARY_PUBLISH_TOKEN`, explicit `canary` channel, and required verified SHA-256.
+Artifact validation requires the canary's narrow `262..262.*` compatibility range.
 That environment job has read-only repository permission. A separate write-only
 GitHub release job creates the prerelease only after Marketplace upload succeeds
 and rechecks the verified digest without receiving the Marketplace token. The release contract tests
