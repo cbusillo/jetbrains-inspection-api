@@ -1,5 +1,7 @@
 package com.shiny.inspectionmcp
 
+import java.nio.file.Paths
+
 internal const val MAX_EXACT_FILE_PROOF_EXAMPLES = 12
 
 internal class ExactFileProofTimeLimitExceededException : RuntimeException()
@@ -22,6 +24,18 @@ internal data class ExactFileProofCandidate<T>(
     val filePath: String,
     val value: T,
 )
+
+internal fun exactFileProofProblemMatchesCandidate(
+    candidateFilePath: String,
+    problem: Map<String, Any>,
+): Boolean {
+    val problemFilePath = (problem["file"] as? String)?.takeIf { it.isNotBlank() } ?: return false
+    val normalizedCandidatePath = runCatching { Paths.get(candidateFilePath).normalize().toAbsolutePath() }.getOrNull()
+        ?: return false
+    val normalizedProblemPath = runCatching { Paths.get(problemFilePath).normalize().toAbsolutePath() }.getOrNull()
+        ?: return false
+    return normalizedProblemPath == normalizedCandidatePath
+}
 
 internal interface ExactFileProofAdapter<T, K, W, D> {
     fun resolveDisplayKey(candidate: ExactFileProofCandidate<T>): K?
@@ -492,7 +506,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                 )
                 return accumulator.result(startNanos, nowNanos)
             }
-            if (mapped == null) {
+            if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
                 accumulator.unmappedDescriptorCount++
                 accumulator.addBlockingExample(
                     safeDiagnostic(
@@ -500,6 +514,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                         ExactFileProofClassification.DESCRIPTOR_UNMAPPED,
                         obligation.sourceWrapper,
                         obligation.batchWrapper,
+                        if (mapped == null) "mapping_returned_null" else "descriptor_outside_candidate_file",
                     ),
                 )
             } else {

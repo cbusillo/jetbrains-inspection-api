@@ -59,7 +59,13 @@ class ExactFileExecutionProofTest {
             onMapping(descriptor)
             return descriptor
                 .takeUnless(unmappedDescriptors::contains)
-                ?.let { mapOf("tool" to candidate.shortName, "description" to it) }
+                ?.let {
+                    mapOf(
+                        "tool" to candidate.shortName,
+                        "description" to it,
+                        "file" to candidate.filePath,
+                    )
+                }
         }
 
         override fun diagnosticRow(
@@ -301,6 +307,40 @@ class ExactFileExecutionProofTest {
         assertEquals(1, proof.unmappedDescriptorCount)
         assertEquals(1, proof.proofProblems.size)
         assertEquals("descriptor_mapping_incomplete", proof.proofBlockReason)
+    }
+
+    @Test
+    fun `descriptors outside the candidate file block clean proof`() {
+        val adapter = object : ExactFileProofAdapter<String, String, Wrapper, String> by FakeAdapter(
+            wrappers = mapOf("Kotlin" to Wrapper()),
+            descriptors = mapOf("Kotlin" to listOf("outside")),
+        ) {
+            override fun mapDescriptor(
+                candidate: ExactFileProofCandidate<String>,
+                batchWrapper: Wrapper,
+                descriptor: String,
+            ): Map<String, Any> = mapOf(
+                "tool" to candidate.shortName,
+                "description" to descriptor,
+                "file" to "/repo/Other.kt",
+            )
+        }
+
+        val proof = runExactFileExecutionProof(
+            enabledLocalToolCount = 1,
+            candidates = listOf(ExactFileProofCandidate("Kotlin", "/repo/Test.kt", "Kotlin")),
+            enumerationErrorCount = 0,
+            timeoutMs = 1_000,
+            nowNanos = { 0L },
+            cancellationCheck = {},
+            rethrowCancellation = {},
+            problemKey = { problem -> problem.toString() },
+            adapter = adapter,
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(1, proof.unmappedDescriptorCount)
+        assertTrue(proof.proofProblems.isEmpty())
     }
 
     @Test

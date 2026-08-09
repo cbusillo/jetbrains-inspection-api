@@ -474,15 +474,16 @@ internal fun buildScopeFileDiagnosticPayload(
 internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInput): InspectionResultsSnapshot {
     val captureIncompleteReason = classifyCaptureIncompleteReason(input.captureDiagnostic)
     val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
-    val executionProofBlocksDecisive = input.executionProofRequired && input.executionProofEstablished != true
+    val executionProofClean = input.captureDiagnostic?.get("execution_proof_clean") as? Boolean
+    val executionProofBlocksClean = input.executionProofRequired && executionProofClean != true
     return when {
-        executionProofBlocksDecisive && input.bestResults.isEmpty() -> InspectionResultsSnapshot(
+        executionProofBlocksClean && input.bestResults.isEmpty() -> InspectionResultsSnapshot(
             problems = emptyList(),
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
             source = if (input.viewReadyOk) "inspection_view" else "tool_window",
-            note = "Inspection execution proof was required but not established, so findings or a clean result could not be confirmed.",
+            note = "Inspection execution proof did not establish a clean result, so a clean result could not be confirmed.",
             captureScope = input.captureScope,
             captureDiagnostic = input.captureDiagnostic,
             captureIncompleteReason = captureIncompleteReason,
@@ -1675,7 +1676,21 @@ class InspectionHandler : HttpRequestHandler() {
                 nextAction = unknownVerdictNextAction(unknownReason, payload),
             )
         }
-        if ((payload["proof_failures"] as? List<*>)?.isNotEmpty() == true) {
+        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
+        val problems = payload["problems"] as? List<*>
+        val hasExplicitZeroResult = totalProblems == 0
+        val hasCurrentFindings = ((totalProblems ?: problems?.size ?: 0) > 0) &&
+            payload["results_may_be_stale"] != true &&
+            payload["capture_incomplete"] != true
+        val proofFailures = (payload["proof_failures"] as? List<*>)
+            ?.mapNotNull { it as? String }
+            .orEmpty()
+        val redCompatibleProofFailures = setOf(
+            CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue,
+            SCOPE_SEMANTIC_COVERAGE_MISSING_REASON,
+            "scope_semantic_coverage_truncated",
+        )
+        if (proofFailures.isNotEmpty() && (!hasCurrentFindings || proofFailures.any { it !in redCompatibleProofFailures })) {
             return InspectionVerdict(
                 verdict = "UNKNOWN",
                 reason = "inspection_proof_failed",
@@ -1683,12 +1698,6 @@ class InspectionHandler : HttpRequestHandler() {
                 nextAction = unknownVerdictNextAction("inspection_proof_failed", payload),
             )
         }
-        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
-        val problems = payload["problems"] as? List<*>
-        val hasExplicitZeroResult = totalProblems == 0
-        val hasCurrentFindings = ((totalProblems ?: problems?.size ?: 0) > 0) &&
-            payload["results_may_be_stale"] != true &&
-            payload["capture_incomplete"] != true
         if (hasCurrentFindings) {
             return InspectionVerdict(
                 verdict = "RED",
@@ -1821,8 +1830,9 @@ class InspectionHandler : HttpRequestHandler() {
         val inspectionRunId = (payload["inspection_run_id"] as? Number)?.toLong()
         val currentRunId = inspectionRunId ?: (payload["run_id"] as? Number)?.toLong()
         val captureIncompleteReason = payload["capture_incomplete_reason"] as? String
-        val incompleteScopeDiagnostics = hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload)
-        val unprovenExecution = hasUnprovenExecutionWithoutCurrentFindings(payload)
+        val incompleteScopeDiagnostics = hasIncompleteScopeDiagnostics(payload)
+        val unprovenExecution = hasUnprovenExecution(payload)
+        val currentFindings = hasCurrentFindings(payload)
         val proofStatus = when {
             payload["session_drift"] == true -> "failed"
             payload["ambiguous"] == true -> "failed"
@@ -1835,6 +1845,7 @@ class InspectionHandler : HttpRequestHandler() {
             payload["timed_out"] == true -> "failed"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "pending"
             payload["clean_inspection"] == true -> "complete"
+            currentFindings -> "complete"
             status == "results_available" || status == "clean" || completionReason == "clean" || completionReason == "results" -> "complete"
             else -> "unknown"
         }
@@ -1875,7 +1886,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (payload["unavailable"] == true) failures.add("inspection_api_unavailable")
         if (payload["results_may_be_stale"] == true || status == "stale_results" || completionReason == "stale_results") failures.add("stale_results")
         if (payload["capture_incomplete"] == true || status == "capture_incomplete" || completionReason == "capture_incomplete") failures.add(captureIncompleteReason ?: "capture_incomplete")
-        if (hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload)) failures.add(SCOPE_SEMANTIC_COVERAGE_MISSING_REASON)
+        if (hasMissingScopeSemanticCoverage(payload)) failures.add(SCOPE_SEMANTIC_COVERAGE_MISSING_REASON)
         if (incompleteScopeDiagnostics) failures.add("scope_semantic_coverage_truncated")
         if (unprovenExecution) failures.add(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue)
         if (payload["timed_out"] == true || completionReason == "timeout") failures.add("timeout")
@@ -1889,32 +1900,37 @@ class InspectionHandler : HttpRequestHandler() {
         return InspectionProof(proof, failures.distinct())
     }
 
-    private fun hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+    private fun hasIncompleteScopeDiagnostics(payload: Map<String, Any?>): Boolean {
         @Suppress("UNCHECKED_CAST")
         val diagnostic = payload["capture_diagnostic"] as? Map<String, Any?> ?: return false
-        if (scopeFileSemanticEvidenceComplete(diagnostic)) return false
-        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
-        val problems = payload["problems"] as? List<*>
-        return (totalProblems ?: problems?.size ?: 0) <= 0
+        return !scopeFileSemanticEvidenceComplete(diagnostic)
     }
 
-    private fun hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+    private fun hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload: Map<String, Any?>): Boolean =
+        hasIncompleteScopeDiagnostics(payload) && !hasCurrentFindings(payload)
+
+    private fun hasMissingScopeSemanticCoverage(payload: Map<String, Any?>): Boolean {
         @Suppress("UNCHECKED_CAST")
         val diagnostic = payload["capture_diagnostic"] as? Map<String, Any?> ?: return false
-        if (!scopeFileSemanticCoverageMissing(diagnostic)) return false
-        val totalProblems = (payload["total_problems"] as? Number)?.toInt()
-        val problems = payload["problems"] as? List<*>
-        return (totalProblems ?: problems?.size ?: 0) <= 0
+        return scopeFileSemanticCoverageMissing(diagnostic)
     }
 
-    private fun hasUnprovenExecutionWithoutCurrentFindings(payload: Map<String, Any?>): Boolean {
+    private fun hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload: Map<String, Any?>): Boolean =
+        hasMissingScopeSemanticCoverage(payload) && !hasCurrentFindings(payload)
+
+    private fun hasUnprovenExecution(payload: Map<String, Any?>): Boolean {
         val diagnostic = payload["capture_diagnostic"] as? Map<*, *> ?: return false
-        val executionUnproven = diagnostic["execution_proof_established"] == false ||
+        return diagnostic["execution_proof_established"] == false ||
             diagnostic["execution_proof_skipped"] == true
-        if (!executionUnproven) return false
+    }
+
+    private fun hasUnprovenExecutionWithoutCurrentFindings(payload: Map<String, Any?>): Boolean =
+        hasUnprovenExecution(payload) && !hasCurrentFindings(payload)
+
+    private fun hasCurrentFindings(payload: Map<String, Any?>): Boolean {
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
         val problems = payload["problems"] as? List<*>
-        return (totalProblems ?: problems?.size ?: 0) <= 0
+        return (totalProblems ?: problems?.size ?: 0) > 0
     }
 
     private fun requestAttribution(
