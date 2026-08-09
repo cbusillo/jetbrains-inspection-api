@@ -669,6 +669,7 @@ build_steps = [
     "Verify trusted workflow ref",
     "Validate canary source metadata",
     "Verify exact canary tag and branch isolation",
+    "Set up JDK 25",
     "Run canary commit gate",
     "Run canary structure gate",
     "Upload canary plugin artifact",
@@ -683,6 +684,8 @@ if "release-compatibility-gate.sh" in build or " verifyPlugin\n" in build:
     raise SystemExit("canary build job must not run branch-controlled compatibility verification")
 if 'GRADLE_OPTS: "-Dorg.gradle.caching=false"' not in build or "--no-build-cache verifyPluginStructure" not in build:
     raise SystemExit("canary build job must disable the Gradle build cache")
+if 'java-version: "25"' not in build:
+    raise SystemExit("canary source build must provision Java 25")
 if build.count("persist-credentials: false") != 2:
     raise SystemExit("canary build checkouts must not persist credentials")
 
@@ -705,6 +708,8 @@ if "persist-credentials: false" not in verify:
     raise SystemExit("trusted verification checkout must not persist credentials")
 if "trusted/scripts/verify-canary-artifact.sh" not in verify:
     raise SystemExit("trusted verification job must independently inspect the downloaded artifact")
+if "Set up JDK 21" not in verify or 'java-version: "21"' not in verify:
+    raise SystemExit("trusted artifact verification must preserve Java 21")
 if "archive_sha256:" not in verify:
     raise SystemExit("trusted verification job must bind publication to the verified artifact digest")
 if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_SOURCE_SHA\"" not in verify:
