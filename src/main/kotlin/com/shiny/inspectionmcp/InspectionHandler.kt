@@ -26,10 +26,13 @@ import com.intellij.openapi.roots.CompilerModuleExtension
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.util.ProgressIndicatorBase
 import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.util.JDOMUtil
+import com.intellij.openapi.util.Computable
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.project.Project
@@ -56,6 +59,7 @@ import com.intellij.psi.search.scope.packageSet.NamedScopeManager
 import com.intellij.psi.search.scope.packageSet.NamedScopesHolder
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.util.messages.MessageBusConnection
+import com.intellij.util.concurrency.AppExecutorUtil
 import com.intellij.packageDependencies.DependencyValidationManager
 import com.intellij.profile.ProfileChangeAdapter
 import com.shiny.inspectionmcp.core.filterProblems
@@ -326,23 +330,6 @@ internal data class InspectionCaptureSnapshotInput(
     val executionProofEstablished: Boolean? = null,
 )
 
-internal data class BoundedExecutionProofResult(
-    val proofProblems: List<Map<String, Any>>,
-    val enabledLocalToolCount: Int,
-    val executedToolCount: Int,
-    val totalDescriptorCount: Int,
-    val skippedReason: String?,
-    val missingWrapperCount: Int = 0,
-    val errorCount: Int = 0,
-    val hitFileLimit: Boolean = false,
-    val hitTimeLimit: Boolean = false,
-) {
-    // All errors disqualify the proof: even partial errors mean some tools may have missed problems.
-    // Zero executions also disqualify: nothing ran means nothing was confirmed.
-    val proofEstablished: Boolean get() = skippedReason == null && !hitFileLimit && !hitTimeLimit && errorCount == 0 && executedToolCount > 0
-    val proofClean: Boolean get() = proofEstablished && proofProblems.isEmpty() && executedToolCount > 0
-}
-
 internal enum class InspectionExecutionProofMode {
     EXACT_BOUNDED,
     NATIVE_ATTESTED,
@@ -489,7 +476,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
     val scopeFileDiagnosticsComplete = scopeFileSemanticEvidenceComplete(input.captureDiagnostic)
     val executionProofBlocksDecisive = input.executionProofRequired && input.executionProofEstablished != true
     return when {
-        executionProofBlocksDecisive -> InspectionResultsSnapshot(
+        executionProofBlocksDecisive && input.bestResults.isEmpty() -> InspectionResultsSnapshot(
             problems = emptyList(),
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
@@ -545,6 +532,18 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             triggerTimeMs = input.triggerTimeMs,
         )
     }
+}
+
+internal fun buildFindingCaptureDiagnostic(
+    scopeDiagnostics: Map<String, Any?>,
+    stateDiagnostic: Map<String, Any?>,
+    proofDiagnostic: Map<String, Any?>,
+    projectStateChangedDuringCapture: Boolean,
+): Map<String, Any?>? {
+    val diagnostic = scopeDiagnostics +
+        (stateDiagnostic.takeIf { projectStateChangedDuringCapture } ?: emptyMap()) +
+        proofDiagnostic
+    return diagnostic.takeIf { it.isNotEmpty() }
 }
 
 private data class CurrentRunPsiChurnReconciliation(
@@ -6305,9 +6304,11 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         // Fix 3: After polling completes, scope-filter proof findings and union/dedupe into bestResults
+                        var scopedProofFindingCount = 0
                         if (proofFindings.isNotEmpty()) {
                             val scopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
                             if (scopedProofFindings.isNotEmpty()) {
+                                scopedProofFindingCount = scopedProofFindings.size
                                 val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
                                 val newProofProblems = scopedProofFindings.filter { problemKey(it) !in existingKeys }
                                 if (newProofProblems.isNotEmpty()) {
@@ -6361,7 +6362,10 @@ class InspectionHandler : HttpRequestHandler() {
                         )
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
                         val proofDiagnostic = buildProofDiagnostic(boundedProof) +
-                            buildNativeProofDiagnostic(nativeProof)
+                            buildNativeProofDiagnostic(nativeProof) +
+                            mapOf(
+                                "execution_proof_mapped_finding_count" to scopedProofFindingCount,
+                            )
                         val executionProofEstablished = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofEstablished
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofEstablished
@@ -6426,8 +6430,12 @@ class InspectionHandler : HttpRequestHandler() {
                             ) + scopeDiagnostics + stateDiagnostic + proofDiagnostic
                         } else {
                             // Fix 7: include proof diagnostics on non-empty snapshots too
-                            val base = stateDiagnostic.takeIf { projectStateChangedDuringCapture } ?: emptyMap()
-                            if (proofDiagnostic.isNotEmpty()) base + proofDiagnostic else base.takeIf { it.isNotEmpty() }
+                            buildFindingCaptureDiagnostic(
+                                scopeDiagnostics = scopeDiagnostics,
+                                stateDiagnostic = stateDiagnostic,
+                                proofDiagnostic = proofDiagnostic,
+                                projectStateChangedDuringCapture = projectStateChangedDuringCapture,
+                            )
                         }
                         val snapshot = buildInspectionCaptureSnapshot(
                             InspectionCaptureSnapshotInput(
@@ -8490,6 +8498,28 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_error_count" to proof.errorCount,
             "execution_proof_hit_file_limit" to proof.hitFileLimit,
             "execution_proof_hit_time_limit" to proof.hitTimeLimit,
+            "execution_proof_candidate_obligation_count" to proof.candidateObligationCount,
+            "execution_proof_profile_enabled_obligation_count" to proof.profileEnabledObligationCount,
+            "execution_proof_profile_disabled_obligation_count" to proof.profileDisabledObligationCount,
+            "execution_proof_display_key_missing_count" to proof.displayKeyMissingCount,
+            "execution_proof_source_wrapper_missing_count" to proof.sourceWrapperMissingCount,
+            "execution_proof_language_applicable_obligation_count" to proof.languageApplicableObligationCount,
+            "execution_proof_language_non_applicable_obligation_count" to proof.languageNonApplicableObligationCount,
+            "execution_proof_batch_runnable_obligation_count" to proof.batchRunnableObligationCount,
+            "execution_proof_unmapped_descriptor_count" to proof.unmappedDescriptorCount,
+            "execution_proof_failed_obligation_count" to proof.failedObligationCount,
+            "execution_proof_unclassified_obligation_count" to proof.unclassifiedObligationCount,
+            "execution_proof_unvisited_obligation_count" to proof.unvisitedObligationCount,
+            "execution_proof_unvisited_classification_obligation_count" to proof.unvisitedClassificationObligationCount,
+            "execution_proof_unexecuted_runnable_obligation_count" to proof.unexecutedRunnableObligationCount,
+            "execution_proof_unvisited_descriptor_count" to proof.unvisitedDescriptorCount,
+            "execution_proof_enumeration_error_count" to proof.enumerationErrorCount,
+            "execution_proof_elapsed_ms" to proof.elapsedMs,
+            "execution_proof_block_reason" to proof.proofBlockReason,
+            "execution_proof_blocking_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
+            "execution_proof_blocking_examples" to proof.blockingExamples.takeIf { it.isNotEmpty() },
+            "execution_proof_non_applicable_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
+            "execution_proof_non_applicable_examples" to proof.nonApplicableExamples.takeIf { it.isNotEmpty() },
             "execution_proof_skipped" to (proof.skippedReason != null),
             "execution_proof_skipped_reason" to proof.skippedReason,
             "execution_proof_established" to proof.proofEstablished,
@@ -8525,26 +8555,74 @@ class InspectionHandler : HttpRequestHandler() {
         ).filterValues { it != null }
     }
 
+    private data class EnabledLocalToolEnumeration(
+        val shortNames: Set<String>,
+        val errorCount: Int,
+        val errorExamples: List<Map<String, Any?>>,
+    )
+
     @Suppress("UnstableApiUsage")
     private fun resolveEnabledLocalToolShortNames(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
-    ): Set<String> {
+        cancellationCheck: () -> Unit,
+    ): EnabledLocalToolEnumeration {
         val names = linkedSetOf<String>()
-        try {
-            for (toolGroup in globalContext.tools.values) {
-                try {
-                    for (state in toolGroup.tools) {
-                        val enabled = try { state.isEnabled } catch (_: Exception) { false }
-                        if (!enabled) continue
-                        val wrapper = try { state.tool } catch (_: Exception) { null } ?: continue
-                        if (wrapper !is com.intellij.codeInspection.ex.LocalInspectionToolWrapper) continue
-                        val shortName = try { wrapper.shortName } catch (_: Exception) { null } ?: continue
-                        names += shortName
-                    }
-                } catch (_: Exception) { }
+        val errors = mutableListOf<Map<String, Any?>>()
+        var errorCount = 0
+
+        fun recordError(stage: String, error: Exception) {
+            rethrowIfCanceled(error)
+            errorCount++
+            if (errors.size < MAX_EXACT_FILE_PROOF_EXAMPLES) {
+                errors += mapOf(
+                    "classification" to ExactFileProofClassification.CLASSIFICATION_FAILED.diagnosticValue,
+                    "stage" to stage,
+                    "error" to error.javaClass.simpleName,
+                )
             }
-        } catch (_: Exception) { }
-        return names
+        }
+
+        cancellationCheck()
+        val toolGroups = try {
+            globalContext.tools.values
+        } catch (error: Exception) {
+            recordError("enabled_tool_groups", error)
+            emptyList()
+        }
+        for (toolGroup in toolGroups) {
+            cancellationCheck()
+            val states = try {
+                toolGroup.tools
+            } catch (error: Exception) {
+                recordError("enabled_tool_states", error)
+                continue
+            }
+            for (state in states) {
+                cancellationCheck()
+                val enabled = try {
+                    state.isEnabled
+                } catch (error: Exception) {
+                    recordError("enabled_tool_state", error)
+                    continue
+                }
+                if (!enabled) continue
+                val wrapper = try {
+                    state.tool
+                } catch (error: Exception) {
+                    recordError("enabled_tool_wrapper", error)
+                    continue
+                }
+                if (wrapper !is com.intellij.codeInspection.ex.LocalInspectionToolWrapper) continue
+                val shortName = try {
+                    wrapper.shortName
+                } catch (error: Exception) {
+                    recordError("enabled_tool_short_name", error)
+                    continue
+                }
+                names += shortName
+            }
+        }
+        return EnabledLocalToolEnumeration(names, errorCount, errors)
     }
 
     @Suppress("UnstableApiUsage")
@@ -8560,101 +8638,231 @@ class InspectionHandler : HttpRequestHandler() {
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
                 enabledLocalToolCount = 0,
-                executedToolCount = 0,
-                totalDescriptorCount = 0,
                 skippedReason = "proof_skipped_edt",
             )
         }
-        val enabledLocalToolNames = resolveEnabledLocalToolShortNames(globalContext)
-        if (enabledLocalToolNames.isEmpty()) {
+        val proofStartNanos = System.nanoTime()
+        val proofTimeoutNanos = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS * 1_000_000L
+
+        fun proofDeadlineExceeded(): Boolean = System.nanoTime() - proofStartNanos > proofTimeoutNanos
+
+        fun checkProofBudget() {
+            cancellationCheck()
+            if (proofDeadlineExceeded()) throw ExactFileProofTimeLimitExceededException()
+        }
+
+        fun <T> runDeadlineAwareProofProcess(action: () -> T): T {
+            val indicator = ProgressIndicatorBase()
+            val deadlineTriggered = AtomicBoolean(false)
+            val externalCancellation = AtomicReference<RuntimeException?>()
+            val monitor = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
+                {
+                    try {
+                        cancellationCheck()
+                    } catch (error: RuntimeException) {
+                        externalCancellation.compareAndSet(null, error)
+                        indicator.cancel()
+                    }
+                    if (externalCancellation.get() == null && proofDeadlineExceeded()) {
+                        deadlineTriggered.set(true)
+                        indicator.cancel()
+                    }
+                },
+                0L,
+                25L,
+                TimeUnit.MILLISECONDS,
+            )
+            return try {
+                ProgressManager.getInstance().runProcess(
+                    Computable {
+                        checkProofBudget()
+                        action().also { checkProofBudget() }
+                    },
+                    indicator,
+                )
+            } catch (error: ProcessCanceledException) {
+                externalCancellation.get()?.let { throw it }
+                if (deadlineTriggered.get() || proofDeadlineExceeded()) {
+                    throw ExactFileProofTimeLimitExceededException()
+                }
+                cancellationCheck()
+                throw error
+            } finally {
+                monitor.cancel(false)
+            }
+        }
+
+        val enabledTools = resolveEnabledLocalToolShortNames(globalContext, cancellationCheck)
+        if (enabledTools.shortNames.isEmpty() && enabledTools.errorCount == 0) {
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
                 enabledLocalToolCount = 0,
-                executedToolCount = 0,
-                totalDescriptorCount = 0,
                 skippedReason = "no_enabled_local_tools",
             )
         }
         val maxFiles = 25
-        val maxTimeMs = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS
-        val proofStartMs = System.currentTimeMillis()
         if (scopeFiles.size > maxFiles) {
+            val candidateObligationCount = enabledTools.shortNames.size * scopeFiles.size
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
-                enabledLocalToolCount = enabledLocalToolNames.size,
-                executedToolCount = 0,
-                totalDescriptorCount = 0,
-                skippedReason = null,
+                enabledLocalToolCount = enabledTools.shortNames.size,
+                candidateObligationCount = candidateObligationCount,
+                unvisitedClassificationObligationCount = candidateObligationCount,
+                enumerationErrorCount = enabledTools.errorCount,
                 hitFileLimit = true,
+                elapsedMs = (System.nanoTime() - proofStartNanos).coerceAtLeast(0L) / 1_000_000L,
+                blockingExamples = enabledTools.errorExamples,
             )
         }
-        val problems = mutableListOf<Map<String, Any>>()
-        val seen = linkedSetOf<String>()
-        var executedToolCount = 0
-        var totalDescriptorCount = 0
-        var missingWrapperCount = 0
-        var errorCount = 0
-        var hitTimeLimit = false
-        outer@ for (shortName in enabledLocalToolNames) {
-            cancellationCheck()
-            for (psiFile in scopeFiles) {
-                cancellationCheck()
-                val enabledForFile = app.runReadAction<Boolean, Exception> {
-                    HighlightDisplayKey.find(shortName)?.let { key -> profile.isToolEnabled(key, psiFile) } ?: false
-                }
-                if (!enabledForFile) continue
-                if (System.currentTimeMillis() - proofStartMs > maxTimeMs) {
-                    hitTimeLimit = true
-                    break@outer
-                }
-                try {
-                    val batchWrapper = app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
-                        com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                            project,
-                            psiFile,
-                            shortName,
-                        )
-                    }
-                    if (batchWrapper == null) {
-                        missingWrapperCount++
-                        continue
-                    }
-                    val descriptors = app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
-                        InspectionEngine.runInspectionOnFile(psiFile, batchWrapper, globalContext)
-                    }
-                    executedToolCount++
-                    totalDescriptorCount += descriptors.size
-                    for (descriptor in descriptors) {
-                        cancellationCheck()
-                        val map = app.runReadAction<Map<String, Any>?, Exception> {
-                            buildProblemMap(descriptor, batchWrapper, project)
-                        } ?: continue
-                        if (seen.add(problemKey(map))) problems += map
-                    }
-                } catch (e: Exception) {
-                    rethrowIfCanceled(e)
-                    errorCount++
-                }
+        val candidates = enabledTools.shortNames.flatMap { shortName ->
+            scopeFiles.map { psiFile ->
+                ExactFileProofCandidate(
+                    shortName = shortName,
+                    filePath = psiFile.virtualFile?.path ?: psiFile.name,
+                    value = psiFile,
+                )
             }
         }
-        val skippedReason = when {
-            hitTimeLimit -> null // hitTimeLimit flag signals unproven; no skippedReason needed
-            executedToolCount == 0 && missingWrapperCount > 0 -> "no_batch_capable_tools"
-            // When executedToolCount > 0 and missingWrapperCount > 0, the proof is still established:
-            // tools without batch wrappers cannot run in this path, but those that can DID run.
-            else -> null
+        val fileLanguages = mutableMapOf<com.intellij.psi.PsiFile, Set<com.intellij.lang.Language>>()
+        val currentProfile =
+            com.intellij.profile.codeInspection.InspectionProjectProfileManager
+                .getInstance(project)
+                .currentProfile
+        val adapter = object : ExactFileProofAdapter<
+            com.intellij.psi.PsiFile,
+            HighlightDisplayKey,
+            com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+            com.intellij.codeInspection.ProblemDescriptor
+            > {
+            override fun resolveDisplayKey(candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>): HighlightDisplayKey? =
+                app.runReadAction<HighlightDisplayKey?, Exception> {
+                    HighlightDisplayKey.find(candidate.shortName)
+                }
+
+            override fun isProfileEnabled(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                displayKey: HighlightDisplayKey,
+            ): Boolean = app.runReadAction<Boolean, Exception> {
+                profile.isToolEnabled(displayKey, candidate.value)
+            }
+
+            override fun resolveSourceWrapper(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+            ): com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? =
+                app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
+                    profile.getInspectionTool(candidate.shortName, candidate.value)
+                        as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                }
+
+            override fun isLanguageApplicable(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+            ): Boolean = app.runReadAction<Boolean, Exception> {
+                val languages = fileLanguages.getOrPut(candidate.value) {
+                    val collected = linkedSetOf<com.intellij.lang.Language>()
+                    collected += candidate.value.viewProvider.languages
+                    candidate.value.accept(object : com.intellij.psi.PsiRecursiveElementWalkingVisitor() {
+                        override fun visitElement(element: com.intellij.psi.PsiElement) {
+                            checkProofBudget()
+                            collected += element.language
+                            super.visitElement(element)
+                        }
+                    })
+                    collected
+                }
+                languages.any(sourceWrapper::isApplicable)
+            }
+
+            override fun resolveBatchWrapper(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+            ): com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? =
+                app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
+                    com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                        project,
+                        candidate.value,
+                        profile,
+                        sourceWrapper,
+                    )
+                }
+
+            override fun execute(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+            ): List<com.intellij.codeInspection.ProblemDescriptor> =
+                runDeadlineAwareProofProcess {
+                    app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
+                        InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper, globalContext)
+                    }
+                }
+
+            override fun mapDescriptor(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+                descriptor: com.intellij.codeInspection.ProblemDescriptor,
+            ): Map<String, Any>? {
+                checkProofBudget()
+                return app.runReadAction<Map<String, Any>?, Exception> {
+                    buildProblemMap(descriptor, batchWrapper, project)
+                }.also { checkProofBudget() }
+            }
+
+            override fun diagnosticRow(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                classification: ExactFileProofClassification,
+                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?,
+                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?,
+                detail: String?,
+            ): Map<String, Any?> {
+                val sourceLocal = sourceWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
+                val pairedBatchShortName =
+                    (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
+                        ?.inspectionForBatchShortName
+                val languageIds = runCatching {
+                    fileLanguages[candidate.value]
+                        ?.map { it.id }
+                        ?.sorted()
+                        ?: candidate.value.viewProvider.languages.map { it.id }.sorted()
+                }.getOrDefault(emptyList())
+                return linkedMapOf(
+                    "short_name" to candidate.shortName,
+                    "file" to candidate.filePath,
+                    "classification" to classification.diagnosticValue,
+                    "detail" to detail,
+                    "file_language_ids" to languageIds,
+                    "selected_profile" to profile.name,
+                    "current_profile" to currentProfile.name,
+                    "source_wrapper_class" to sourceWrapper?.javaClass?.name,
+                    "source_tool_class" to sourceTool?.javaClass?.name,
+                    "source_declared_language" to runCatching { sourceWrapper?.language }.getOrNull(),
+                    "source_is_unfair" to runCatching { sourceLocal?.isUnfair }.getOrNull(),
+                    "paired_batch_short_name" to pairedBatchShortName,
+                    "batch_wrapper_class" to batchWrapper?.javaClass?.name,
+                    "batch_short_name" to runCatching { batchWrapper?.shortName }.getOrNull(),
+                ).filterValues { it != null }
+            }
         }
-        return BoundedExecutionProofResult(
-            proofProblems = problems,
-            enabledLocalToolCount = enabledLocalToolNames.size,
-            executedToolCount = executedToolCount,
-            totalDescriptorCount = totalDescriptorCount,
-            skippedReason = skippedReason,
-            missingWrapperCount = missingWrapperCount,
-            errorCount = errorCount,
-            hitFileLimit = false,
-            hitTimeLimit = hitTimeLimit,
+        val proof = runExactFileExecutionProof(
+            enabledLocalToolCount = enabledTools.shortNames.size,
+            candidates = candidates,
+            enumerationErrorCount = enabledTools.errorCount,
+            timeoutMs = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS,
+            nowNanos = System::nanoTime,
+            startNanos = proofStartNanos,
+            cancellationCheck = cancellationCheck,
+            rethrowCancellation = ::rethrowIfCanceled,
+            problemKey = ::problemKey,
+            adapter = adapter,
         )
+        return if (enabledTools.errorExamples.isEmpty()) {
+            proof
+        } else {
+            proof.copy(
+                blockingExamples = (enabledTools.errorExamples + proof.blockingExamples)
+                    .take(MAX_EXACT_FILE_PROOF_EXAMPLES),
+            )
+        }
     }
 
     private fun buildProblemMap(

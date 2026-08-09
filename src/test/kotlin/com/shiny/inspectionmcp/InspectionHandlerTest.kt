@@ -2817,6 +2817,28 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test finding capture diagnostic retains scope proof for filtered verdicts`() {
+        val scopeDiagnostic = mapOf<String, Any?>(
+            "scope_file_semantic_evidence_complete" to false,
+            "scope_file_semantic_coverage" to mapOf(
+                "unproven_file_count" to 1,
+                "missing_file_count" to 1,
+            ),
+        )
+        val diagnostic = buildFindingCaptureDiagnostic(
+            scopeDiagnostics = scopeDiagnostic,
+            stateDiagnostic = mapOf("project_state_changed_during_capture" to true),
+            proofDiagnostic = mapOf("execution_proof_established" to false),
+            projectStateChangedDuringCapture = false,
+        )
+
+        assertEquals(false, diagnostic?.get("scope_file_semantic_evidence_complete"))
+        assertEquals(scopeDiagnostic["scope_file_semantic_coverage"], diagnostic?.get("scope_file_semantic_coverage"))
+        assertEquals(false, diagnostic?.get("execution_proof_established"))
+        assertFalse(diagnostic.orEmpty().containsKey("project_state_changed_during_capture"))
+    }
+
+    @Test
     fun `test completed scoped run without snapshot remains unknown`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -4218,7 +4240,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_instance_id\""))
-        assertTrue(body.contains("\"inspection_execution_proof_version\": 2"))
+        assertTrue(body.contains("\"inspection_execution_proof_version\": 3"))
     }
 
     @Test

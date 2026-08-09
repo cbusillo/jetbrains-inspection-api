@@ -3747,6 +3747,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 5,
+            batchRunnableObligationCount = 5,
             executedToolCount = 3,
             totalDescriptorCount = 0,
             skippedReason = null,
@@ -3779,6 +3780,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 4,
+            batchRunnableObligationCount = 4,
             executedToolCount = 4,
             totalDescriptorCount = 0,
             skippedReason = null,
@@ -3795,6 +3797,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = listOf(finding),
             enabledLocalToolCount = 4,
+            batchRunnableObligationCount = 4,
             executedToolCount = 4,
             totalDescriptorCount = 1,
             skippedReason = null,
@@ -3805,21 +3808,21 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("proofEstablished is true when some tools lack wrappers but at least one ran successfully")
-    fun testProofEstablishedTrueWhenSomeToolsMissingWrapperButSomeRan() {
-        // Deliberate behavior: tools without batch wrappers cannot run in the proof path, but
-        // those that can DID run — the proof covers what the engine can execute.
+    @DisplayName("proofEstablished is false when an applicable tool lacks a batch wrapper")
+    fun testProofEstablishedFalseWhenApplicableToolMissingWrapper() {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 5,
+            batchRunnableObligationCount = 2,
             executedToolCount = 2,
             totalDescriptorCount = 0,
             skippedReason = null,
             missingWrapperCount = 3,
             errorCount = 0,
         )
-        assertTrue(proof.proofEstablished)
-        assertTrue(proof.proofClean)
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+        assertEquals("applicable_missing_batch_wrapper", proof.proofBlockReason)
     }
 
     // ---- Fix 3: Proof findings survive polling adoption (union by problemKey) ----
@@ -3870,8 +3873,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Non-empty findings fail closed when required execution proof is incomplete")
-    fun testNonEmptyFindingsFailClosedWithoutExecutionProof() {
+    @DisplayName("Current findings remain decisive when clean execution proof is incomplete")
+    fun testNonEmptyFindingsRemainVisibleWithoutCleanExecutionProof() {
         val snapshot = buildInspectionCaptureSnapshot(
             InspectionCaptureSnapshotInput(
                 bestResults = listOf(
@@ -3905,9 +3908,9 @@ class InspectionSnapshotStateTest {
             ),
         )
 
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
-        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
-        assertTrue(snapshot.problems.isEmpty())
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(1, snapshot.problems.size)
+        assertEquals(false, snapshot.captureDiagnostic?.get("execution_proof_established"))
     }
 
     // ---- Fix 5: No scope PSI files → unproven ----
