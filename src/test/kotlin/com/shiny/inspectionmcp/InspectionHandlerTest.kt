@@ -14,6 +14,7 @@ import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.fileTypes.FileType
+import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.module.EmptyModuleType
@@ -46,6 +47,8 @@ import com.intellij.psi.PsiDirectory
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.psi.search.FilenameIndex
+import com.intellij.psi.search.GlobalSearchScope
 import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.ui.content.Content
 import com.intellij.ui.content.ContentManager
@@ -169,6 +172,17 @@ class InspectionHandlerTest {
 
         assertNull(prepareLifecycleProjectStoreIfDirectory(projectFilePath))
         assertFalse(Files.exists(projectRoot.resolve(Project.DIRECTORY_STORE_FOLDER)))
+    }
+
+    @Test
+    fun `directory scope ancestry uses native path components`() {
+        val root = Files.createTempDirectory("inspection-directory-scope")
+        val directory = root.resolve("app")
+        val child = directory.resolve("nested").resolve("selected.py")
+        val sibling = root.resolve("application").resolve("selected.py")
+
+        assertTrue(inspectionPathWithinDirectory(child.toString(), directory.toString()))
+        assertFalse(inspectionPathWithinDirectory(sibling.toString(), directory.toString()))
     }
     
     @BeforeEach
@@ -346,6 +360,76 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test changed file disappearing before preflight fails closed with scope evidence`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        val queuedTasks = mutableListOf<Runnable>()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            queuedTasks += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val changedPath = "/tmp/TestProject/src/Disappeared.kt"
+        mockChangedFiles(listOf(changedPath))
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(changedPath) } returns null
+        var analysisReadinessCalls = 0
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            analysisReadinessCalls += 1
+            error("Unavailable changed-file evidence must fail before language analysis.")
+        }
+
+        try {
+            val uri = "/api/inspection/trigger?scope=changed_files&include_unversioned=false"
+            val urlDecoder = QueryStringDecoder(uri)
+            val request = mockk<FullHttpRequest>()
+            val context = mockk<ChannelHandlerContext>()
+            val responseSlot = slot<Any>()
+            every { request.uri() } returns uri
+            every { context.writeAndFlush(capture(responseSlot)) } returns mockk(relaxed = true)
+
+            assertTrue(handler.process(urlDecoder, request, context))
+            assertEquals(1, queuedTasks.size)
+            queuedTasks.removeAt(0).run()
+
+            val response = responseSlot.captured as FullHttpResponse
+            assertEquals(HttpResponseStatus.OK, response.status())
+            assertEquals(1, queuedTasks.size)
+
+            queuedTasks.removeAt(0).run()
+
+            val status = buildInspectionStatus()
+            val statusResponse = processGetRequest("/api/inspection/status")
+            val statusBody = statusResponse.content().toString(Charsets.UTF_8)
+            assertEquals("capture_incomplete", status["snapshot_outcome"])
+            assertEquals("project_analysis_not_ready", status["capture_incomplete_reason"])
+            assertEquals("project_analysis_readiness", status["results_source"])
+            @Suppress("UNCHECKED_CAST")
+            val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+            assertEquals("inspection_preflight", diagnostic["readiness_stage"])
+            assertEquals("changed_files", diagnostic["requested_scope"])
+            assertEquals("changed_files", diagnostic["resolved_scope"])
+            assertEquals(1, diagnostic["resolved_scope_file_count"])
+            assertEquals("scope_resolution_unavailable", diagnostic["analysis_state"])
+            assertEquals(false, diagnostic["inspection_started"])
+            assertEquals("tool", diagnostic["outcome_ownership"])
+            assertEquals(1, diagnostic["scope_resolution_missing_file_count"])
+            assertEquals(listOf(changedPath), diagnostic["scope_resolution_missing_files"])
+            assertTrue(statusBody.contains("\"code\": \"project_analysis_not_ready\""), statusBody)
+            assertEquals(0, analysisReadinessCalls)
+            assertEquals(false, inspectionRunState(projectKey(mockProject))?.inProgress)
+            verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        } finally {
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
     fun `test python scope without sdk publishes capture incomplete before inspection`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -387,7 +471,257 @@ class InspectionHandlerTest {
         assertEquals(0, status["total_problems"])
         assertTrue(statusBody.contains("\"classification\": \"configuration_blocked\""), statusBody)
         assertTrue(statusBody.contains("\"code\": \"language_sdk_missing\""), statusBody)
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("inspection_preflight", diagnostic["readiness_stage"])
+        assertEquals("whole_project", diagnostic["requested_scope"])
+        assertEquals("whole_project", diagnostic["resolved_scope"])
+        assertEquals(2, diagnostic["selected_python_file_count"])
+        assertEquals("available", diagnostic["language_support_state"])
+        assertEquals("missing", diagnostic["sdk_assignment_state"])
+        assertEquals("python_sdk_missing", diagnostic["analysis_state"])
+        assertEquals(false, diagnostic["inspection_started"])
+        assertEquals("configuration", diagnostic["outcome_ownership"])
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test refreshing Python analysis remains fail closed before inspection`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            InspectionProjectAnalysisReadiness(
+                required = true,
+                ready = false,
+                reason = "python_sdk_updating",
+                pythonFileCount = 1,
+                pythonSdkCount = 1,
+                updatingSdkCount = 1,
+            )
+        }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val status = buildInspectionStatus()
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("project_analysis_not_ready", status["capture_incomplete_reason"])
+        assertEquals("project_analysis_readiness", status["results_source"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("inspection_preflight", diagnostic["readiness_stage"])
+        assertEquals("python_sdk_updating", diagnostic["analysis_state"])
+        assertEquals(false, diagnostic["inspection_started"])
+        assertEquals("environment", diagnostic["outcome_ownership"])
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
+    fun `test unresolved targeted analysis scope fails closed without widening`() {
+        val productionHandler = InspectionHandler()
+
+        val readiness = productionHandler.projectAnalysisReadinessProvider(
+            mockProject,
+            InspectionCaptureScope(
+                scopeParam = "files",
+                files = listOf("src/main/kotlin/App.kt"),
+            ),
+        )
+
+        assertTrue(readiness.required)
+        assertFalse(readiness.ready)
+        assertEquals("scope_resolution_unavailable", readiness.reason)
+        assertEquals(0, readiness.pythonFileCount)
+    }
+
+    @Test
+    fun `test resolved non-python files and changed files do not require a Python SDK`() {
+        val productionHandler = InspectionHandler()
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val kotlinFile = mockk<VirtualFile>(relaxed = true)
+        val kotlinPath = "/tmp/TestProject/src/App.kt"
+        every { kotlinFile.path } returns kotlinPath
+        every { kotlinFile.name } returns "App.kt"
+        every { kotlinFile.isValid } returns true
+        every { kotlinFile.isDirectory } returns false
+        every { kotlinFile.isInLocalFileSystem } returns true
+        every { kotlinFile.extension } returns "kt"
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(kotlinPath) } returns kotlinFile
+
+        try {
+            listOf("files", "changed_files").forEach { scopeKind ->
+                val readiness = productionHandler.projectAnalysisReadinessProvider(
+                    mockProject,
+                    InspectionCaptureScope(
+                        scopeParam = scopeKind,
+                        files = listOf(kotlinPath).takeIf { scopeKind == "files" },
+                        resolvedFiles = listOf(kotlinPath),
+                    ),
+                )
+
+                assertFalse(readiness.required, scopeKind)
+                assertTrue(readiness.ready, scopeKind)
+                assertEquals("python_not_in_scope", readiness.reason, scopeKind)
+                assertEquals(0, readiness.pythonFileCount, scopeKind)
+            }
+        } finally {
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
+    fun `test selected Python file without SDK fails closed`() {
+        val productionHandler = InspectionHandler()
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val pythonFile = mockk<VirtualFile>(relaxed = true)
+        val pythonFileType = mockk<FileType>(relaxed = true)
+        val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
+        val rootManager = mockk<ProjectRootManager>(relaxed = true)
+        val pythonPath = "/tmp/TestProject/scripts/check.py"
+        every { pythonFile.path } returns pythonPath
+        every { pythonFile.name } returns "check.py"
+        every { pythonFile.isValid } returns true
+        every { pythonFile.isDirectory } returns false
+        every { pythonFile.isInLocalFileSystem } returns true
+        every { pythonFile.extension } returns "py"
+        every { pythonFileType.name } returns "Plain Text"
+        every { rootManager.projectSdk } returns null
+        mockkStatic(LocalFileSystem::class)
+        mockkStatic(FileTypeManager::class)
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(pythonPath) } returns pythonFile
+        every { FileTypeManager.getInstance() } returns fileTypeManager
+        every { fileTypeManager.getFileTypeByExtension("py") } returns pythonFileType
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleUtilCore.findModuleForFile(pythonFile, mockProject) } returns null
+
+        try {
+            val unsupportedReadiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf(pythonPath),
+                    resolvedFiles = listOf(pythonPath),
+                ),
+            )
+            assertTrue(unsupportedReadiness.required)
+            assertFalse(unsupportedReadiness.ready)
+            assertEquals("python_support_unavailable", unsupportedReadiness.reason)
+            assertEquals(1, unsupportedReadiness.pythonFileCount)
+
+            every { pythonFileType.name } returns "Python"
+            val readiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf(pythonPath),
+                    resolvedFiles = listOf(pythonPath),
+                ),
+            )
+
+            assertTrue(readiness.required)
+            assertFalse(readiness.ready)
+            assertEquals("python_sdk_missing", readiness.reason)
+            assertEquals(1, readiness.pythonFileCount)
+            assertEquals(1, readiness.missingSdkFileCount)
+        } finally {
+            unmockkStatic(ModuleUtilCore::class)
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(FileTypeManager::class)
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
+    fun `test directory and whole project preserve Python readiness boundaries`() {
+        val productionHandler = InspectionHandler()
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val directory = mockk<VirtualFile>(relaxed = true)
+        val selectedPythonFile = mockk<VirtualFile>(relaxed = true)
+        val unrelatedPythonFile = mockk<VirtualFile>(relaxed = true)
+        val pythonFileType = mockk<FileType>(relaxed = true)
+        val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
+        val rootManager = mockk<ProjectRootManager>(relaxed = true)
+        val searchScope = mockk<GlobalSearchScope>(relaxed = true)
+        val directoryPath = "/tmp/TestProject/scripts"
+        val selectedPath = "$directoryPath/selected.py"
+        val unrelatedPath = "/tmp/TestProject/fixtures/unrelated.py"
+        every { directory.path } returns directoryPath
+        every { directory.isValid } returns true
+        every { directory.isDirectory } returns true
+        every { selectedPythonFile.path } returns selectedPath
+        every { selectedPythonFile.name } returns "selected.py"
+        every { selectedPythonFile.isValid } returns true
+        every { selectedPythonFile.isDirectory } returns false
+        every { selectedPythonFile.extension } returns "py"
+        every { unrelatedPythonFile.path } returns unrelatedPath
+        every { unrelatedPythonFile.name } returns "unrelated.py"
+        every { unrelatedPythonFile.isValid } returns true
+        every { unrelatedPythonFile.isDirectory } returns false
+        every { unrelatedPythonFile.extension } returns "py"
+        every { pythonFileType.name } returns "Python"
+        every { rootManager.projectSdk } returns null
+        mockkStatic(LocalFileSystem::class)
+        mockkStatic(FileTypeManager::class)
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        mockkStatic(FilenameIndex::class)
+        mockkStatic(GlobalSearchScope::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(directoryPath) } returns directory
+        every { FileTypeManager.getInstance() } returns fileTypeManager
+        every { fileTypeManager.getFileTypeByExtension("py") } returns pythonFileType
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleUtilCore.findModuleForFile(any(), mockProject) } returns null
+        every { GlobalSearchScope.projectScope(mockProject) } returns searchScope
+        every {
+            FilenameIndex.getAllFilesByExt(mockProject, "py", searchScope)
+        } returns listOf(selectedPythonFile, unrelatedPythonFile)
+
+        try {
+            val directoryReadiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "directory",
+                    directoryParam = directoryPath,
+                    resolvedDirectory = directoryPath,
+                ),
+            )
+            val wholeProjectReadiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(scopeParam = "whole_project"),
+            )
+
+            assertEquals("python_sdk_missing", directoryReadiness.reason)
+            assertEquals(1, directoryReadiness.pythonFileCount)
+            assertEquals(1, directoryReadiness.missingSdkFileCount)
+            assertEquals("python_sdk_missing", wholeProjectReadiness.reason)
+            assertEquals(2, wholeProjectReadiness.pythonFileCount)
+            assertEquals(2, wholeProjectReadiness.missingSdkFileCount)
+        } finally {
+            unmockkStatic(GlobalSearchScope::class)
+            unmockkStatic(FilenameIndex::class)
+            unmockkStatic(ModuleUtilCore::class)
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(FileTypeManager::class)
+            unmockkStatic(LocalFileSystem::class)
+        }
     }
 
     @Test
@@ -3957,12 +4291,10 @@ class InspectionHandlerTest {
             moduleRootManagers.getValue(firstArg())
         }
         val productionHandler = InspectionHandler()
+        var analysisReadinessCalls = 0
         productionHandler.projectAnalysisReadinessProvider = { _, _ ->
-            InspectionProjectAnalysisReadiness(
-                required = false,
-                ready = true,
-                reason = "python_not_in_scope",
-            )
+            analysisReadinessCalls += 1
+            error("Lifecycle structural readiness must not evaluate whole-project language readiness.")
         }
         val targetKey = tempDir.toRealPath().toString()
 
@@ -3980,6 +4312,9 @@ class InspectionHandlerTest {
             assertTrue(childReady.ready, childReady.toString())
             assertFalse(childReady.targetInsideContent)
             assertTrue(childReady.contentRootInsideTarget)
+            assertFalse(childReady.analysisRequired)
+            assertTrue(childReady.analysisReady)
+            assertEquals("deferred_to_inspection_scope", childReady.analysisReason)
 
             val fallbackModule = mockk<com.intellij.openapi.module.Module>()
             val fallbackRootManager = mockk<ModuleRootManager>()
@@ -4021,6 +4356,7 @@ class InspectionHandlerTest {
             val fallbackWithSibling = productionHandler.lifecycleContentRootReadinessProvider(mockProject, targetKey)
             assertFalse(fallbackWithSibling.ready)
             assertEquals("content_roots_outside_target", fallbackWithSibling.reason)
+            assertEquals(0, analysisReadinessCalls)
         } finally {
             unmockkStatic(ProjectRootManager::class)
             unmockkStatic(ModuleManager::class)

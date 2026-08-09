@@ -340,10 +340,14 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `ownership_proven: true`; preexisting, coalesced, mismatched, and untracked
   projects return `status: "not_owned"` without a close token. Helper-owned
   routes and claims also include `lifecycle_readiness`; automation must wait
-  for `ready: true` before inspection. When Python files are in project scope,
-  readiness also proves a Python SDK is assigned and its SDK refresh and daemon
-  analysis are settled; missing or changing analysis inputs remain fail-closed
-  with bounded `analysis_*`, Python file, and SDK counts. For a helper-owned raw directory whose
+  for `ready: true` before inspection. Lifecycle readiness proves only project,
+  route, module, and content-root structure; its `analysis_reason` is
+  `deferred_to_inspection_scope` once that structure is ready. The inspection
+  preflight then evaluates language support, SDK assignment, and analysis state
+  against the resolved requested scope. Unrelated project Python files therefore
+  do not block targeted Kotlin/Java inspections, while selected Python remains
+  fail-closed with bounded scope, Python file, SDK, start-state, and ownership
+  diagnostics. For a helper-owned raw directory whose
   configurators leave no usable module/content root, the plugin may install a
   non-persistent fallback module rooted at the requested worktree. Repair is
   limited to the exact lease-bound project instance; preexisting, coalesced,
