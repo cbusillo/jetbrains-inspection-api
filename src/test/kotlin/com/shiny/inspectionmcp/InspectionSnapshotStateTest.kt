@@ -3747,6 +3747,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 5,
+            batchRunnableObligationCount = 5,
             executedToolCount = 3,
             totalDescriptorCount = 0,
             skippedReason = null,
@@ -3779,6 +3780,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 4,
+            batchRunnableObligationCount = 4,
             executedToolCount = 4,
             totalDescriptorCount = 0,
             skippedReason = null,
@@ -3795,6 +3797,7 @@ class InspectionSnapshotStateTest {
         val proof = BoundedExecutionProofResult(
             proofProblems = listOf(finding),
             enabledLocalToolCount = 4,
+            batchRunnableObligationCount = 4,
             executedToolCount = 4,
             totalDescriptorCount = 1,
             skippedReason = null,
@@ -3805,21 +3808,21 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("proofEstablished is true when some tools lack wrappers but at least one ran successfully")
-    fun testProofEstablishedTrueWhenSomeToolsMissingWrapperButSomeRan() {
-        // Deliberate behavior: tools without batch wrappers cannot run in the proof path, but
-        // those that can DID run — the proof covers what the engine can execute.
+    @DisplayName("proofEstablished is false when an applicable tool lacks a batch wrapper")
+    fun testProofEstablishedFalseWhenApplicableToolMissingWrapper() {
         val proof = BoundedExecutionProofResult(
             proofProblems = emptyList(),
             enabledLocalToolCount = 5,
+            batchRunnableObligationCount = 2,
             executedToolCount = 2,
             totalDescriptorCount = 0,
             skippedReason = null,
             missingWrapperCount = 3,
             errorCount = 0,
         )
-        assertTrue(proof.proofEstablished)
-        assertTrue(proof.proofClean)
+        assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+        assertEquals("applicable_missing_batch_wrapper", proof.proofBlockReason)
     }
 
     // ---- Fix 3: Proof findings survive polling adoption (union by problemKey) ----
@@ -3870,8 +3873,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Non-empty findings fail closed when required execution proof is incomplete")
-    fun testNonEmptyFindingsFailClosedWithoutExecutionProof() {
+    @DisplayName("Current findings remain decisive when clean execution proof is incomplete")
+    fun testNonEmptyFindingsRemainVisibleWithoutCleanExecutionProof() {
         val snapshot = buildInspectionCaptureSnapshot(
             InspectionCaptureSnapshotInput(
                 bestResults = listOf(
@@ -3905,9 +3908,102 @@ class InspectionSnapshotStateTest {
             ),
         )
 
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
-        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
-        assertTrue(snapshot.problems.isEmpty())
+        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
+        assertEquals(1, snapshot.problems.size)
+        assertEquals(false, snapshot.captureDiagnostic?.get("execution_proof_established"))
+    }
+
+    @Test
+    @DisplayName("Current findings keep RED while proof metadata reports incomplete execution")
+    fun testCurrentFindingsKeepRedWithIncompleteProofMetadata() {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Unresolved reference",
+                        "file" to "/tmp/TestProject/src/App.kt",
+                        "line" to 3,
+                        "severity" to "warning",
+                        "inspectionType" to "KotlinUnresolvedReference",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "global_context",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "scope_file_semantic_evidence_complete" to true,
+                    "execution_proof_mode" to "exact_bounded",
+                    "execution_proof_established" to false,
+                    "execution_proof_clean" to false,
+                    "execution_proof_block_reason" to "applicable_missing_batch_wrapper",
+                ),
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals("RED", status["inspection_verdict"])
+        @Suppress("UNCHECKED_CAST")
+        val proof = status["inspection_proof"] as Map<String, Any?>
+        assertEquals("failed", proof["status"])
+        assertEquals(false, proof["capture_complete"])
+        assertEquals(listOf("execution_not_proven"), status["proof_failures"])
+    }
+
+    @Test
+    @DisplayName("Established RED proof remains complete even though it is not clean")
+    fun testEstablishedRedProofRemainsComplete() {
+        val runState = beginInspectionRun()
+        finishInspectionRun(snapshotKey(), runState.runId)
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    mapOf(
+                        "description" to "Unresolved reference",
+                        "file" to "/tmp/TestProject/src/App.kt",
+                        "line" to 3,
+                        "severity" to "warning",
+                        "inspectionType" to "KotlinUnresolvedReference",
+                    ),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "global_context",
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "scope_file_semantic_evidence_complete" to true,
+                    "execution_proof_mode" to "exact_bounded",
+                    "execution_proof_established" to true,
+                    "execution_proof_clean" to false,
+                ),
+                runId = runState.runId,
+                triggerTimeMs = runState.triggerTimeMs,
+            ),
+        )
+
+        val status = buildInspectionStatus()
+
+        assertEquals("RED", status["inspection_verdict"])
+        @Suppress("UNCHECKED_CAST")
+        val proof = status["inspection_proof"] as Map<String, Any?>
+        assertEquals("complete", proof["status"])
+        assertEquals(true, proof["capture_complete"])
+        assertFalse(status.containsKey("proof_failures"))
     }
 
     // ---- Fix 5: No scope PSI files → unproven ----
@@ -4015,6 +4111,7 @@ class InspectionSnapshotStateTest {
                     "view_ready_ok" to true,
                     "execution_proof_skipped" to false,
                     "execution_proof_established" to true,
+                    "execution_proof_clean" to true,
                     "execution_proof_executed_tool_count" to 2,
                     "execution_proof_descriptor_count" to 0,
                 ),
@@ -4028,6 +4125,39 @@ class InspectionSnapshotStateTest {
 
         assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
         assertEquals(emptyList<Map<String, Any>>(), snapshot.problems)
+    }
+
+    @Test
+    @DisplayName("Established execution cannot confirm clean when proof findings were not adopted")
+    fun testCleanConfirmedRequiresCleanExecutionProof() {
+        val snapshot = buildInspectionCaptureSnapshot(
+            InspectionCaptureSnapshotInput(
+                bestResults = emptyList(),
+                bestSource = "inspection_view",
+                snapshotTimeMs = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                emptyNote = null,
+                captureScope = InspectionCaptureScope(
+                    scopeParam = "files",
+                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
+                ),
+                captureDiagnostic = mapOf(
+                    "scope_file_semantic_evidence_complete" to true,
+                    "execution_proof_established" to true,
+                    "execution_proof_clean" to false,
+                    "execution_proof_descriptor_count" to 1,
+                ),
+                runId = 1L,
+                triggerTimeMs = null,
+                viewReadyOk = true,
+                executionProofRequired = true,
+                executionProofEstablished = true,
+            ),
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
+        assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
     }
 
     // ---- Fix 4: File limit and time limit yield unproven ----

@@ -241,7 +241,7 @@ GUI IDE.
 
 ### Inspection execution proof (issues #239 and #259)
 
-For `current_file`, `files`, and `changed_files` scopes, GREEN requires that at least one local inspection tool executes successfully against the resolved files. If no tool runs, any tool errors out, or the 25-file/20-second bounds are exceeded, the verdict is `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`.
+For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. Applicable non-batch tools, unresolved keys/wrappers, failures, timeouts, unvisited obligations, or unmapped descriptors keep clean proof `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`. Current mapped findings remain decisive RED even when clean proof is incomplete.
 
 For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
 
@@ -249,21 +249,26 @@ Run the focused regression suite:
 
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
+  --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
+  --tests "*.InspectionHandlerTest" \
   --tests "*.NativeInspectionExecutionProofTest"
 ```
 
 Key expectations:
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
-- bounded inspection with successful execution, no findings → GREEN (`proofEstablished=true`, `executedToolCount > 0`)
+- bounded inspection with all applicable runnable obligations executed, no blocking obligations, and no findings → GREEN
+- globally enabled but exact-file language-non-applicable tools do not block GREEN
+- applicable missing/non-batch wrappers, unresolved obligations, failures, timeouts, or unmapped descriptors → `execution_not_proven`
+- current mapped findings remain RED when clean execution proof is incomplete
 - `whole_project`/`directory` normal native completion with file traversal, file-scoped tool completions, no failures, and zero findings → GREEN
 - `whole_project`/`directory` aborted, failed, zero-file, zero-file-scoped-tool, stale, or mismatched native execution → `execution_not_proven`, not GREEN
 - native problem counts without mapped findings → `execution_not_proven`, not GREEN; mapped current findings remain RED
 - filtering an unproven finding snapshot to zero matching findings → `execution_not_proven`, not `no_matching_findings`
 - an exactly empty `changed_files` scope remains a vacuously clean result without executing tools
-- `capture_diagnostic` contains `execution_proof_mode`, `execution_proof_established`, `execution_proof_clean`, `execution_proof_error_count`, `execution_proof_skipped`, `execution_proof_skipped_reason`, and `execution_proof_block_reason`; native broad scopes also include expected, analyzed, missing, unexpected, and tool-event counts under `execution_proof_native_*`
+- `capture_diagnostic` contains `execution_proof_mode`, `execution_proof_established`, `execution_proof_clean`, `execution_proof_error_count`, `execution_proof_skipped`, `execution_proof_skipped_reason`, and `execution_proof_block_reason`; exact bounded scopes also separate globally enabled tools from candidate, applicable, non-applicable, runnable, executed, failed, unclassified, and unvisited obligations and emit bounded examples; native broad scopes include expected, analyzed, missing, unexpected, and tool-event counts under `execution_proof_native_*`
 
 Before shipping changes to clean/capture classification, run the focused
 `InspectionSnapshotStateTest` coverage, then build the plugin with
