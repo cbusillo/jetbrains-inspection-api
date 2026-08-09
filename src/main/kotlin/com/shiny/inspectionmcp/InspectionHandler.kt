@@ -1454,7 +1454,7 @@ internal fun classifyCaptureIncompleteReason(
 
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-    val context: GlobalInspectionContextImpl? = null,
+    val context: com.intellij.codeInspection.GlobalInspectionContext? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -8749,8 +8749,6 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.profile.codeInspection.InspectionProjectProfileManager
                 .getInstance(project)
                 .currentProfile
-        val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-
         fun cleanupExactFileExecutionWrapper(executionWrapper: ExactFileInspectionExecutionWrapper) {
             var cleanupFailure: Exception? = null
             try {
@@ -8768,8 +8766,9 @@ class InspectionHandler : HttpRequestHandler() {
                         cleanupFailure.addSuppressed(error)
                     }
                 } finally {
+                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
                     synchronized(exactProofInspectionManager) {
-                        exactProofInspectionManager.runningContexts.remove(context)
+                        exactProofInspectionManager.runningContexts.remove(context as GlobalInspectionContextImpl)
                     }
                 }
             }
@@ -8842,6 +8841,7 @@ class InspectionHandler : HttpRequestHandler() {
                     InspectionProfileImpl.copyToolSettings(batchWrapper.toolWrapper)
                 }
                 val executionContext = try {
+                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
                     synchronized(exactProofInspectionManager) {
                         exactProofInspectionManager.createNewGlobalContext()
                     }
@@ -8877,11 +8877,12 @@ class InspectionHandler : HttpRequestHandler() {
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
                 runDeadlineAwareProofProcess {
+                    val executionContext = requireNotNull(batchWrapper.context) as GlobalInspectionContextImpl
                     app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
                         InspectionEngine.runInspectionOnFile(
                             candidate.value,
                             batchWrapper.toolWrapper,
-                            requireNotNull(batchWrapper.context),
+                            executionContext,
                         )
                     }
                 }
