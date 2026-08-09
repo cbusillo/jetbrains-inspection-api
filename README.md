@@ -774,7 +774,9 @@ an isolated `canary/vX.Y.Z-canary.N` tag. Pushing that tag does not publish
 anything. An operator must explicitly dispatch `.github/workflows/canary-release.yml`
 from the default branch with the existing tag as input. The workflow builds and
 tests the branch-only source without Marketplace secrets or persisted checkout
-credentials or Gradle build caching. The untrusted build runs tests and plugin
+credentials or Gradle build caching. The untrusted 262-only source build uses
+Java 25, ignores only checkout-local executable-bit differences before invoking
+the Gradle wrapper, and runs tests and plugin
 structure validation but does not make the compatibility or private-API
 decision. That build workspace and all branch-produced verifier reports are
 discarded. A fresh trusted job downloads the resulting zip, independently runs
