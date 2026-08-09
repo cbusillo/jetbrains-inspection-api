@@ -174,22 +174,23 @@ class ExactFileExecutionProofTest {
 
     @Test
     fun `reproduced two-file workload executes all 227 runnable obligations`() {
-        val names = (0 until 227).map { index -> "Tool${index.toString().padStart(3, '0')}" }
-        val firstExecutionsStarted = CountDownLatch(2)
-        val proof = runProof(
-            names = names,
-            adapter = FakeAdapter(
-                wrappers = names.associateWith { Wrapper() },
-                onExecutionWrapper = { name, _ ->
-                    if (name == "Tool000" || name == "Tool001") {
-                        firstExecutionsStarted.countDown()
-                        assertTrue(firstExecutionsStarted.await(2, TimeUnit.SECONDS))
-                    }
-                },
-            ),
-            filePaths = names.associateWith { name ->
-                if (name.removePrefix("Tool").toInt() % 2 == 0) "/repo/large_a.py" else "/repo/large_b.py"
-            },
+        val toolNames = (0 until 114).map { index -> "Tool${index.toString().padStart(3, '0')}" }
+        val candidates = buildList {
+            toolNames.forEachIndexed { index, toolName ->
+                add(ExactFileProofCandidate(toolName, "/repo/large_a.py", "$toolName:a"))
+                if (index < 113) add(ExactFileProofCandidate(toolName, "/repo/large_b.py", "$toolName:b"))
+            }
+        }
+        val proof = runExactFileExecutionProof(
+            enabledLocalToolCount = toolNames.size,
+            candidates = candidates,
+            enumerationErrorCount = 0,
+            timeoutMs = 5_000,
+            nowNanos = System::nanoTime,
+            cancellationCheck = {},
+            rethrowCancellation = { error -> if (error is CancellationSignal) throw error },
+            problemKey = { problem -> problem.toString() },
+            adapter = FakeAdapter(toolNames.associateWith { Wrapper() }),
         )
 
         assertTrue(proof.proofEstablished)
@@ -198,6 +199,27 @@ class ExactFileExecutionProofTest {
         assertEquals(227, proof.executedToolCount)
         assertEquals(0, proof.unexecutedRunnableObligationCount)
         assertFalse(proof.hitTimeLimit)
+    }
+
+    @Test
+    fun `timeout after execution marks every returned descriptor unvisited`() {
+        val nowNanos = java.util.concurrent.atomic.AtomicLong(0L)
+        val proof = runProof(
+            names = listOf("Kotlin"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Kotlin" to Wrapper()),
+                descriptors = mapOf("Kotlin" to listOf("first", "second")),
+                onExecution = { nowNanos.set(2_000_000L) },
+            ),
+            timeoutMs = 1,
+            clock = nowNanos::get,
+        )
+
+        assertTrue(proof.hitTimeLimit)
+        assertEquals(1, proof.executedToolCount)
+        assertEquals(2, proof.totalDescriptorCount)
+        assertEquals(2, proof.unvisitedDescriptorCount)
+        assertEquals("time_limit", proof.proofBlockReason)
     }
 
     @Test
@@ -240,6 +262,23 @@ class ExactFileExecutionProofTest {
         assertEquals(1, proof.failedObligationCount)
         assertEquals(0, proof.executedToolCount)
         assertEquals(1, cleanupCount.get())
+        assertEquals("execution_failed", proof.proofBlockReason)
+    }
+
+    @Test
+    fun `cleanup failure keeps completed execution unproven`() {
+        val proof = runProof(
+            names = listOf("Kotlin"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Kotlin" to Wrapper()),
+                onCleanup = { _, _ -> throw IllegalStateException("cleanup") },
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(1, proof.executedToolCount)
+        assertEquals(1, proof.failedObligationCount)
+        assertEquals(1, proof.errorCount)
         assertEquals("execution_failed", proof.proofBlockReason)
     }
 

@@ -469,7 +469,12 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             val descriptors = adapter.execute(obligation.candidate, executionWrapper)
             state.executed = true
             state.descriptorCount = descriptors.size
-            checkExecutionBudget()
+            try {
+                checkExecutionBudget()
+            } catch (error: ExactFileProofTimeLimitExceededException) {
+                state.unvisitedDescriptorCount = descriptors.size
+                throw error
+            }
             stage = "descriptor_mapping"
             for ((descriptorIndex, descriptor) in descriptors.withIndex()) {
                 try {

@@ -8750,6 +8750,32 @@ class InspectionHandler : HttpRequestHandler() {
                 .getInstance(project)
                 .currentProfile
         val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+
+        fun cleanupExactFileExecutionWrapper(executionWrapper: ExactFileInspectionExecutionWrapper) {
+            var cleanupFailure: Exception? = null
+            try {
+                executionWrapper.toolWrapper.cleanup(project)
+            } catch (error: Exception) {
+                cleanupFailure = error
+            }
+            executionWrapper.context?.let { context ->
+                try {
+                    context.cleanup()
+                } catch (error: Exception) {
+                    if (cleanupFailure == null) {
+                        cleanupFailure = error
+                    } else {
+                        cleanupFailure.addSuppressed(error)
+                    }
+                } finally {
+                    synchronized(exactProofInspectionManager) {
+                        exactProofInspectionManager.runningContexts.remove(context)
+                    }
+                }
+            }
+            cleanupFailure?.let { throw it }
+        }
+
         val adapter = object : ExactFileProofAdapter<
             com.intellij.psi.PsiFile,
             HighlightDisplayKey,
@@ -8815,19 +8841,26 @@ class InspectionHandler : HttpRequestHandler() {
                 val copiedWrapper = synchronized(batchWrapper.toolWrapper) {
                     InspectionProfileImpl.copyToolSettings(batchWrapper.toolWrapper)
                 }
-                val executionContext = synchronized(exactProofInspectionManager) {
-                    exactProofInspectionManager.createNewGlobalContext()
+                val executionContext = try {
+                    synchronized(exactProofInspectionManager) {
+                        exactProofInspectionManager.createNewGlobalContext()
+                    }
+                } catch (error: Exception) {
+                    runCatching { copiedWrapper.cleanup(project) }
+                        .exceptionOrNull()
+                        ?.let(error::addSuppressed)
+                    throw error
                 }
+                val executionWrapper = ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
                 return try {
                     executionContext.setExternalProfile(profile)
                     executionContext.currentScope = globalContext.currentScope
                     checkProofBudget()
-                    ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
+                    executionWrapper
                 } catch (error: Exception) {
-                    runCatching { executionContext.cleanup() }
-                    synchronized(exactProofInspectionManager) {
-                        exactProofInspectionManager.runningContexts.remove(executionContext)
-                    }
+                    runCatching { cleanupExactFileExecutionWrapper(executionWrapper) }
+                        .exceptionOrNull()
+                        ?.let(error::addSuppressed)
                     throw error
                 }
             }
@@ -8868,17 +8901,7 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ) {
-                try {
-                    batchWrapper.toolWrapper.cleanup(project)
-                } finally {
-                    batchWrapper.context?.let { context ->
-                        runCatching { context.cleanup() }
-                            .onFailure { error -> logger.warn("Exact-file inspection context cleanup failed for ${project.name}", error) }
-                        synchronized(exactProofInspectionManager) {
-                            exactProofInspectionManager.runningContexts.remove(context)
-                        }
-                    }
-                }
+                cleanupExactFileExecutionWrapper(batchWrapper)
             }
 
             override fun diagnosticRow(
