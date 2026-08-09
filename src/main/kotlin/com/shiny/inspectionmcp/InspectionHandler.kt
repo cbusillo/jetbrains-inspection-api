@@ -1452,6 +1452,11 @@ internal fun classifyCaptureIncompleteReason(
     }
 }
 
+private data class ExactFileInspectionExecutionWrapper(
+    val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+    val context: com.intellij.codeInspection.GlobalInspectionContext? = null,
+)
+
 class InspectionHandler : HttpRequestHandler() {
     private val logger = Logger.getInstance(InspectionHandler::class.java)
 
@@ -8744,10 +8749,36 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.profile.codeInspection.InspectionProjectProfileManager
                 .getInstance(project)
                 .currentProfile
+        fun cleanupExactFileExecutionWrapper(executionWrapper: ExactFileInspectionExecutionWrapper) {
+            var cleanupFailure: Exception? = null
+            try {
+                executionWrapper.toolWrapper.cleanup(project)
+            } catch (error: Exception) {
+                cleanupFailure = error
+            }
+            executionWrapper.context?.let { context ->
+                try {
+                    context.cleanup()
+                } catch (error: Exception) {
+                    if (cleanupFailure == null) {
+                        cleanupFailure = error
+                    } else {
+                        cleanupFailure.addSuppressed(error)
+                    }
+                } finally {
+                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+                    synchronized(exactProofInspectionManager) {
+                        exactProofInspectionManager.runningContexts.remove(context as GlobalInspectionContextImpl)
+                    }
+                }
+            }
+            cleanupFailure?.let { throw it }
+        }
+
         val adapter = object : ExactFileProofAdapter<
             com.intellij.psi.PsiFile,
             HighlightDisplayKey,
-            com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+            ExactFileInspectionExecutionWrapper,
             com.intellij.codeInspection.ProblemDescriptor
             > {
             override fun resolveDisplayKey(candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>): HighlightDisplayKey? =
@@ -8764,15 +8795,15 @@ class InspectionHandler : HttpRequestHandler() {
 
             override fun resolveSourceWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-            ): com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? =
+            ): ExactFileInspectionExecutionWrapper? =
                 app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
                     profile.getInspectionTool(candidate.shortName, candidate.value)
                         as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                }
+                }?.let(::ExactFileInspectionExecutionWrapper)
 
             override fun isLanguageApplicable(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+                sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): Boolean = app.runReadAction<Boolean, Exception> {
                 val languages = fileLanguages.getOrPut(candidate.value) {
                     val collected = linkedSetOf<com.intellij.lang.Language>()
@@ -8786,51 +8817,102 @@ class InspectionHandler : HttpRequestHandler() {
                     })
                     collected
                 }
-                languages.any(sourceWrapper::isApplicable)
+                languages.any(sourceWrapper.toolWrapper::isApplicable)
             }
 
             override fun resolveBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-            ): com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? =
+                sourceWrapper: ExactFileInspectionExecutionWrapper,
+            ): ExactFileInspectionExecutionWrapper? =
                 app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
                     com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
                         project,
                         candidate.value,
                         profile,
-                        sourceWrapper,
+                        sourceWrapper.toolWrapper,
                     )
+                }?.let(::ExactFileInspectionExecutionWrapper)
+
+            override fun copyBatchWrapper(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
+            ): ExactFileInspectionExecutionWrapper {
+                val copiedWrapper = synchronized(batchWrapper.toolWrapper) {
+                    InspectionProfileImpl.copyToolSettings(batchWrapper.toolWrapper)
                 }
+                val executionContext = try {
+                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+                    synchronized(exactProofInspectionManager) {
+                        exactProofInspectionManager.createNewGlobalContext()
+                    }
+                } catch (error: Exception) {
+                    runCatching { copiedWrapper.cleanup(project) }
+                        .exceptionOrNull()
+                        ?.let(error::addSuppressed)
+                    throw error
+                }
+                val executionWrapper = ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
+                return try {
+                    executionContext.setExternalProfile(profile)
+                    executionContext.currentScope = globalContext.currentScope
+                    checkProofBudget()
+                    executionWrapper
+                } catch (error: Exception) {
+                    runCatching { cleanupExactFileExecutionWrapper(executionWrapper) }
+                        .exceptionOrNull()
+                        ?.let(error::addSuppressed)
+                    throw error
+                }
+            }
+
+            override fun initializeBatchWrapper(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
+            ) {
+                checkProofBudget()
+            }
 
             override fun execute(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
                 runDeadlineAwareProofProcess {
+                    val executionContext = requireNotNull(batchWrapper.context) as GlobalInspectionContextImpl
                     app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
-                        InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper, globalContext)
+                        InspectionEngine.runInspectionOnFile(
+                            candidate.value,
+                            batchWrapper.toolWrapper,
+                            executionContext,
+                        )
                     }
                 }
 
             override fun mapDescriptor(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
                 descriptor: com.intellij.codeInspection.ProblemDescriptor,
             ): Map<String, Any>? {
                 checkProofBudget()
                 return app.runReadAction<Map<String, Any>?, Exception> {
-                    buildProblemMap(descriptor, batchWrapper, project)
+                    buildProblemMap(descriptor, batchWrapper.toolWrapper, project)
                 }.also { checkProofBudget() }
+            }
+
+            override fun cleanupBatchWrapper(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
+            ) {
+                cleanupExactFileExecutionWrapper(batchWrapper)
             }
 
             override fun diagnosticRow(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 classification: ExactFileProofClassification,
-                sourceWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?,
-                batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?,
+                sourceWrapper: ExactFileInspectionExecutionWrapper?,
+                batchWrapper: ExactFileInspectionExecutionWrapper?,
                 detail: String?,
             ): Map<String, Any?> {
-                val sourceLocal = sourceWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                val sourceLocal = sourceWrapper?.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
                 val pairedBatchShortName =
                     (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
@@ -8849,13 +8931,13 @@ class InspectionHandler : HttpRequestHandler() {
                     "file_language_ids" to languageIds,
                     "selected_profile" to profile.name,
                     "current_profile" to currentProfile.name,
-                    "source_wrapper_class" to sourceWrapper?.javaClass?.name,
+                    "source_wrapper_class" to sourceWrapper?.toolWrapper?.javaClass?.name,
                     "source_tool_class" to sourceTool?.javaClass?.name,
-                    "source_declared_language" to runCatching { sourceWrapper?.language }.getOrNull(),
+                    "source_declared_language" to runCatching { sourceWrapper?.toolWrapper?.language }.getOrNull(),
                     "source_is_unfair" to runCatching { sourceLocal?.isUnfair }.getOrNull(),
                     "paired_batch_short_name" to pairedBatchShortName,
-                    "batch_wrapper_class" to batchWrapper?.javaClass?.name,
-                    "batch_short_name" to runCatching { batchWrapper?.shortName }.getOrNull(),
+                    "batch_wrapper_class" to batchWrapper?.toolWrapper?.javaClass?.name,
+                    "batch_short_name" to runCatching { batchWrapper?.toolWrapper?.shortName }.getOrNull(),
                 ).filterValues { it != null }
             }
         }

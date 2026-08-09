@@ -1,6 +1,11 @@
 package com.shiny.inspectionmcp
 
 import java.nio.file.Paths
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 internal const val MAX_EXACT_FILE_PROOF_EXAMPLES = 12
 
@@ -48,9 +53,15 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 
     fun resolveBatchWrapper(candidate: ExactFileProofCandidate<T>, sourceWrapper: W): W?
 
+    fun copyBatchWrapper(candidate: ExactFileProofCandidate<T>, batchWrapper: W): W = batchWrapper
+
+    fun initializeBatchWrapper(candidate: ExactFileProofCandidate<T>, batchWrapper: W) = Unit
+
     fun execute(candidate: ExactFileProofCandidate<T>, batchWrapper: W): List<D>
 
     fun mapDescriptor(candidate: ExactFileProofCandidate<T>, batchWrapper: W, descriptor: D): Map<String, Any>?
+
+    fun cleanupBatchWrapper(candidate: ExactFileProofCandidate<T>, batchWrapper: W) = Unit
 
     fun diagnosticRow(
         candidate: ExactFileProofCandidate<T>,
@@ -142,6 +153,21 @@ private data class RunnableExactFileProofObligation<T, W>(
     val batchWrapper: W,
 )
 
+private class ExactFileProofExecutionState<T, W, D>(
+    val obligation: RunnableExactFileProofObligation<T, W>,
+) {
+    var executionWrapper: W? = null
+    var executed = false
+    var completed = false
+    var descriptorCount = 0
+    var unvisitedDescriptorCount = 0
+    var mappingErrorCount = 0
+    val mappedProblems = mutableListOf<Map<String, Any>>()
+    val unmappedDetails = mutableListOf<String>()
+    var failureDetail: String? = null
+    var timeoutStage: String? = null
+}
+
 private class ExactFileProofAccumulator(
     private val enabledLocalToolCount: Int,
     private val candidateObligationCount: Int,
@@ -220,6 +246,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     rethrowCancellation: (Exception) -> Unit,
     problemKey: (Map<String, Any>) -> String,
     adapter: ExactFileProofAdapter<T, K, W, D>,
+    maxParallelFiles: Int = 4,
 ): BoundedExecutionProofResult {
     val timeoutNanos = timeoutMs.coerceAtLeast(0L) * 1_000_000L
     val accumulator = ExactFileProofAccumulator(enabledLocalToolCount, candidates.size, enumerationErrorCount)
@@ -384,41 +411,211 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         runnable += RunnableExactFileProofObligation(candidate, sourceWrapper, batchWrapper)
     }
 
-    for ((index, obligation) in runnable.withIndex()) {
-        cancellationCheck()
-        if (deadlineExceeded()) {
-            accumulator.hitTimeLimit = true
-            accumulator.unexecutedRunnableObligationCount += runnable.size - index
-            accumulator.addBlockingExample(
-                safeDiagnostic(
-                    obligation.candidate,
-                    ExactFileProofClassification.TIME_LIMIT,
-                    obligation.sourceWrapper,
-                    obligation.batchWrapper,
-                    "execution",
-                ),
-            )
-            return accumulator.result(startNanos, nowNanos)
-        }
+    val executionStates = runnable.map { obligation -> ExactFileProofExecutionState<T, W, D>(obligation) }
+    val deadlineTriggered = AtomicBoolean(false)
+    val externalCancellation = AtomicReference<RuntimeException?>()
 
-        val descriptors = try {
-            adapter.execute(obligation.candidate, obligation.batchWrapper)
-        } catch (error: Exception) {
-            if (error is ExactFileProofTimeLimitExceededException) {
-                accumulator.hitTimeLimit = true
-                accumulator.unexecutedRunnableObligationCount += runnable.size - index
-                accumulator.addBlockingExample(
-                    safeDiagnostic(
-                        obligation.candidate,
-                        ExactFileProofClassification.TIME_LIMIT,
-                        obligation.sourceWrapper,
-                        obligation.batchWrapper,
-                        "execution",
-                    ),
-                )
-                return accumulator.result(startNanos, nowNanos)
-            }
+    fun requestExternalCancellation(error: RuntimeException) {
+        externalCancellation.compareAndSet(null, error)
+    }
+
+    fun checkExecutionBudget() {
+        val cancellation = externalCancellation.get()
+        if (cancellation != null) throw cancellation
+        try {
+            cancellationCheck()
+        } catch (error: RuntimeException) {
+            requestExternalCancellation(error)
+            throw error
+        }
+        if (deadlineTriggered.get() || deadlineExceeded()) {
+            deadlineTriggered.set(true)
+            throw ExactFileProofTimeLimitExceededException()
+        }
+    }
+
+    fun classifyExecutionError(error: Exception): RuntimeException? {
+        if (error is ExactFileProofTimeLimitExceededException) {
+            deadlineTriggered.set(true)
+            return null
+        }
+        val cancellation = try {
             rethrowCancellation(error)
+            null
+        } catch (cancellation: RuntimeException) {
+            requestExternalCancellation(cancellation)
+            cancellation
+        }
+        if (cancellation != null) return cancellation
+        if (deadlineTriggered.get() || deadlineExceeded()) {
+            deadlineTriggered.set(true)
+        }
+        return null
+    }
+
+    fun executeState(state: ExactFileProofExecutionState<T, W, D>): Boolean {
+        val obligation = state.obligation
+        var stage = "wrapper_copy"
+        var executionWrapper: W? = null
+        var stopFileWorker = false
+        try {
+            checkExecutionBudget()
+            executionWrapper = adapter.copyBatchWrapper(obligation.candidate, obligation.batchWrapper)
+            state.executionWrapper = executionWrapper
+            stage = "wrapper_initialize"
+            adapter.initializeBatchWrapper(obligation.candidate, executionWrapper)
+            checkExecutionBudget()
+            stage = "execution"
+            val descriptors = adapter.execute(obligation.candidate, executionWrapper)
+            state.executed = true
+            state.descriptorCount = descriptors.size
+            try {
+                checkExecutionBudget()
+            } catch (error: ExactFileProofTimeLimitExceededException) {
+                state.unvisitedDescriptorCount = descriptors.size
+                throw error
+            }
+            stage = "descriptor_mapping"
+            for ((descriptorIndex, descriptor) in descriptors.withIndex()) {
+                try {
+                    checkExecutionBudget()
+                } catch (error: ExactFileProofTimeLimitExceededException) {
+                    state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                    throw error
+                }
+                val mapped = try {
+                    adapter.mapDescriptor(obligation.candidate, executionWrapper, descriptor)
+                } catch (error: Exception) {
+                    val cancellation = classifyExecutionError(error)
+                    if (cancellation != null) throw cancellation
+                    if (deadlineTriggered.get()) {
+                        state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                        throw ExactFileProofTimeLimitExceededException()
+                    }
+                    state.mappingErrorCount++
+                    null
+                }
+                try {
+                    checkExecutionBudget()
+                } catch (error: ExactFileProofTimeLimitExceededException) {
+                    state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                    throw error
+                }
+                if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
+                    state.unmappedDetails += if (mapped == null) {
+                        "mapping_returned_null"
+                    } else {
+                        "descriptor_outside_candidate_file"
+                    }
+                } else {
+                    state.mappedProblems += mapped
+                }
+            }
+        } catch (error: Exception) {
+            val cancellation = classifyExecutionError(error)
+            when {
+                cancellation != null -> stopFileWorker = true
+                deadlineTriggered.get() -> {
+                    state.timeoutStage = stage
+                    stopFileWorker = true
+                }
+                else -> state.failureDetail = "$stage:${error.javaClass.simpleName}"
+            }
+        } finally {
+            if (executionWrapper != null) {
+                try {
+                    adapter.cleanupBatchWrapper(obligation.candidate, executionWrapper)
+                } catch (error: Exception) {
+                    val cancellation = classifyExecutionError(error)
+                    when {
+                        cancellation != null -> stopFileWorker = true
+                        deadlineTriggered.get() -> {
+                            state.timeoutStage = state.timeoutStage ?: "wrapper_cleanup"
+                            stopFileWorker = true
+                        }
+                        state.failureDetail == null -> state.failureDetail = "wrapper_cleanup:${error.javaClass.simpleName}"
+                    }
+                }
+            }
+        }
+        state.completed = state.executed &&
+            state.unvisitedDescriptorCount == 0 &&
+            state.failureDetail == null &&
+            state.timeoutStage == null
+        return !stopFileWorker && externalCancellation.get() == null && !deadlineTriggered.get()
+    }
+
+    fun executeFile(states: List<ExactFileProofExecutionState<T, W, D>>) {
+        for (state in states) {
+            if (!executeState(state)) break
+        }
+    }
+
+    val statesByFile = executionStates.groupBy { state ->
+        runCatching { Paths.get(state.obligation.candidate.filePath).normalize().toAbsolutePath().toString() }
+            .getOrDefault(state.obligation.candidate.filePath)
+    }
+    if (statesByFile.size <= 1 || maxParallelFiles <= 1) {
+        statesByFile.values.forEach(::executeFile)
+    } else {
+        val threadNumber = AtomicInteger()
+        val executor = Executors.newFixedThreadPool(
+            minOf(statesByFile.size, maxParallelFiles.coerceAtLeast(1)),
+        ) { task ->
+            val thread = Thread(task, "exact-file-proof-${threadNumber.incrementAndGet()}")
+            thread.isDaemon = true
+            thread
+        }
+        statesByFile.values.forEach { states -> executor.execute { executeFile(states) } }
+        executor.shutdown()
+        var stopRequested = false
+        var waitInterrupted = false
+        while (true) {
+            val terminated = try {
+                executor.awaitTermination(25L, TimeUnit.MILLISECONDS)
+            } catch (error: InterruptedException) {
+                waitInterrupted = true
+                requestExternalCancellation(RuntimeException(error))
+                false
+            }
+            if (terminated) break
+            if (externalCancellation.get() != null) {
+                stopRequested = true
+            } else {
+                try {
+                    cancellationCheck()
+                } catch (error: RuntimeException) {
+                    requestExternalCancellation(error)
+                    stopRequested = true
+                }
+                if (deadlineExceeded()) {
+                    deadlineTriggered.set(true)
+                    stopRequested = true
+                }
+            }
+            if (stopRequested) executor.shutdownNow()
+        }
+        if (waitInterrupted) Thread.currentThread().interrupt()
+    }
+
+    val cancellation = externalCancellation.get()
+    if (cancellation != null) throw cancellation
+
+    accumulator.hitTimeLimit = deadlineTriggered.get()
+    for (state in executionStates) {
+        cancellationCheck()
+        if (deadlineExceeded()) accumulator.hitTimeLimit = true
+        val obligation = state.obligation
+        val diagnosticWrapper = state.executionWrapper ?: obligation.batchWrapper
+        if (state.executed) {
+            accumulator.executedToolCount++
+            accumulator.totalDescriptorCount += state.descriptorCount
+        } else if (state.failureDetail == null) {
+            accumulator.unexecutedRunnableObligationCount++
+        }
+        accumulator.unvisitedDescriptorCount += state.unvisitedDescriptorCount
+        accumulator.errorCount += state.mappingErrorCount
+        if (state.failureDetail != null) {
             accumulator.failedObligationCount++
             accumulator.errorCount++
             accumulator.addBlockingExample(
@@ -426,117 +623,60 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                     obligation.candidate,
                     ExactFileProofClassification.EXECUTION_FAILED,
                     obligation.sourceWrapper,
-                    obligation.batchWrapper,
-                    error.javaClass.simpleName,
+                    diagnosticWrapper,
+                    state.failureDetail,
                 ),
             )
-            continue
         }
-        accumulator.executedToolCount++
-        accumulator.totalDescriptorCount += descriptors.size
-        cancellationCheck()
-        if (deadlineExceeded()) {
-            accumulator.hitTimeLimit = true
-            accumulator.unexecutedRunnableObligationCount += runnable.size - index - 1
-            accumulator.unvisitedDescriptorCount += descriptors.size
+        if (state.timeoutStage != null) {
             accumulator.addBlockingExample(
                 safeDiagnostic(
                     obligation.candidate,
                     ExactFileProofClassification.TIME_LIMIT,
                     obligation.sourceWrapper,
-                    obligation.batchWrapper,
-                    "descriptor_mapping",
+                    diagnosticWrapper,
+                    state.timeoutStage,
                 ),
             )
-            return accumulator.result(startNanos, nowNanos)
         }
-
-        for ((descriptorIndex, descriptor) in descriptors.withIndex()) {
+        for (detail in state.unmappedDetails) {
+            accumulator.unmappedDescriptorCount++
+            accumulator.addBlockingExample(
+                safeDiagnostic(
+                    obligation.candidate,
+                    ExactFileProofClassification.DESCRIPTOR_UNMAPPED,
+                    obligation.sourceWrapper,
+                    diagnosticWrapper,
+                    detail,
+                ),
+            )
+        }
+        for (mapped in state.mappedProblems) {
             cancellationCheck()
-            if (deadlineExceeded()) {
-                accumulator.hitTimeLimit = true
-                accumulator.unexecutedRunnableObligationCount += runnable.size - index - 1
-                accumulator.unvisitedDescriptorCount += descriptors.size - descriptorIndex
-                accumulator.addBlockingExample(
-                    safeDiagnostic(
-                        obligation.candidate,
-                        ExactFileProofClassification.TIME_LIMIT,
-                        obligation.sourceWrapper,
-                        obligation.batchWrapper,
-                        "descriptor_mapping",
-                    ),
-                )
-                return accumulator.result(startNanos, nowNanos)
-            }
-            val mapped = try {
-                adapter.mapDescriptor(obligation.candidate, obligation.batchWrapper, descriptor)
-            } catch (error: Exception) {
-                if (error is ExactFileProofTimeLimitExceededException) {
-                    accumulator.hitTimeLimit = true
-                    accumulator.unexecutedRunnableObligationCount += runnable.size - index - 1
-                    accumulator.unvisitedDescriptorCount += descriptors.size - descriptorIndex
-                    accumulator.addBlockingExample(
-                        safeDiagnostic(
-                            obligation.candidate,
-                            ExactFileProofClassification.TIME_LIMIT,
-                            obligation.sourceWrapper,
-                            obligation.batchWrapper,
-                            "descriptor_mapping",
-                        ),
-                    )
-                    return accumulator.result(startNanos, nowNanos)
-                }
-                rethrowCancellation(error)
-                accumulator.errorCount++
-                null
-            }
-            cancellationCheck()
-            if (deadlineExceeded()) {
-                accumulator.hitTimeLimit = true
-                accumulator.unexecutedRunnableObligationCount += runnable.size - index - 1
-                accumulator.unvisitedDescriptorCount += descriptors.size - descriptorIndex
-                accumulator.addBlockingExample(
-                    safeDiagnostic(
-                        obligation.candidate,
-                        ExactFileProofClassification.TIME_LIMIT,
-                        obligation.sourceWrapper,
-                        obligation.batchWrapper,
-                        "descriptor_mapping",
-                    ),
-                )
-                return accumulator.result(startNanos, nowNanos)
-            }
-            if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
-                accumulator.unmappedDescriptorCount++
-                accumulator.addBlockingExample(
-                    safeDiagnostic(
-                        obligation.candidate,
-                        ExactFileProofClassification.DESCRIPTOR_UNMAPPED,
-                        obligation.sourceWrapper,
-                        obligation.batchWrapper,
-                        if (mapped == null) "mapping_returned_null" else "descriptor_outside_candidate_file",
-                    ),
-                )
-            } else {
-                val mappedProblemKey = problemKey(mapped)
-                cancellationCheck()
-                if (deadlineExceeded()) {
-                    accumulator.hitTimeLimit = true
-                    accumulator.unexecutedRunnableObligationCount += runnable.size - index - 1
-                    accumulator.unvisitedDescriptorCount += descriptors.size - descriptorIndex
-                    accumulator.addBlockingExample(
-                        safeDiagnostic(
-                            obligation.candidate,
-                            ExactFileProofClassification.TIME_LIMIT,
-                            obligation.sourceWrapper,
-                            obligation.batchWrapper,
-                            "descriptor_mapping",
-                        ),
-                    )
-                    return accumulator.result(startNanos, nowNanos)
-                }
-                if (accumulator.seenProblems.add(mappedProblemKey)) accumulator.problems += mapped
-            }
+            if (deadlineExceeded()) accumulator.hitTimeLimit = true
+            val mappedProblemKey = problemKey(mapped)
+            if (accumulator.seenProblems.add(mappedProblemKey)) accumulator.problems += mapped
+        }
+    }
+    if (deadlineExceeded()) accumulator.hitTimeLimit = true
+    if (accumulator.hitTimeLimit && executionStates.none { it.timeoutStage != null }) {
+        val timeoutState = executionStates.firstOrNull { !it.completed && it.failureDetail == null }
+            ?: executionStates.lastOrNull()
+        if (timeoutState != null) {
+            val obligation = timeoutState.obligation
+            accumulator.addBlockingExample(
+                safeDiagnostic(
+                    obligation.candidate,
+                    ExactFileProofClassification.TIME_LIMIT,
+                    obligation.sourceWrapper,
+                    timeoutState.executionWrapper ?: obligation.batchWrapper,
+                    when {
+                        timeoutState.completed -> "aggregation"
+                        timeoutState.executed -> "descriptor_mapping"
+                        else -> "execution"
+                    },
+                ),
+            )
         }
     }
 
