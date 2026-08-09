@@ -6,6 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCHIVE=""
 TAG="${GITHUB_REF_NAME:-}"
 CHANNEL="${MARKETPLACE_CHANNEL:-}"
+SOURCE_SHA="${CANARY_SOURCE_SHA:-}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -20,6 +21,10 @@ while [ $# -gt 0 ]; do
     --channel)
       shift
       CHANNEL="${1:-}"
+      ;;
+    --source-sha)
+      shift
+      SOURCE_SHA="${1:-}"
       ;;
     *)
       echo "ERROR: Unknown argument: $1" >&2
@@ -37,8 +42,12 @@ if ! [[ "$TAG" =~ ^canary/v([0-9]+\.[0-9]+\.[0-9]+)-canary\.([1-9][0-9]*)$ ]]; t
   echo "ERROR: Canary tag must be in canary/vX.Y.Z-canary.N format (got '${TAG:-<empty>}')." >&2
   exit 1
 fi
-
 VERSION="${BASH_REMATCH[1]}-canary.${BASH_REMATCH[2]}"
+if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "ERROR: --source-sha must be the lowercase 40-character canary source commit." >&2
+  exit 1
+fi
+
 EXPECTED_SINCE_BUILD="262"
 EXPECTED_UNTIL_BUILD="262.*"
 "$ROOT/scripts/validate-marketplace-publication.sh" \
@@ -72,10 +81,22 @@ if ! unzip -p "$TEMP_DIR/plugin.jar" META-INF/plugin.xml > "$TEMP_DIR/plugin.xml
   echo "ERROR: Canary plugin jar does not contain META-INF/plugin.xml." >&2
   exit 1
 fi
+BUILD_INFO_PATH="com/shiny/inspectionmcp/inspection-build.properties"
+BUILD_INFO_COUNT=$(unzip -Z1 "$TEMP_DIR/plugin.jar" | awk -v target="$BUILD_INFO_PATH" '$0 == target { count++ } END { print count + 0 }')
+if [ "$BUILD_INFO_COUNT" -ne 1 ]; then
+  echo "ERROR: Canary plugin jar must contain exactly one $BUILD_INFO_PATH." >&2
+  exit 1
+fi
+if ! unzip -p "$TEMP_DIR/plugin.jar" "$BUILD_INFO_PATH" > "$TEMP_DIR/inspection-build.properties"; then
+  echo "ERROR: Canary plugin jar does not contain $BUILD_INFO_PATH." >&2
+  exit 1
+fi
 
 python3 - \
   "$TEMP_DIR/plugin.xml" \
+  "$TEMP_DIR/inspection-build.properties" \
   "$VERSION" \
+  "$SOURCE_SHA" \
   "$EXPECTED_SINCE_BUILD" \
   "$EXPECTED_UNTIL_BUILD" <<'PY'
 from pathlib import Path
@@ -83,9 +104,11 @@ import sys
 import xml.etree.ElementTree as ET
 
 plugin_xml_path = Path(sys.argv[1])
-expected_version = sys.argv[2]
-expected_since_build = sys.argv[3]
-expected_until_build = sys.argv[4]
+build_info_path = Path(sys.argv[2])
+expected_version = sys.argv[3]
+expected_source_sha = sys.argv[4]
+expected_since_build = sys.argv[5]
+expected_until_build = sys.argv[6]
 
 try:
     plugin_root = ET.parse(plugin_xml_path).getroot()
@@ -111,4 +134,29 @@ if since_build != expected_since_build or until_build != expected_until_build:
         f"{since_build or '<missing>'}..{until_build or '<missing>'} does not match "
         f"trusted range {expected_since_build}..{expected_until_build}."
     )
+
+build_info = {}
+for raw_line in build_info_path.read_text(encoding="utf-8").splitlines():
+    line = raw_line.strip()
+    if not line or line.startswith(("#", "!")):
+        continue
+    key, separator, value = line.partition("=")
+    if not separator:
+        raise SystemExit("ERROR: Canary archive build provenance is malformed.")
+    build_info[key.strip()] = value.strip()
+
+expected_provenance = {
+    "plugin.version": expected_version,
+    "plugin.build.commit": expected_source_sha,
+    "plugin.build.short_commit": expected_source_sha[:12],
+    "plugin.build.dirty": "false",
+    "plugin.build.fingerprint": f"{expected_source_sha}-clean",
+}
+for key, expected_value in expected_provenance.items():
+    actual_value = build_info.get(key, "")
+    if actual_value != expected_value:
+        raise SystemExit(
+            f"ERROR: Canary archive provenance {key}={actual_value or '<missing>'} "
+            f"does not match trusted value {expected_value}."
+        )
 PY

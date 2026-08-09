@@ -6,6 +6,7 @@ ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCHIVE=""
 TAG="${GITHUB_REF_NAME:-}"
 CHANNEL="${MARKETPLACE_CHANNEL:-}"
+SOURCE_SHA="${CANARY_SOURCE_SHA:-}"
 
 java_major_version() {
   local java_home="$1"
@@ -50,6 +51,10 @@ while [ $# -gt 0 ]; do
       shift
       CHANNEL="${1:-}"
       ;;
+    --source-sha)
+      shift
+      SOURCE_SHA="${1:-}"
+      ;;
     *)
       echo "ERROR: Unknown argument: $1" >&2
       exit 1
@@ -61,7 +66,8 @@ done
 "$ROOT/scripts/validate-canary-artifact.sh" \
   --archive "$ARCHIVE" \
   --tag "$TAG" \
-  --channel "$CHANNEL"
+  --channel "$CHANNEL" \
+  --source-sha "$SOURCE_SHA"
 
 ARCHIVE=$(cd "$(dirname "$ARCHIVE")" && pwd)/$(basename "$ARCHIVE")
 VERSION="${TAG#canary/v}"

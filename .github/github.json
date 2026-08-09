@@ -34,8 +34,8 @@
       "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
       "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
       "validateCanaryReleaseVersion": "./scripts/validate-canary-release-version.sh --tag canary/vX.Y.Z-canary.N --channel canary",
-      "verifyCanaryArtifact": "MARKETPLACE_CHANNEL=canary ./scripts/verify-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary",
-      "publishCanaryArtifact": "PUBLISH_TOKEN=$CANARY_PUBLISH_TOKEN MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary --expected-sha256 <verified-sha256>",
+      "verifyCanaryArtifact": "MARKETPLACE_CHANNEL=canary ./scripts/verify-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary --source-sha <40-character-source-sha>",
+      "publishCanaryArtifact": "PUBLISH_TOKEN=$CANARY_PUBLISH_TOKEN MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
       "canaryPublishEnvironment": "canary-marketplace",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
