@@ -773,11 +773,14 @@ GitHub Release and Marketplace jobs independently download and recheck that
 digest before consuming the same bytes. Release notes are generated under the
 runner's temporary directory, not inside the source checkout.
 
-Stable reruns preserve an existing GitHub Release and its notes. If the expected
-zip is already attached, the workflow downloads it and requires its SHA-256 to
-match before continuing; it never uses a clobbering upload. A missing asset is
-attached on rerun, while a mismatched existing asset fails closed for explicit
-operator recovery.
+Stable reruns preserve an existing GitHub Release and its notes. Use GitHub's
+**Re-run failed jobs** action while the original workflow artifact is retained;
+that path reuses the verified zip. A full workflow rerun rebuilds timestamped
+plugin bytes and intentionally fails against an existing different asset. If
+the expected zip is already attached, the workflow downloads it and requires
+its SHA-256 to match before continuing; it never uses a clobbering upload. A
+missing asset is attached on rerun, while a mismatched existing asset fails
+closed for explicit operator recovery.
 
 The GitHub Release is created before Marketplace publication, preserving the
 existing Stable failure semantics. Its job has GitHub contents write permission

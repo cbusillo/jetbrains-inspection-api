@@ -108,7 +108,7 @@ write_section() {
   echo ""
   echo "- Commit gate passed in CI."
   echo "- Plugin distribution was built with Gradle."
-  echo "- Plugin was published to JetBrains Marketplace."
+  echo "- Plugin artifact passed independent verification."
   echo ""
   echo "## Installation & Setup"
   echo ""

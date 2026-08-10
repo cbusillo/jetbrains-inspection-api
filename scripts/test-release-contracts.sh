@@ -887,6 +887,8 @@ PY
   assert_not_contains .github/workflows/release.yml './gradlew publishPlugin'
   assert_not_contains .github/workflows/release.yml 'softprops/action-gh-release'
   assert_not_contains .github/workflows/release.yml 'build/distributions/*.zip'
+  assert_contains scripts/generate-release-notes.sh 'Plugin artifact passed independent verification.'
+  assert_not_contains scripts/generate-release-notes.sh 'Plugin was published to JetBrains Marketplace.'
   assert_contains scripts/publish-stable-artifact.sh '--expected-sha256'
   assert_contains scripts/verify-stable-artifact.sh '-PpluginVerificationArchive=$ARCHIVE'
 
