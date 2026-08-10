@@ -348,6 +348,51 @@ manifest with the sorted canonical first sentence of each approved finding, and
 rerun `./gradlew verifyPlugin` across every configured IDE. Never add a broader
 class-name pattern to make a report pass.
 
+### Private recommendation canary cache qualification
+
+The 262-only recommendation canary must prove deterministic advertiser-cache
+`recommended` behavior before Marketplace upload. Build and independently
+verify the exact canary archive first, then prepare a disposable profile using a
+JetBrains 262 product that bundles Properties but not Go, such as PyCharm:
+
+```bash
+artifact=build/canary-qualification/trusted-run-31334693870/jetbrains-inspection-api-1.14.0-canary.1.zip
+profile_parent=$(mktemp -d)
+profile_root="$profile_parent/profile"
+CANARY_TEST_IDE_HOME="$HOME/Applications/PyCharm.app/Contents" \
+  ./scripts/test-plugin-recommendation-canary-profile.sh
+./scripts/prepare-plugin-recommendation-canary-profile.sh \
+  --ide-home "$HOME/Applications/PyCharm.app/Contents" \
+  --plugin-archive "$artifact" \
+  --canary-tag canary/v1.14.0-canary.1 \
+  --expected-sha256 3153c695ec204cd24f97da71aae2e8929d6868f10db6e305c685251155bbdee4 \
+  --expected-source-commit 61e74b59d8adae9f684ff911c8baf6e3a6fe24f1 \
+  --profile-root "$profile_root"
+```
+
+Start the non-GUI backend with `"$profile_root/launch-headless.sh"`. Resolve the
+exact route from its isolated registry and query only the canary endpoint for
+the copied fixture paths. `main.go` must return `recommended` for
+`org.jetbrains.plugins.go` with installation state `absent`;
+`disabled.canary.properties` must return `recommended` for
+`com.intellij.properties` with installation state `disabled`.
+`irrelevant.canary_fixture` must return no recommendation. Preserve the response
+JSON, IDE build, candidate source commit, archive SHA-256, and generated
+`qualification.json` with the issue evidence. Stop the backend and delete the
+disposable profile after evidence capture.
+
+The preparation path is qualification-only and is not packaged in the plugin.
+It serializes a two-row cache with the selected IDE's own 262 classes into a new
+profile, disables Properties only in that profile, refuses existing state, and
+never accepts plugin IDs from the caller. It also pre-trusts only the fixture,
+marks the 262 What's New content as shown, disables startup tips and automatic
+plugin updates, blocks Marketplace cache refreshes, copies the fixture out of
+the source tree, and requires the trusted artifact digest plus embedded clean
+source commit before extraction. Properties is suppressed only through the
+isolated backend's `idea.suppressed.plugins.id` VM property; no normal IDE plugin
+state is changed. The canary endpoint remains read-only, and the qualification
+uses the remote-development backend so it opens no local IDE window.
+
 Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
 `.github/workflows/canary-release.yml` must be dispatched explicitly from the
 default branch with an existing isolated tag. Its build job treats the source,
