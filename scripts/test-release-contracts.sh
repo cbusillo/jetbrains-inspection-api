@@ -277,6 +277,148 @@ CURL
   trap - RETURN
 }
 
+test_stable_artifact_publication() {
+  local temp_dir fake_bin curl_log archive archive_sha256 invalid_id_archive invalid_version_archive invalid_range_archive dirty_archive wrong_source_archive missing_jar_archive source_sha
+  temp_dir=$(mktemp -d)
+  fake_bin="$temp_dir/bin"
+  curl_log="$temp_dir/curl.log"
+  archive="$temp_dir/jetbrains-inspection-api-1.2.3.zip"
+  invalid_id_archive="$temp_dir/invalid-id/jetbrains-inspection-api-1.2.3.zip"
+  invalid_version_archive="$temp_dir/invalid-version/jetbrains-inspection-api-1.2.3.zip"
+  invalid_range_archive="$temp_dir/invalid-range/jetbrains-inspection-api-1.2.3.zip"
+  dirty_archive="$temp_dir/dirty/jetbrains-inspection-api-1.2.3.zip"
+  wrong_source_archive="$temp_dir/wrong-source/jetbrains-inspection-api-1.2.3.zip"
+  missing_jar_archive="$temp_dir/missing-jar/jetbrains-inspection-api-1.2.3.zip"
+  source_sha="0123456789abcdef0123456789abcdef01234567"
+  export STABLE_SOURCE_SHA="$source_sha"
+  trap 'rm -rf "$temp_dir"' RETURN
+  mkdir -p "$temp_dir/scripts" "$fake_bin"
+  cp \
+    scripts/publish-stable-artifact.sh \
+    scripts/validate-stable-artifact.sh \
+    scripts/validate-marketplace-publication.sh \
+    "$temp_dir/scripts/"
+  mkdir -p \
+    "$(dirname "$invalid_id_archive")" \
+    "$(dirname "$invalid_version_archive")" \
+    "$(dirname "$invalid_range_archive")" \
+    "$(dirname "$dirty_archive")" \
+    "$(dirname "$wrong_source_archive")" \
+    "$(dirname "$missing_jar_archive")"
+  python3 - \
+    "$archive" \
+    "$invalid_id_archive" \
+    "$invalid_version_archive" \
+    "$invalid_range_archive" \
+    "$dirty_archive" \
+    "$wrong_source_archive" \
+    "$missing_jar_archive" <<'PY'
+from io import BytesIO
+from pathlib import Path
+import sys
+import zipfile
+
+def write_archive(
+    path: Path,
+    plugin_id: str,
+    version: str,
+    since_build: str = "251",
+    until_build: str = "262.*",
+    build_commit: str = "0123456789abcdef0123456789abcdef01234567",
+    build_dirty: bool = False,
+) -> None:
+    plugin_xml = (
+        f"<idea-plugin><id>{plugin_id}</id>"
+        f"<version>{version}</version>"
+        f'<idea-version since-build="{since_build}" until-build="{until_build}"/>'
+        "</idea-plugin>"
+    )
+    state = "dirty" if build_dirty else "clean"
+    build_info = "\n".join(
+        [
+            f"plugin.version={version}",
+            f"plugin.build.commit={build_commit}",
+            f"plugin.build.short_commit={build_commit[:12]}",
+            f"plugin.build.dirty={str(build_dirty).lower()}",
+            f"plugin.build.fingerprint={build_commit}-{state}",
+            "plugin.build.time=2026-08-10T00\\:00\\:00Z",
+            "",
+        ]
+    )
+    plugin_jar = BytesIO()
+    with zipfile.ZipFile(plugin_jar, "w") as jar:
+        jar.writestr("META-INF/plugin.xml", plugin_xml)
+        jar.writestr("com/shiny/inspectionmcp/inspection-build.properties", build_info)
+    with zipfile.ZipFile(path, "w") as plugin_zip:
+        plugin_zip.writestr(
+            "jetbrains-inspection-api/lib/jetbrains-inspection-api-1.2.3.jar",
+            plugin_jar.getvalue(),
+        )
+
+write_archive(Path(sys.argv[1]), "com.shiny.inspection.api", "1.2.3")
+write_archive(Path(sys.argv[2]), "different.plugin.id", "1.2.3")
+write_archive(Path(sys.argv[3]), "com.shiny.inspection.api", "1.2.4")
+write_archive(Path(sys.argv[4]), "com.shiny.inspection.api", "1.2.3", since_build="262")
+write_archive(Path(sys.argv[5]), "com.shiny.inspection.api", "1.2.3", build_dirty=True)
+write_archive(
+    Path(sys.argv[6]),
+    "com.shiny.inspection.api",
+    "1.2.3",
+    build_commit="89abcdef0123456789abcdef0123456789abcdef",
+)
+with zipfile.ZipFile(Path(sys.argv[7]), "w") as plugin_zip:
+    plugin_zip.writestr("unexpected.txt", "missing plugin jar")
+PY
+  archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+  cat > "$fake_bin/curl" <<'CURL'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "$CURL_LOG"
+CURL
+  chmod +x "$fake_bin/curl"
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test STABLE_SOURCE_SHA='' ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 >/dev/null 2>&1); then
+    fail "Stable artifact publisher accepted an absent source SHA"
+  fi
+  [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl without source provenance"
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$archive" --tag canary/v1.2.3-canary.1 >/dev/null 2>&1); then
+    fail "Stable artifact publisher accepted a canary tag"
+  fi
+  [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for a canary tag"
+
+  for invalid_archive in \
+    "$invalid_id_archive" \
+    "$invalid_version_archive" \
+    "$invalid_range_archive" \
+    "$dirty_archive" \
+    "$wrong_source_archive" \
+    "$missing_jar_archive"; do
+    if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$invalid_archive" --tag v1.2.3 >/dev/null 2>&1); then
+      fail "Stable artifact publisher accepted invalid artifact $invalid_archive"
+    fi
+    [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for invalid artifact $invalid_archive"
+  done
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN='' ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 --expected-sha256 "$archive_sha256" >/dev/null 2>&1); then
+    fail "Stable artifact publisher accepted an absent token"
+  fi
+  [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl without a token"
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 --expected-sha256 "$(printf '0%.0s' {1..64})" >/dev/null 2>&1); then
+    fail "Stable artifact publisher accepted an unverified artifact digest"
+  fi
+  [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for an unverified artifact digest"
+
+  (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 --expected-sha256 "$archive_sha256" >/dev/null)
+  assert_contains "$curl_log" "xmlId=com.shiny.inspection.api"
+  assert_contains "$curl_log" "file=@$archive"
+  assert_not_contains "$curl_log" "channel="
+
+  unset STABLE_SOURCE_SHA
+  rm -rf "$temp_dir"
+  trap - RETURN
+}
+
 test_marketplace_publication_policy() {
   ./scripts/validate-marketplace-publication.sh --version 1.2.3
   ./scripts/validate-marketplace-publication.sh --version 1.2.3-canary.1 --channel canary
@@ -666,32 +808,75 @@ from pathlib import Path
 import re
 
 build = Path("build.gradle.kts").read_text(encoding="utf-8")
-validator = Path("scripts/validate-canary-artifact.sh").read_text(encoding="utf-8")
+canary_validator = Path("scripts/validate-canary-artifact.sh").read_text(encoding="utf-8")
+stable_validator = Path("scripts/validate-stable-artifact.sh").read_text(encoding="utf-8")
 build_since = re.search(r'sinceBuild = "([^"]+)"', build)
 build_until = re.search(r'untilBuild = "([^"]+)"', build)
-validator_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', validator)
-validator_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', validator)
-if not all((build_since, build_until, validator_since, validator_until)):
+canary_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', canary_validator)
+canary_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', canary_validator)
+stable_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', stable_validator)
+stable_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', stable_validator)
+if not all((build_since, build_until, canary_since, canary_until, stable_since, stable_until)):
     raise SystemExit("trusted compatibility policy could not be resolved")
 if build_since.group(1) != "251" or build_until.group(1) != "262.*":
     raise SystemExit("Stable Gradle compatibility policy changed")
-if validator_since.group(1) != "262" or validator_until.group(1) != "262.*":
+if stable_since.group(1) != build_since.group(1) or stable_until.group(1) != build_until.group(1):
+    raise SystemExit("Stable artifact compatibility policy must match Gradle")
+if canary_since.group(1) != "262" or canary_until.group(1) != "262.*":
     raise SystemExit("canary artifact compatibility policy must remain 262-only")
 
 workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-validate = workflow.index("Validate release version")
-default_branch = workflow.index("Verify tag commit is current default branch")
-compatibility = workflow.index("Run release compatibility gate")
-github_release = workflow.index("Create GitHub Release")
-publish = workflow.index("Publish to JetBrains Marketplace")
-if not validate < default_branch < compatibility < github_release < publish:
-    raise SystemExit("release workflow validation/verifier/publish ordering is unsafe")
+test = workflow.split("\n  test:\n", 1)[1].split("\n  package:\n", 1)[0]
+package = workflow.split("\n  package:\n", 1)[1].split("\n  verify:\n", 1)[0]
+verify = workflow.split("\n  verify:\n", 1)[1].split("\n  release:\n", 1)[0]
+release = workflow.split("\n  release:\n", 1)[1].split("\n  publish:\n", 1)[0]
+publish = workflow.split("\n  publish:\n", 1)[1]
+
+for line in workflow.splitlines():
+    stripped = line.strip()
+    if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
+        raise SystemExit(f"Stable workflow action is not pinned to a full commit SHA: {stripped}")
+
+if "Run commit gate" not in test or "PUBLISH_TOKEN" in test:
+    raise SystemExit("Stable test job trust boundary is invalid")
+if "needs: [test]" not in package or "PUBLISH_TOKEN" in package:
+    raise SystemExit("Stable packaging job trust boundary is invalid")
+if "--no-build-cache buildPlugin verifyPluginStructure" not in package:
+    raise SystemExit("Stable packaging must build and structure-check one uncached archive")
+if "git status --porcelain --untracked-files=all" not in package:
+    raise SystemExit("Stable packaging must require a clean exact source checkout")
+if "needs: [test, package]" not in verify or "plugin_zip_sha256:" not in verify:
+    raise SystemExit("Stable verification must bind consumers to the plugin zip digest")
+if "verify-stable-artifact.sh" not in verify or "PUBLISH_TOKEN" in verify:
+    raise SystemExit("Stable verification trust boundary is invalid")
+if "contents: write" not in release or "PUBLISH_TOKEN" in release:
+    raise SystemExit("GitHub Release authority must remain isolated from Marketplace authority")
+if "$RUNNER_TEMP/release-notes.md" not in release:
+    raise SystemExit("Stable release notes must be generated outside the source checkout")
+if "needs: [test, package, verify, release]" not in publish:
+    raise SystemExit("Stable Marketplace publication must follow GitHub Release creation")
+if "contents: read" not in publish or "contents: write" in publish:
+    raise SystemExit("Stable Marketplace publication must have read-only repository permission")
+if "publish-stable-artifact.sh" not in publish or "./gradlew publishPlugin" in publish:
+    raise SystemExit("Stable Marketplace publication must use the bounded artifact publisher")
+for section_name, section in (("release", release), ("publish", publish)):
+    if "EXPECTED_PLUGIN_ZIP_SHA256" not in section:
+        raise SystemExit(f"{section_name} must consume the independently verified plugin zip digest")
+    if 'test "$actual_sha256" = "$EXPECTED_PLUGIN_ZIP_SHA256"' not in section:
+        raise SystemExit(f"{section_name} must recheck the plugin zip digest")
+if "artifact-digest" in workflow:
+    raise SystemExit("Stable publication must not confuse the Actions wrapper digest with the plugin zip digest")
 PY
 
   assert_contains .github/workflows/release.yml '- "v*"'
   assert_not_contains .github/workflows/release.yml 'canary/v'
   assert_not_contains .github/workflows/release.yml 'validate-canary-release-version.sh'
-  assert_contains .github/workflows/release.yml 'run: ./gradlew publishPlugin'
+  assert_contains .github/workflows/release.yml 'scripts/publish-stable-artifact.sh'
+  assert_not_contains .github/workflows/release.yml './gradlew publishPlugin'
+  assert_not_contains .github/workflows/release.yml 'softprops/action-gh-release'
+  assert_not_contains .github/workflows/release.yml 'build/distributions/*.zip'
+  assert_contains scripts/publish-stable-artifact.sh '--expected-sha256'
+  assert_contains scripts/verify-stable-artifact.sh '-PpluginVerificationArchive=$ARCHIVE'
 
   assert_contains .github/workflows/canary-release.yml 'workflow_dispatch:'
   assert_contains .github/workflows/canary-release.yml 'group: "canary-release-${{ inputs.tag }}"'
@@ -880,6 +1065,7 @@ PY
 test_version_validator
 test_canary_version_validator
 test_canary_artifact_publication
+test_stable_artifact_publication
 test_marketplace_publication_policy
 test_canary_branch_isolation
 test_internal_api_allowlist
