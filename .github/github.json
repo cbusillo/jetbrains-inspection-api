@@ -33,6 +33,8 @@
       "verifyPluginCompatibility": "./gradlew verifyPlugin",
       "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
       "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
+      "verifyStableArtifact": "./scripts/verify-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --source-sha <40-character-source-sha>",
+      "publishStableArtifact": "PUBLISH_TOKEN=$PUBLISH_TOKEN ./scripts/publish-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
       "validateCanaryReleaseVersion": "./scripts/validate-canary-release-version.sh --tag canary/vX.Y.Z-canary.N --channel canary",
       "verifyCanaryArtifact": "MARKETPLACE_CHANNEL=canary ./scripts/verify-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary --source-sha <40-character-source-sha>",
       "publishCanaryArtifact": "PUBLISH_TOKEN=$CANARY_PUBLISH_TOKEN MARKETPLACE_CHANNEL=canary ./scripts/publish-canary-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z-canary.N.zip --tag canary/vX.Y.Z-canary.N --channel canary --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
@@ -57,10 +59,10 @@
     "releaseCompatibility": {
       "jetbrainsBuildRange": "251-262.*",
       "automatedTagGate": [
+        "qualityGate.test.commitGate",
         "qualityGate.build.buildPlugin",
         "qualityGate.build.verifyPluginStructure",
-        "qualityGate.build.verifyPluginCompatibility",
-        "qualityGate.build.releaseCompatibilityGate"
+        "qualityGate.build.verifyStableArtifact"
       ],
       "manualEvidenceFor262": [
         "qualityGate.manualSmoke.redLaneDogfoodIntelliJ",

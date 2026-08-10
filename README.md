@@ -763,9 +763,52 @@ full release gates, pushes that branch, and opens a PR into the protected
 default branch. After the PR merges, its separate `tag` mode verifies that the
 tag, `pluginVersion`, and `plugin.xml` versions match before pushing the tag.
 The tag-triggered GitHub Actions workflow also proves the tag points at the
-current default-branch commit, repeats the version check, runs plugin structure
-and compatibility verification, creates the GitHub Release, and then publishes
-to JetBrains Marketplace (requires `PUBLISH_TOKEN`).
+current default-branch commit and repeats the version check. A fresh packaging
+job builds one clean, explicitly named plugin zip without a Gradle build cache
+and runs the structure check before uploading those bytes as a workflow
+artifact. A separate verification job downloads that zip, validates its
+embedded plugin identity and clean source provenance, runs Plugin Verifier
+against the downloaded archive, and records the plugin zip's SHA-256. The
+GitHub Release and Marketplace jobs independently download and recheck that
+digest before consuming the same bytes. Release notes are generated under the
+runner's temporary directory, not inside the source checkout.
+
+Stable reruns preserve an existing GitHub Release and its notes. Use GitHub's
+**Re-run failed jobs** action while the original workflow artifact is retained;
+that path reuses the verified zip. A full workflow rerun rebuilds timestamped
+plugin bytes and intentionally fails against an existing different asset. If
+the expected zip is already attached, the workflow downloads it and requires
+its SHA-256 to match before continuing; it never uses a clobbering upload. A
+missing asset is attached on rerun, while a mismatched existing asset fails
+closed for explicit operator recovery.
+
+The GitHub Release is created before Marketplace publication, preserving the
+existing Stable failure semantics. Its job has GitHub contents write permission
+but never receives `PUBLISH_TOKEN`. The final Marketplace job has read-only
+repository permission, runs no Gradle tasks, and uploads through the bounded
+`scripts/publish-stable-artifact.sh` after revalidating the tag, archive,
+embedded clean source commit, and independently recorded digest. Existing
+Marketplace updates are never replaced or resubmitted by this workflow change.
+
+For manual verification or recovery, run the trusted scripts from a clean
+checkout pinned to the exact Stable tag commit:
+
+```bash
+source_sha="$(git rev-list -n 1 vX.Y.Z)"
+archive=/path/to/jetbrains-inspection-api-X.Y.Z.zip
+
+./scripts/verify-stable-artifact.sh \
+  --archive "$archive" \
+  --tag vX.Y.Z \
+  --source-sha "$source_sha"
+
+verified_sha256="$(shasum -a 256 "$archive" | awk '{print $1}')"
+PUBLISH_TOKEN="$PUBLISH_TOKEN" ./scripts/publish-stable-artifact.sh \
+  --archive "$archive" \
+  --tag vX.Y.Z \
+  --expected-sha256 "$verified_sha256" \
+  --source-sha "$source_sha"
+```
 
 Canary publication is a separate branch-only path and does not change Stable's
 plugin ID, `vX.Y.Z` tags, version validator, workflow, or default Marketplace

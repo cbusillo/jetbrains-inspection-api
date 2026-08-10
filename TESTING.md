@@ -341,12 +341,34 @@ before that check is considered stable enough to require.
 
 Version tags (`v*`) run `.github/workflows/release.yml`, which rejects tag,
 `pluginVersion`, or `plugin.xml` mismatches before publication, repeats the
-commit gate, runs `buildPlugin`, `verifyPluginStructure`, and `verifyPlugin`,
-creates the GitHub Release, then publishes to JetBrains Marketplace. The
-workflow also rejects tags that do not point at the current default-branch
-commit. `verifyPlugin` treats internal API usage as a release failure except
-for the existing inspection-engine Marketplace exemption. Every configured IDE
-report must match the exact, sorted canonical findings in
+commit gate, and rejects tags that do not point at the current default-branch
+commit. A fresh packaging runner proves its exact checkout is clean, builds one
+explicitly named archive without a Gradle build cache, runs
+`verifyPluginStructure`, and uploads that zip. A separate Java 21 verification
+runner downloads the archive, validates its embedded plugin ID, version,
+compatibility range, source commit, and clean fingerprint, then runs
+`verifyPlugin` against those exact bytes through
+`-PpluginVerificationArchive` and records the plugin zip SHA-256.
+
+The GitHub Release job and the later Marketplace job each download that same
+workflow artifact, re-resolve the remote tag and default-branch commit, and
+recheck the independently recorded plugin zip digest. Release notes are written
+under `$RUNNER_TEMP`, and the notes and workflow summary record both the source
+commit and archive SHA-256. The Marketplace job has read-only repository
+permission, receives `PUBLISH_TOKEN` only for its bounded publication steps,
+runs no Gradle tasks, and calls `scripts/publish-stable-artifact.sh`; it cannot
+silently rebuild or substitute the artifact attached to the GitHub Release.
+Use **Re-run failed jobs** for Stable recovery while the original workflow
+artifact is retained. This reuses the verified zip without rewriting existing
+release notes or clobbering attached assets. The workflow downloads an existing
+same-name asset and requires the verified SHA-256, attaches a missing asset, and
+fails closed when an existing asset has different bytes. A full workflow rerun
+rebuilds timestamped plugin bytes and therefore fails against an existing asset
+instead of replacing it.
+
+`verifyPlugin` treats internal API usage as a release failure except for the
+existing inspection-engine Marketplace exemption. Every configured IDE report
+must match the exact, sorted canonical findings in
 `config/plugin-verifier/stable-internal-api-allowlist.txt`; additional findings,
 missing expected findings, malformed report lines, or absent reports fail the
 build. This replaces broad class-name substring acceptance.
