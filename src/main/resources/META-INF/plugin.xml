@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.14.0-canary.1</version>
+    <version>1.14.0-canary.2</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -27,7 +27,7 @@
     ]]></description>
     
     <change-notes><![CDATA[
-        <b>Version 1.14.0-canary.1</b>
+        <b>Version 1.14.0-canary.2</b>
         <ul>
             <li>Adds a read-only 262-only experiment exposing IDE-derived plugin recommendations for explicitly selected project files.</li>
             <li>Keeps recommendation metadata separate from inspection verdict, execution proof, freshness, retry, routing, and cleanup semantics.</li>
