@@ -853,6 +853,18 @@ if "contents: write" not in release or "PUBLISH_TOKEN" in release:
     raise SystemExit("GitHub Release authority must remain isolated from Marketplace authority")
 if "$RUNNER_TEMP/release-notes.md" not in release:
     raise SystemExit("Stable release notes must be generated outside the source checkout")
+if "if: steps.release_state.outputs.exists != 'true'" not in release:
+    raise SystemExit("Stable reruns must preserve existing GitHub Release notes")
+if "gh release edit" in release or "--clobber" in release:
+    raise SystemExit("Stable reruns must not rewrite release notes or clobber release assets")
+if "gh release download" not in release or 'test "$asset_count" -le 1' not in release:
+    raise SystemExit("Stable reruns must download and uniquely identify an existing release asset")
+if 'existing_sha256" != "$EXPECTED_PLUGIN_ZIP_SHA256' not in release:
+    raise SystemExit("Stable reruns must fail closed when the existing release asset digest differs")
+if test.count('java-version: "21"') != 1 or 'java-version: "25"' in test:
+    raise SystemExit("Stable commit gate must run on Java 21")
+if package.count('java-version: "21"') != 1 or 'java-version: "25"' in package:
+    raise SystemExit("Stable packaging must run on Java 21")
 if "needs: [test, package, verify, release]" not in publish:
     raise SystemExit("Stable Marketplace publication must follow GitHub Release creation")
 if "contents: read" not in publish or "contents: write" in publish:

@@ -45,10 +45,10 @@ jobs:
           test "$(git rev-parse HEAD)" = "$(git rev-parse "origin/$DEFAULT_BRANCH")"
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - name: Set up JDK 25
+      - name: Set up JDK 21
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
-          java-version: "25"
+          java-version: "21"
           distribution: "temurin"
 
       - name: Run commit gate
@@ -93,10 +93,10 @@ jobs:
           test -x gradlew
           test -z "$(git status --porcelain --untracked-files=all)"
 
-      - name: Set up JDK 25
+      - name: Set up JDK 21
         uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
         with:
-          java-version: "25"
+          java-version: "21"
           distribution: "temurin"
 
       - name: Build clean Stable artifact
@@ -217,7 +217,19 @@ jobs:
             --tag "$GITHUB_REF_NAME" \
             --source-sha "$EXPECTED_SOURCE_SHA"
 
+      - name: Determine GitHub Release state
+        id: release_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate release notes outside source checkout
+        if: steps.release_state.outputs.exists != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PLUGIN_ZIP_SHA256: ${{ needs.verify.outputs.plugin_zip_sha256 }}
@@ -231,34 +243,54 @@ jobs:
             "$SOURCE_SHA" \
             "$PLUGIN_ZIP_SHA256" \
             >> "$notes_file"
-          {
-            echo "Source commit: \`$SOURCE_SHA\`"
-            echo "Plugin archive SHA-256: \`$PLUGIN_ZIP_SHA256\`"
-          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Create or update GitHub Release
+      - name: Create or reuse GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          archive="artifact/jetbrains-inspection-api-${{ needs.test.outputs.version }}.zip"
           notes_file="$RUNNER_TEMP/release-notes.md"
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$archive" --clobber --repo "$GITHUB_REPOSITORY"
-            gh release edit "$GITHUB_REF_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --title "Release $GITHUB_REF_NAME" \
-              --notes-file "$notes_file" \
-              --draft=false \
-              --prerelease=false \
-              --latest
-          else
-            gh release create "$GITHUB_REF_NAME" "$archive" \
+          if [ "${{ steps.release_state.outputs.exists }}" != "true" ]; then
+            gh release create "$GITHUB_REF_NAME" \
               --repo "$GITHUB_REPOSITORY" \
               --title "Release $GITHUB_REF_NAME" \
               --notes-file "$notes_file" \
               --latest \
               --verify-tag
           fi
+
+      - name: Attach or verify GitHub Release artifact
+        env:
+          EXPECTED_PLUGIN_ZIP_SHA256: ${{ needs.verify.outputs.plugin_zip_sha256 }}
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.test.outputs.source_sha }}
+        run: |
+          archive="artifact/jetbrains-inspection-api-${{ needs.test.outputs.version }}.zip"
+          archive_name="$(basename "$archive")"
+          release_json="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets)"
+          asset_count="$(jq --arg name "$archive_name" '[.assets[] | select(.name == $name)] | length' <<< "$release_json")"
+          test "$asset_count" -le 1
+
+          if [ "$asset_count" -eq 1 ]; then
+            existing_dir="$RUNNER_TEMP/existing-release-asset"
+            rm -rf "$existing_dir"
+            mkdir -p "$existing_dir"
+            gh release download "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --pattern "$archive_name" \
+              --dir "$existing_dir"
+            existing_sha256="$(shasum -a 256 "$existing_dir/$archive_name" | awk '{print $1}')"
+            if [ "$existing_sha256" != "$EXPECTED_PLUGIN_ZIP_SHA256" ]; then
+              echo "ERROR: Existing GitHub Release asset digest does not match the verified artifact; refusing to replace it." >&2
+              exit 1
+            fi
+          else
+            gh release upload "$GITHUB_REF_NAME" "$archive" --repo "$GITHUB_REPOSITORY"
+          fi
+
+          {
+            echo "Source commit: \`$SOURCE_SHA\`"
+            echo "Plugin archive SHA-256: \`$EXPECTED_PLUGIN_ZIP_SHA256\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   publish:
     needs: [test, package, verify, release]

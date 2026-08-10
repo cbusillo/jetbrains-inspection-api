@@ -59,10 +59,10 @@
     "releaseCompatibility": {
       "jetbrainsBuildRange": "251-262.*",
       "automatedTagGate": [
+        "qualityGate.test.commitGate",
         "qualityGate.build.buildPlugin",
         "qualityGate.build.verifyPluginStructure",
-        "qualityGate.build.verifyPluginCompatibility",
-        "qualityGate.build.releaseCompatibilityGate"
+        "qualityGate.build.verifyStableArtifact"
       ],
       "manualEvidenceFor262": [
         "qualityGate.manualSmoke.redLaneDogfoodIntelliJ",

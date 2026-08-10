@@ -358,6 +358,9 @@ commit and archive SHA-256. The Marketplace job has read-only repository
 permission, receives `PUBLISH_TOKEN` only for its bounded publication steps,
 runs no Gradle tasks, and calls `scripts/publish-stable-artifact.sh`; it cannot
 silently rebuild or substitute the artifact attached to the GitHub Release.
+Reruns do not rewrite existing release notes or clobber attached assets. They
+download an existing same-name asset and require the verified SHA-256, attach a
+missing asset, and fail closed when an existing asset has different bytes.
 
 `verifyPlugin` treats internal API usage as a release failure except for the
 existing inspection-engine Marketplace exemption. Every configured IDE report
