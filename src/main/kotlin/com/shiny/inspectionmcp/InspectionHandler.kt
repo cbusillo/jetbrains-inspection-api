@@ -5,7 +5,6 @@ import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
-import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
@@ -1454,7 +1453,7 @@ internal fun classifyCaptureIncompleteReason(
 
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-    val context: com.intellij.codeInspection.GlobalInspectionContext? = null,
+    val context: GlobalInspectionContextBoundary? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -1572,9 +1571,9 @@ class InspectionHandler : HttpRequestHandler() {
             createProjectContentTracker(project, fingerprint)
         }
     internal var nativeGlobalInspectionContextFactory:
-        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> NativeAttestedGlobalInspectionContext =
+        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> GlobalInspectionContextBoundary =
         { inspectionManager, project, collector ->
-            createAttestedGlobalInspectionContext(inspectionManager, project, collector)
+            GlobalInspectionContextBoundary.createAttested(inspectionManager, project, collector)
         }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
@@ -5402,8 +5401,7 @@ class InspectionHandler : HttpRequestHandler() {
         var captureScheduled = false
         var projectContentTracker: InspectionProjectContentTracker? = null
         var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
-        var nativeGlobalContext: GlobalInspectionContextImpl? = null
-        var nativeInspectionManager: InspectionManagerEx? = null
+        var nativeGlobalContext: GlobalInspectionContextBoundary? = null
         var nativeProofConnection: MessageBusConnection? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
@@ -5752,30 +5750,27 @@ class InspectionHandler : HttpRequestHandler() {
                 null
             }
             val globalContext = if (nativeProofCollector == null) {
-                inspectionManager.createNewGlobalContext()
+                GlobalInspectionContextBoundary.create(inspectionManager)
             } else {
                 try {
                     val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
-                    context.openSynchronousFileTraversalGate()
                     nativeProofConnection = project.messageBus.connect().apply {
                         subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
                     }
                     nativeGlobalContext = context
-                    nativeInspectionManager = inspectionManager
                     context
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
                     nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
                     logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
-                    inspectionManager.createNewGlobalContext()
+                    GlobalInspectionContextBoundary.create(inspectionManager)
                 }
             }
-            globalContext.setExternalProfile(profile)
-            globalContext.currentScope = scope
+            globalContext.configure(profile, scope)
             try {
                 @Suppress("UnstableApiUsage")
-                globalContext.performInspectionsWithProgress(scope, false, false)
+                globalContext.performInspectionsWithProgress(scope)
                 nativeProofCollector?.markCompletedNormally()
             } catch (error: Throwable) {
                 nativeProofCollector?.markUnavailable("native_inspection_aborted")
@@ -5792,7 +5787,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val viewReady = globalContext.initializeViewIfNeeded()
                 val initialView = try {
                     @Suppress("UnstableApiUsage")
-                    globalContext.view
+                    globalContext.inspectionView()
                 } catch (_: Exception) {
                     null
                 }
@@ -6020,7 +6015,7 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             val view = try {
                                 @Suppress("UnstableApiUsage")
-                                globalContext.view
+                                globalContext.inspectionView()
                             } catch (e: Exception) {
                                 rethrowIfCanceled(e)
                                 null
@@ -6585,7 +6580,7 @@ class InspectionHandler : HttpRequestHandler() {
                     runCatching { context.cleanup() }
                         .onFailure { error -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", error) }
                 }
-                nativeInspectionManager?.runningContexts?.remove(context)
+                context.removeFromRunningContexts()
             }
             projectContentTracker?.close()
             if (!captureScheduled) {
@@ -8079,12 +8074,12 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContextSafe(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
         selectedProfile: InspectionProfile?,
-        targetToolShortNames: Set<String> = emptySet(),
-        fallbackScopeFiles: List<com.intellij.psi.PsiFile> = emptyList(),
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        targetToolShortNames: Set<String>,
+        fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val app = ApplicationManager.getApplication()
@@ -8141,11 +8136,11 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
         selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val problems = mutableListOf<Map<String, Any>>()
@@ -8157,7 +8152,7 @@ class InspectionHandler : HttpRequestHandler() {
         var unreadableToolCount = 0
         val unreadableReasons = linkedSetOf<String>()
         val tools = try {
-            globalContext.tools.values
+            globalContext.toolGroups()
         } catch (e: Exception) {
             return InspectionModelExtraction(
                 problems = emptyList(),
@@ -8213,7 +8208,7 @@ class InspectionHandler : HttpRequestHandler() {
                 enabledToolCount += 1
 
                 val presentation = try {
-                    globalContext.getPresentation(wrapper)
+                    globalContext.presentation(wrapper)
                 } catch (e: Exception) {
                     unreadableReasons.add(formatModelUnreadableReason("presentation", e))
                     null
@@ -8293,12 +8288,12 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun mergeInspectionEngineFallback(
         base: InspectionModelExtraction,
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
         selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val targetStates = base.targetToolStates.associate { state ->
@@ -8315,7 +8310,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val fallbackDescriptors = if (state["enabled"] == true && (state["descriptor_count"] as? Int ?: 0) == 0) {
                 runTargetInspectionEngineFallback(
-                    globalContext = globalContext,
+                    globalContext = globalContext.publicContext(),
                     project = project,
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
@@ -8599,7 +8594,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun resolveEnabledLocalToolShortNames(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         cancellationCheck: () -> Unit,
     ): EnabledLocalToolEnumeration {
         val names = linkedSetOf<String>()
@@ -8620,7 +8615,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         cancellationCheck()
         val toolGroups = try {
-            globalContext.tools.values
+            globalContext.toolGroups()
         } catch (error: Exception) {
             recordError("enabled_tool_groups", error)
             emptyList()
@@ -8665,17 +8660,14 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         profile: InspectionProfileImpl,
         psiFile: com.intellij.psi.PsiFile,
-    ): com.intellij.codeInspection.GlobalInspectionContext {
+    ): GlobalInspectionContextBoundary {
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-        val context = synchronized(inspectionManager) {
-            inspectionManager.createNewGlobalContext()
-        }
+        val context = GlobalInspectionContextBoundary.createForExactFile(inspectionManager)
         return try {
-            context.setExternalProfile(profile)
-            context.currentScope = AnalysisScope(psiFile)
+            context.configure(profile, AnalysisScope(psiFile))
             context
         } catch (error: Exception) {
-            runCatching { cleanupExactFileExecutionContext(project, context) }
+            runCatching { cleanupExactFileExecutionContext(context) }
                 .exceptionOrNull()
                 ?.let(error::addSuppressed)
             throw error
@@ -8683,8 +8675,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun cleanupExactFileExecutionContext(
-        project: Project,
-        context: com.intellij.codeInspection.GlobalInspectionContext,
+        context: GlobalInspectionContextBoundary,
     ) {
         var cleanupFailure: Exception? = null
         try {
@@ -8692,13 +8683,7 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Exception) {
             cleanupFailure = error
         } finally {
-            val implementation = context as? GlobalInspectionContextImpl
-            if (implementation != null) {
-                val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-                synchronized(inspectionManager) {
-                    inspectionManager.runningContexts.remove(implementation)
-                }
-            }
+            context.removeFromRunningContextsSynchronously()
         }
         cleanupFailure?.let { throw it }
     }
@@ -8814,7 +8799,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             executionWrapper.context?.let { context ->
                 try {
-                    cleanupExactFileExecutionContext(project, context)
+                    cleanupExactFileExecutionContext(context)
                 } catch (error: Exception) {
                     if (cleanupFailure == null) {
                         cleanupFailure = error
@@ -8931,7 +8916,7 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionEngine.runInspectionOnFile(
                                 candidate.value,
                                 batchWrapper.toolWrapper,
-                                requireNotNull(batchWrapper.context),
+                                requireNotNull(batchWrapper.context).publicContext(),
                             )
                         }
                     }
