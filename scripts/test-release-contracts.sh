@@ -776,6 +776,44 @@ test_static_contracts() {
     --manifest config/plugin-verifier/canary-internal-api-allowlist.txt >/dev/null
 
   python3 - <<'PY'
+from pathlib import Path
+
+boundary = Path("src/main/kotlin/com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt")
+implementation_name = "GlobalInspectionContextImpl"
+violations = []
+for source in Path("src/main/kotlin").rglob("*.kt"):
+    if source == boundary:
+        continue
+    if implementation_name in source.read_text(encoding="utf-8"):
+        violations.append(str(source))
+if violations:
+    raise SystemExit(
+        "GlobalInspectionContextImpl must remain confined to "
+        f"{boundary}: {', '.join(sorted(violations))}"
+    )
+
+stable_entries = {
+    line.strip()
+    for line in Path("config/plugin-verifier/stable-internal-api-allowlist.txt")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    if line.strip() and not line.lstrip().startswith("#")
+}
+misattributed = sorted(
+    entry
+    for entry in stable_entries
+    if implementation_name in entry
+    and "com.shiny.inspectionmcp.GlobalInspectionContextBoundary" not in entry
+    and "com.shiny.inspectionmcp.NativeAttestedGlobalInspectionContext" not in entry
+)
+if misattributed:
+    raise SystemExit(
+        "Stable GlobalInspectionContextImpl findings escaped the named boundary:\n"
+        + "\n".join(misattributed)
+    )
+PY
+
+  python3 - <<'PY'
 from collections import Counter
 from pathlib import Path
 

@@ -201,7 +201,7 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `inspectEx descriptors do not carry selected profile severity`() {
+    fun `selected profile severity raises inspectEx descriptor severity`() {
         val project = projectExtension.project
         val tool = SeverityProfileFindingInspection()
         val psiFile = createPhysicalFile()
@@ -216,11 +216,11 @@ class SupportedInspectionExecutorPlatformTest {
                 EmptyProgressIndicator(),
             ).returnedDescriptorsByToolShortName.getValue(tool.shortName).single()
         }
-        val mapped = InspectionHandler().buildProblemMap(descriptor, wrapper, project)
+        val mapped = InspectionHandler().buildProblemMap(descriptor, wrapper, profile, project)
 
         assertThat(profile.getErrorLevel(key, psiFile)).isEqualTo(HighlightDisplayLevel.ERROR)
         assertThat(mapped).isNotNull()
-        assertThat(mapped!!["severity"]).isEqualTo("warning")
+        assertThat(mapped!!["severity"]).isEqualTo("error")
     }
 
     @Test

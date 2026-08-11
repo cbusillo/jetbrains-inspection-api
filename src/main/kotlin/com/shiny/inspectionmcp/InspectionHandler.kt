@@ -5,11 +5,9 @@ import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
-import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
-import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.ide.impl.ProjectUtil
@@ -101,7 +99,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import javax.swing.JTree
 import javax.swing.tree.TreeNode
 
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
@@ -1072,10 +1069,13 @@ internal fun classifyEmptyInspectionCapture(
     }
 
     if (
-        viewReadyOk &&
-            !observedNonEmptyInspectionTree &&
+        !observedNonEmptyInspectionTree &&
             (
-                (observedInspectionView && (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)) ||
+                (viewReadyOk &&
+                    (
+                        observedInspectionView &&
+                            (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)
+                        )) ||
                     observedStableEmptyResultsWithoutInspectionView ||
                     observedModelCleanInspection
                 )
@@ -1322,6 +1322,7 @@ internal fun shouldStopCapturePolling(
 
 internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
+    hasExecutionProofCleanEvidence: Boolean = false,
     observedInspectionView: Boolean = false,
     inspectionViewUpdating: Boolean = false,
     hasSettledInspectionViewEvidence: Boolean = false,
@@ -1349,7 +1350,7 @@ internal fun shouldTrustStableScopedEmptyResults(
                 pollingElapsedMs >= maxUpdatingInspectionViewWaitMs
         )
 
-    return viewReadyOk &&
+    return (viewReadyOk || (hasExecutionProofCleanEvidence && hasModelCleanEvidence)) &&
         hasUsableInspectionViewEvidence &&
         extractionSucceeded &&
         hasScopedMatcher &&
@@ -1454,7 +1455,7 @@ internal fun classifyCaptureIncompleteReason(
 
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-    val context: com.intellij.codeInspection.GlobalInspectionContext? = null,
+    val context: GlobalInspectionContextBoundary? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -1572,9 +1573,9 @@ class InspectionHandler : HttpRequestHandler() {
             createProjectContentTracker(project, fingerprint)
         }
     internal var nativeGlobalInspectionContextFactory:
-        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> NativeAttestedGlobalInspectionContext =
+        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> GlobalInspectionContextBoundary =
         { inspectionManager, project, collector ->
-            createAttestedGlobalInspectionContext(inspectionManager, project, collector)
+            GlobalInspectionContextBoundary.createAttested(inspectionManager, project, collector)
         }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
@@ -5402,8 +5403,7 @@ class InspectionHandler : HttpRequestHandler() {
         var captureScheduled = false
         var projectContentTracker: InspectionProjectContentTracker? = null
         var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
-        var nativeGlobalContext: GlobalInspectionContextImpl? = null
-        var nativeInspectionManager: InspectionManagerEx? = null
+        var nativeGlobalContext: GlobalInspectionContextBoundary? = null
         var nativeProofConnection: MessageBusConnection? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
@@ -5752,30 +5752,27 @@ class InspectionHandler : HttpRequestHandler() {
                 null
             }
             val globalContext = if (nativeProofCollector == null) {
-                inspectionManager.createNewGlobalContext()
+                GlobalInspectionContextBoundary.create(inspectionManager)
             } else {
                 try {
                     val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
-                    context.openSynchronousFileTraversalGate()
                     nativeProofConnection = project.messageBus.connect().apply {
                         subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
                     }
                     nativeGlobalContext = context
-                    nativeInspectionManager = inspectionManager
                     context
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
                     nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
                     logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
-                    inspectionManager.createNewGlobalContext()
+                    GlobalInspectionContextBoundary.create(inspectionManager)
                 }
             }
-            globalContext.setExternalProfile(profile)
-            globalContext.currentScope = scope
+            globalContext.configure(profile, scope)
             try {
                 @Suppress("UnstableApiUsage")
-                globalContext.performInspectionsWithProgress(scope, false, false)
+                globalContext.performInspectionsWithProgress(scope)
                 nativeProofCollector?.markCompletedNormally()
             } catch (error: Throwable) {
                 nativeProofCollector?.markUnavailable("native_inspection_aborted")
@@ -5788,14 +5785,6 @@ class InspectionHandler : HttpRequestHandler() {
             ProgressManager.checkCanceled()
 
             try {
-                @Suppress("UnstableApiUsage")
-                val viewReady = globalContext.initializeViewIfNeeded()
-                val initialView = try {
-                    @Suppress("UnstableApiUsage")
-                    globalContext.view
-                } catch (_: Exception) {
-                    null
-                }
                 run {
                     try {
                         checkInspectionRunCancellation(key, runId)
@@ -5824,6 +5813,7 @@ class InspectionHandler : HttpRequestHandler() {
                             extractProblemsFromContextSafe(
                                 globalContext,
                                 project,
+                                profile,
                                 targetToolShortNames,
                                 fallbackScopeFiles,
                                 cancellationCheck = { checkInspectionRunCancellation(key, runId) },
@@ -5895,26 +5885,31 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> Unit
                             InspectionExecutionProofMode.NONE -> Unit
                         }
+                        val executionProofClean = when (executionProofMode) {
+                            InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofClean == true
+                            InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProofCollector?.result()?.proofClean == true
+                            InspectionExecutionProofMode.NONE -> false
+                        }
 
                         var lastSize = bestResults.size
                         var lastChangeMs = System.currentTimeMillis()
-                        var observedInspectionView = false
-                        var observedSettledEmptyInspectionView = false
-                        var observedStableReadableEmptyInspectionView = false
+                        val observedInspectionView = false
+                        val observedSettledEmptyInspectionView = false
+                        val observedStableReadableEmptyInspectionView = false
                         var observedStableEmptyResultsWithoutInspectionView = false
-                        var observedOpaqueSettledEmptyInspectionView = false
+                        val observedOpaqueSettledEmptyInspectionView = false
                         var observedModelCleanInspection = false
-                        var observedNonEmptyInspectionTree = false
-                        var observedStaleNonEmptyInspectionTree = false
-                        var observedTransientEmptyInspectionViewEvidence = false
-                        var inspectionViewUpdating = false
-                        var lastViewObservation: InspectionViewObservation? = null
-                        var readableEmptyInspectionViewStableSince: Long? = null
-                        var inspectionViewObservationCount = 0
-                        var readableEmptyInspectionViewObservationCount = 0
-                        var transientUpdatingEmptyObservationCount = 0
-                        var unreadableProblemStateObservationCount = 0
-                        var nullRootChildObservationCount = 0
+                        val observedNonEmptyInspectionTree = false
+                        val observedStaleNonEmptyInspectionTree = false
+                        val observedTransientEmptyInspectionViewEvidence = false
+                        val inspectionViewUpdating = false
+                        val lastViewObservation: InspectionViewObservation? = null
+                        val readableEmptyInspectionViewStableSince: Long? = null
+                        val inspectionViewObservationCount = 0
+                        val readableEmptyInspectionViewObservationCount = 0
+                        val transientUpdatingEmptyObservationCount = 0
+                        val unreadableProblemStateObservationCount = 0
+                        val nullRootChildObservationCount = 0
                         var toolWindowObservationCount = 0
                         var compatibleToolWindowObservationCount = 0
                         var extractionFailureCount = if (extractedFromContextSucceeded) 0 else 1
@@ -5922,85 +5917,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var lastExtractionCycleSucceeded = extractedFromContextSucceeded
                         var lastToolExtractionSucceeded = false
                         var captureExitReason = "deadline"
-                        var inspectionViewMarkedFinished = false
-
-                        fun resetReadableEmptyInspectionViewEvidence() {
-                            readableEmptyInspectionViewStableSince = null
-                            readableEmptyInspectionViewObservationCount = 0
-                        }
-
-                        fun extractFromViewSafe(view: InspectionResultsView): ProblemExtractionResult {
-                            val app = ApplicationManager.getApplication()
-                            if (app.isDispatchThread) {
-                                return extractor.extractAllProblemsFromInspectionViewWithStatus(view, project)
-                            }
-                            val holder = AtomicReference<ProblemExtractionResult>()
-                            app.invokeAndWait {
-                                holder.set(extractor.extractAllProblemsFromInspectionViewWithStatus(view, project))
-                            }
-                            return holder.get() ?: ProblemExtractionResult(emptyList(), succeeded = false)
-                        }
-
-                        fun inspectViewStateSafe(view: InspectionResultsView): InspectionViewObservation {
-                            val app = ApplicationManager.getApplication()
-
-                            fun inspectViewState(): InspectionViewObservation {
-                                val rootChildCount = try {
-                                    readInspectionRootChildCount(inspectionResultsTree(view)?.model?.root)
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    null
-                                }
-                                val (hasProblems, problemStateReadable) = try {
-                                    view.hasProblems() to true
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    false to false
-                                }
-                                val (isUpdating, updateStateReadable) = try {
-                                    view.isUpdating to true
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    false to false
-                                }
-                                return InspectionViewObservation(
-                                    isUpdating = isUpdating,
-                                    hasProblems = hasProblems,
-                                    rootChildCount = rootChildCount,
-                                    updateStateReadable = updateStateReadable,
-                                    problemStateReadable = problemStateReadable,
-                                )
-                            }
-
-                            if (app.isDispatchThread) {
-                                return inspectViewState()
-                            }
-
-                            val holder = AtomicReference<InspectionViewObservation>()
-                            app.invokeAndWait {
-                                holder.set(inspectViewState())
-                            }
-                            return holder.get() ?: InspectionViewObservation(
-                                isUpdating = false,
-                                hasProblems = false,
-                                rootChildCount = null,
-                                updateStateReadable = false,
-                                problemStateReadable = false,
-                            )
-                        }
-
-                        fun markInspectionViewFinishedSafe(view: InspectionResultsView) {
-                            val app = ApplicationManager.getApplication()
-                            if (app.isDispatchThread) {
-                                view.setUpdating(false)
-                                return
-                            }
-                            app.invokeAndWait {
-                                view.setUpdating(false)
-                            }
-                        }
-
-                        var viewReadyOk = false
+                        val viewReadyOk = false
 
                         while (System.currentTimeMillis() < deadlineMs) {
                             checkInspectionRunCancellation(key, runId)
@@ -6009,121 +5926,6 @@ class InspectionHandler : HttpRequestHandler() {
                                 break
                             }
                             val loopNow = System.currentTimeMillis()
-                            if (!viewReadyOk) {
-                                viewReadyOk = try {
-                                    viewReady.waitFor(1)
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    false
-                                }
-                            }
-                            val view = try {
-                                @Suppress("UnstableApiUsage")
-                                globalContext.view
-                            } catch (e: Exception) {
-                                rethrowIfCanceled(e)
-                                null
-                            } ?: initialView
-                            if (!viewReadyOk && view != null) {
-                                viewReadyOk = true
-                            }
-
-                            if (
-                                viewReadyOk &&
-                                view != null &&
-                                !inspectionViewMarkedFinished &&
-                                (modelVerdict == InspectionModelVerdict.CLEAN || modelVerdict == InspectionModelVerdict.HAS_PROBLEMS)
-                            ) {
-                                try {
-                                    markInspectionViewFinishedSafe(view)
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                }
-                                inspectionViewMarkedFinished = true
-                            }
-
-                            var viewExtractionSucceeded = false
-                            if (viewReadyOk && view != null) {
-                                observedInspectionView = true
-                                val viewObservation = try {
-                                    inspectViewStateSafe(view)
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    InspectionViewObservation(
-                                        isUpdating = false,
-                                        hasProblems = false,
-                                        rootChildCount = null,
-                                        updateStateReadable = false,
-                                        problemStateReadable = false,
-                                    )
-                                }
-                                inspectionViewObservationCount += 1
-                                if (!viewObservation.problemStateReadable) {
-                                    unreadableProblemStateObservationCount += 1
-                                }
-                                if (viewObservation.rootChildCount == null) {
-                                    nullRootChildObservationCount += 1
-                                }
-                                if (isReadableEmptyInspectionView(viewObservation)) {
-                                    readableEmptyInspectionViewObservationCount += 1
-                                }
-                                lastViewObservation = viewObservation
-                                inspectionViewUpdating = viewObservation.isUpdating
-                                when {
-                                    hasInspectionViewProblems(viewObservation) -> {
-                                        observedNonEmptyInspectionTree = true
-                                        resetReadableEmptyInspectionViewEvidence()
-                                        transientUpdatingEmptyObservationCount = 0
-                                    }
-                                    isSettledCleanInspectionView(viewObservation) -> {
-                                        observedSettledEmptyInspectionView = true
-                                        if (readableEmptyInspectionViewStableSince == null) {
-                                            readableEmptyInspectionViewStableSince = loopNow
-                                        }
-                                    }
-                                    isReadableEmptyInspectionView(viewObservation) -> {
-                                        if (readableEmptyInspectionViewStableSince == null) {
-                                            readableEmptyInspectionViewStableSince = loopNow
-                                        }
-                                    }
-                                    isTransientUpdatingUnreadableEmptyCandidate(viewObservation) &&
-                                        !observedNonEmptyInspectionTree -> {
-                                        observedTransientEmptyInspectionViewEvidence = true
-                                        transientUpdatingEmptyObservationCount += 1
-                                        if (readableEmptyInspectionViewStableSince == null) {
-                                            readableEmptyInspectionViewStableSince = loopNow
-                                        }
-                                    }
-                                    isOpaqueSettledEmptyInspectionViewCandidate(viewObservation) -> {
-                                        observedOpaqueSettledEmptyInspectionView = true
-                                    }
-                                    else -> {
-                                        resetReadableEmptyInspectionViewEvidence()
-                                        transientUpdatingEmptyObservationCount = 0
-                                    }
-                                }
-                                val attempt = try {
-                                    val extraction = extractFromViewSafe(view)
-                                    viewExtractionSucceeded = extraction.succeeded
-                                    if (!extraction.succeeded) {
-                                        extractionFailureCount += 1
-                                    }
-                                    extraction.problems
-                                } catch (e: Exception) {
-                                    rethrowIfCanceled(e)
-                                    extractionFailureCount += 1
-                                    emptyList()
-                                }
-                                if (viewExtractionSucceeded) {
-                                    successfulExtractionCount += 1
-                                }
-                                val scopedAttempt = filterProblemsForScope(attempt, scopeProblemMatcher)
-                                if (scopedAttempt.size > bestResults.size) {
-                                    bestResults = scopedAttempt
-                                    bestSource = "inspection_view"
-                                }
-                            }
-
                             var toolExtractionSucceeded = false
                             var toolExtractionSource = ProblemExtractionSource.NONE
                             val toolResults = try {
@@ -6145,7 +5947,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 successfulExtractionCount += 1
                             }
                             lastToolExtractionSucceeded = toolExtractionSucceeded
-                            lastExtractionCycleSucceeded = (!observedInspectionView || viewExtractionSucceeded) && toolExtractionSucceeded
+                            lastExtractionCycleSucceeded = toolExtractionSucceeded
                             toolWindowObservationCount += 1
                             val compatibleToolResults = filterProblemsForScope(toolResults, scopeProblemMatcher)
                             if (compatibleToolResults.isNotEmpty()) {
@@ -6171,42 +5973,12 @@ class InspectionHandler : HttpRequestHandler() {
 
                             val stableForMs = loopNow - lastChangeMs
                             val pollingElapsedMs = loopNow - captureStartMs
-                            if (
-                                !observedStaleNonEmptyInspectionTree &&
-                                shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
-                                    observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                                    modelExtractionClean = modelExtractionClean,
-                                    modelProblemDescriptorCount = contextExtraction.problemDescriptorCount,
-                                    bestResultsEmpty = bestResults.isEmpty(),
-                                    extractionFailureCount = extractionFailureCount,
-                                    lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
-                                    lastToolExtractionSucceeded = lastToolExtractionSucceeded,
-                                    inspectionViewUpdating = inspectionViewUpdating,
-                                    stableForMs = stableForMs,
-                                    pollingElapsedMs = pollingElapsedMs,
-                                )
-                            ) {
-                                observedStaleNonEmptyInspectionTree = true
-                            }
-                            val effectiveObservedNonEmptyInspectionTree =
-                                observedNonEmptyInspectionTree && !observedStaleNonEmptyInspectionTree
-                            if (
-                                !observedStableReadableEmptyInspectionView &&
-                                shouldPromoteStableReadableEmptyInspectionView(
-                                    readableEmptyInspectionViewStableSince = readableEmptyInspectionViewStableSince,
-                                    readableEmptyInspectionViewObservationCount = readableEmptyInspectionViewObservationCount,
-                                    transientUpdatingEmptyObservationCount = transientUpdatingEmptyObservationCount,
-                                    inspectionViewUpdating = inspectionViewUpdating,
-                                    now = loopNow,
-                                    pollingElapsedMs = pollingElapsedMs,
-                                )
-                            ) {
-                                observedStableReadableEmptyInspectionView = true
-                            }
+                            val effectiveObservedNonEmptyInspectionTree = false
                             if (
                                 !observedStableEmptyResultsWithoutInspectionView &&
                                 shouldTrustStableScopedEmptyResults(
                                     viewReadyOk = viewReadyOk,
+                                    hasExecutionProofCleanEvidence = executionProofClean,
                                     hasScopedMatcher = scopeProblemMatcher != null,
                                     observedInspectionView = observedInspectionView,
                                     inspectionViewUpdating = inspectionViewUpdating,
@@ -6231,9 +6003,8 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             if (
                                 !observedModelCleanInspection &&
+                                executionProofClean &&
                                 modelExtractionClean &&
-                                viewReadyOk &&
-                                (lastViewObservation?.hasProblems != true || observedStaleNonEmptyInspectionTree) &&
                                 bestResults.isEmpty() &&
                                 !effectiveObservedNonEmptyInspectionTree &&
                                 stableForMs >= 5000L &&
@@ -6268,29 +6039,12 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                         }
 
-                        if (
-                            !observedStaleNonEmptyInspectionTree &&
-                            shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
-                                observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
-                                modelExtractionClean = modelExtractionClean,
-                                modelProblemDescriptorCount = contextExtraction.problemDescriptorCount,
-                                bestResultsEmpty = bestResults.isEmpty(),
-                                extractionFailureCount = extractionFailureCount,
-                                lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
-                                lastToolExtractionSucceeded = lastToolExtractionSucceeded,
-                                inspectionViewUpdating = inspectionViewUpdating,
-                                stableForMs = System.currentTimeMillis() - lastChangeMs,
-                                pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
-                            )
-                        ) {
-                            observedStaleNonEmptyInspectionTree = true
-                        }
-                        val effectiveObservedNonEmptyInspectionTree =
-                            observedNonEmptyInspectionTree && !observedStaleNonEmptyInspectionTree
+                        val effectiveObservedNonEmptyInspectionTree = false
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
                             shouldTrustStableScopedEmptyResults(
                                 viewReadyOk = viewReadyOk,
+                                hasExecutionProofCleanEvidence = executionProofClean,
                                 hasScopedMatcher = scopeProblemMatcher != null,
                                 observedInspectionView = observedInspectionView,
                                 inspectionViewUpdating = inspectionViewUpdating,
@@ -6317,9 +6071,8 @@ class InspectionHandler : HttpRequestHandler() {
                         val finalPollingElapsedMs = System.currentTimeMillis() - captureStartMs
                         if (
                             !observedModelCleanInspection &&
+                            executionProofClean &&
                             modelExtractionClean &&
-                            viewReadyOk &&
-                            (lastViewObservation?.hasProblems != true || observedStaleNonEmptyInspectionTree) &&
                             bestResults.isEmpty() &&
                             !effectiveObservedNonEmptyInspectionTree &&
                             finalStableForMs >= 5000L &&
@@ -6584,7 +6337,7 @@ class InspectionHandler : HttpRequestHandler() {
                     runCatching { context.cleanup() }
                         .onFailure { error -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", error) }
                 }
-                nativeInspectionManager?.runningContexts?.remove(context)
+                context.removeFromRunningContexts()
             }
             projectContentTracker?.close()
             if (!captureScheduled) {
@@ -6755,7 +6508,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun containsInspectionResultsView(component: Component): Boolean {
-        if (component is InspectionResultsView || component.javaClass.name.contains("InspectionResultsView")) {
+        if (component.javaClass.name.contains("InspectionResultsView")) {
             return true
         }
 
@@ -6768,14 +6521,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         return false
-    }
-
-    private fun inspectionResultsTree(view: InspectionResultsView): JTree? {
-        return try {
-            view.javaClass.getMethod("getTree").invoke(view) as? JTree
-        } catch (_: Exception) {
-            null
-        }
     }
 
     private fun captureProjectState(project: Project): InspectionProjectStateSnapshot {
@@ -8078,11 +7823,12 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContextSafe(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
-        targetToolShortNames: Set<String> = emptySet(),
-        fallbackScopeFiles: List<com.intellij.psi.PsiFile> = emptyList(),
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        selectedProfile: InspectionProfile?,
+        targetToolShortNames: Set<String>,
+        fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val app = ApplicationManager.getApplication()
@@ -8091,7 +7837,13 @@ class InspectionHandler : HttpRequestHandler() {
             cancellationCheck()
             presentationHolder.set(
                 app.runReadAction<InspectionModelExtraction, Exception> {
-                    extractProblemsFromContext(globalContext, project, targetToolShortNames, cancellationCheck)
+                    extractProblemsFromContext(
+                        globalContext,
+                        project,
+                        selectedProfile,
+                        targetToolShortNames,
+                        cancellationCheck,
+                    )
                 }
             )
         }
@@ -8124,6 +7876,7 @@ class InspectionHandler : HttpRequestHandler() {
             base = presentationExtraction,
             globalContext = globalContext,
             project = project,
+            selectedProfile = selectedProfile,
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
             cancellationCheck = cancellationCheck,
@@ -8132,10 +7885,11 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
-        targetToolShortNames: Set<String> = emptySet(),
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        selectedProfile: InspectionProfile?,
+        targetToolShortNames: Set<String>,
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val problems = mutableListOf<Map<String, Any>>()
@@ -8147,7 +7901,7 @@ class InspectionHandler : HttpRequestHandler() {
         var unreadableToolCount = 0
         val unreadableReasons = linkedSetOf<String>()
         val tools = try {
-            globalContext.tools.values
+            globalContext.toolGroups()
         } catch (e: Exception) {
             return InspectionModelExtraction(
                 problems = emptyList(),
@@ -8203,7 +7957,7 @@ class InspectionHandler : HttpRequestHandler() {
                 enabledToolCount += 1
 
                 val presentation = try {
-                    globalContext.getPresentation(wrapper)
+                    globalContext.presentation(wrapper)
                 } catch (e: Exception) {
                     unreadableReasons.add(formatModelUnreadableReason("presentation", e))
                     null
@@ -8242,7 +7996,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                 for (descriptor in descriptors) {
                     cancellationCheck()
-                    val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                    val map = buildProblemMap(descriptor, wrapper, selectedProfile, project) ?: continue
                     val key = listOf(
                         map["severity"],
                         map["inspectionType"],
@@ -8283,11 +8037,12 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun mergeInspectionEngineFallback(
         base: InspectionModelExtraction,
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         project: Project,
+        selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
-        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+        cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
         val targetStates = base.targetToolStates.associate { state ->
@@ -8304,7 +8059,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val fallbackDescriptors = if (state["enabled"] == true && (state["descriptor_count"] as? Int ?: 0) == 0) {
                 runTargetInspectionEngineFallback(
-                    globalContext = globalContext,
+                    globalContext = globalContext.publicContext(),
                     project = project,
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
@@ -8318,7 +8073,7 @@ class InspectionHandler : HttpRequestHandler() {
             fallbackDescriptorCount += fallbackDescriptors.size
             for ((descriptor, wrapper) in fallbackDescriptors) {
                 cancellationCheck()
-                val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                val map = buildProblemMap(descriptor, wrapper, selectedProfile, project) ?: continue
                 if (baseKeys.add(problemKey(map))) {
                     fallbackProblems += map
                 }
@@ -8588,7 +8343,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     @Suppress("UnstableApiUsage")
     private fun resolveEnabledLocalToolShortNames(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: GlobalInspectionContextBoundary,
         cancellationCheck: () -> Unit,
     ): EnabledLocalToolEnumeration {
         val names = linkedSetOf<String>()
@@ -8609,7 +8364,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         cancellationCheck()
         val toolGroups = try {
-            globalContext.tools.values
+            globalContext.toolGroups()
         } catch (error: Exception) {
             recordError("enabled_tool_groups", error)
             emptyList()
@@ -8654,17 +8409,14 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         profile: InspectionProfileImpl,
         psiFile: com.intellij.psi.PsiFile,
-    ): com.intellij.codeInspection.GlobalInspectionContext {
+    ): GlobalInspectionContextBoundary {
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-        val context = synchronized(inspectionManager) {
-            inspectionManager.createNewGlobalContext()
-        }
+        val context = GlobalInspectionContextBoundary.createForExactFile(inspectionManager)
         return try {
-            context.setExternalProfile(profile)
-            context.currentScope = AnalysisScope(psiFile)
+            context.configure(profile, AnalysisScope(psiFile))
             context
         } catch (error: Exception) {
-            runCatching { cleanupExactFileExecutionContext(project, context) }
+            runCatching { cleanupExactFileExecutionContext(context) }
                 .exceptionOrNull()
                 ?.let(error::addSuppressed)
             throw error
@@ -8672,8 +8424,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun cleanupExactFileExecutionContext(
-        project: Project,
-        context: com.intellij.codeInspection.GlobalInspectionContext,
+        context: GlobalInspectionContextBoundary,
     ) {
         var cleanupFailure: Exception? = null
         try {
@@ -8681,13 +8432,7 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Exception) {
             cleanupFailure = error
         } finally {
-            val implementation = context as? GlobalInspectionContextImpl
-            if (implementation != null) {
-                val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-                synchronized(inspectionManager) {
-                    inspectionManager.runningContexts.remove(implementation)
-                }
-            }
+            context.removeFromRunningContextsSynchronously()
         }
         cleanupFailure?.let { throw it }
     }
@@ -8803,7 +8548,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             executionWrapper.context?.let { context ->
                 try {
-                    cleanupExactFileExecutionContext(project, context)
+                    cleanupExactFileExecutionContext(context)
                 } catch (error: Exception) {
                     if (cleanupFailure == null) {
                         cleanupFailure = error
@@ -8920,7 +8665,7 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionEngine.runInspectionOnFile(
                                 candidate.value,
                                 batchWrapper.toolWrapper,
-                                requireNotNull(batchWrapper.context),
+                                requireNotNull(batchWrapper.context).publicContext(),
                             )
                         }
                     }
@@ -8933,7 +8678,7 @@ class InspectionHandler : HttpRequestHandler() {
             ): Map<String, Any>? {
                 checkProofBudget()
                 return app.runReadAction<Map<String, Any>?, Exception> {
-                    buildProblemMap(descriptor, batchWrapper.toolWrapper, project)
+                    buildProblemMap(descriptor, batchWrapper.toolWrapper, profile, project)
                 }.also { checkProofBudget() }
             }
 
@@ -9005,6 +8750,7 @@ class InspectionHandler : HttpRequestHandler() {
     internal fun buildProblemMap(
         descriptor: com.intellij.codeInspection.CommonProblemDescriptor,
         wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+        selectedProfile: InspectionProfile?,
         project: Project,
     ): Map<String, Any>? {
         val descriptionTemplate = descriptor.descriptionTemplate.takeIf { it.isNotBlank() } ?: return null
@@ -9012,15 +8758,17 @@ class InspectionHandler : HttpRequestHandler() {
             descriptionTemplate,
             (descriptor as? com.intellij.codeInspection.ProblemDescriptor)?.let(::problemDescriptorRefText),
         )
-        val inspectionType = wrapper.shortName
+        val inspectionType = runCatching { wrapper.shortName }.getOrNull() ?: return null
         val category = wrapper.groupDisplayName
 
         var filePath = "unknown"
         var line = 0
         var column = 0
         var severity = "warning"
+        var psiElement: com.intellij.psi.PsiElement? = null
 
         if (descriptor is com.intellij.codeInspection.ProblemDescriptor) {
+            psiElement = descriptor.psiElement?.takeIf { it.isValid }
             val location = resolveProblemLocation(descriptor, project)
             if (location != null) {
                 filePath = location.filePath
@@ -9028,6 +8776,8 @@ class InspectionHandler : HttpRequestHandler() {
                 column = location.column
             }
             severity = severityFromHighlightType(descriptor.highlightType)
+            val displayKey = HighlightDisplayKey.find(inspectionType)
+            severity = liftSeverityWithProfile(severity, selectedProfile, displayKey, psiElement)
         }
 
         val typeLower = inspectionType.lowercase()
