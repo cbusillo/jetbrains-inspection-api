@@ -1,11 +1,16 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeHighlighting.HighlightDisplayLevel
+import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.GlobalInspectionTool
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.codeInspection.ex.InspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
@@ -17,6 +22,8 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
+import com.intellij.profile.codeInspection.BaseInspectionProfileManager
+import com.intellij.profile.codeInspection.InspectionProfileManager
 import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
@@ -138,6 +145,103 @@ class SupportedInspectionExecutorPlatformTest {
     fun `inspectEx routing accepts local wrappers and preserves global fallback`() {
         assertThat(canExecuteWithInspectEx(LocalInspectionToolWrapper(CleanInspection()))).isTrue()
         assertThat(canExecuteWithInspectEx(GlobalInspectionToolWrapper(TestGlobalInspection()))).isFalse()
+        assertThat(canExecuteWithInspectEx(GlobalInspectionToolWrapper(TestGlobalSimpleInspection()))).isFalse()
+    }
+
+    @Test
+    fun `selected profile disables one obligation without weakening executed findings`() {
+        val project = projectExtension.project
+        val enabledTool = EnabledProfileFindingInspection()
+        val disabledTool = DisabledProfileFindingInspection()
+        resetVisits(enabledTool)
+        resetVisits(disabledTool)
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(enabledTool, disabledTool)
+        profile.setToolEnabled(enabledTool.shortName, true, project)
+        profile.setToolEnabled(disabledTool.shortName, false, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(enabledTool, disabledTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.profileEnabledObligationCount).isEqualTo(1)
+        assertThat(result.profileDisabledObligationCount).isEqualTo(1)
+        assertThat(result.batchRunnableObligationCount).isEqualTo(1)
+        assertThat(result.executedToolCount).isEqualTo(1)
+        assertThat(result.proofEstablished).isTrue()
+        assertThat(result.proofProblems).hasSize(1)
+        assertThat(visitCount(enabledTool)).isEqualTo(1)
+        assertThat(visitCount(disabledTool)).isZero()
+    }
+
+    @Test
+    fun `zero proof deadline deterministically remains unproven`() {
+        val project = projectExtension.project
+        val tool = TimeoutProfileInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(tool)
+        val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 0 }
+
+        val result = handler.runBoundedExecutionProof(
+            enabledTools = enabledTools(tool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.hitTimeLimit).isTrue()
+        assertThat(result.proofEstablished).isFalse()
+        assertThat(result.proofBlockReason).isEqualTo("time_limit")
+        assertThat(result.unvisitedClassificationObligationCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `inspectEx descriptors do not carry selected profile severity`() {
+        val project = projectExtension.project
+        val tool = SeverityProfileFindingInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(tool)
+        val key = requireNotNull(HighlightDisplayKey.find(tool.shortName))
+        profile.setErrorLevel(key, HighlightDisplayLevel.ERROR, project)
+        val wrapper = requireNotNull(profile.getInspectionTool(tool.shortName, psiFile)) as LocalInspectionToolWrapper
+        val descriptor = ReadAction.compute<com.intellij.codeInspection.ProblemDescriptor, RuntimeException> {
+            SupportedInspectionExecutor().executePreparedFile(
+                psiFile,
+                listOf(wrapper),
+                EmptyProgressIndicator(),
+            ).returnedDescriptorsByToolShortName.getValue(tool.shortName).single()
+        }
+        val mapped = InspectionHandler().buildProblemMap(descriptor, wrapper, project)
+
+        assertThat(profile.getErrorLevel(key, psiFile)).isEqualTo(HighlightDisplayLevel.ERROR)
+        assertThat(mapped).isNotNull()
+        assertThat(mapped!!["severity"]).isEqualTo("warning")
+    }
+
+    @Test
+    fun `expected and submitted files match for exact directory and project scopes`() {
+        val project = projectExtension.project
+        val outsideFile = createPhysicalFile()
+        val directoryFiles = createPhysicalDirectoryFiles(2)
+        val exactScope = AnalysisScope(project, directoryFiles.mapTo(linkedSetOf()) { it.virtualFile })
+        val directoryScope = ReadAction.compute<AnalysisScope, RuntimeException> {
+            AnalysisScope(requireNotNull(directoryFiles.first().containingDirectory))
+        }
+        val projectScope = AnalysisScope(project)
+        val handler = InspectionHandler()
+
+        assertScopeParity(handler, exactScope, directoryFiles.mapTo(linkedSetOf()) { it.virtualFile.path })
+        assertScopeParity(handler, directoryScope, directoryFiles.mapTo(linkedSetOf()) { it.virtualFile.path })
+
+        val projectPaths = scopePaths(handler, projectScope)
+        assertThat(projectPaths.first).isEqualTo(projectPaths.second)
+        assertThat(projectPaths.first).contains(outsideFile.virtualFile.path)
+        assertThat(projectPaths.first).containsAll(directoryFiles.map { it.virtualFile.path })
     }
 
     private fun execute(
@@ -182,6 +286,59 @@ class SupportedInspectionExecutorPlatformTest {
         }
     }
 
+    private fun createPhysicalDirectoryFiles(count: Int): List<PsiFile> {
+        val project = projectExtension.project
+        val module = projectExtension.module
+        return runInEdtAndGet {
+            WriteAction.compute<List<PsiFile>, RuntimeException> {
+                val contentRoot = ModuleRootManager.getInstance(module).contentRoots.single()
+                val directory = contentRoot.createChildDirectory(this, "evidence-directory-${fileCounter.incrementAndGet()}")
+                (1..count).map { index ->
+                    val virtualFile = directory.createChildData(this, "fixture-$index.txt")
+                    VfsUtil.saveText(virtualFile, "directory evidence $index")
+                    requireNotNull(PsiManager.getInstance(project).findFile(virtualFile))
+                }
+            }
+        }
+    }
+
+    private fun assertScopeParity(handler: InspectionHandler, scope: AnalysisScope, expectedPaths: Set<String>) {
+        val paths = scopePaths(handler, scope)
+        assertThat(paths.first).isEqualTo(paths.second)
+        assertThat(paths.first).containsExactlyInAnyOrderElementsOf(expectedPaths)
+    }
+
+    private fun scopePaths(handler: InspectionHandler, scope: AnalysisScope): Pair<Set<String>, Set<String>> =
+        ReadAction.compute<Pair<Set<String>, Set<String>>, RuntimeException> {
+            handler.nativeInspectionExpectedFilePaths(scope) to
+                SupportedInspectionExecutor().collectScopeFiles(scope)
+                    .mapNotNullTo(linkedSetOf()) { it.virtualFile?.path }
+        }
+
+    private fun profileWith(vararg tools: LocalInspectionTool): InspectionProfileImpl {
+        val project = projectExtension.project
+        val wrappers = tools.map(::LocalInspectionToolWrapper)
+        wrappers.forEach { HighlightDisplayKey.findOrRegister(it.shortName, it.displayName) }
+        val supplier = InspectionToolsSupplier.Simple(wrappers.map { it as InspectionToolWrapper<*, *> })
+        val manager = InspectionProfileManager.getInstance() as BaseInspectionProfileManager
+        val profile = InspectionProfileImpl("evidence-${profileCounter.incrementAndGet()}", supplier, manager)
+        val previousInitInspections = InspectionProfileImpl.INIT_INSPECTIONS
+        InspectionProfileImpl.INIT_INSPECTIONS = true
+        try {
+            profile.initInspectionTools(project)
+        } finally {
+            InspectionProfileImpl.INIT_INSPECTIONS = previousInitInspections
+        }
+        return profile
+    }
+
+    private fun enabledTools(vararg tools: LocalInspectionTool): InspectionHandler.EnabledLocalToolEnumeration =
+        InspectionHandler.EnabledLocalToolEnumeration(
+            shortNames = tools.mapTo(linkedSetOf()) { it.shortName },
+            errorCount = 0,
+            errorExamples = emptyList(),
+        )
+
     private open class RecordingInspection : LocalInspectionTool() {
         override fun getDisplayName(): String = shortName
 
@@ -223,10 +380,22 @@ class SupportedInspectionExecutorPlatformTest {
         }
     }
 
-    private class TestGlobalInspection : GlobalInspectionTool() {
+    private class EnabledProfileFindingInspection : FindingInspection()
+
+    private class DisabledProfileFindingInspection : FindingInspection()
+
+    private class SeverityProfileFindingInspection : FindingInspection()
+
+    private class TimeoutProfileInspection : RecordingInspection()
+
+    private open class TestGlobalInspection : GlobalInspectionTool() {
         override fun getDisplayName(): String = shortName
 
         override fun getGroupDisplayName(): String = "Supported Inspection Tests"
+    }
+
+    private class TestGlobalSimpleInspection : TestGlobalInspection() {
+        override fun isGlobalSimpleInspectionTool(): Boolean = true
     }
 
     companion object {
@@ -235,6 +404,7 @@ class SupportedInspectionExecutorPlatformTest {
         val projectExtension = ProjectExtension()
 
         private val fileCounter = AtomicInteger()
+        private val profileCounter = AtomicInteger()
         private val visitCounts = ConcurrentHashMap<String, AtomicInteger>()
 
         private fun resetVisits(tool: LocalInspectionTool) {
