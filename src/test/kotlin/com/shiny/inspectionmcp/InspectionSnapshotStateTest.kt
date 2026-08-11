@@ -3342,8 +3342,78 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("buildInspectionCaptureSnapshot with proof-found problems merges them into PROBLEMS_FOUND")
-    fun testBuildCaptureSnapshotWithProofFoundProblemsIsProblemsFound() {
+    @DisplayName("Established execution proof and stable extraction confirm clean without Inspection Results view")
+    fun testStableEmptyExtractionWithProofConfirmsCleanWithoutInspectionResultsView() {
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                hasModelCleanEvidence = true,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = false,
+            observedInspectionView = false,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome)
+    }
+
+    @Test
+    @DisplayName("Missing proof or unreadable extraction without Inspection Results view remains incomplete")
+    fun testNoViewRequiresEstablishedProofAndReadableExtractionForClean() {
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+
+        val (outcome, _) = classifyEmptyInspectionCapture(
+            viewReadyOk = false,
+            observedInspectionView = false,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome)
+    }
+
+    @Test
+    @DisplayName("Proof-found problems remain RED without an Inspection Results view")
+    fun testBuildCaptureSnapshotWithProofFoundProblemsIsProblemsFoundWithoutInspectionResultsView() {
         val proofProblem = mapOf(
             "description" to "Undefined variable 'x'",
             "file" to "/tmp/TestProject/src/main.py",
@@ -3373,7 +3443,9 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
+                viewReadyOk = false,
+                executionProofRequired = true,
+                executionProofEstablished = true,
             ),
         )
         assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
