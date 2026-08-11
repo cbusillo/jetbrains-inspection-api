@@ -243,14 +243,15 @@ GUI IDE.
 
 ### Inspection execution proof (issues #239, #259, and #284)
 
-For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; each obligation executes with an isolated copied wrapper and independent inspection context whose initialize/cleanup lifecycle completes before the proof returns, and every worker shares the same deadline and cancellation state. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. Applicable non-batch tools, unresolved keys/wrappers, failures, timeouts, unvisited obligations, or unmapped descriptors keep clean proof `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`. Current mapped findings remain decisive RED even when clean proof is incomplete.
+For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; each obligation executes through the supported `InspectionEngine.inspectEx` API with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. Applicable non-batch tools, unresolved keys/wrappers, failures, timeouts, unvisited obligations, or unmapped descriptors keep clean proof `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
 
-For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
+For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
 
 Run the focused regression suite:
 
 ```bash
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
+  --tests "*.SupportedInspectionExecutorPlatformTest" \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
@@ -259,10 +260,12 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
 ```
 
 Key expectations:
+- supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation
+- the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
 - bounded inspection with all applicable runnable obligations executed, no blocking obligations, and no findings → GREEN
-- multi-file bounded replay accounts for every tool/file obligation while running exact files concurrently with copied wrapper initialize/cleanup lifecycle
+- multi-file bounded replay accounts for every tool/file obligation while running exact files concurrently with copied wrapper cleanup lifecycle
 - the reproduced two-file workload accounts for all 227 runnable obligations without timeout or unvisited work
 - one shared deadline or cancellation stops every file worker, preserves completed/partial counts, and waits for cleanup before returning
 - globally enabled but exact-file language-non-applicable tools do not block GREEN

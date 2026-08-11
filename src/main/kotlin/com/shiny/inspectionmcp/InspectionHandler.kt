@@ -5867,8 +5867,11 @@ class InspectionHandler : HttpRequestHandler() {
                                     )
                                 } else {
                                     try {
+                                        val enabledTools = resolveEnabledLocalToolShortNames(globalContext) {
+                                            checkInspectionRunCancellation(key, runId)
+                                        }
                                         val proofRun = runBoundedExecutionProof(
-                                            globalContext,
+                                            enabledTools,
                                             profile,
                                             project,
                                             capturedScopeFiles,
@@ -8359,7 +8362,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun runTargetInspectionEngineFallback(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        globalContext: com.intellij.codeInspection.GlobalInspectionContext,
         project: Project,
         toolShortName: String,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
@@ -8646,9 +8649,51 @@ class InspectionHandler : HttpRequestHandler() {
         return EnabledLocalToolEnumeration(names, errorCount, errors)
     }
 
+    private fun createExactFileExecutionContext(
+        project: Project,
+        profile: InspectionProfileImpl,
+        psiFile: com.intellij.psi.PsiFile,
+    ): com.intellij.codeInspection.GlobalInspectionContext {
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val context = synchronized(inspectionManager) {
+            inspectionManager.createNewGlobalContext()
+        }
+        return try {
+            context.setExternalProfile(profile)
+            context.currentScope = AnalysisScope(psiFile)
+            context
+        } catch (error: Exception) {
+            runCatching { cleanupExactFileExecutionContext(project, context) }
+                .exceptionOrNull()
+                ?.let(error::addSuppressed)
+            throw error
+        }
+    }
+
+    private fun cleanupExactFileExecutionContext(
+        project: Project,
+        context: com.intellij.codeInspection.GlobalInspectionContext,
+    ) {
+        var cleanupFailure: Exception? = null
+        try {
+            context.cleanup()
+        } catch (error: Exception) {
+            cleanupFailure = error
+        } finally {
+            val implementation = context as? GlobalInspectionContextImpl
+            if (implementation != null) {
+                val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+                synchronized(inspectionManager) {
+                    inspectionManager.runningContexts.remove(implementation)
+                }
+            }
+        }
+        cleanupFailure?.let { throw it }
+    }
+
     @Suppress("UnstableApiUsage")
     private fun runBoundedExecutionProof(
-        globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
+        enabledTools: EnabledLocalToolEnumeration,
         profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
@@ -8672,7 +8717,7 @@ class InspectionHandler : HttpRequestHandler() {
             if (proofDeadlineExceeded()) throw ExactFileProofTimeLimitExceededException()
         }
 
-        fun <T> runDeadlineAwareProofProcess(action: () -> T): T {
+        fun <T> runDeadlineAwareProofProcess(action: (ProgressIndicator) -> T): T {
             val indicator = ProgressIndicatorBase()
             val deadlineTriggered = AtomicBoolean(false)
             val externalCancellation = AtomicReference<RuntimeException?>()
@@ -8697,7 +8742,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ProgressManager.getInstance().runProcess(
                     Computable {
                         checkProofBudget()
-                        action().also { checkProofBudget() }
+                        action(indicator).also { checkProofBudget() }
                     },
                     indicator,
                 )
@@ -8713,7 +8758,6 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
-        val enabledTools = resolveEnabledLocalToolShortNames(globalContext, cancellationCheck)
         if (enabledTools.shortNames.isEmpty() && enabledTools.errorCount == 0) {
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
@@ -8758,17 +8802,12 @@ class InspectionHandler : HttpRequestHandler() {
             }
             executionWrapper.context?.let { context ->
                 try {
-                    context.cleanup()
+                    cleanupExactFileExecutionContext(project, context)
                 } catch (error: Exception) {
                     if (cleanupFailure == null) {
                         cleanupFailure = error
                     } else {
                         cleanupFailure.addSuppressed(error)
-                    }
-                } finally {
-                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-                    synchronized(exactProofInspectionManager) {
-                        exactProofInspectionManager.runningContexts.remove(context as GlobalInspectionContextImpl)
                     }
                 }
             }
@@ -8840,25 +8879,16 @@ class InspectionHandler : HttpRequestHandler() {
                 val copiedWrapper = synchronized(batchWrapper.toolWrapper) {
                     InspectionProfileImpl.copyToolSettings(batchWrapper.toolWrapper)
                 }
-                val executionContext = try {
-                    val exactProofInspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
-                    synchronized(exactProofInspectionManager) {
-                        exactProofInspectionManager.createNewGlobalContext()
+                return try {
+                    checkProofBudget()
+                    val executionContext = if (canExecuteWithInspectEx(copiedWrapper)) {
+                        null
+                    } else {
+                        createExactFileExecutionContext(project, profile, candidate.value)
                     }
+                    ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
                 } catch (error: Exception) {
                     runCatching { copiedWrapper.cleanup(project) }
-                        .exceptionOrNull()
-                        ?.let(error::addSuppressed)
-                    throw error
-                }
-                val executionWrapper = ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
-                return try {
-                    executionContext.setExternalProfile(profile)
-                    executionContext.currentScope = globalContext.currentScope
-                    checkProofBudget()
-                    executionWrapper
-                } catch (error: Exception) {
-                    runCatching { cleanupExactFileExecutionWrapper(executionWrapper) }
                         .exceptionOrNull()
                         ?.let(error::addSuppressed)
                     throw error
@@ -8876,14 +8906,22 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
-                runDeadlineAwareProofProcess {
-                    val executionContext = requireNotNull(batchWrapper.context) as GlobalInspectionContextImpl
+                runDeadlineAwareProofProcess { indicator ->
                     app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
-                        InspectionEngine.runInspectionOnFile(
-                            candidate.value,
-                            batchWrapper.toolWrapper,
-                            executionContext,
-                        )
+                        if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
+                            val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                            SupportedInspectionExecutor().executePreparedFile(
+                                candidate.value,
+                                listOf(localWrapper),
+                                indicator,
+                            ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                        } else {
+                            InspectionEngine.runInspectionOnFile(
+                                candidate.value,
+                                batchWrapper.toolWrapper,
+                                requireNotNull(batchWrapper.context),
+                            )
+                        }
                     }
                 }
 

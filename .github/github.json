@@ -23,6 +23,7 @@
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test",
+      "supportedInspectionExecutor": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test --tests '*.SupportedInspectionExecutorPlatformTest'",
       "core": "./gradlew :inspection-core:test",
       "mcpServer": "./gradlew :mcp-server-jvm:test"
     },
