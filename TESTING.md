@@ -241,11 +241,15 @@ runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
 checks the IntelliJ, PyCharm, and WebStorm fixture contracts without requiring a
 GUI IDE.
 
-### Inspection execution proof (issues #239, #259, and #284)
+### Inspection execution proof (issues #239, #259, #284, and #296)
 
 For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; each obligation executes through the supported `InspectionEngine.inspectEx` API with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. Applicable non-batch tools, unresolved keys/wrappers, failures, timeouts, unvisited obligations, or unmapped descriptors keep clean proof `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
 
 For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
+
+The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. It also records a remaining fidelity boundary: `inspectEx` descriptors carry their `ProblemHighlightType`, not the selected profile's configured display level. The current problem mapper therefore reports descriptor-derived severity even when the profile raises the tool to ERROR; resolving that mapping belongs to the evidence-backed #297 reduction rather than this qualification slice.
+
+Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which copies maintained fixtures outside the plugin checkout; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
 Run the focused regression suite:
 
@@ -262,6 +266,10 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
 Key expectations:
 - supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation
 - the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
+- a selected non-default profile excludes disabled obligations while preserving enabled findings, and a zero proof deadline remains `execution_not_proven`
+- exact-file, directory, and whole-project `AnalysisScope` traversal matches the native expected-file set on physical test content
+- selected profile severity remains external to `inspectEx` descriptors; current mapped severity is derived from `ProblemHighlightType`
+- local/global-simple/true-global wrapper routing is automated evidence only; native global execution requires live IDE evidence
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
 - bounded inspection with all applicable runnable obligations executed, no blocking obligations, and no findings → GREEN

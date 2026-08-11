@@ -107,7 +107,7 @@ import javax.swing.tree.TreeNode
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
-private const val BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
+private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
@@ -1539,6 +1539,7 @@ class InspectionHandler : HttpRequestHandler() {
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
     internal var closeVerificationTimeoutMs: Long = 10_000
+    internal var boundedExecutionProofTimeoutMs: Long = DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS
     internal var closeVerificationPollMs: Long = 100
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
@@ -7341,7 +7342,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun nativeInspectionExpectedFilePaths(scope: AnalysisScope): Set<String> {
+    internal fun nativeInspectionExpectedFilePaths(scope: AnalysisScope): Set<String> {
         val paths = linkedSetOf<String>()
         scope.accept(object : PsiElementVisitor() {
             override fun visitFile(file: com.intellij.psi.PsiFile) {
@@ -8579,7 +8580,7 @@ class InspectionHandler : HttpRequestHandler() {
         ).filterValues { it != null }
     }
 
-    private data class EnabledLocalToolEnumeration(
+    internal data class EnabledLocalToolEnumeration(
         val shortNames: Set<String>,
         val errorCount: Int,
         val errorExamples: List<Map<String, Any?>>,
@@ -8692,7 +8693,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     @Suppress("UnstableApiUsage")
-    private fun runBoundedExecutionProof(
+    internal fun runBoundedExecutionProof(
         enabledTools: EnabledLocalToolEnumeration,
         profile: InspectionProfileImpl,
         project: Project,
@@ -8708,7 +8709,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val proofStartNanos = System.nanoTime()
-        val proofTimeoutNanos = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS * 1_000_000L
+        val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
 
         fun proofDeadlineExceeded(): Boolean = System.nanoTime() - proofStartNanos > proofTimeoutNanos
 
@@ -8983,7 +8984,7 @@ class InspectionHandler : HttpRequestHandler() {
             enabledLocalToolCount = enabledTools.shortNames.size,
             candidates = candidates,
             enumerationErrorCount = enabledTools.errorCount,
-            timeoutMs = BOUNDED_EXECUTION_PROOF_TIMEOUT_MS,
+            timeoutMs = boundedExecutionProofTimeoutMs,
             nowNanos = System::nanoTime,
             startNanos = proofStartNanos,
             cancellationCheck = cancellationCheck,
@@ -9001,7 +9002,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun buildProblemMap(
+    internal fun buildProblemMap(
         descriptor: com.intellij.codeInspection.CommonProblemDescriptor,
         wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
         project: Project,
