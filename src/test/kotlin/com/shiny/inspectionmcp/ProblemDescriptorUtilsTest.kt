@@ -1,6 +1,10 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.codeInspection.ProblemDescriptor
+import com.intellij.codeInspection.ProblemHighlightType
+import com.intellij.codeHighlighting.HighlightDisplayLevel
+import com.intellij.codeInsight.daemon.HighlightDisplayKey
+import com.intellij.codeInspection.InspectionProfile
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import io.mockk.every
@@ -113,6 +117,72 @@ class ProblemDescriptorUtilsTest {
         val descriptor = mockProblemDescriptor("port", TextRange(0, 4), isValid = false)
 
         assertEquals(null, problemDescriptorRefText(descriptor))
+    }
+
+    @Test
+    @DisplayName("Profile severity can raise a warning descriptor to error")
+    fun liftSeverityWithProfileRaisesWarningToError() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { profile.getErrorLevel(displayKey, element) } returns HighlightDisplayLevel.ERROR
+
+        assertEquals(
+            "error",
+            liftSeverityWithProfile(
+                baseSeverity = severityFromHighlightType(ProblemHighlightType.WARNING),
+                selectedProfile = profile,
+                displayKey = displayKey,
+                psiElement = element,
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Profile severity does not lower a descriptor-derived error")
+    fun liftSeverityWithProfileDoesNotLowerErrorSeverity() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { profile.getErrorLevel(displayKey, element) } returns HighlightDisplayLevel.WARNING
+
+        assertEquals(
+            "error",
+            liftSeverityWithProfile(
+                baseSeverity = severityFromHighlightType(ProblemHighlightType.ERROR),
+                selectedProfile = profile,
+                displayKey = displayKey,
+                psiElement = element,
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Missing profile data falls back to the highlight-type severity")
+    fun liftSeverityWithProfileFallsBackSafely() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { profile.getErrorLevel(displayKey, element) } throws IllegalStateException("missing")
+
+        assertEquals(
+            "warning",
+            liftSeverityWithProfile(
+                baseSeverity = severityFromHighlightType(ProblemHighlightType.GENERIC_ERROR_OR_WARNING),
+                selectedProfile = profile,
+                displayKey = displayKey,
+                psiElement = element,
+            ),
+        )
+        assertEquals(
+            "warning",
+            liftSeverityWithProfile(
+                baseSeverity = severityFromHighlightType(ProblemHighlightType.GENERIC_ERROR_OR_WARNING),
+                selectedProfile = null,
+                displayKey = displayKey,
+                psiElement = element,
+            ),
+        )
     }
 
     private fun mockProblemDescriptor(
