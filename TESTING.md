@@ -247,7 +247,9 @@ For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete
 
 For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
 
-The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. It also records a remaining fidelity boundary: `inspectEx` descriptors carry their `ProblemHighlightType`, not the selected profile's configured display level. The current problem mapper therefore reports descriptor-derived severity even when the profile raises the tool to ERROR; resolving that mapping belongs to the evidence-backed #297 reduction rather than this qualification slice.
+The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. `inspectEx` descriptors still carry `ProblemHighlightType` rather than the selected profile's display level, so the mapper resolves the tool's `HighlightDisplayKey` against the selected profile and may raise the descriptor-derived severity. It never lowers descriptor severity, and missing keys, PSI elements, or profile lookup failures retain the descriptor-derived value.
+
+Broad native execution no longer initializes or polls `InspectionResultsView`. Direct presentation descriptors remain the primary model, native or bounded execution proof establishes whether an empty run is eligible for GREEN, and stable successful tool-window extraction supplies the independent empty-result observation. Missing proof or unreadable extraction remains `UNKNOWN`. The generic Problems/inspection tool-window fallback stays available, but the capture path no longer depends on `GlobalInspectionContextImpl.getView()` or `initializeViewIfNeeded()`.
 
 Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which copies maintained fixtures outside the plugin checkout; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
@@ -268,7 +270,7 @@ Key expectations:
 - the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
 - a selected non-default profile excludes disabled obligations while preserving enabled findings, and a zero proof deadline remains `execution_not_proven`
 - exact-file, directory, and whole-project `AnalysisScope` traversal matches the native expected-file set on physical test content
-- selected profile severity remains external to `inspectEx` descriptors; current mapped severity is derived from `ProblemHighlightType`
+- selected profile severity remains external to `inspectEx` descriptors; mapped severity starts from `ProblemHighlightType`, may be raised by the selected profile, and is never lowered by it
 - local/global-simple/true-global wrapper routing is automated evidence only; native global execution requires live IDE evidence
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
@@ -383,6 +385,13 @@ must match the exact, sorted canonical findings in
 `config/plugin-verifier/stable-internal-api-allowlist.txt`; additional findings,
 missing expected findings, malformed report lines, or absent reports fail the
 build. This replaces broad class-name substring acceptance.
+
+All remaining `GlobalInspectionContextImpl` source references must stay in
+`GlobalInspectionContextBoundary.kt` (including its private attested subclass),
+and the release-contract suite rejects source or Stable allowlist references
+that escape that named boundary. The boundary exists only for broad native
+execution, direct presentation access, lifecycle cleanup, and per-kind
+attestation that the supported bounded `inspectEx` path cannot provide.
 
 When an intentional Stable implementation change alters verifier findings,
 review the complete `missing`/`unexpected` diff from `verifyPlugin`, update the
