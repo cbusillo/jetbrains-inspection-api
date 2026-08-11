@@ -8,7 +8,6 @@ import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
-import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.NotNullLazyValue
 import com.intellij.psi.PsiFile
@@ -31,10 +30,6 @@ internal class GlobalInspectionContextBoundary private constructor(
     fun performInspectionsWithProgress(scope: AnalysisScope) {
         context.performInspectionsWithProgress(scope, false, false)
     }
-
-    fun initializeViewIfNeeded() = context.initializeViewIfNeeded()
-
-    fun inspectionView(): InspectionResultsView? = context.view
 
     fun publicContext(): GlobalInspectionContext = context
 
