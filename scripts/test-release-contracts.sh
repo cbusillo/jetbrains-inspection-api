@@ -781,7 +781,7 @@ from pathlib import Path
 boundary = Path("src/main/kotlin/com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt")
 implementation_name = "GlobalInspectionContextImpl"
 violations = []
-for source in Path("src/main/kotlin/com/shiny/inspectionmcp").glob("*.kt"):
+for source in Path("src/main/kotlin").rglob("*.kt"):
     if source == boundary:
         continue
     if implementation_name in source.read_text(encoding="utf-8"):

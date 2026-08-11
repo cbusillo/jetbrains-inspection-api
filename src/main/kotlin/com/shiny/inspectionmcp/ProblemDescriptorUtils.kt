@@ -90,10 +90,12 @@ fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
 }
 
 internal fun severityFromHighlightDisplayLevel(level: HighlightDisplayLevel?): String? {
-    val severityName = runCatching { level?.severity?.name?.lowercase() }.getOrNull() ?: return null
+    val severityName = runCatching {
+        level?.severity?.name?.lowercase()?.replace(' ', '_')
+    }.getOrNull() ?: return null
     return when (severityName) {
         "error", "non_switchable_error" -> "error"
-        "warning", "non_switchable_warning", "generic_server_error_or_warning" -> "warning"
+        "warning", "non_switchable_warning", "generic_server_error_or_warning", "server_problem" -> "warning"
         "weak_warning" -> "weak_warning"
         "info", "information", "consideration_attributes", "do_not_show" -> "info"
         else -> null

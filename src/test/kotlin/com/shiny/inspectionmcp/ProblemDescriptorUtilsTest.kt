@@ -158,6 +158,15 @@ class ProblemDescriptorUtilsTest {
     }
 
     @Test
+    @DisplayName("Weak warning display levels use the API severity vocabulary")
+    fun severityFromHighlightDisplayLevelNormalizesWeakWarning() {
+        assertEquals(
+            "weak_warning",
+            severityFromHighlightDisplayLevel(HighlightDisplayLevel.WEAK_WARNING),
+        )
+    }
+
+    @Test
     @DisplayName("Missing profile data falls back to the highlight-type severity")
     fun liftSeverityWithProfileFallsBackSafely() {
         val profile = mockk<InspectionProfile>()

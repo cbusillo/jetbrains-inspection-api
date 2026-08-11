@@ -1954,6 +1954,19 @@ class InspectionSnapshotStateTest {
         assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, modelCleanWithUpdatingView.first)
         assertEquals(null, modelCleanWithUpdatingView.second)
 
+        val modelCleanWithoutInspectionView = classifyEmptyInspectionCapture(
+            viewReadyOk = false,
+            observedInspectionView = false,
+            observedSettledEmptyInspectionView = false,
+            observedStableReadableEmptyInspectionView = false,
+            observedStableEmptyResultsWithoutInspectionView = false,
+            observedModelCleanInspection = true,
+            observedNonEmptyInspectionTree = false,
+        )
+
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, modelCleanWithoutInspectionView.first)
+        assertEquals(null, modelCleanWithoutInspectionView.second)
+
         val unreadableView = classifyEmptyInspectionCapture(
             viewReadyOk = true,
             observedInspectionView = true,

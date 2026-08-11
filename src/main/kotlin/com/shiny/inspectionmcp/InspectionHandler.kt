@@ -1073,11 +1073,11 @@ internal fun classifyEmptyInspectionCapture(
             (
                 (viewReadyOk &&
                     (
-                        (observedInspectionView &&
-                            (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)) ||
-                            observedModelCleanInspection
+                        observedInspectionView &&
+                            (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)
                         )) ||
-                    observedStableEmptyResultsWithoutInspectionView
+                    observedStableEmptyResultsWithoutInspectionView ||
+                    observedModelCleanInspection
                 )
     ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
