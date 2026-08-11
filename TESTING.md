@@ -261,7 +261,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
 
 Key expectations:
 - supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation
-- profile-disabled tools stay outside the submitted wrapper set; profile and applicability classification remain explicit caller responsibilities
+- the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
 - bounded inspection with all applicable runnable obligations executed, no blocking obligations, and no findings → GREEN

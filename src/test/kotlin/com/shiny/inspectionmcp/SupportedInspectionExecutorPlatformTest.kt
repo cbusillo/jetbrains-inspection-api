@@ -1,9 +1,11 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeInspection.GlobalInspectionTool
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
@@ -56,6 +58,20 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `sparse results retain findings while omitting clean tools`() {
+        val findingTool = FindingInspection()
+        val cleanTool = CleanInspection()
+
+        val result = execute(listOf(findingTool, cleanTool))
+
+        val fileResult = result.fileResults.single()
+        assertThat(fileResult.suppliedToolShortNames)
+            .containsExactlyInAnyOrder(findingTool.shortName, cleanTool.shortName)
+        assertThat(fileResult.returnedDescriptorsByToolShortName.keys)
+            .containsExactly(findingTool.shortName)
+    }
+
+    @Test
     fun `language inapplicable tools are omitted before visiting`() {
         val tool = JavaOnlyInspection()
         resetVisits(tool)
@@ -86,7 +102,7 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `pre-cancelled indicators escape instead of becoming clean results`() {
+    fun `pre-cancelled indicators escape before inspection execution`() {
         val indicator = EmptyProgressIndicator().apply { cancel() }
 
         assertThatThrownBy { execute(listOf(CleanInspection()), indicator = indicator) }
@@ -94,7 +110,7 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `profile disabled tools remain outside the submitted tool set`() {
+    fun `an empty caller-selected wrapper set records no submitted tools`() {
         val tool = FindingInspection()
         resetVisits(tool)
 
@@ -106,7 +122,7 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `explicit analysis scope visits every physical file exactly once`() {
+    fun `explicit analysis scope returns every distinct physical file`() {
         val project = projectExtension.project
         val firstFile = createPhysicalFile()
         val secondFile = createPhysicalFile()
@@ -116,6 +132,12 @@ class SupportedInspectionExecutorPlatformTest {
 
         assertThat(result.fileResults.map { it.filePath })
             .containsExactlyInAnyOrder(firstFile.virtualFile.path, secondFile.virtualFile.path)
+    }
+
+    @Test
+    fun `inspectEx routing accepts local wrappers and preserves global fallback`() {
+        assertThat(canExecuteWithInspectEx(LocalInspectionToolWrapper(CleanInspection()))).isTrue()
+        assertThat(canExecuteWithInspectEx(GlobalInspectionToolWrapper(TestGlobalInspection()))).isFalse()
     }
 
     private fun execute(
@@ -199,6 +221,12 @@ class SupportedInspectionExecutorPlatformTest {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {
             throw IllegalStateException("supported inspection failure")
         }
+    }
+
+    private class TestGlobalInspection : GlobalInspectionTool() {
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "Supported Inspection Tests"
     }
 
     companion object {

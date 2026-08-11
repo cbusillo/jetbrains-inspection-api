@@ -3,12 +3,16 @@ package com.shiny.inspectionmcp
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.ProblemDescriptor
+import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
 import com.intellij.util.PairProcessor
+
+internal fun canExecuteWithInspectEx(toolWrapper: InspectionToolWrapper<*, *>): Boolean =
+    toolWrapper is LocalInspectionToolWrapper
 
 internal data class SupportedInspectionFileResult(
     val filePath: String,
@@ -84,7 +88,7 @@ internal class SupportedInspectionExecutor {
             psiFile.textRange,
             psiFile.textRange,
             false,
-            true,
+            false,
             ignoreSuppressedElements,
             indicator,
             PairProcessor.alwaysTrue(),
