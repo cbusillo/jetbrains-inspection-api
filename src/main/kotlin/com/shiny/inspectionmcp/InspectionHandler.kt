@@ -5823,6 +5823,7 @@ class InspectionHandler : HttpRequestHandler() {
                             extractProblemsFromContextSafe(
                                 globalContext,
                                 project,
+                                profile,
                                 targetToolShortNames,
                                 fallbackScopeFiles,
                                 cancellationCheck = { checkInspectionRunCancellation(key, runId) },
@@ -8076,6 +8077,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun extractProblemsFromContextSafe(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
+        selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String> = emptySet(),
         fallbackScopeFiles: List<com.intellij.psi.PsiFile> = emptyList(),
         cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
@@ -8087,7 +8089,13 @@ class InspectionHandler : HttpRequestHandler() {
             cancellationCheck()
             presentationHolder.set(
                 app.runReadAction<InspectionModelExtraction, Exception> {
-                    extractProblemsFromContext(globalContext, project, targetToolShortNames, cancellationCheck)
+                    extractProblemsFromContext(
+                        globalContext,
+                        project,
+                        selectedProfile,
+                        targetToolShortNames,
+                        cancellationCheck,
+                    )
                 }
             )
         }
@@ -8120,6 +8128,7 @@ class InspectionHandler : HttpRequestHandler() {
             base = presentationExtraction,
             globalContext = globalContext,
             project = project,
+            selectedProfile = selectedProfile,
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
             cancellationCheck = cancellationCheck,
@@ -8130,7 +8139,8 @@ class InspectionHandler : HttpRequestHandler() {
     private fun extractProblemsFromContext(
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
-        targetToolShortNames: Set<String> = emptySet(),
+        selectedProfile: InspectionProfile?,
+        targetToolShortNames: Set<String>,
         cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
     ): InspectionModelExtraction {
         cancellationCheck()
@@ -8238,7 +8248,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                 for (descriptor in descriptors) {
                     cancellationCheck()
-                    val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                    val map = buildProblemMap(descriptor, wrapper, selectedProfile, project) ?: continue
                     val key = listOf(
                         map["severity"],
                         map["inspectionType"],
@@ -8281,6 +8291,7 @@ class InspectionHandler : HttpRequestHandler() {
         base: InspectionModelExtraction,
         globalContext: com.intellij.codeInspection.ex.GlobalInspectionContextImpl,
         project: Project,
+        selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
@@ -8314,7 +8325,7 @@ class InspectionHandler : HttpRequestHandler() {
             fallbackDescriptorCount += fallbackDescriptors.size
             for ((descriptor, wrapper) in fallbackDescriptors) {
                 cancellationCheck()
-                val map = buildProblemMap(descriptor, wrapper, project) ?: continue
+                val map = buildProblemMap(descriptor, wrapper, selectedProfile, project) ?: continue
                 if (baseKeys.add(problemKey(map))) {
                     fallbackProblems += map
                 }
@@ -8894,7 +8905,7 @@ class InspectionHandler : HttpRequestHandler() {
             ): Map<String, Any>? {
                 checkProofBudget()
                 return app.runReadAction<Map<String, Any>?, Exception> {
-                    buildProblemMap(descriptor, batchWrapper.toolWrapper, project)
+                    buildProblemMap(descriptor, batchWrapper.toolWrapper, profile, project)
                 }.also { checkProofBudget() }
             }
 
@@ -8966,6 +8977,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun buildProblemMap(
         descriptor: com.intellij.codeInspection.CommonProblemDescriptor,
         wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+        selectedProfile: InspectionProfile?,
         project: Project,
     ): Map<String, Any>? {
         val descriptionTemplate = descriptor.descriptionTemplate.takeIf { it.isNotBlank() } ?: return null
@@ -8973,15 +8985,17 @@ class InspectionHandler : HttpRequestHandler() {
             descriptionTemplate,
             (descriptor as? com.intellij.codeInspection.ProblemDescriptor)?.let(::problemDescriptorRefText),
         )
-        val inspectionType = wrapper.shortName
+        val inspectionType = runCatching { wrapper.shortName }.getOrNull() ?: return null
         val category = wrapper.groupDisplayName
 
         var filePath = "unknown"
         var line = 0
         var column = 0
         var severity = "warning"
+        var psiElement: com.intellij.psi.PsiElement? = null
 
         if (descriptor is com.intellij.codeInspection.ProblemDescriptor) {
+            psiElement = descriptor.psiElement?.takeIf { it.isValid }
             val location = resolveProblemLocation(descriptor, project)
             if (location != null) {
                 filePath = location.filePath
@@ -8989,6 +9003,8 @@ class InspectionHandler : HttpRequestHandler() {
                 column = location.column
             }
             severity = severityFromHighlightType(descriptor.highlightType)
+            val displayKey = HighlightDisplayKey.find(inspectionType)
+            severity = liftSeverityWithProfile(severity, selectedProfile, displayKey, psiElement)
         }
 
         val typeLower = inspectionType.lowercase()

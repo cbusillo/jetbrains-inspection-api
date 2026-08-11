@@ -1,5 +1,8 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeHighlighting.HighlightDisplayLevel
+import com.intellij.codeInsight.daemon.HighlightDisplayKey
+import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.injected.editor.DocumentWindow
@@ -7,6 +10,7 @@ import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.injection.InjectedLanguageManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
+import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiDocumentManager
 
 data class ProblemLocation(
@@ -82,6 +86,44 @@ fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
         ProblemHighlightType.LIKE_UNUSED_SYMBOL -> "weak_warning"
         ProblemHighlightType.GENERIC_ERROR -> "error"
         else -> "info"
+    }
+}
+
+internal fun severityFromHighlightDisplayLevel(level: HighlightDisplayLevel?): String? {
+    val severityName = runCatching { level?.severity?.name?.lowercase() }.getOrNull() ?: return null
+    return when (severityName) {
+        "error", "non_switchable_error" -> "error"
+        "warning", "non_switchable_warning", "generic_server_error_or_warning" -> "warning"
+        "weak_warning" -> "weak_warning"
+        "info", "information", "consideration_attributes", "do_not_show" -> "info"
+        else -> null
+    }
+}
+
+internal fun liftSeverityWithProfile(
+    baseSeverity: String,
+    selectedProfile: InspectionProfile?,
+    displayKey: HighlightDisplayKey?,
+    psiElement: PsiElement?,
+): String {
+    if (selectedProfile == null || displayKey == null || psiElement == null) {
+        return baseSeverity
+    }
+    val profileSeverity = runCatching { selectedProfile.getErrorLevel(displayKey, psiElement) }.getOrNull()
+        ?: return baseSeverity
+    val liftedSeverity = severityFromHighlightDisplayLevel(profileSeverity) ?: return baseSeverity
+    val baseRank = severityRank(baseSeverity) ?: return baseSeverity
+    val liftedRank = severityRank(liftedSeverity) ?: return baseSeverity
+    return if (liftedRank > baseRank) liftedSeverity else baseSeverity
+}
+
+private fun severityRank(severity: String): Int? {
+    return when (severity) {
+        "info" -> 0
+        "weak_warning" -> 1
+        "warning" -> 2
+        "error" -> 3
+        else -> null
     }
 }
 
