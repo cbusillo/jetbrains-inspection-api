@@ -1110,8 +1110,14 @@ if "test \"$(git rev-parse \"refs/tags/$CANARY_TAG^{commit}\")\" = \"$EXPECTED_S
 PY
 
   assert_contains scripts/test-all.sh 'Plugin JaCoCo verification (0% minimum; report-only signal)'
+  assert_contains scripts/test-all.sh './gradlew :jacocoTestCoverageVerification'
   assert_contains scripts/test-all.sh 'Core coverage is below the configured 85% threshold'
   assert_contains scripts/test-all.sh 'MCP coverage is below the configured 85% threshold'
+  assert_contains scripts/commit-gate.sh ':inspection-core:jacocoTestCoverageVerification'
+  assert_contains scripts/commit-gate.sh ':mcp-server-jvm:jacocoTestCoverageVerification'
+  assert_not_contains scripts/commit-gate.sh './gradlew jacocoTestCoverageVerification'
+  assert_not_contains scripts/commit-gate.sh 'test-red-lane-smoke-script.sh'
+  assert_contains scripts/test-all.sh './scripts/test-red-lane-smoke-script.sh'
 }
 
 test_version_validator
