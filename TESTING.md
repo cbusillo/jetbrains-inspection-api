@@ -236,10 +236,12 @@ Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed
 application name even when channel and version selectors identify an EAP line.
 
-This is a live IDE smoke, not a normal CI unit test. `./scripts/test-all.sh`
-runs `./scripts/test-red-lane-smoke-script.sh`, which stubs the helper and
-checks the IntelliJ, PyCharm, and WebStorm fixture contracts without requiring a
-GUI IDE.
+This is a live IDE smoke, not a normal CI unit test. The red-lane smoke-script contract remains local-only
+under `./scripts/test-all.sh` because the contract
+invokes the developer-facing helper through `uv run`, which is not part of the
+required CI toolchain. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
+and checks the IntelliJ, PyCharm, and WebStorm fixture contracts without
+requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change.
 
 ### Inspection execution proof (issues #239, #259, #284, #296, and #301)
 
@@ -349,7 +351,10 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 
 The commit gate sync-checks `plugin.xml` against `gradle.properties`, runs the
 fast release/workflow contract tests, requires Java 21, then runs plugin tests,
-core tests, MCP server tests, and `buildPlugin`.
+the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
+verification task depends on its module's tests and report, so tests are not run
+twice. The plugin's own 0% JaCoCo minimum remains report-only and is not required
+by CI.
 Code scanning is tracked through the required `Analyze (actions)` and
 `Analyze (python)` checks alongside `commit-gate`. `Analyze (java-kotlin)` also
 runs as a non-required signal so Kotlin and plugin upgrades can be validated
@@ -440,10 +445,10 @@ broader rule. Manual verification and recovery publication must run from a
 separate, clean checkout pinned to the reviewed default-branch dispatch commit,
 never from the canary source worktree.
 
-`./scripts/test-all.sh` reports the configured JaCoCo contracts accurately:
-plugin coverage is a 0% minimum report-only signal because IntelliJ classloader
-isolation prevents reliable plugin instrumentation, while `inspection-core`
-and `mcp-server-jvm` each enforce 85% minimum coverage.
+The required commit gate owns the 85% coverage thresholds for `inspection-core`
+and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal
+because IntelliJ classloader isolation prevents reliable plugin instrumentation;
+`./scripts/test-all.sh` reports that signal without making it a required check.
 
 Release preparation is a two-phase protected-branch flow:
 

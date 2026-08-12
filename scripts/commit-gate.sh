@@ -124,6 +124,6 @@ JAVA_HOME=$(resolve_java_home) || {
 export JAVA_HOME
 
 ./gradlew :test
-./gradlew :inspection-core:test
-./gradlew :mcp-server-jvm:test
+./gradlew :inspection-core:jacocoTestCoverageVerification
+./gradlew :mcp-server-jvm:jacocoTestCoverageVerification
 ./gradlew buildPlugin

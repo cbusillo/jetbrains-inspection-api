@@ -192,7 +192,7 @@ print_result $RELEASE_CONTRACT_RESULT "Release workflow contracts"
 print_section "5. Coverage Verification"
 
 echo "Plugin JaCoCo verification (0% minimum; report-only signal)"
-if ./gradlew jacocoTestCoverageVerification; then
+if ./gradlew :jacocoTestCoverageVerification; then
   PLUGIN_COVERAGE_RESULT=0
 else
   PLUGIN_COVERAGE_RESULT=1

@@ -14,8 +14,8 @@
       "commitGate": "./scripts/commit-gate.sh --ci",
       "commitGateIncludes": [
         "./gradlew :test",
-        "./gradlew :inspection-core:test",
-        "./gradlew :mcp-server-jvm:test",
+        "./gradlew :inspection-core:jacocoTestCoverageVerification",
+        "./gradlew :mcp-server-jvm:jacocoTestCoverageVerification",
         "./scripts/test-release-contracts.sh",
         "./gradlew buildPlugin"
       ],
