@@ -333,7 +333,15 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `lease_id`. Identity and endpoint responses advertise
   `lifecycle_ownership_protocol: "lease_bound_v1"`; an
   `ownership_registered: true` open response records only the pending request,
-  not ownership of the eventual project instance.
+  not ownership of the eventual project instance. A same-target probe during
+  or after an attempt may also include the bounded
+  `lifecycle_open_diagnostic` object with safe lifecycle phase/outcome,
+  timestamps/elapsed time, state booleans, and a project instance identifier
+  when available. It reports progress such as `scheduled`, `edt_started`,
+  `readiness_wait`, and `ready`, plus terminal null, mismatch/reuse,
+  unresolved, and failed outcomes; it is diagnostic only and does not grant
+  close authority. Pass `probe=true` for a strictly read-only state query; the
+  probe never trusts, opens, schedules, or claims a project.
 - `GET /api/inspection/lifecycle/claim`: resolves the same selectors as
   `/route` and verifies optional `project_instance_id`. It returns a one-use
   `close_token` only when the supplied `lease_id` is bound to the exact project

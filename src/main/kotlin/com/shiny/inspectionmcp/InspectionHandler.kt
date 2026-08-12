@@ -111,7 +111,10 @@ private const val REQUIRED_PYTHON_SDK_READY_OBSERVATIONS = 2
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
+private const val DEFAULT_LIFECYCLE_OPEN_DIAGNOSTIC_TTL_MS = 10 * 60_000L
+private const val DEFAULT_MAX_LIFECYCLE_OPEN_DIAGNOSTICS = 128
 internal const val LIFECYCLE_OWNERSHIP_PROTOCOL = "lease_bound_v1"
+internal const val LIFECYCLE_OPEN_DIAGNOSTIC_VERSION = 1
 private const val INSPECTION_ATTRIBUTION_SCHEMA_VERSION = 1
 private val NON_SEMANTIC_SCOPE_FILE_VALUES = setOf("text", "plaintext", "textmate")
 private val NON_SEMANTIC_SCOPE_FILE_CLASS_MARKERS = setOf("plaintext", "textmate")
@@ -1618,6 +1621,22 @@ class InspectionHandler : HttpRequestHandler() {
         val project: Project,
     )
 
+    private data class LifecycleOpenDiagnostic(
+        val phase: String,
+        val reason: String?,
+        val startedAtMs: Long,
+        val updatedAtMs: Long,
+        val outcomePhase: String? = null,
+        val outcomeReason: String? = null,
+        val outcomeAtMs: Long? = null,
+        val openingScheduled: Boolean = false,
+        val openReturned: Boolean = false,
+        val ownershipRegistered: Boolean = false,
+        val readinessWaiting: Boolean = false,
+        val unresolved: Boolean = false,
+        val projectInstanceId: String? = null,
+    )
+
     internal data class LifecycleContentRootReadiness(
         val ready: Boolean,
         val reason: String,
@@ -1656,6 +1675,7 @@ class InspectionHandler : HttpRequestHandler() {
     private val openingProjectRequests = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenRequest>()
     private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
     private val unresolvedLifecycleOpenProjects = java.util.concurrent.ConcurrentHashMap<String, Project>()
+    private val lifecycleOpenDiagnosticsByTarget = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenDiagnostic>()
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
@@ -1675,6 +1695,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleFallbackFailureThreshold: Int = 3
     internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var lifecycleOpenDiagnosticNow: () -> Long = { System.currentTimeMillis() }
+    internal var lifecycleOpenDiagnosticTtlMs: Long = DEFAULT_LIFECYCLE_OPEN_DIAGNOSTIC_TTL_MS
+    internal var maxLifecycleOpenDiagnostics: Int = DEFAULT_MAX_LIFECYCLE_OPEN_DIAGNOSTICS
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
         ProgressManager.getInstance().runProcess(task, indicator)
@@ -2926,10 +2949,13 @@ class InspectionHandler : HttpRequestHandler() {
                         )
                     }
                     unresolvedLifecycleOpenProjects.remove(entry.key, project)
-                }
+            }
             return lifecycleOpenAlreadyOpen(project)
         }
         val target = resolveLifecycleOpenTarget(path)
+        if (parseBooleanParameter(parameters, "probe", defaultValue = false)) {
+            return probeLifecycleOpen(target)
+        }
         unresolvedLifecycleOpenProjects[target.key]?.let { project ->
             if (isUnresolvedLifecycleOpenActive(project)) {
                 return lifecycleOpenStateUnknown(target, project)
@@ -2972,9 +2998,13 @@ class InspectionHandler : HttpRequestHandler() {
                 "ownership_registered" to sameLease,
                 "lease_id" to requestedLeaseId,
                 "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
-            ) to HttpResponseStatus.OK
+                "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+            ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.OK
         }
         unresolvedLifecycleOpenProjects.remove(target.key)
+        recordLifecycleOpenDiagnostic(target.key, "scheduled", "open_scheduled") {
+            it.copy(openingScheduled = true)
+        }
 
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
@@ -2982,9 +3012,16 @@ class InspectionHandler : HttpRequestHandler() {
                 var keepOpeningGuard = false
                 var routeHidden = false
                 try {
+                    recordLifecycleOpenDiagnostic(target.key, "edt_started", "open_started")
                     val preexistingProject = findOpenProjectForLifecycleOpen(target.projectRoot.toString())
                     if (preexistingProject != null) {
                         opened = preexistingProject
+                        recordLifecycleOpenDiagnostic(
+                            target.key,
+                            "opened_mismatched_or_reused",
+                            "project_preexisted_before_open",
+                            preexistingProject,
+                        )
                         return@invokeLater
                     }
                     val projectsBeforeOpen = ProjectManager.getInstance().openProjects.toList()
@@ -2996,6 +3033,11 @@ class InspectionHandler : HttpRequestHandler() {
                     opened = openProjectPath(target.openPath) { project ->
                         openedProjectCandidate.compareAndSet(null, project)
                     }
+                    if (opened == null) {
+                        recordLifecycleOpenDiagnostic(target.key, "open_returned_null", "project_open_returned_null") {
+                            it.copy(openReturned = true)
+                        }
+                    }
                     val ownershipProject = openedProjectCandidate.get()?.takeIf { project ->
                         project === opened &&
                             !project.isDefault &&
@@ -3005,14 +3047,33 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     if (ownershipProject != null && requestedLeaseId != null) {
                         registerLifecycleOpenOwnership(ownershipProject, requestedLeaseId, target.key)
+                        recordLifecycleOpenDiagnostic(
+                            target.key,
+                            "ownership_registered",
+                            "ownership_registered",
+                            ownershipProject,
+                        ) { it.copy(openReturned = true, ownershipRegistered = true) }
+                    } else if (opened != null && requestedLeaseId != null) {
+                        recordLifecycleOpenDiagnostic(
+                            target.key,
+                            "opened_mismatched_or_reused",
+                            "opened_project_not_eligible_for_ownership",
+                            opened,
+                        ) { it.copy(openReturned = true) }
                     }
                     LifecycleOpenRouteVisibility.reveal(target.key)
                     routeHidden = false
                     if (opened != null) {
                         refreshProjectRoot(target.projectRoot.toString())
                         keepOpeningGuard = true
+                        recordLifecycleOpenDiagnostic(target.key, "readiness_wait", "waiting_for_readiness", opened) {
+                            it.copy(openReturned = true, readinessWaiting = true)
+                        }
                         releaseLifecycleOpenGuardWhenUsable(target.key, opened, request)
                     }
+                } catch (error: Exception) {
+                    recordLifecycleOpenDiagnostic(target.key, "failed", "open_failed")
+                    throw error
                 } finally {
                     if (routeHidden) {
                         LifecycleOpenRouteVisibility.reveal(target.key)
@@ -3025,6 +3086,7 @@ class InspectionHandler : HttpRequestHandler() {
         }.isSuccess
         if (!scheduled) {
             openingProjectRequests.remove(target.key, request)
+            recordLifecycleOpenDiagnostic(target.key, "failed", "open_schedule_failed")
             return mapOf(
                 "status" to "failed",
                 "opened" to false,
@@ -3034,7 +3096,8 @@ class InspectionHandler : HttpRequestHandler() {
                 "project_root" to target.projectRoot.toString(),
                 "session_id" to InspectionIdeSession.sessionId,
                 "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
-            ) to HttpResponseStatus.CONFLICT
+                "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+            ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.CONFLICT
         }
 
         return mapOf(
@@ -3047,13 +3110,45 @@ class InspectionHandler : HttpRequestHandler() {
             "ownership_registered" to (requestedLeaseId != null),
             "lease_id" to requestedLeaseId,
             "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
-        ) to HttpResponseStatus.OK
+            "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.OK
+    }
+
+    private fun probeLifecycleOpen(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+        unresolvedLifecycleOpenProjects[target.key]?.let { project ->
+            if (isUnresolvedLifecycleOpenActive(project)) {
+                return lifecycleOpenStateUnknown(target, project)
+            }
+        }
+        findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
+            return if (isUsableProject(project)) {
+                lifecycleOpenAlreadyOpen(project, target.key)
+            } else {
+                lifecycleOpenAlreadyOpening(target)
+            }
+        }
+        val opening = openingProjectRequests.containsKey(target.key)
+        val diagnostic = lifecycleOpenDiagnosticsByTarget[target.key]
+        return mapOf(
+            "status" to if (opening) "opening" else "not_open",
+            "opened" to false,
+            "opening_scheduled" to false,
+            "reason" to if (opening) "already_opening" else "project_not_open",
+            "worktree_path" to target.path.toString(),
+            "project_root" to target.projectRoot.toString(),
+            "session_id" to InspectionIdeSession.sessionId,
+            "probe" to true,
+            "diagnostic_available" to (diagnostic != null),
+            "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
+            "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.OK
     }
 
     private fun releaseLifecycleOpenGuardWhenUsable(key: String, project: Project, request: LifecycleOpenRequest) {
         if (project.isDisposed) {
             openingProjectRequests.remove(key, request)
             unresolvedLifecycleOpenProjects.remove(key)
+            recordLifecycleOpenDiagnostic(key, "failed", "project_disposed", project)
             return
         }
         val submitted = runCatching {
@@ -3069,6 +3164,9 @@ class InspectionHandler : HttpRequestHandler() {
                     var fallbackAttemptCount = 0
                     while (openingProjectRequests.containsKey(key)) {
                         val nowMs = lifecycleOpenGuardNow()
+                        recordLifecycleOpenDiagnostic(key, "readiness_wait", "waiting_for_readiness", project) {
+                            it.copy(readinessWaiting = true)
+                        }
                         val lifecycleComplete = runCatching {
                             val readiness = lifecycleContentRootReadinessProvider(project, key)
                             val isOpenProject = readiness.reason != "project_not_open"
@@ -3120,6 +3218,15 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                         }.getOrDefault(false)
                         if (lifecycleComplete) {
+                            if (unresolvedOpenState) {
+                                recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_guard_timeout", project) {
+                                    it.copy(readinessWaiting = false, unresolved = true)
+                                }
+                            } else {
+                                recordLifecycleOpenDiagnostic(key, "ready", "readiness_ready", project) {
+                                    it.copy(readinessWaiting = false)
+                                }
+                            }
                             return@executeOnPooledThread
                         }
                         lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
@@ -3135,8 +3242,87 @@ class InspectionHandler : HttpRequestHandler() {
         if (!submitted) {
             if (isUnresolvedLifecycleOpenActive(project)) {
                 unresolvedLifecycleOpenProjects[key] = project
+                recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_wait_not_submitted", project) {
+                    it.copy(readinessWaiting = false, unresolved = true)
+                }
+            } else {
+                recordLifecycleOpenDiagnostic(key, "failed", "readiness_wait_not_submitted", project) {
+                    it.copy(readinessWaiting = false)
+                }
             }
             openingProjectRequests.remove(key, request)
+        }
+    }
+
+    private fun recordLifecycleOpenDiagnostic(
+        targetKey: String,
+        phase: String,
+        reason: String?,
+        project: Project? = null,
+        update: (LifecycleOpenDiagnostic) -> LifecycleOpenDiagnostic = { it },
+    ) {
+        val nowMs = lifecycleOpenDiagnosticNow()
+        cleanupLifecycleOpenDiagnostics(nowMs)
+        lifecycleOpenDiagnosticsByTarget.compute(targetKey) { _, existing ->
+            val base = if (phase == "scheduled") null else existing
+            val current = base ?: LifecycleOpenDiagnostic(
+                phase = phase,
+                reason = reason,
+                startedAtMs = nowMs,
+                updatedAtMs = nowMs,
+            )
+            val terminal = phase in setOf("ready", "unresolved", "failed", "open_returned_null", "opened_mismatched_or_reused")
+            update(current.copy(
+                phase = phase,
+                reason = reason,
+                updatedAtMs = nowMs,
+                outcomePhase = if (terminal) phase else current.outcomePhase,
+                outcomeReason = if (terminal) reason else current.outcomeReason,
+                outcomeAtMs = if (terminal) nowMs else current.outcomeAtMs,
+                projectInstanceId = project?.let(::projectInstanceId) ?: current.projectInstanceId,
+            ))
+        }
+        cleanupLifecycleOpenDiagnostics(nowMs)
+    }
+
+    private fun Map<String, Any?>.withLifecycleOpenDiagnostic(targetKey: String?): Map<String, Any?> {
+        if (targetKey == null) return this
+        val diagnostic = lifecycleOpenDiagnosticsByTarget[targetKey] ?: return this
+        val nowMs = lifecycleOpenDiagnosticNow()
+        cleanupLifecycleOpenDiagnostics(nowMs)
+        if (lifecycleOpenDiagnosticsByTarget[targetKey] !== diagnostic) return this
+        return toMutableMap().apply {
+            put("lifecycle_open_diagnostic", mapOf(
+                "phase" to diagnostic.phase,
+                "reason" to diagnostic.reason,
+                "started_at_ms" to diagnostic.startedAtMs,
+                "updated_at_ms" to diagnostic.updatedAtMs,
+                "elapsed_ms" to (nowMs - diagnostic.startedAtMs).coerceAtLeast(0),
+                "opening_scheduled" to diagnostic.openingScheduled,
+                "open_returned" to diagnostic.openReturned,
+                "ownership_registered" to diagnostic.ownershipRegistered,
+                "readiness_waiting" to diagnostic.readinessWaiting,
+                "unresolved" to diagnostic.unresolved,
+                "project_instance_id" to diagnostic.projectInstanceId,
+                "outcome_phase" to diagnostic.outcomePhase,
+                "outcome_reason" to diagnostic.outcomeReason,
+                "outcome_at_ms" to diagnostic.outcomeAtMs,
+            ).filterValues { value -> value != null })
+        }
+    }
+
+    private fun cleanupLifecycleOpenDiagnostics(nowMs: Long) {
+        val expirationMs = nowMs - lifecycleOpenDiagnosticTtlMs.coerceAtLeast(0)
+        lifecycleOpenDiagnosticsByTarget.entries.removeIf { (_, diagnostic) ->
+            diagnostic.updatedAtMs < expirationMs
+        }
+        val maxEntries = maxLifecycleOpenDiagnostics.coerceAtLeast(1)
+        val overflow = lifecycleOpenDiagnosticsByTarget.size - maxEntries
+        if (overflow > 0) {
+            lifecycleOpenDiagnosticsByTarget.entries
+                .sortedBy { (_, diagnostic) -> diagnostic.updatedAtMs }
+                .take(overflow)
+                .forEach { entry -> lifecycleOpenDiagnosticsByTarget.remove(entry.key, entry.value) }
         }
     }
 
@@ -3359,12 +3545,20 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    private fun lifecycleOpenAlreadyOpen(project: Project): Pair<Map<String, Any?>, HttpResponseStatus> {
+    private fun lifecycleOpenAlreadyOpen(
+        project: Project,
+        targetKey: String? = null,
+    ): Pair<Map<String, Any?>, HttpResponseStatus> {
         return mapOf(
             "status" to "already_open",
             "opened" to false,
             "session_id" to InspectionIdeSession.sessionId,
             "route" to routeMetadata(ResolvedInspectionRoute(project, safeInspectionIdentity(), openProjectIdentity(project))),
+            "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        ).withLifecycleOpenDiagnostic(
+            targetKey ?: lifecycleOpenKeys(project).firstOrNull { key ->
+                lifecycleOpenDiagnosticsByTarget.containsKey(key)
+            },
         ) to HttpResponseStatus.OK
     }
 
@@ -3377,7 +3571,8 @@ class InspectionHandler : HttpRequestHandler() {
             "worktree_path" to target.path.toString(),
             "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
-        ) to HttpResponseStatus.OK
+            "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.OK
     }
 
     private fun lifecycleOpenStateUnknown(
@@ -3407,7 +3602,8 @@ class InspectionHandler : HttpRequestHandler() {
             "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
             "lifecycle_readiness" to lifecycleContentRootReadinessPayload(readiness),
-        ) to HttpResponseStatus.CONFLICT
+            "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        ).withLifecycleOpenDiagnostic(target.key) to HttpResponseStatus.CONFLICT
     }
 
     private fun resolveLifecycleOpenTarget(path: Path): LifecycleOpenTarget {
