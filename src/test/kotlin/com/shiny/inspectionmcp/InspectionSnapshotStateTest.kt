@@ -3426,6 +3426,49 @@ class InspectionSnapshotStateTest {
                 pollingElapsedMs = 30000L,
             ),
         )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                hasUnreadableModelEvidence = true,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = false,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = true,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
 
         val (outcome, _) = classifyEmptyInspectionCapture(
             viewReadyOk = false,
