@@ -15,6 +15,7 @@ internal enum class ExactFileProofClassification(val diagnosticValue: String) {
     PROFILE_DISABLED("profile_disabled"),
     LANGUAGE_NOT_APPLICABLE("language_not_applicable"),
     BATCH_RUNNABLE("batch_runnable"),
+    NON_BATCH_CAPABLE_EXCLUDED("non_batch_capable_excluded"),
     APPLICABLE_MISSING_BATCH_WRAPPER("applicable_missing_batch_wrapper"),
     DISPLAY_KEY_UNRESOLVED("display_key_unresolved"),
     SOURCE_WRAPPER_UNRESOLVED("source_wrapper_unresolved"),
@@ -30,16 +31,21 @@ internal data class ExactFileProofCandidate<T>(
     val value: T,
 )
 
+internal enum class ExactFileProofBatchCapability(val diagnosticValue: String) {
+    BATCH_RUNNABLE("batch_runnable"),
+    NON_BATCH_CAPABLE_EXCLUDED("non_batch_capable_excluded"),
+}
+
+internal fun exactFileProofNormalizedPath(filePath: String): String =
+    runCatching { Paths.get(filePath).normalize().toAbsolutePath().toString() }
+        .getOrDefault(filePath)
+
 internal fun exactFileProofProblemMatchesCandidate(
     candidateFilePath: String,
     problem: Map<String, Any>,
 ): Boolean {
     val problemFilePath = (problem["file"] as? String)?.takeIf { it.isNotBlank() } ?: return false
-    val normalizedCandidatePath = runCatching { Paths.get(candidateFilePath).normalize().toAbsolutePath() }.getOrNull()
-        ?: return false
-    val normalizedProblemPath = runCatching { Paths.get(problemFilePath).normalize().toAbsolutePath() }.getOrNull()
-        ?: return false
-    return normalizedProblemPath == normalizedCandidatePath
+    return exactFileProofNormalizedPath(problemFilePath) == exactFileProofNormalizedPath(candidateFilePath)
 }
 
 internal interface ExactFileProofAdapter<T, K, W, D> {
@@ -50,6 +56,9 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
     fun resolveSourceWrapper(candidate: ExactFileProofCandidate<T>): W?
 
     fun isLanguageApplicable(candidate: ExactFileProofCandidate<T>, sourceWrapper: W): Boolean
+
+    fun resolveBatchCapability(candidate: ExactFileProofCandidate<T>, sourceWrapper: W): ExactFileProofBatchCapability =
+        ExactFileProofBatchCapability.BATCH_RUNNABLE
 
     fun resolveBatchWrapper(candidate: ExactFileProofCandidate<T>, sourceWrapper: W): W?
 
@@ -79,6 +88,9 @@ internal data class BoundedExecutionProofResult(
     val totalDescriptorCount: Int = 0,
     val skippedReason: String? = null,
     val candidateObligationCount: Int = 0,
+    val candidateScopeFileCount: Int = 0,
+    val applicableScopeFileCount: Int = 0,
+    val executedScopeFileCount: Int = 0,
     val profileEnabledObligationCount: Int = 0,
     val profileDisabledObligationCount: Int = 0,
     val displayKeyMissingCount: Int = 0,
@@ -86,12 +98,14 @@ internal data class BoundedExecutionProofResult(
     val languageApplicableObligationCount: Int = 0,
     val languageNonApplicableObligationCount: Int = 0,
     val batchRunnableObligationCount: Int = 0,
+    val nonBatchExcludedObligationCount: Int = 0,
     val unmappedDescriptorCount: Int = 0,
     val missingWrapperCount: Int = 0,
     val failedObligationCount: Int = 0,
     val unclassifiedObligationCount: Int = 0,
     val unvisitedClassificationObligationCount: Int = 0,
     val unexecutedRunnableObligationCount: Int = 0,
+    val missingScopeExecutionCoverageCount: Int = 0,
     val unvisitedDescriptorCount: Int = 0,
     val enumerationErrorCount: Int = 0,
     val errorCount: Int = 0,
@@ -99,6 +113,7 @@ internal data class BoundedExecutionProofResult(
     val hitTimeLimit: Boolean = false,
     val elapsedMs: Long = 0,
     val blockingExamples: List<Map<String, Any?>> = emptyList(),
+    val nonBatchExamples: List<Map<String, Any?>> = emptyList(),
     val nonApplicableExamples: List<Map<String, Any?>> = emptyList(),
 ) {
     val proofEstablished: Boolean
@@ -113,10 +128,12 @@ internal data class BoundedExecutionProofResult(
             unclassifiedObligationCount == 0 &&
             unvisitedClassificationObligationCount == 0 &&
             unexecutedRunnableObligationCount == 0 &&
+            missingScopeExecutionCoverageCount == 0 &&
             unvisitedDescriptorCount == 0 &&
             unmappedDescriptorCount == 0 &&
             errorCount == 0 &&
             batchRunnableObligationCount > 0 &&
+            executedScopeFileCount == applicableScopeFileCount &&
             executedToolCount == batchRunnableObligationCount
 
     val proofClean: Boolean
@@ -140,6 +157,7 @@ internal data class BoundedExecutionProofResult(
             errorCount > 0 -> "proof_errors"
             batchRunnableObligationCount == 0 -> "no_applicable_batch_tools"
             executedToolCount != batchRunnableObligationCount -> "applicable_execution_incomplete"
+            missingScopeExecutionCoverageCount > 0 -> "candidate_file_execution_incomplete"
             else -> null
         }
 
@@ -171,6 +189,7 @@ private class ExactFileProofExecutionState<T, W, D>(
 private class ExactFileProofAccumulator(
     private val enabledLocalToolCount: Int,
     private val candidateObligationCount: Int,
+    val candidateScopeFileCount: Int,
     private val enumerationErrorCount: Int,
 ) {
     val problems = mutableListOf<Map<String, Any>>()
@@ -184,6 +203,7 @@ private class ExactFileProofAccumulator(
     var languageApplicableObligationCount = 0
     var languageNonApplicableObligationCount = 0
     var batchRunnableObligationCount = 0
+    var nonBatchExcludedObligationCount = 0
     var executedToolCount = 0
     var totalDescriptorCount = 0
     var unmappedDescriptorCount = 0
@@ -192,12 +212,20 @@ private class ExactFileProofAccumulator(
     var unclassifiedObligationCount = 0
     var unvisitedClassificationObligationCount = 0
     var unexecutedRunnableObligationCount = 0
+    var missingScopeExecutionCoverageCount = 0
     var unvisitedDescriptorCount = 0
     var errorCount = 0
     var hitTimeLimit = false
+    val nonBatchExamples = mutableListOf<Map<String, Any?>>()
+    val applicableScopeFiles = linkedSetOf<String>()
+    val executedScopeFiles = linkedSetOf<String>()
 
     fun addBlockingExample(example: Map<String, Any?>) {
         if (blockingExamples.size < MAX_EXACT_FILE_PROOF_EXAMPLES) blockingExamples += example
+    }
+
+    fun addNonBatchExample(example: Map<String, Any?>) {
+        if (nonBatchExamples.size < MAX_EXACT_FILE_PROOF_EXAMPLES) nonBatchExamples += example
     }
 
     fun addNonApplicableExample(example: Map<String, Any?>) {
@@ -209,6 +237,8 @@ private class ExactFileProofAccumulator(
             proofProblems = problems,
             enabledLocalToolCount = enabledLocalToolCount,
             candidateObligationCount = candidateObligationCount,
+            candidateScopeFileCount = candidateScopeFileCount,
+            applicableScopeFileCount = applicableScopeFiles.size,
             profileEnabledObligationCount = profileEnabledObligationCount,
             profileDisabledObligationCount = profileDisabledObligationCount,
             displayKeyMissingCount = displayKeyMissingCount,
@@ -216,7 +246,9 @@ private class ExactFileProofAccumulator(
             languageApplicableObligationCount = languageApplicableObligationCount,
             languageNonApplicableObligationCount = languageNonApplicableObligationCount,
             batchRunnableObligationCount = batchRunnableObligationCount,
+            nonBatchExcludedObligationCount = nonBatchExcludedObligationCount,
             executedToolCount = executedToolCount,
+            executedScopeFileCount = executedScopeFiles.size,
             totalDescriptorCount = totalDescriptorCount,
             unmappedDescriptorCount = unmappedDescriptorCount,
             missingWrapperCount = missingWrapperCount,
@@ -224,6 +256,7 @@ private class ExactFileProofAccumulator(
             unclassifiedObligationCount = unclassifiedObligationCount,
             unvisitedClassificationObligationCount = unvisitedClassificationObligationCount,
             unexecutedRunnableObligationCount = unexecutedRunnableObligationCount,
+            missingScopeExecutionCoverageCount = missingScopeExecutionCoverageCount,
             unvisitedDescriptorCount = unvisitedDescriptorCount,
             enumerationErrorCount = enumerationErrorCount,
             errorCount = errorCount,
@@ -231,6 +264,7 @@ private class ExactFileProofAccumulator(
             hitTimeLimit = hitTimeLimit,
             elapsedMs = ((nowNanos() - startNanos).coerceAtLeast(0L) / 1_000_000L),
             blockingExamples = blockingExamples,
+            nonBatchExamples = nonBatchExamples,
             nonApplicableExamples = nonApplicableExamples,
         )
 }
@@ -249,7 +283,12 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     maxParallelFiles: Int = 4,
 ): BoundedExecutionProofResult {
     val timeoutNanos = timeoutMs.coerceAtLeast(0L) * 1_000_000L
-    val accumulator = ExactFileProofAccumulator(enabledLocalToolCount, candidates.size, enumerationErrorCount)
+    val accumulator = ExactFileProofAccumulator(
+        enabledLocalToolCount,
+        candidates.size,
+        candidates.map { exactFileProofNormalizedPath(it.filePath) }.toSet().size,
+        enumerationErrorCount,
+    )
     val runnable = mutableListOf<RunnableExactFileProofObligation<T, W>>()
 
     fun deadlineExceeded(): Boolean = nowNanos() - startNanos > timeoutNanos
@@ -376,6 +415,39 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             continue
         }
         accumulator.languageApplicableObligationCount++
+        accumulator.applicableScopeFiles += exactFileProofNormalizedPath(candidate.filePath)
+
+        val batchCapability = try {
+            adapter.resolveBatchCapability(candidate, sourceWrapper)
+        } catch (error: Exception) {
+            if (error is ExactFileProofTimeLimitExceededException) return timeoutResult(index, candidate)
+            rethrowCancellation(error)
+            accumulator.unclassifiedObligationCount++
+            accumulator.errorCount++
+            accumulator.addBlockingExample(
+                safeDiagnostic(
+                    candidate,
+                    ExactFileProofClassification.CLASSIFICATION_FAILED,
+                    sourceWrapper = sourceWrapper,
+                    detail = "batch_capability:${error.javaClass.simpleName}",
+                ),
+            )
+            continue
+        }
+        cancellationCheck()
+        if (deadlineExceeded()) return timeoutResult(index, candidate)
+        if (batchCapability == ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED) {
+            accumulator.nonBatchExcludedObligationCount++
+            accumulator.addNonBatchExample(
+                safeDiagnostic(
+                    candidate,
+                    ExactFileProofClassification.NON_BATCH_CAPABLE_EXCLUDED,
+                    sourceWrapper = sourceWrapper,
+                    detail = batchCapability.diagnosticValue,
+                ),
+            )
+            continue
+        }
 
         val batchWrapper = try {
             adapter.resolveBatchWrapper(candidate, sourceWrapper)
@@ -552,8 +624,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     }
 
     val statesByFile = executionStates.groupBy { state ->
-        runCatching { Paths.get(state.obligation.candidate.filePath).normalize().toAbsolutePath().toString() }
-            .getOrDefault(state.obligation.candidate.filePath)
+        exactFileProofNormalizedPath(state.obligation.candidate.filePath)
     }
     if (statesByFile.size <= 1 || maxParallelFiles <= 1) {
         statesByFile.values.forEach(::executeFile)
@@ -610,6 +681,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         if (state.executed) {
             accumulator.executedToolCount++
             accumulator.totalDescriptorCount += state.descriptorCount
+            accumulator.executedScopeFiles += exactFileProofNormalizedPath(obligation.candidate.filePath)
         } else if (state.failureDetail == null) {
             accumulator.unexecutedRunnableObligationCount++
         }
@@ -658,6 +730,8 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             if (accumulator.seenProblems.add(mappedProblemKey)) accumulator.problems += mapped
         }
     }
+    accumulator.missingScopeExecutionCoverageCount =
+        (accumulator.applicableScopeFiles.size - accumulator.executedScopeFiles.size).coerceAtLeast(0)
     if (deadlineExceeded()) accumulator.hitTimeLimit = true
     if (accumulator.hitTimeLimit && executionStates.none { it.timeoutStage != null }) {
         val timeoutState = executionStates.firstOrNull { !it.completed && it.failureDetail == null }

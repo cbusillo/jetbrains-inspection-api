@@ -13,7 +13,8 @@ import java.util.concurrent.atomic.AtomicInteger
 class ExactFileExecutionProofTest {
     private data class Wrapper(
         val applicable: Boolean = true,
-        val batchRunnable: Boolean = true,
+        val batchCapability: ExactFileProofBatchCapability = ExactFileProofBatchCapability.BATCH_RUNNABLE,
+        val hasBatchWrapper: Boolean = true,
         val identity: String = "source",
     )
 
@@ -27,6 +28,7 @@ class ExactFileExecutionProofTest {
         private val onDisplayKey: (String) -> Unit = {},
         private val onEnablement: (String) -> Unit = {},
         private val onWrapperResolution: (String) -> Unit = {},
+        private val onBatchCapability: (String) -> Unit = {},
         private val onExecution: (String) -> Unit = {},
         private val onCopy: (String, Wrapper) -> Wrapper = { _, wrapper -> wrapper.copy(identity = "${wrapper.identity}:copy") },
         private val onInitialize: (String, Wrapper) -> Unit = { _, _ -> },
@@ -34,6 +36,9 @@ class ExactFileExecutionProofTest {
         private val onCleanup: (String, Wrapper) -> Unit = { _, _ -> },
         private val onMapping: (String) -> Unit = {},
         private val onDiagnostic: (String) -> Unit = {},
+        private val onResolveBatchWrapper: (String, Wrapper) -> Wrapper? = { name, wrapper ->
+            pairedBatchWrappers[name] ?: wrapper.takeIf { it.hasBatchWrapper }
+        },
     ) : ExactFileProofAdapter<String, String, Wrapper, String> {
         override fun resolveDisplayKey(candidate: ExactFileProofCandidate<String>): String? {
             onDisplayKey(candidate.shortName)
@@ -53,8 +58,16 @@ class ExactFileExecutionProofTest {
         override fun isLanguageApplicable(candidate: ExactFileProofCandidate<String>, sourceWrapper: Wrapper): Boolean =
             sourceWrapper.applicable
 
+        override fun resolveBatchCapability(
+            candidate: ExactFileProofCandidate<String>,
+            sourceWrapper: Wrapper,
+        ): ExactFileProofBatchCapability {
+            onBatchCapability(candidate.shortName)
+            return sourceWrapper.batchCapability
+        }
+
         override fun resolveBatchWrapper(candidate: ExactFileProofCandidate<String>, sourceWrapper: Wrapper): Wrapper? =
-            pairedBatchWrappers[candidate.shortName] ?: sourceWrapper.takeIf { it.batchRunnable }
+            onResolveBatchWrapper(candidate.shortName, sourceWrapper)
 
         override fun copyBatchWrapper(candidate: ExactFileProofCandidate<String>, batchWrapper: Wrapper): Wrapper =
             onCopy(candidate.shortName, batchWrapper)
@@ -133,12 +146,17 @@ class ExactFileExecutionProofTest {
         val proof = runProof(
             names = listOf("KotlinA", "KotlinB"),
             adapter = FakeAdapter(mapOf("KotlinA" to Wrapper(), "KotlinB" to Wrapper())),
+            filePaths = mapOf("KotlinA" to "/repo/A.kt", "KotlinB" to "/repo/B.kt"),
         )
 
         assertTrue(proof.proofEstablished)
         assertTrue(proof.proofClean)
         assertEquals(2, proof.languageApplicableObligationCount)
         assertEquals(2, proof.executedToolCount)
+        assertEquals(2, proof.candidateScopeFileCount)
+        assertEquals(2, proof.applicableScopeFileCount)
+        assertEquals(2, proof.executedScopeFileCount)
+        assertEquals(2, proof.batchRunnableObligationCount)
     }
 
     @Test
@@ -167,6 +185,7 @@ class ExactFileExecutionProofTest {
 
         assertTrue(proof.proofEstablished)
         assertEquals(2, proof.executedToolCount)
+        assertEquals(2, proof.executedScopeFileCount)
         assertEquals(2, maxActiveWorkers.get())
         assertEquals(2, overlappingExecutions.get())
         assertEquals(0, activeWorkers.get())
@@ -197,6 +216,8 @@ class ExactFileExecutionProofTest {
         assertEquals(227, proof.candidateObligationCount)
         assertEquals(227, proof.batchRunnableObligationCount)
         assertEquals(227, proof.executedToolCount)
+        assertEquals(2, proof.candidateScopeFileCount)
+        assertEquals(2, proof.executedScopeFileCount)
         assertEquals(0, proof.unexecutedRunnableObligationCount)
         assertFalse(proof.hitTimeLimit)
     }
@@ -288,15 +309,23 @@ class ExactFileExecutionProofTest {
         val proof = runProof(
             names = listOf("ApplicableUnfair"),
             adapter = FakeAdapter(
-                wrappers = mapOf("ApplicableUnfair" to Wrapper(batchRunnable = false, identity = "unfair")),
+                wrappers = mapOf(
+                    "ApplicableUnfair" to Wrapper(
+                        batchCapability = ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED,
+                        hasBatchWrapper = false,
+                        identity = "unfair",
+                    ),
+                ),
                 pairedBatchWrappers = mapOf("ApplicableUnfair" to Wrapper(identity = "paired")),
                 onExecutionWrapper = { _, wrapper -> executedWrapperIdentities += wrapper.identity },
             ),
         )
 
-        assertTrue(proof.proofEstablished)
         assertEquals(0, proof.missingWrapperCount)
-        assertEquals(listOf("paired:copy"), executedWrapperIdentities)
+        assertEquals(1, proof.nonBatchExcludedObligationCount)
+        assertEquals(1, proof.nonBatchExamples.size)
+        assertEquals("non_batch_capable_excluded", proof.nonBatchExamples.single()["classification"])
+        assertTrue(executedWrapperIdentities.isEmpty())
     }
 
     @Test
@@ -317,32 +346,101 @@ class ExactFileExecutionProofTest {
     }
 
     @Test
-    fun `no runnable exact-file obligations remains unknown`() {
+    fun `files with no applicable obligations do not require execution coverage`() {
         val proof = runProof(
-            names = listOf("XmlOnly"),
-            adapter = FakeAdapter(mapOf("XmlOnly" to Wrapper(applicable = false))),
-        )
-
-        assertFalse(proof.proofEstablished)
-        assertFalse(proof.proofClean)
-        assertEquals(0, proof.executedToolCount)
-        assertEquals("no_applicable_batch_tools", proof.proofBlockReason)
-    }
-
-    @Test
-    fun `applicable non-batch wrapper keeps proof unproven`() {
-        val proof = runProof(
-            names = listOf("Kotlin", "ApplicableUnfair"),
+            names = listOf("Kotlin", "XmlOnly"),
             adapter = FakeAdapter(
                 mapOf(
                     "Kotlin" to Wrapper(),
-                    "ApplicableUnfair" to Wrapper(batchRunnable = false),
+                    "XmlOnly" to Wrapper(applicable = false),
+                ),
+            ),
+            filePaths = mapOf(
+                "Kotlin" to "/repo/A.kt",
+                "XmlOnly" to "/repo/B.kt",
+            ),
+        )
+
+        assertTrue(proof.proofEstablished)
+        assertEquals(2, proof.candidateScopeFileCount)
+        assertEquals(1, proof.applicableScopeFileCount)
+        assertEquals(1, proof.executedScopeFileCount)
+        assertEquals(0, proof.missingScopeExecutionCoverageCount)
+    }
+
+    @Test
+    fun `explicitly excluded unfair tools are not counted as runnable or executed`() {
+        val proof = runProof(
+            names = listOf("ApplicableUnfair"),
+            adapter = FakeAdapter(
+                mapOf(
+                    "ApplicableUnfair" to Wrapper(
+                        batchCapability = ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED,
+                        hasBatchWrapper = false,
+                    ),
                 ),
             ),
         )
 
         assertFalse(proof.proofEstablished)
+        assertFalse(proof.proofClean)
+        assertEquals(0, proof.executedToolCount)
+        assertEquals(0, proof.batchRunnableObligationCount)
+        assertEquals(1, proof.nonBatchExcludedObligationCount)
+        assertEquals(1, proof.nonBatchExamples.size)
+        assertEquals("no_applicable_batch_tools", proof.proofBlockReason)
+    }
+
+    @Test
+    fun `fair missing wrapper remains blocking and excluded tools stay out of the denominator`() {
+        val proof = runProof(
+            names = listOf("Kotlin", "ApplicableUnfair", "MissingBatch"),
+            adapter = FakeAdapter(
+                mapOf(
+                    "Kotlin" to Wrapper(),
+                    "ApplicableUnfair" to Wrapper(
+                        batchCapability = ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED,
+                        hasBatchWrapper = false,
+                    ),
+                    "MissingBatch" to Wrapper(hasBatchWrapper = false),
+                ),
+            ),
+            filePaths = mapOf(
+                "Kotlin" to "/repo/A.kt",
+                "ApplicableUnfair" to "/repo/B.kt",
+                "MissingBatch" to "/repo/C.kt",
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
         assertEquals(1, proof.missingWrapperCount)
+        assertEquals(1, proof.nonBatchExcludedObligationCount)
+        assertEquals(1, proof.batchRunnableObligationCount)
+        assertEquals(1, proof.executedToolCount)
+        assertEquals(3, proof.candidateScopeFileCount)
+        assertEquals(3, proof.applicableScopeFileCount)
+        assertEquals(1, proof.executedScopeFileCount)
+        assertEquals(2, proof.missingScopeExecutionCoverageCount)
+        assertEquals("applicable_missing_batch_wrapper", proof.proofBlockReason)
+    }
+
+    @Test
+    fun `paired unfair unavailable counterpart remains blocking`() {
+        val proof = runProof(
+            names = listOf("Kotlin", "PairedUnfair"),
+            adapter = FakeAdapter(
+                mapOf(
+                    "Kotlin" to Wrapper(),
+                    "PairedUnfair" to Wrapper(hasBatchWrapper = false, identity = "paired-unfair"),
+                ),
+                pairedBatchWrappers = emptyMap(),
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(1, proof.missingWrapperCount)
+        assertEquals(1, proof.batchRunnableObligationCount)
+        assertEquals(1, proof.executedToolCount)
         assertEquals("applicable_missing_batch_wrapper", proof.proofBlockReason)
     }
 
@@ -374,6 +472,7 @@ class ExactFileExecutionProofTest {
         assertFalse(proof.proofEstablished)
         assertTrue(proof.hitTimeLimit)
         assertEquals(1, proof.executedToolCount)
+        assertEquals(1, proof.executedScopeFileCount)
         assertEquals(1, proof.unvisitedObligationCount)
         assertEquals(0, proof.unvisitedClassificationObligationCount)
         assertEquals(1, proof.unexecutedRunnableObligationCount)
@@ -408,6 +507,7 @@ class ExactFileExecutionProofTest {
         assertTrue(proof.hitTimeLimit)
         assertEquals(0, proof.executedToolCount)
         assertEquals(2, proof.unexecutedRunnableObligationCount)
+        assertEquals(0, proof.executedScopeFileCount)
         assertEquals(2, cleanupCount.get())
         assertEquals(0, activeWorkers.get())
     }
@@ -441,6 +541,7 @@ class ExactFileExecutionProofTest {
 
         assertTrue(proof.hitTimeLimit)
         assertEquals(1, proof.executedToolCount)
+        assertEquals(1, proof.executedScopeFileCount)
         assertEquals(2, proof.unexecutedRunnableObligationCount)
         assertEquals(2, cleanupCount.get())
     }
@@ -523,6 +624,36 @@ class ExactFileExecutionProofTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `cancellation during batch capability classification propagates`() {
+        assertThrows(CancellationSignal::class.java) {
+            runProof(
+                names = listOf("Kotlin"),
+                adapter = FakeAdapter(
+                    wrappers = mapOf("Kotlin" to Wrapper()),
+                    onBatchCapability = { throw CancellationSignal() },
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `batch capability classification failure remains unproven`() {
+        val proof = runProof(
+            names = listOf("Kotlin"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Kotlin" to Wrapper()),
+                onBatchCapability = { throw IllegalStateException("metadata failed") },
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(1, proof.unclassifiedObligationCount)
+        assertEquals(1, proof.errorCount)
+        assertEquals("unclassified_obligations", proof.proofBlockReason)
+        assertEquals("classification_failed", proof.blockingExamples.single()["classification"])
     }
 
     @Test
@@ -643,12 +774,49 @@ class ExactFileExecutionProofTest {
         val names = (1..20).map { "ApplicableUnfair$it" }
         val proof = runProof(
             names = names,
-            adapter = FakeAdapter(names.associateWith { Wrapper(batchRunnable = false) }),
+            adapter = FakeAdapter(
+                names.associateWith {
+                    Wrapper(
+                        batchCapability = ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED,
+                        hasBatchWrapper = false,
+                    )
+                },
+            ),
         )
 
-        assertEquals(20, proof.missingWrapperCount)
-        assertEquals(MAX_EXACT_FILE_PROOF_EXAMPLES, proof.blockingExamples.size)
-        assertEquals("ApplicableUnfair1", proof.blockingExamples.first()["short_name"])
-        assertEquals("ApplicableUnfair12", proof.blockingExamples.last()["short_name"])
+        assertEquals(20, proof.nonBatchExcludedObligationCount)
+        assertEquals(MAX_EXACT_FILE_PROOF_EXAMPLES, proof.nonBatchExamples.size)
+        assertEquals("ApplicableUnfair1", proof.nonBatchExamples.first()["short_name"])
+        assertEquals("ApplicableUnfair12", proof.nonBatchExamples.last()["short_name"])
+    }
+
+    @Test
+    fun `candidate scope coverage requires one executed batch obligation per file`() {
+        val proof = runProof(
+            names = listOf("FileA", "FileB", "ExcludedOnly"),
+            adapter = FakeAdapter(
+                mapOf(
+                    "FileA" to Wrapper(identity = "a"),
+                    "FileB" to Wrapper(identity = "b"),
+                    "ExcludedOnly" to Wrapper(
+                        batchCapability = ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED,
+                        hasBatchWrapper = false,
+                    ),
+                ),
+            ),
+            filePaths = mapOf(
+                "FileA" to "/repo/A.kt",
+                "FileB" to "/repo/B.kt",
+                "ExcludedOnly" to "/repo/C.kt",
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(2, proof.executedToolCount)
+        assertEquals(2, proof.executedScopeFileCount)
+        assertEquals(3, proof.candidateScopeFileCount)
+        assertEquals(1, proof.nonBatchExcludedObligationCount)
+        assertEquals(1, proof.missingScopeExecutionCoverageCount)
+        assertEquals("candidate_file_execution_incomplete", proof.proofBlockReason)
     }
 }

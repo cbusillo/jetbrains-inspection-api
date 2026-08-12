@@ -61,7 +61,7 @@ internal fun inspectionPluginVersion(): String? = pluginBuildInfo.version
 
 internal fun inspectionIdeChannel(isEap: Boolean): String = if (isEap) "eap" else "stable"
 
-internal const val INSPECTION_EXECUTION_PROOF_VERSION = 3
+internal const val INSPECTION_EXECUTION_PROOF_VERSION = 4
 
 internal fun buildInspectionIdentity(): Map<String, Any?> {
     val appInfo = ApplicationInfo.getInstance()

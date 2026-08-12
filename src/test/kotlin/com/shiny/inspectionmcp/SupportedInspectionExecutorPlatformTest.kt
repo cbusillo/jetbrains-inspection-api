@@ -12,6 +12,8 @@ import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+import com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool
+import com.intellij.codeInspection.ex.UnfairLocalInspectionTool
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.roots.ModuleRootManager
@@ -201,6 +203,180 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `unpaired unfair tool is the only intentionally non-batch platform classification`() {
+        val project = projectExtension.project
+        val psiFile = createPhysicalFile()
+        val tool = UnpairedUnfairInspection()
+        val wrapper = LocalInspectionToolWrapper(tool)
+        val profile = profileWith(tool)
+
+        assertThat(
+            LocalInspectionToolWrapper.findTool2RunInBatch(project, psiFile, profile, wrapper),
+        ).isNull()
+
+        val metadata = classifyMissingBatchWrapperPlatformMetadata(
+            wrapper,
+        )
+
+        assertThat(metadata.classification)
+            .isEqualTo(MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH)
+        assertThat(metadata.sourceIsUnfair).isTrue()
+        assertThat(metadata.sourceIsPairedUnfair).isFalse()
+    }
+
+    @Test
+    fun `bounded proof excludes unpaired unfair tool when another tool executes on the file`() {
+        val project = projectExtension.project
+        val cleanTool = CleanInspection()
+        val unfairTool = UnpairedUnfairInspection()
+        resetVisits(cleanTool)
+        resetVisits(unfairTool)
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(cleanTool, unfairTool)
+        profile.setToolEnabled(cleanTool.shortName, true, project)
+        profile.setToolEnabled(unfairTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(cleanTool, unfairTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isTrue()
+        assertThat(result.batchRunnableObligationCount).isEqualTo(1)
+        assertThat(result.nonBatchExcludedObligationCount).isEqualTo(1)
+        assertThat(result.executedToolCount).isEqualTo(1)
+        assertThat(result.executedScopeFileCount).isEqualTo(1)
+        val nonBatchExample = result.nonBatchExamples.single()
+        assertThat(nonBatchExample["short_name"]).isEqualTo(unfairTool.shortName)
+        assertThat(nonBatchExample["missing_batch_wrapper_platform_classification"])
+            .isEqualTo("intentionally_non_batch")
+        assertThat(visitCount(cleanTool)).isEqualTo(1)
+        assertThat(visitCount(unfairTool)).isZero()
+    }
+
+    @Test
+    fun `bounded proof does not report clean when a file has only unpaired unfair tools`() {
+        val project = projectExtension.project
+        val unfairTool = UnpairedUnfairInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(unfairTool)
+        profile.setToolEnabled(unfairTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(unfairTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isFalse()
+        assertThat(result.proofBlockReason).isEqualTo("no_applicable_batch_tools")
+        assertThat(result.nonBatchExcludedObligationCount).isEqualTo(1)
+        assertThat(result.executedToolCount).isZero()
+        assertThat(result.missingScopeExecutionCoverageCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `paired unfair and fair missing wrappers remain fail closed`() {
+        val project = projectExtension.project
+        val psiFile = createPhysicalFile()
+        val pairedTool = PairedUnfairInspection()
+        val pairedWrapper = LocalInspectionToolWrapper(pairedTool)
+        val pairedProfile = profileWith(pairedTool)
+
+        assertThat(
+            LocalInspectionToolWrapper.findTool2RunInBatch(project, psiFile, pairedProfile, pairedWrapper),
+        ).isNull()
+
+        val pairedMetadata = classifyMissingBatchWrapperPlatformMetadata(
+            pairedWrapper,
+        )
+        val fairMetadata = classifyMissingBatchWrapperPlatformMetadata(
+            LocalInspectionToolWrapper(CleanInspection()),
+        )
+
+        assertThat(pairedMetadata.classification)
+            .isEqualTo(MissingBatchWrapperPlatformClassification.MISSING_BATCH_WRAPPER)
+        assertThat(pairedMetadata.sourceIsUnfair).isTrue()
+        assertThat(pairedMetadata.sourceIsPairedUnfair).isTrue()
+        assertThat(pairedMetadata.pairedBatchShortName).isEqualTo("MissingPairedBatchInspection")
+        assertThat(fairMetadata.classification)
+            .isEqualTo(MissingBatchWrapperPlatformClassification.MISSING_BATCH_WRAPPER)
+        assertThat(fairMetadata.sourceIsUnfair).isFalse()
+    }
+
+    @Test
+    fun `bounded proof keeps paired unfair missing counterpart fail closed`() {
+        val project = projectExtension.project
+        val cleanTool = CleanInspection()
+        val pairedTool = PairedUnfairInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(cleanTool, pairedTool)
+        profile.setToolEnabled(cleanTool.shortName, true, project)
+        profile.setToolEnabled(pairedTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(cleanTool, pairedTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isFalse()
+        assertThat(result.proofBlockReason).isEqualTo("applicable_missing_batch_wrapper")
+        assertThat(result.missingWrapperCount).isEqualTo(1)
+        assertThat(result.nonBatchExcludedObligationCount).isZero()
+        assertThat(result.blockingExamples).anySatisfy { example ->
+            assertThat(example["short_name"]).isEqualTo(pairedTool.shortName)
+            assertThat(example["missing_batch_wrapper_platform_classification"])
+                .isEqualTo("missing_batch_wrapper")
+            assertThat(example["source_is_paired_unfair"]).isEqualTo(true)
+        }
+    }
+
+    @Test
+    fun `bounded example counters distinguish platform classifications`() {
+        val examples = listOf(
+            MissingBatchWrapperPlatformMetadata(
+                MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH,
+            ).diagnosticFields(),
+            MissingBatchWrapperPlatformMetadata(
+                MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+            ).diagnosticFields(),
+            emptyMap(),
+        )
+
+        assertThat(
+            countMissingBatchWrapperPlatformClassificationExamples(
+                examples,
+                MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH,
+            ),
+        ).isEqualTo(1)
+        assertThat(
+            countMissingBatchWrapperPlatformClassificationExamples(
+                examples,
+                MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+            ),
+        ).isEqualTo(1)
+    }
+
+    @Test
+    fun `unreadable unfair metadata remains fail closed`() {
+        val metadata = classifyMissingBatchWrapperPlatformMetadata(
+            ThrowingUnfairMetadataWrapper(CleanInspection()),
+        )
+
+        assertThat(metadata.classification)
+            .isEqualTo(MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE)
+        assertThat(metadata.failureStage).isEqualTo("source_is_unfair")
+    }
+
+    @Test
     fun `selected profile severity raises inspectEx descriptor severity`() {
         val project = projectExtension.project
         val tool = SeverityProfileFindingInspection()
@@ -387,6 +563,16 @@ class SupportedInspectionExecutorPlatformTest {
     private class SeverityProfileFindingInspection : FindingInspection()
 
     private class TimeoutProfileInspection : RecordingInspection()
+
+    private class UnpairedUnfairInspection : RecordingInspection(), UnfairLocalInspectionTool
+
+    private class PairedUnfairInspection : RecordingInspection(), PairedUnfairLocalInspectionTool {
+        override fun getInspectionForBatchShortName(): String = "MissingPairedBatchInspection"
+    }
+
+    private class ThrowingUnfairMetadataWrapper(tool: LocalInspectionTool) : LocalInspectionToolWrapper(tool) {
+        override fun isUnfair(): Boolean = throw IllegalStateException("metadata unavailable")
+    }
 
     private open class TestGlobalInspection : GlobalInspectionTool() {
         override fun getDisplayName(): String = shortName

@@ -1456,6 +1456,7 @@ internal fun classifyCaptureIncompleteReason(
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
     val context: GlobalInspectionContextBoundary? = null,
+    var resolvedBatchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -8279,6 +8280,9 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_hit_file_limit" to proof.hitFileLimit,
             "execution_proof_hit_time_limit" to proof.hitTimeLimit,
             "execution_proof_candidate_obligation_count" to proof.candidateObligationCount,
+            "execution_proof_candidate_scope_file_count" to proof.candidateScopeFileCount,
+            "execution_proof_applicable_scope_file_count" to proof.applicableScopeFileCount,
+            "execution_proof_executed_scope_file_count" to proof.executedScopeFileCount,
             "execution_proof_profile_enabled_obligation_count" to proof.profileEnabledObligationCount,
             "execution_proof_profile_disabled_obligation_count" to proof.profileDisabledObligationCount,
             "execution_proof_display_key_missing_count" to proof.displayKeyMissingCount,
@@ -8286,18 +8290,27 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_language_applicable_obligation_count" to proof.languageApplicableObligationCount,
             "execution_proof_language_non_applicable_obligation_count" to proof.languageNonApplicableObligationCount,
             "execution_proof_batch_runnable_obligation_count" to proof.batchRunnableObligationCount,
+            "execution_proof_intentionally_non_batch_obligation_count" to proof.nonBatchExcludedObligationCount,
             "execution_proof_unmapped_descriptor_count" to proof.unmappedDescriptorCount,
             "execution_proof_failed_obligation_count" to proof.failedObligationCount,
             "execution_proof_unclassified_obligation_count" to proof.unclassifiedObligationCount,
             "execution_proof_unvisited_obligation_count" to proof.unvisitedObligationCount,
             "execution_proof_unvisited_classification_obligation_count" to proof.unvisitedClassificationObligationCount,
             "execution_proof_unexecuted_runnable_obligation_count" to proof.unexecutedRunnableObligationCount,
+            "execution_proof_missing_scope_execution_coverage_count" to proof.missingScopeExecutionCoverageCount,
             "execution_proof_unvisited_descriptor_count" to proof.unvisitedDescriptorCount,
             "execution_proof_enumeration_error_count" to proof.enumerationErrorCount,
             "execution_proof_elapsed_ms" to proof.elapsedMs,
             "execution_proof_block_reason" to proof.proofBlockReason,
             "execution_proof_blocking_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_blocking_examples" to proof.blockingExamples.takeIf { it.isNotEmpty() },
+            "execution_proof_intentionally_non_batch_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
+            "execution_proof_intentionally_non_batch_examples" to proof.nonBatchExamples.takeIf { it.isNotEmpty() },
+            "execution_proof_missing_batch_metadata_unavailable_example_count" to
+                countMissingBatchWrapperPlatformClassificationExamples(
+                    proof.blockingExamples,
+                    MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+                ),
             "execution_proof_non_applicable_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_non_applicable_examples" to proof.nonApplicableExamples.takeIf { it.isNotEmpty() },
             "execution_proof_skipped" to (proof.skippedReason != null),
@@ -8608,15 +8621,33 @@ class InspectionHandler : HttpRequestHandler() {
             override fun resolveBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
-            ): ExactFileInspectionExecutionWrapper? =
-                app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
-                    com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                        project,
-                        candidate.value,
-                        profile,
-                        sourceWrapper.toolWrapper,
-                    )
-                }?.let(::ExactFileInspectionExecutionWrapper)
+            ): ExactFileInspectionExecutionWrapper? = sourceWrapper.resolvedBatchWrapper
+                ?.let(::ExactFileInspectionExecutionWrapper)
+
+            override fun resolveBatchCapability(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                sourceWrapper: ExactFileInspectionExecutionWrapper,
+            ): ExactFileProofBatchCapability = app.runReadAction<ExactFileProofBatchCapability, Exception> {
+                val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                    project,
+                    candidate.value,
+                    profile,
+                    localWrapper,
+                )
+                sourceWrapper.resolvedBatchWrapper = batchWrapper
+                if (batchWrapper != null) {
+                    ExactFileProofBatchCapability.BATCH_RUNNABLE
+                } else {
+                    when (classifyMissingBatchWrapperPlatformMetadata(localWrapper).classification) {
+                        MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH ->
+                            ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED
+                        MissingBatchWrapperPlatformClassification.MISSING_BATCH_WRAPPER,
+                        MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+                        -> ExactFileProofBatchCapability.BATCH_RUNNABLE
+                    }
+                }
+            }
 
             override fun copyBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
@@ -8698,16 +8729,27 @@ class InspectionHandler : HttpRequestHandler() {
             ): Map<String, Any?> {
                 val sourceLocal = sourceWrapper?.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
-                val pairedBatchShortName =
-                    (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
-                        ?.inspectionForBatchShortName
+                val missingBatchWrapperMetadata = sourceLocal
+                    ?.takeIf {
+                        batchWrapper == null &&
+                            classification in setOf(
+                                ExactFileProofClassification.APPLICABLE_MISSING_BATCH_WRAPPER,
+                                ExactFileProofClassification.NON_BATCH_CAPABLE_EXCLUDED,
+                            )
+                    }
+                    ?.let(::classifyMissingBatchWrapperPlatformMetadata)
+                val pairedBatchShortName = missingBatchWrapperMetadata?.pairedBatchShortName
+                    ?: runCatching {
+                        (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
+                            ?.inspectionForBatchShortName
+                    }.getOrNull()
                 val languageIds = runCatching {
                     fileLanguages[candidate.value]
                         ?.map { it.id }
                         ?.sorted()
                         ?: candidate.value.viewProvider.languages.map { it.id }.sorted()
                 }.getOrDefault(emptyList())
-                return linkedMapOf(
+                val diagnostic = linkedMapOf(
                     "short_name" to candidate.shortName,
                     "file" to candidate.filePath,
                     "classification" to classification.diagnosticValue,
@@ -8718,11 +8760,16 @@ class InspectionHandler : HttpRequestHandler() {
                     "source_wrapper_class" to sourceWrapper?.toolWrapper?.javaClass?.name,
                     "source_tool_class" to sourceTool?.javaClass?.name,
                     "source_declared_language" to runCatching { sourceWrapper?.toolWrapper?.language }.getOrNull(),
-                    "source_is_unfair" to runCatching { sourceLocal?.isUnfair }.getOrNull(),
+                    "source_is_unfair" to (
+                        missingBatchWrapperMetadata?.sourceIsUnfair
+                            ?: runCatching { sourceLocal?.isUnfair }.getOrNull()
+                        ),
+                    "source_is_paired_unfair" to missingBatchWrapperMetadata?.sourceIsPairedUnfair,
                     "paired_batch_short_name" to pairedBatchShortName,
                     "batch_wrapper_class" to batchWrapper?.toolWrapper?.javaClass?.name,
                     "batch_short_name" to runCatching { batchWrapper?.toolWrapper?.shortName }.getOrNull(),
                 ).filterValues { it != null }
+                return diagnostic + (missingBatchWrapperMetadata?.diagnosticFields().orEmpty())
             }
         }
         val proof = runExactFileExecutionProof(
