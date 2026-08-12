@@ -549,7 +549,11 @@ class InspectionHandlerTest {
             ),
         )
         var currentReadiness = readinessSequence.removeFirst()
+        var currentModificationCount = 10L
         var fingerprintCalls = 0
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            currentModificationCount
+        }
         handler.pythonSdkSettleTimeoutMs = 100
         handler.pythonSdkSettlePollMs = 10
         handler.pythonSdkSettleNow = { 0L }
@@ -557,6 +561,9 @@ class InspectionHandlerTest {
         handler.projectAnalysisReadinessProvider = { _, _ -> currentReadiness }
         handler.projectAnalysisReadinessRefreshProvider = { _, _, _ ->
             currentReadiness = readinessSequence.removeFirst()
+            if (currentReadiness.ready) {
+                currentModificationCount = 11L
+            }
             currentReadiness
         }
         handler.projectInputsFingerprintProvider = { _, _ ->
@@ -569,6 +576,11 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertEquals(1, fingerprintCalls)
+        assertEquals(
+            11L,
+            requireNotNull(InspectionResultsStore.getSnapshot(projectKey(mockProject))).projectState.psiModificationCount,
+            "SDK registration changes must be excluded from capture churn validation.",
+        )
     }
 
     @Test
@@ -689,6 +701,32 @@ class InspectionHandlerTest {
         assertEquals(2, result.evidence.stableReadyObservations)
         assertTrue(result.readiness.ready)
         assertFalse(result.evidence.timedOut)
+    }
+
+    @Test
+    fun `test Python SDK settle fails closed on single ready observation at deadline`() {
+        val observations = ArrayDeque(
+            listOf(
+                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+            ),
+        )
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+            now = { 0L },
+            sleep = {},
+            observe = { observations.removeFirst() },
+            checkCanceled = {},
+            timeoutMs = 20,
+            pollMs = 10,
+        )
+
+        assertFalse(result.readiness.ready)
+        assertEquals("python_sdk_missing", result.readiness.reason)
+        assertEquals(1, result.evidence.stableReadyObservations)
+        assertTrue(result.evidence.timedOut)
+        assertEquals("python_sdk_missing", result.evidence.finalReason)
     }
 
     @Test

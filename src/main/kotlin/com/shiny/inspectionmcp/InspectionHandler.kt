@@ -280,6 +280,7 @@ internal fun settlePythonSdkReadiness(
     val boundedPollMs = pollMs.coerceAtLeast(1)
     val requiredObservations = requiredReadyObservations.coerceAtLeast(1)
     var readiness = initialReadiness
+    var lastNonReadyReadiness = initialReadiness
     var observationCount = 1
     var stableReadyObservations = 0
     var sleptMs = 0L
@@ -290,8 +291,15 @@ internal fun settlePythonSdkReadiness(
         checkCanceled()
         val elapsed = elapsedMs()
         if (elapsed >= boundedTimeoutMs) {
+            val finalReadiness = if (
+                readiness.ready && stableReadyObservations < requiredObservations
+            ) {
+                lastNonReadyReadiness
+            } else {
+                readiness
+            }
             return PythonSdkSettleResult(
-                readiness = readiness,
+                readiness = finalReadiness,
                 evidence = PythonSdkSettleEvidence(
                     attempted = true,
                     localInterpreterCandidate = true,
@@ -299,7 +307,7 @@ internal fun settlePythonSdkReadiness(
                     stableReadyObservations = stableReadyObservations,
                     elapsedMs = elapsed,
                     timedOut = true,
-                    finalReason = readiness.reason,
+                    finalReason = finalReadiness.reason,
                 ),
             )
         }
@@ -311,6 +319,9 @@ internal fun settlePythonSdkReadiness(
         readiness = observe()
         observationCount += 1
         stableReadyObservations = if (readiness.ready) stableReadyObservations + 1 else 0
+        if (!readiness.ready) {
+            lastNonReadyReadiness = readiness
+        }
         val evidence = PythonSdkSettleEvidence(
             attempted = true,
             localInterpreterCandidate = true,
@@ -5535,7 +5546,7 @@ class InspectionHandler : HttpRequestHandler() {
             syncProjectState(project)
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
-            val inspectionInputState = captureStableProjectState(project)
+            var inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
             val profileManager = com.intellij.profile.codeInspection.InspectionProjectProfileManager.getInstance(project)
@@ -5687,6 +5698,9 @@ class InspectionHandler : HttpRequestHandler() {
                     additionalDiagnostic = pythonSdkSettleDiagnostic(pythonSdkSettleResult.evidence),
                 )
                 return
+            }
+            if (pythonSdkSettleResult.evidence.attempted) {
+                inspectionInputState = captureStableProjectState(project)
             }
             if (supportsStableInputValidation(effectiveCaptureScope)) {
                 val initialFingerprint = projectInputsFingerprintProvider(project, requestedProfileName)
