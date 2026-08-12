@@ -28,6 +28,7 @@ class ExactFileExecutionProofTest {
         private val onDisplayKey: (String) -> Unit = {},
         private val onEnablement: (String) -> Unit = {},
         private val onWrapperResolution: (String) -> Unit = {},
+        private val onBatchCapability: (String) -> Unit = {},
         private val onExecution: (String) -> Unit = {},
         private val onCopy: (String, Wrapper) -> Wrapper = { _, wrapper -> wrapper.copy(identity = "${wrapper.identity}:copy") },
         private val onInitialize: (String, Wrapper) -> Unit = { _, _ -> },
@@ -60,7 +61,10 @@ class ExactFileExecutionProofTest {
         override fun resolveBatchCapability(
             candidate: ExactFileProofCandidate<String>,
             sourceWrapper: Wrapper,
-        ): ExactFileProofBatchCapability = sourceWrapper.batchCapability
+        ): ExactFileProofBatchCapability {
+            onBatchCapability(candidate.shortName)
+            return sourceWrapper.batchCapability
+        }
 
         override fun resolveBatchWrapper(candidate: ExactFileProofCandidate<String>, sourceWrapper: Wrapper): Wrapper? =
             onResolveBatchWrapper(candidate.shortName, sourceWrapper)
@@ -620,6 +624,36 @@ class ExactFileExecutionProofTest {
                 ),
             )
         }
+    }
+
+    @Test
+    fun `cancellation during batch capability classification propagates`() {
+        assertThrows(CancellationSignal::class.java) {
+            runProof(
+                names = listOf("Kotlin"),
+                adapter = FakeAdapter(
+                    wrappers = mapOf("Kotlin" to Wrapper()),
+                    onBatchCapability = { throw CancellationSignal() },
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `batch capability classification failure remains unproven`() {
+        val proof = runProof(
+            names = listOf("Kotlin"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Kotlin" to Wrapper()),
+                onBatchCapability = { throw IllegalStateException("metadata failed") },
+            ),
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertEquals(1, proof.unclassifiedObligationCount)
+        assertEquals(1, proof.errorCount)
+        assertEquals("unclassified_obligations", proof.proofBlockReason)
+        assertEquals("classification_failed", proof.blockingExamples.single()["classification"])
     }
 
     @Test

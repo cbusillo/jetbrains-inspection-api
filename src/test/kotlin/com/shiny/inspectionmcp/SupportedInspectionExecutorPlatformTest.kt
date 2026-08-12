@@ -310,6 +310,36 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `bounded proof keeps paired unfair missing counterpart fail closed`() {
+        val project = projectExtension.project
+        val cleanTool = CleanInspection()
+        val pairedTool = PairedUnfairInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(cleanTool, pairedTool)
+        profile.setToolEnabled(cleanTool.shortName, true, project)
+        profile.setToolEnabled(pairedTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(cleanTool, pairedTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isFalse()
+        assertThat(result.proofBlockReason).isEqualTo("applicable_missing_batch_wrapper")
+        assertThat(result.missingWrapperCount).isEqualTo(1)
+        assertThat(result.nonBatchExcludedObligationCount).isZero()
+        assertThat(result.blockingExamples).anySatisfy { example ->
+            assertThat(example["short_name"]).isEqualTo(pairedTool.shortName)
+            assertThat(example["missing_batch_wrapper_platform_classification"])
+                .isEqualTo("missing_batch_wrapper")
+            assertThat(example["source_is_paired_unfair"]).isEqualTo(true)
+        }
+    }
+
+    @Test
     fun `bounded example counters distinguish platform classifications`() {
         val examples = listOf(
             MissingBatchWrapperPlatformMetadata(

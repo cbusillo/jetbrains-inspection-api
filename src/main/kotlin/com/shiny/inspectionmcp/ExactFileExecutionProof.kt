@@ -624,8 +624,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     }
 
     val statesByFile = executionStates.groupBy { state ->
-        runCatching { Paths.get(state.obligation.candidate.filePath).normalize().toAbsolutePath().toString() }
-            .getOrDefault(state.obligation.candidate.filePath)
+        exactFileProofNormalizedPath(state.obligation.candidate.filePath)
     }
     if (statesByFile.size <= 1 || maxParallelFiles <= 1) {
         statesByFile.values.forEach(::executeFile)
@@ -670,7 +669,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         if (waitInterrupted) Thread.currentThread().interrupt()
     }
 
-        val cancellation = externalCancellation.get()
+    val cancellation = externalCancellation.get()
         if (cancellation != null) throw cancellation
 
     accumulator.hitTimeLimit = deadlineTriggered.get()

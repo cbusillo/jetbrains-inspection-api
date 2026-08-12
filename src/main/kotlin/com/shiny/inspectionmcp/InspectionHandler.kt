@@ -1456,6 +1456,7 @@ internal fun classifyCaptureIncompleteReason(
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
     val context: GlobalInspectionContextBoundary? = null,
+    var resolvedBatchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -8620,15 +8621,8 @@ class InspectionHandler : HttpRequestHandler() {
             override fun resolveBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
-            ): ExactFileInspectionExecutionWrapper? =
-                app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
-                    com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                        project,
-                        candidate.value,
-                        profile,
-                        sourceWrapper.toolWrapper,
-                    )
-                }?.let(::ExactFileInspectionExecutionWrapper)
+            ): ExactFileInspectionExecutionWrapper? = sourceWrapper.resolvedBatchWrapper
+                ?.let(::ExactFileInspectionExecutionWrapper)
 
             override fun resolveBatchCapability(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
@@ -8641,6 +8635,7 @@ class InspectionHandler : HttpRequestHandler() {
                     profile,
                     localWrapper,
                 )
+                sourceWrapper.resolvedBatchWrapper = batchWrapper
                 if (batchWrapper != null) {
                     ExactFileProofBatchCapability.BATCH_RUNNABLE
                 } else {
@@ -8735,7 +8730,13 @@ class InspectionHandler : HttpRequestHandler() {
                 val sourceLocal = sourceWrapper?.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
                 val missingBatchWrapperMetadata = sourceLocal
-                    ?.takeIf { batchWrapper == null }
+                    ?.takeIf {
+                        batchWrapper == null &&
+                            classification in setOf(
+                                ExactFileProofClassification.APPLICABLE_MISSING_BATCH_WRAPPER,
+                                ExactFileProofClassification.NON_BATCH_CAPABLE_EXCLUDED,
+                            )
+                    }
                     ?.let(::classifyMissingBatchWrapperPlatformMetadata)
                 val pairedBatchShortName = missingBatchWrapperMetadata?.pairedBatchShortName
                     ?: runCatching {
