@@ -8279,6 +8279,9 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_hit_file_limit" to proof.hitFileLimit,
             "execution_proof_hit_time_limit" to proof.hitTimeLimit,
             "execution_proof_candidate_obligation_count" to proof.candidateObligationCount,
+            "execution_proof_candidate_scope_file_count" to proof.candidateScopeFileCount,
+            "execution_proof_applicable_scope_file_count" to proof.applicableScopeFileCount,
+            "execution_proof_executed_scope_file_count" to proof.executedScopeFileCount,
             "execution_proof_profile_enabled_obligation_count" to proof.profileEnabledObligationCount,
             "execution_proof_profile_disabled_obligation_count" to proof.profileDisabledObligationCount,
             "execution_proof_display_key_missing_count" to proof.displayKeyMissingCount,
@@ -8286,23 +8289,22 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_language_applicable_obligation_count" to proof.languageApplicableObligationCount,
             "execution_proof_language_non_applicable_obligation_count" to proof.languageNonApplicableObligationCount,
             "execution_proof_batch_runnable_obligation_count" to proof.batchRunnableObligationCount,
+            "execution_proof_intentionally_non_batch_obligation_count" to proof.nonBatchExcludedObligationCount,
             "execution_proof_unmapped_descriptor_count" to proof.unmappedDescriptorCount,
             "execution_proof_failed_obligation_count" to proof.failedObligationCount,
             "execution_proof_unclassified_obligation_count" to proof.unclassifiedObligationCount,
             "execution_proof_unvisited_obligation_count" to proof.unvisitedObligationCount,
             "execution_proof_unvisited_classification_obligation_count" to proof.unvisitedClassificationObligationCount,
             "execution_proof_unexecuted_runnable_obligation_count" to proof.unexecutedRunnableObligationCount,
+            "execution_proof_missing_scope_execution_coverage_count" to proof.missingScopeExecutionCoverageCount,
             "execution_proof_unvisited_descriptor_count" to proof.unvisitedDescriptorCount,
             "execution_proof_enumeration_error_count" to proof.enumerationErrorCount,
             "execution_proof_elapsed_ms" to proof.elapsedMs,
             "execution_proof_block_reason" to proof.proofBlockReason,
             "execution_proof_blocking_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_blocking_examples" to proof.blockingExamples.takeIf { it.isNotEmpty() },
-            "execution_proof_intentionally_non_batch_example_count" to
-                countMissingBatchWrapperPlatformClassificationExamples(
-                    proof.blockingExamples,
-                    MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH,
-                ),
+            "execution_proof_intentionally_non_batch_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
+            "execution_proof_intentionally_non_batch_examples" to proof.nonBatchExamples.takeIf { it.isNotEmpty() },
             "execution_proof_missing_batch_metadata_unavailable_example_count" to
                 countMissingBatchWrapperPlatformClassificationExamples(
                     proof.blockingExamples,
@@ -8627,6 +8629,30 @@ class InspectionHandler : HttpRequestHandler() {
                         sourceWrapper.toolWrapper,
                     )
                 }?.let(::ExactFileInspectionExecutionWrapper)
+
+            override fun resolveBatchCapability(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                sourceWrapper: ExactFileInspectionExecutionWrapper,
+            ): ExactFileProofBatchCapability = app.runReadAction<ExactFileProofBatchCapability, Exception> {
+                val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                    project,
+                    candidate.value,
+                    profile,
+                    localWrapper,
+                )
+                if (batchWrapper != null) {
+                    ExactFileProofBatchCapability.BATCH_RUNNABLE
+                } else {
+                    when (classifyMissingBatchWrapperPlatformMetadata(localWrapper).classification) {
+                        MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH ->
+                            ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED
+                        MissingBatchWrapperPlatformClassification.MISSING_BATCH_WRAPPER,
+                        MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+                        -> ExactFileProofBatchCapability.BATCH_RUNNABLE
+                    }
+                }
+            }
 
             override fun copyBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,

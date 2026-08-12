@@ -225,6 +225,62 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `bounded proof excludes unpaired unfair tool when another tool executes on the file`() {
+        val project = projectExtension.project
+        val cleanTool = CleanInspection()
+        val unfairTool = UnpairedUnfairInspection()
+        resetVisits(cleanTool)
+        resetVisits(unfairTool)
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(cleanTool, unfairTool)
+        profile.setToolEnabled(cleanTool.shortName, true, project)
+        profile.setToolEnabled(unfairTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(cleanTool, unfairTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isTrue()
+        assertThat(result.batchRunnableObligationCount).isEqualTo(1)
+        assertThat(result.nonBatchExcludedObligationCount).isEqualTo(1)
+        assertThat(result.executedToolCount).isEqualTo(1)
+        assertThat(result.executedScopeFileCount).isEqualTo(1)
+        val nonBatchExample = result.nonBatchExamples.single()
+        assertThat(nonBatchExample["short_name"]).isEqualTo(unfairTool.shortName)
+        assertThat(nonBatchExample["missing_batch_wrapper_platform_classification"])
+            .isEqualTo("intentionally_non_batch")
+        assertThat(visitCount(cleanTool)).isEqualTo(1)
+        assertThat(visitCount(unfairTool)).isZero()
+    }
+
+    @Test
+    fun `bounded proof does not report clean when a file has only unpaired unfair tools`() {
+        val project = projectExtension.project
+        val unfairTool = UnpairedUnfairInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(unfairTool)
+        profile.setToolEnabled(unfairTool.shortName, true, project)
+
+        val result = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(unfairTool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(result.proofEstablished).isFalse()
+        assertThat(result.proofBlockReason).isEqualTo("no_applicable_batch_tools")
+        assertThat(result.nonBatchExcludedObligationCount).isEqualTo(1)
+        assertThat(result.executedToolCount).isZero()
+        assertThat(result.missingScopeExecutionCoverageCount).isEqualTo(1)
+    }
+
+    @Test
     fun `paired unfair and fair missing wrappers remain fail closed`() {
         val project = projectExtension.project
         val psiFile = createPhysicalFile()

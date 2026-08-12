@@ -150,6 +150,7 @@ class ExactFileExecutionProofTest {
         assertEquals(2, proof.languageApplicableObligationCount)
         assertEquals(2, proof.executedToolCount)
         assertEquals(2, proof.candidateScopeFileCount)
+        assertEquals(2, proof.applicableScopeFileCount)
         assertEquals(2, proof.executedScopeFileCount)
         assertEquals(2, proof.batchRunnableObligationCount)
     }
@@ -341,6 +342,29 @@ class ExactFileExecutionProofTest {
     }
 
     @Test
+    fun `files with no applicable obligations do not require execution coverage`() {
+        val proof = runProof(
+            names = listOf("Kotlin", "XmlOnly"),
+            adapter = FakeAdapter(
+                mapOf(
+                    "Kotlin" to Wrapper(),
+                    "XmlOnly" to Wrapper(applicable = false),
+                ),
+            ),
+            filePaths = mapOf(
+                "Kotlin" to "/repo/A.kt",
+                "XmlOnly" to "/repo/B.kt",
+            ),
+        )
+
+        assertTrue(proof.proofEstablished)
+        assertEquals(2, proof.candidateScopeFileCount)
+        assertEquals(1, proof.applicableScopeFileCount)
+        assertEquals(1, proof.executedScopeFileCount)
+        assertEquals(0, proof.missingScopeExecutionCoverageCount)
+    }
+
+    @Test
     fun `explicitly excluded unfair tools are not counted as runnable or executed`() {
         val proof = runProof(
             names = listOf("ApplicableUnfair"),
@@ -390,6 +414,7 @@ class ExactFileExecutionProofTest {
         assertEquals(1, proof.batchRunnableObligationCount)
         assertEquals(1, proof.executedToolCount)
         assertEquals(3, proof.candidateScopeFileCount)
+        assertEquals(3, proof.applicableScopeFileCount)
         assertEquals(1, proof.executedScopeFileCount)
         assertEquals(2, proof.missingScopeExecutionCoverageCount)
         assertEquals("applicable_missing_batch_wrapper", proof.proofBlockReason)

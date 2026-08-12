@@ -89,6 +89,7 @@ internal data class BoundedExecutionProofResult(
     val skippedReason: String? = null,
     val candidateObligationCount: Int = 0,
     val candidateScopeFileCount: Int = 0,
+    val applicableScopeFileCount: Int = 0,
     val executedScopeFileCount: Int = 0,
     val profileEnabledObligationCount: Int = 0,
     val profileDisabledObligationCount: Int = 0,
@@ -132,7 +133,7 @@ internal data class BoundedExecutionProofResult(
             unmappedDescriptorCount == 0 &&
             errorCount == 0 &&
             batchRunnableObligationCount > 0 &&
-            executedScopeFileCount == candidateScopeFileCount &&
+            executedScopeFileCount == applicableScopeFileCount &&
             executedToolCount == batchRunnableObligationCount
 
     val proofClean: Boolean
@@ -216,6 +217,7 @@ private class ExactFileProofAccumulator(
     var errorCount = 0
     var hitTimeLimit = false
     val nonBatchExamples = mutableListOf<Map<String, Any?>>()
+    val applicableScopeFiles = linkedSetOf<String>()
     val executedScopeFiles = linkedSetOf<String>()
 
     fun addBlockingExample(example: Map<String, Any?>) {
@@ -236,6 +238,7 @@ private class ExactFileProofAccumulator(
             enabledLocalToolCount = enabledLocalToolCount,
             candidateObligationCount = candidateObligationCount,
             candidateScopeFileCount = candidateScopeFileCount,
+            applicableScopeFileCount = applicableScopeFiles.size,
             profileEnabledObligationCount = profileEnabledObligationCount,
             profileDisabledObligationCount = profileDisabledObligationCount,
             displayKeyMissingCount = displayKeyMissingCount,
@@ -412,6 +415,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             continue
         }
         accumulator.languageApplicableObligationCount++
+        accumulator.applicableScopeFiles += exactFileProofNormalizedPath(candidate.filePath)
 
         val batchCapability = try {
             adapter.resolveBatchCapability(candidate, sourceWrapper)
@@ -728,7 +732,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         }
     }
     accumulator.missingScopeExecutionCoverageCount =
-        (accumulator.candidateScopeFileCount - accumulator.executedScopeFiles.size).coerceAtLeast(0)
+        (accumulator.applicableScopeFiles.size - accumulator.executedScopeFiles.size).coerceAtLeast(0)
     if (deadlineExceeded()) accumulator.hitTimeLimit = true
     if (accumulator.hitTimeLimit && executionStates.none { it.timeoutStage != null }) {
         val timeoutState = executionStates.firstOrNull { !it.completed && it.failureDetail == null }
