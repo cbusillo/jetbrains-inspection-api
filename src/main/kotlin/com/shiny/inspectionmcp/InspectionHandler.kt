@@ -2932,6 +2932,28 @@ class InspectionHandler : HttpRequestHandler() {
         val normalizedPath = normalizeFileSystemPath(rawPath)
             ?: throw BadRequestException("worktree_path", "Parameter 'worktree_path' must be a valid local path.")
         val path = Paths.get(normalizedPath)
+        val probe = parseBooleanParameter(parameters, "probe", defaultValue = false)
+        if (probe) {
+            findOpenProjectForLifecycleOpen(path.toString())?.let { project ->
+                unresolvedLifecycleOpenProjects.entries
+                    .firstOrNull { entry -> entry.value === project && isUnresolvedLifecycleOpenActive(project) }
+                    ?.let { entry ->
+                        val projectRoot = Paths.get(entry.key)
+                        return lifecycleOpenStateUnknown(
+                            LifecycleOpenTarget(
+                                path = path,
+                                openPath = projectRoot,
+                                projectRoot = projectRoot,
+                                key = entry.key,
+                            ),
+                            project,
+                            probe = true,
+                        )
+                    }
+                return lifecycleOpenAlreadyOpen(project, probe = true)
+            }
+            return probeLifecycleOpen(resolveLifecycleOpenTarget(path))
+        }
         findOpenProjectForLifecycleOpen(path.toString())?.let { project ->
             unresolvedLifecycleOpenProjects.entries
                 .firstOrNull { entry -> entry.value === project }
@@ -2953,9 +2975,6 @@ class InspectionHandler : HttpRequestHandler() {
             return lifecycleOpenAlreadyOpen(project)
         }
         val target = resolveLifecycleOpenTarget(path)
-        if (parseBooleanParameter(parameters, "probe", defaultValue = false)) {
-            return probeLifecycleOpen(target)
-        }
         unresolvedLifecycleOpenProjects[target.key]?.let { project ->
             if (isUnresolvedLifecycleOpenActive(project)) {
                 return lifecycleOpenStateUnknown(target, project)
@@ -3118,14 +3137,14 @@ class InspectionHandler : HttpRequestHandler() {
         cleanupLifecycleOpenDiagnostics(lifecycleOpenDiagnosticNow())
         unresolvedLifecycleOpenProjects[target.key]?.let { project ->
             if (isUnresolvedLifecycleOpenActive(project)) {
-                return lifecycleOpenStateUnknown(target, project)
+                return lifecycleOpenStateUnknown(target, project, probe = true)
             }
         }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
             return if (isUsableProject(project)) {
-                lifecycleOpenAlreadyOpen(project, target.key)
+                lifecycleOpenAlreadyOpen(project, target.key, probe = true)
             } else {
-                lifecycleOpenAlreadyOpening(target)
+                lifecycleOpenAlreadyOpening(target, probe = true)
             }
         }
         val opening = openingProjectRequests.containsKey(target.key)
@@ -3565,12 +3584,16 @@ class InspectionHandler : HttpRequestHandler() {
         ) to HttpResponseStatus.OK
     }
 
-    private fun lifecycleOpenAlreadyOpening(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+    private fun lifecycleOpenAlreadyOpening(
+        target: LifecycleOpenTarget,
+        probe: Boolean = false,
+    ): Pair<Map<String, Any?>, HttpResponseStatus> {
         return mapOf(
             "status" to "opening",
             "opened" to false,
             "opening_scheduled" to false,
             "reason" to "already_opening",
+            "probe" to probe,
             "worktree_path" to target.path.toString(),
             "project_root" to target.projectRoot.toString(),
             "session_id" to InspectionIdeSession.sessionId,
@@ -3581,6 +3604,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun lifecycleOpenStateUnknown(
         target: LifecycleOpenTarget,
         project: Project,
+        probe: Boolean = false,
     ): Pair<Map<String, Any?>, HttpResponseStatus> {
         val observedReadiness = lifecycleContentRootReadinessProvider(project, target.key)
         val readiness = if (observedReadiness.ready) {
@@ -3594,6 +3618,7 @@ class InspectionHandler : HttpRequestHandler() {
             "opened" to false,
             "opening_scheduled" to false,
             "reason" to if (contentRootFailure) "project_content_roots_missing" else "open_state_unknown",
+            "probe" to probe,
             "message" to if (contentRootFailure) {
                 "The IDE opened the project but did not establish a content root covering the requested worktree before the guard timeout."
             } else if (readiness.reason == "project_configuration_unstable") {

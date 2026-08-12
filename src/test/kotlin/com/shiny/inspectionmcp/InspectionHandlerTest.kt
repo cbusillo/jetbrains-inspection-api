@@ -5530,6 +5530,20 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open probe marks already open response without scheduling`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+
+        val response = processGetRequest(lifecycleOpenUri("/tmp/TestProject", probe = true))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"probe\": true"))
+        verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
     fun `test lifecycle open resets diagnostic for a new attempt`() {
         val tempDir = Files.createTempDirectory("inspection-open-diagnostic-reset")
         every { mockProjectManager.openProjects } returns emptyArray()
