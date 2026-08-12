@@ -105,6 +105,9 @@ private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
+private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 5_000L
+private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
+private const val REQUIRED_PYTHON_SDK_READY_OBSERVATIONS = 2
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 private const val LIFECYCLE_FALLBACK_MODULE_PREFIX = "__jetbrains_inspection_api_lifecycle_fallback__"
@@ -225,7 +228,106 @@ internal data class InspectionProjectAnalysisReadiness(
     val updatingSdkCount: Int = 0,
     val daemonRunning: Boolean = false,
     val sdkUpdateStateUnavailable: Boolean = false,
+    val localPythonInterpreterCandidate: Boolean = false,
+    val pythonScopeFiles: List<VirtualFile> = emptyList(),
 )
+
+internal data class PythonSdkSettleEvidence(
+    val attempted: Boolean,
+    val localInterpreterCandidate: Boolean,
+    val observationCount: Int,
+    val stableReadyObservations: Int,
+    val elapsedMs: Long,
+    val timedOut: Boolean,
+    val finalReason: String,
+)
+
+internal data class PythonSdkSettleResult(
+    val readiness: InspectionProjectAnalysisReadiness,
+    val evidence: PythonSdkSettleEvidence,
+)
+
+internal fun settlePythonSdkReadiness(
+    initialReadiness: InspectionProjectAnalysisReadiness,
+    now: () -> Long,
+    sleep: (Long) -> Unit,
+    observe: () -> InspectionProjectAnalysisReadiness,
+    checkCanceled: () -> Unit,
+    timeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS,
+    pollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS,
+    requiredReadyObservations: Int = REQUIRED_PYTHON_SDK_READY_OBSERVATIONS,
+): PythonSdkSettleResult {
+    val settleReasons = setOf("python_sdk_missing", "python_sdk_updating")
+    val shouldSettle = initialReadiness.reason in settleReasons &&
+        initialReadiness.localPythonInterpreterCandidate
+    if (!shouldSettle) {
+        return PythonSdkSettleResult(
+            readiness = initialReadiness,
+            evidence = PythonSdkSettleEvidence(
+                attempted = false,
+                localInterpreterCandidate = initialReadiness.localPythonInterpreterCandidate,
+                observationCount = 1,
+                stableReadyObservations = if (initialReadiness.ready) 1 else 0,
+                elapsedMs = 0,
+                timedOut = false,
+                finalReason = initialReadiness.reason,
+            ),
+        )
+    }
+
+    val startedAt = now()
+    val boundedTimeoutMs = timeoutMs.coerceAtLeast(0)
+    val boundedPollMs = pollMs.coerceAtLeast(1)
+    val requiredObservations = requiredReadyObservations.coerceAtLeast(1)
+    var readiness = initialReadiness
+    var observationCount = 1
+    var stableReadyObservations = 0
+    var sleptMs = 0L
+
+    fun elapsedMs(): Long = maxOf((now() - startedAt).coerceAtLeast(0), sleptMs)
+
+    while (true) {
+        checkCanceled()
+        val elapsed = elapsedMs()
+        if (elapsed >= boundedTimeoutMs) {
+            return PythonSdkSettleResult(
+                readiness = readiness,
+                evidence = PythonSdkSettleEvidence(
+                    attempted = true,
+                    localInterpreterCandidate = true,
+                    observationCount = observationCount,
+                    stableReadyObservations = stableReadyObservations,
+                    elapsedMs = elapsed,
+                    timedOut = true,
+                    finalReason = readiness.reason,
+                ),
+            )
+        }
+
+        val sleepDurationMs = minOf(boundedPollMs, boundedTimeoutMs - elapsed)
+        sleep(sleepDurationMs)
+        sleptMs += sleepDurationMs
+        checkCanceled()
+        readiness = observe()
+        observationCount += 1
+        stableReadyObservations = if (readiness.ready) stableReadyObservations + 1 else 0
+        val evidence = PythonSdkSettleEvidence(
+            attempted = true,
+            localInterpreterCandidate = true,
+            observationCount = observationCount,
+            stableReadyObservations = stableReadyObservations,
+            elapsedMs = elapsedMs(),
+            timedOut = false,
+            finalReason = readiness.reason,
+        )
+        if (
+            stableReadyObservations >= requiredObservations ||
+            (readiness.reason !in settleReasons && !readiness.ready)
+        ) {
+            return PythonSdkSettleResult(readiness, evidence)
+        }
+    }
+}
 
 private data class InspectionAnalysisQualification(
     val inputFingerprint: InspectionProjectInputsFingerprint,
@@ -1551,6 +1653,10 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationPollMs: Long = 100
     internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var pythonSdkSettleTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS
+    internal var pythonSdkSettlePollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS
+    internal var pythonSdkSettleNow: () -> Long = { System.currentTimeMillis() }
+    internal var pythonSdkSettleSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
     internal var lifecycleOpenGuardTimeoutMs: Long = 30_000
     internal var lifecycleOpenRootStabilizationMs: Long = 10_000
@@ -1574,6 +1680,11 @@ class InspectionHandler : HttpRequestHandler() {
     internal var projectAnalysisReadinessProvider:
         (Project, InspectionCaptureScope?) -> InspectionProjectAnalysisReadiness = { project, captureScope ->
             inspectProjectAnalysisReadiness(project, captureScope)
+        }
+    internal var projectAnalysisReadinessRefreshProvider:
+        (Project, InspectionCaptureScope?, List<VirtualFile>) -> InspectionProjectAnalysisReadiness =
+        { project, captureScope, pythonScopeFiles ->
+            inspectProjectAnalysisReadiness(project, captureScope, pythonScopeFiles)
         }
     internal var projectContentTrackerFactory:
         (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
@@ -5540,6 +5651,43 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 return
             }
+            val initialAnalysisReadiness = projectAnalysisReadinessProvider(project, effectiveCaptureScope)
+            val pythonSdkSettleResult = settlePythonSdkReadiness(
+                initialReadiness = initialAnalysisReadiness,
+                now = pythonSdkSettleNow,
+                sleep = pythonSdkSettleSleep,
+                observe = {
+                    projectAnalysisReadinessRefreshProvider(
+                        project,
+                        effectiveCaptureScope,
+                        initialAnalysisReadiness.pythonScopeFiles,
+                    )
+                },
+                checkCanceled = { checkInspectionRunCancellation(key, runId) },
+                timeoutMs = pythonSdkSettleTimeoutMs,
+                pollMs = pythonSdkSettlePollMs,
+            )
+            val analysisReadiness = pythonSdkSettleResult.readiness
+            val analysisReadinessDiagnostic = projectAnalysisReadinessDiagnostic(
+                requestedScope = captureScope,
+                resolvedScope = effectiveCaptureScope,
+                readiness = analysisReadiness,
+                inspectionStarted = false,
+            ) + pythonSdkSettleDiagnostic(pythonSdkSettleResult.evidence)
+            if (analysisReadiness.required && !analysisReadiness.ready) {
+                projectContentTracker?.close()
+                projectContentTracker = null
+                publishProjectAnalysisReadinessFailure(
+                    key = key,
+                    runId = runId,
+                    projectState = inspectionInputState,
+                    requestedScope = captureScope,
+                    resolvedScope = effectiveCaptureScope,
+                    readiness = analysisReadiness,
+                    additionalDiagnostic = pythonSdkSettleDiagnostic(pythonSdkSettleResult.evidence),
+                )
+                return
+            }
             if (supportsStableInputValidation(effectiveCaptureScope)) {
                 val initialFingerprint = projectInputsFingerprintProvider(project, requestedProfileName)
                 val tracker = initialFingerprint?.let { fingerprint ->
@@ -5588,7 +5736,7 @@ class InspectionHandler : HttpRequestHandler() {
                             source = "inspection_input_validation",
                             note = "Project inspection inputs could not be captured consistently before inspection.",
                             captureScope = effectiveCaptureScope,
-                            captureDiagnostic = mapOf(
+                            captureDiagnostic = analysisReadinessDiagnostic + mapOf(
                                 "initial_fingerprint_available" to (initialFingerprint != null),
                                 "tracker_available" to (tracker != null),
                                 "tracker_changed" to trackerChangedDuringPreflight,
@@ -5602,26 +5750,6 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                     return
                 }
-            }
-            val analysisReadiness = projectAnalysisReadinessProvider(project, effectiveCaptureScope)
-            val analysisReadinessDiagnostic = projectAnalysisReadinessDiagnostic(
-                requestedScope = captureScope,
-                resolvedScope = effectiveCaptureScope,
-                readiness = analysisReadiness,
-                inspectionStarted = false,
-            )
-            if (analysisReadiness.required && !analysisReadiness.ready) {
-                projectContentTracker?.close()
-                projectContentTracker = null
-                publishProjectAnalysisReadinessFailure(
-                    key = key,
-                    runId = runId,
-                    projectState = inspectionInputState,
-                    requestedScope = captureScope,
-                    resolvedScope = effectiveCaptureScope,
-                    readiness = analysisReadiness,
-                )
-                return
             }
             if (analysisReadiness.required && inspectionInputFingerprint == null) {
                 inspectionInputFingerprint = projectInputsFingerprintProvider(project, requestedProfileName)
@@ -6544,6 +6672,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun inspectProjectAnalysisReadiness(
         project: Project,
         captureScope: InspectionCaptureScope?,
+        resolvedPythonScopeFiles: List<VirtualFile>? = null,
     ): InspectionProjectAnalysisReadiness {
         if (project.isDisposed) {
             return InspectionProjectAnalysisReadiness(
@@ -6554,7 +6683,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
         return runCatching {
             ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
-                val pythonFiles = resolvePythonScopeFiles(project, captureScope)
+                val pythonFiles = resolvedPythonScopeFiles ?: resolvePythonScopeFiles(project, captureScope)
                 if (pythonFiles == null) {
                     return@runReadAction InspectionProjectAnalysisReadiness(
                         required = true,
@@ -6608,6 +6737,10 @@ class InspectionHandler : HttpRequestHandler() {
                     missingSdkFileCount = missingSdkFileCount,
                     updatingSdkCount = updatingSdkCount,
                     sdkUpdateStateUnavailable = updateStateUnavailable,
+                    localPythonInterpreterCandidate =
+                        (missingSdkFileCount > 0 || updatingSdkCount > 0) &&
+                            hasWorktreeLocalPythonInterpreter(project),
+                    pythonScopeFiles = pythonFiles,
                 )
             }
         }.getOrElse {
@@ -6617,6 +6750,21 @@ class InspectionHandler : HttpRequestHandler() {
                 reason = "analysis_readiness_unavailable",
             )
         }
+    }
+
+    private fun hasWorktreeLocalPythonInterpreter(project: Project): Boolean {
+        return runCatching {
+            val projectRoot = project.basePath?.let(::normalizeFileSystemPath) ?: return false
+            val virtualEnvironmentRoot = Paths.get(projectRoot, ".venv")
+            listOf(
+                virtualEnvironmentRoot.resolve("bin/python"),
+                virtualEnvironmentRoot.resolve("bin/python3"),
+                virtualEnvironmentRoot.resolve("Scripts/python.exe"),
+                virtualEnvironmentRoot.resolve("Scripts/python"),
+            ).any { interpreter ->
+                Files.isRegularFile(interpreter) && Files.isExecutable(interpreter)
+            }
+        }.getOrDefault(false)
     }
 
     private fun resolvePythonScopeFiles(
@@ -6694,6 +6842,18 @@ class InspectionHandler : HttpRequestHandler() {
             "inspection_started" to inspectionStarted,
             "outcome_ownership" to outcomeOwnership,
         ).filterValues { it != null }
+    }
+
+    private fun pythonSdkSettleDiagnostic(evidence: PythonSdkSettleEvidence): Map<String, Any?> {
+        return mapOf(
+            "python_sdk_settle_attempted" to evidence.attempted,
+            "python_sdk_settle_local_interpreter_candidate" to evidence.localInterpreterCandidate,
+            "python_sdk_settle_observation_count" to evidence.observationCount,
+            "python_sdk_settle_stable_ready_observations" to evidence.stableReadyObservations,
+            "python_sdk_settle_elapsed_ms" to evidence.elapsedMs,
+            "python_sdk_settle_timed_out" to evidence.timedOut,
+            "python_sdk_settle_final_reason" to evidence.finalReason,
+        )
     }
 
     private fun publishProjectAnalysisReadinessFailure(
