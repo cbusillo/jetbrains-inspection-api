@@ -670,7 +670,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     }
 
     val cancellation = externalCancellation.get()
-        if (cancellation != null) throw cancellation
+    if (cancellation != null) throw cancellation
 
     accumulator.hitTimeLimit = deadlineTriggered.get()
     for (state in executionStates) {
