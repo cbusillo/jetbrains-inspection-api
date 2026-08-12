@@ -3384,8 +3384,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Missing proof or unreadable extraction without Inspection Results view remains incomplete")
-    fun testNoViewRequiresEstablishedProofAndReadableExtractionForClean() {
+    @DisplayName("Missing proof remains incomplete but exact bounded proof survives cold tool-window extraction")
+    fun testNoViewRequiresProofUnlessExactBoundedExecutionIsClean() {
         assertFalse(
             shouldTrustStableScopedEmptyResults(
                 viewReadyOk = false,
@@ -3398,15 +3398,88 @@ class InspectionSnapshotStateTest {
                 pollingElapsedMs = 30000L,
             ),
         )
-        assertFalse(
+        assertTrue(
             shouldTrustStableScopedEmptyResults(
                 viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 extractionSucceeded = false,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,
                 bestResultsEmpty = true,
                 observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.NATIVE_ATTESTED,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                modelVerdict = InspectionModelVerdict.UNREADABLE,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                modelVerdict = InspectionModelVerdict.HAS_PROBLEMS,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = false,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = true,
                 stableForMs = 5000L,
                 pollingElapsedMs = 30000L,
             ),

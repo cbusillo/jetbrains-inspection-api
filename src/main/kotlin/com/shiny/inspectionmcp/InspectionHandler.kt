@@ -1323,6 +1323,8 @@ internal fun shouldStopCapturePolling(
 internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
     hasExecutionProofCleanEvidence: Boolean = false,
+    executionProofMode: InspectionExecutionProofMode = InspectionExecutionProofMode.NONE,
+    modelVerdict: InspectionModelVerdict = InspectionModelVerdict.UNKNOWN,
     observedInspectionView: Boolean = false,
     inspectionViewUpdating: Boolean = false,
     hasSettledInspectionViewEvidence: Boolean = false,
@@ -1340,6 +1342,10 @@ internal fun shouldTrustStableScopedEmptyResults(
     minPollingMs: Long = 30000L,
     maxUpdatingInspectionViewWaitMs: Long = 60000L,
 ): Boolean {
+    val hasExactBoundedCleanProof =
+        executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED &&
+            hasExecutionProofCleanEvidence &&
+            modelVerdict !in setOf(InspectionModelVerdict.UNREADABLE, InspectionModelVerdict.HAS_PROBLEMS)
     val hasUsableInspectionViewEvidence = !observedInspectionView ||
         (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
         (!inspectionViewUpdating && hasOpaqueSettledEmptyInspectionViewEvidence && extractionSucceeded) ||
@@ -1350,9 +1356,9 @@ internal fun shouldTrustStableScopedEmptyResults(
                 pollingElapsedMs >= maxUpdatingInspectionViewWaitMs
         )
 
-    return (viewReadyOk || (hasExecutionProofCleanEvidence && hasModelCleanEvidence)) &&
+    return (viewReadyOk || hasExactBoundedCleanProof || (hasExecutionProofCleanEvidence && hasModelCleanEvidence)) &&
         hasUsableInspectionViewEvidence &&
-        extractionSucceeded &&
+        (extractionSucceeded || hasExactBoundedCleanProof) &&
         hasScopedMatcher &&
         scopedContextResultsEmpty &&
         bestResultsEmpty &&
@@ -5980,6 +5986,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 shouldTrustStableScopedEmptyResults(
                                     viewReadyOk = viewReadyOk,
                                     hasExecutionProofCleanEvidence = executionProofClean,
+                                    executionProofMode = executionProofMode,
+                                    modelVerdict = modelVerdict,
                                     hasScopedMatcher = scopeProblemMatcher != null,
                                     observedInspectionView = observedInspectionView,
                                     inspectionViewUpdating = inspectionViewUpdating,
@@ -6046,6 +6054,8 @@ class InspectionHandler : HttpRequestHandler() {
                             shouldTrustStableScopedEmptyResults(
                                 viewReadyOk = viewReadyOk,
                                 hasExecutionProofCleanEvidence = executionProofClean,
+                                executionProofMode = executionProofMode,
+                                modelVerdict = modelVerdict,
                                 hasScopedMatcher = scopeProblemMatcher != null,
                                 observedInspectionView = observedInspectionView,
                                 inspectionViewUpdating = inspectionViewUpdating,
