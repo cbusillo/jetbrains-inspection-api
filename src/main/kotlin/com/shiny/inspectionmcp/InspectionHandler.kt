@@ -8298,6 +8298,16 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_block_reason" to proof.proofBlockReason,
             "execution_proof_blocking_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_blocking_examples" to proof.blockingExamples.takeIf { it.isNotEmpty() },
+            "execution_proof_intentionally_non_batch_example_count" to
+                countMissingBatchWrapperPlatformClassificationExamples(
+                    proof.blockingExamples,
+                    MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH,
+                ),
+            "execution_proof_missing_batch_metadata_unavailable_example_count" to
+                countMissingBatchWrapperPlatformClassificationExamples(
+                    proof.blockingExamples,
+                    MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
+                ),
             "execution_proof_non_applicable_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_non_applicable_examples" to proof.nonApplicableExamples.takeIf { it.isNotEmpty() },
             "execution_proof_skipped" to (proof.skippedReason != null),
@@ -8698,16 +8708,21 @@ class InspectionHandler : HttpRequestHandler() {
             ): Map<String, Any?> {
                 val sourceLocal = sourceWrapper?.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
-                val pairedBatchShortName =
-                    (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
-                        ?.inspectionForBatchShortName
+                val missingBatchWrapperMetadata = sourceLocal
+                    ?.takeIf { batchWrapper == null }
+                    ?.let(::classifyMissingBatchWrapperPlatformMetadata)
+                val pairedBatchShortName = missingBatchWrapperMetadata?.pairedBatchShortName
+                    ?: runCatching {
+                        (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
+                            ?.inspectionForBatchShortName
+                    }.getOrNull()
                 val languageIds = runCatching {
                     fileLanguages[candidate.value]
                         ?.map { it.id }
                         ?.sorted()
                         ?: candidate.value.viewProvider.languages.map { it.id }.sorted()
                 }.getOrDefault(emptyList())
-                return linkedMapOf(
+                val diagnostic = linkedMapOf(
                     "short_name" to candidate.shortName,
                     "file" to candidate.filePath,
                     "classification" to classification.diagnosticValue,
@@ -8718,11 +8733,16 @@ class InspectionHandler : HttpRequestHandler() {
                     "source_wrapper_class" to sourceWrapper?.toolWrapper?.javaClass?.name,
                     "source_tool_class" to sourceTool?.javaClass?.name,
                     "source_declared_language" to runCatching { sourceWrapper?.toolWrapper?.language }.getOrNull(),
-                    "source_is_unfair" to runCatching { sourceLocal?.isUnfair }.getOrNull(),
+                    "source_is_unfair" to (
+                        missingBatchWrapperMetadata?.sourceIsUnfair
+                            ?: runCatching { sourceLocal?.isUnfair }.getOrNull()
+                        ),
+                    "source_is_paired_unfair" to missingBatchWrapperMetadata?.sourceIsPairedUnfair,
                     "paired_batch_short_name" to pairedBatchShortName,
                     "batch_wrapper_class" to batchWrapper?.toolWrapper?.javaClass?.name,
                     "batch_short_name" to runCatching { batchWrapper?.toolWrapper?.shortName }.getOrNull(),
                 ).filterValues { it != null }
+                return diagnostic + (missingBatchWrapperMetadata?.diagnosticFields().orEmpty())
             }
         }
         val proof = runExactFileExecutionProof(
