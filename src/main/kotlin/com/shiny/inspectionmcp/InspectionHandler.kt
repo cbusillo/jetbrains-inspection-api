@@ -1324,7 +1324,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
     hasExecutionProofCleanEvidence: Boolean = false,
     executionProofMode: InspectionExecutionProofMode = InspectionExecutionProofMode.NONE,
-    hasUnreadableModelEvidence: Boolean = false,
+    modelVerdict: InspectionModelVerdict = InspectionModelVerdict.UNKNOWN,
     observedInspectionView: Boolean = false,
     inspectionViewUpdating: Boolean = false,
     hasSettledInspectionViewEvidence: Boolean = false,
@@ -1345,7 +1345,7 @@ internal fun shouldTrustStableScopedEmptyResults(
     val hasExactBoundedCleanProof =
         executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED &&
             hasExecutionProofCleanEvidence &&
-            !hasUnreadableModelEvidence
+            modelVerdict !in setOf(InspectionModelVerdict.UNREADABLE, InspectionModelVerdict.HAS_PROBLEMS)
     val hasUsableInspectionViewEvidence = !observedInspectionView ||
         (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
         (!inspectionViewUpdating && hasOpaqueSettledEmptyInspectionViewEvidence && extractionSucceeded) ||
@@ -5987,7 +5987,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     viewReadyOk = viewReadyOk,
                                     hasExecutionProofCleanEvidence = executionProofClean,
                                     executionProofMode = executionProofMode,
-                                    hasUnreadableModelEvidence = modelVerdict == InspectionModelVerdict.UNREADABLE,
+                                    modelVerdict = modelVerdict,
                                     hasScopedMatcher = scopeProblemMatcher != null,
                                     observedInspectionView = observedInspectionView,
                                     inspectionViewUpdating = inspectionViewUpdating,
@@ -6055,7 +6055,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 viewReadyOk = viewReadyOk,
                                 hasExecutionProofCleanEvidence = executionProofClean,
                                 executionProofMode = executionProofMode,
-                                hasUnreadableModelEvidence = modelVerdict == InspectionModelVerdict.UNREADABLE,
+                                modelVerdict = modelVerdict,
                                 hasScopedMatcher = scopeProblemMatcher != null,
                                 observedInspectionView = observedInspectionView,
                                 inspectionViewUpdating = inspectionViewUpdating,

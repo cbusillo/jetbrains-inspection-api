@@ -3431,7 +3431,22 @@ class InspectionSnapshotStateTest {
                 viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
-                hasUnreadableModelEvidence = true,
+                modelVerdict = InspectionModelVerdict.UNREADABLE,
+                extractionSucceeded = false,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = true,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 5000L,
+                pollingElapsedMs = 30000L,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                modelVerdict = InspectionModelVerdict.HAS_PROBLEMS,
                 extractionSucceeded = false,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,
