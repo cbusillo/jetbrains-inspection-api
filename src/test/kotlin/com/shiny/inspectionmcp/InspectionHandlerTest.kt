@@ -529,6 +529,256 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test local Python SDK registration settles before stable input fingerprinting`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val readinessSequence = ArrayDeque(
+            listOf(
+                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+            ),
+        )
+        var currentReadiness = readinessSequence.removeFirst()
+        var currentModificationCount = 10L
+        var fingerprintCalls = 0
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            currentModificationCount
+        }
+        handler.pythonSdkSettleTimeoutMs = 100
+        handler.pythonSdkSettlePollMs = 10
+        handler.pythonSdkSettleNow = { 0L }
+        handler.pythonSdkSettleSleep = {}
+        handler.projectAnalysisReadinessProvider = { _, _ -> currentReadiness }
+        handler.projectAnalysisReadinessRefreshProvider = { _, _, _ ->
+            currentReadiness = readinessSequence.removeFirst()
+            if (currentReadiness.ready) {
+                currentModificationCount = 11L
+            }
+            currentReadiness
+        }
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            assertTrue(currentReadiness.ready, "SDK readiness must settle before fingerprinting.")
+            fingerprintCalls += 1
+            projectInputsFingerprint(profileName = "TestProfile")
+        }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(1, fingerprintCalls)
+        assertEquals(
+            11L,
+            requireNotNull(InspectionResultsStore.getSnapshot(projectKey(mockProject))).projectState.psiModificationCount,
+            "SDK registration changes must be excluded from capture churn validation.",
+        )
+    }
+
+    @Test
+    fun `test local Python SDK registration timeout remains language SDK missing`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        var refreshCalls = 0
+        handler.pythonSdkSettleTimeoutMs = 25
+        handler.pythonSdkSettlePollMs = 10
+        handler.pythonSdkSettleNow = { 0L }
+        handler.pythonSdkSettleSleep = {}
+        handler.projectAnalysisReadinessProvider = { _, _ ->
+            pythonSdkReadiness(ready = false, localInterpreterCandidate = true)
+        }
+        handler.projectAnalysisReadinessRefreshProvider = { _, _, _ ->
+            refreshCalls += 1
+            pythonSdkReadiness(ready = false, localInterpreterCandidate = true)
+        }
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            error("Terminal SDK absence must not fingerprint inspection inputs.")
+        }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val status = buildInspectionStatus()
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(3, refreshCalls)
+        assertEquals("language_sdk_missing", status["capture_incomplete_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals(true, diagnostic["python_sdk_settle_attempted"])
+        assertEquals(true, diagnostic["python_sdk_settle_timed_out"])
+        assertEquals(25L, diagnostic["python_sdk_settle_elapsed_ms"])
+    }
+
+    @Test
+    fun `test Python SDK settle skips missing SDK without local interpreter candidate`() {
+        var sleepCalls = 0
+        var observationCalls = 0
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = false),
+            now = { 0L },
+            sleep = { sleepCalls += 1 },
+            observe = {
+                observationCalls += 1
+                error("No local interpreter candidate must not be retried.")
+            },
+            checkCanceled = {},
+        )
+
+        assertFalse(result.evidence.attempted)
+        assertEquals(0, sleepCalls)
+        assertEquals(0, observationCalls)
+        assertEquals("python_sdk_missing", result.readiness.reason)
+    }
+
+    @Test
+    fun `test Python SDK settle is zero cost for non Python scopes`() {
+        var sleepCalls = 0
+        var observationCalls = 0
+        val initialReadiness = InspectionProjectAnalysisReadiness(
+            required = false,
+            ready = true,
+            reason = "python_not_in_scope",
+        )
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = initialReadiness,
+            now = { 0L },
+            sleep = { sleepCalls += 1 },
+            observe = {
+                observationCalls += 1
+                error("Non-Python scopes must not be retried.")
+            },
+            checkCanceled = {},
+        )
+
+        assertFalse(result.evidence.attempted)
+        assertEquals(0, sleepCalls)
+        assertEquals(0, observationCalls)
+        assertEquals(initialReadiness, result.readiness)
+    }
+
+    @Test
+    fun `test Python SDK settle requires consecutive ready observations`() {
+        val observations = ArrayDeque(
+            listOf(
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+            ),
+        )
+        var sleepCalls = 0
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+            now = { 0L },
+            sleep = { sleepCalls += 1 },
+            observe = { observations.removeFirst() },
+            checkCanceled = {},
+            timeoutMs = 100,
+            pollMs = 10,
+        )
+
+        assertEquals(4, sleepCalls)
+        assertEquals(5, result.evidence.observationCount)
+        assertEquals(2, result.evidence.stableReadyObservations)
+        assertTrue(result.readiness.ready)
+        assertFalse(result.evidence.timedOut)
+    }
+
+    @Test
+    fun `test Python SDK settle fails closed on single ready observation at deadline`() {
+        val observations = ArrayDeque(
+            listOf(
+                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+            ),
+        )
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+            now = { 0L },
+            sleep = {},
+            observe = { observations.removeFirst() },
+            checkCanceled = {},
+            timeoutMs = 20,
+            pollMs = 10,
+        )
+
+        assertFalse(result.readiness.ready)
+        assertEquals("python_sdk_missing", result.readiness.reason)
+        assertEquals(1, result.evidence.stableReadyObservations)
+        assertTrue(result.evidence.timedOut)
+        assertEquals("python_sdk_missing", result.evidence.finalReason)
+    }
+
+    @Test
+    fun `test Python SDK settle continues through assigned SDK update`() {
+        val observations = ArrayDeque(
+            listOf(
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
+            ),
+        )
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = InspectionProjectAnalysisReadiness(
+                required = true,
+                ready = false,
+                reason = "python_sdk_updating",
+                pythonFileCount = 1,
+                pythonSdkCount = 1,
+                updatingSdkCount = 1,
+                localPythonInterpreterCandidate = true,
+            ),
+            now = { 0L },
+            sleep = {},
+            observe = { observations.removeFirst() },
+            checkCanceled = {},
+            timeoutMs = 100,
+            pollMs = 10,
+        )
+
+        assertTrue(result.readiness.ready)
+        assertEquals(2, result.evidence.stableReadyObservations)
+        assertFalse(result.evidence.timedOut)
+    }
+
+    @Test
+    fun `test Python SDK settle honors cancellation`() {
+        var sleepCalls = 0
+
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            settlePythonSdkReadiness(
+                initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+                now = { 0L },
+                sleep = { sleepCalls += 1 },
+                observe = { pythonSdkReadiness(ready = false, localInterpreterCandidate = true) },
+                checkCanceled = { throw com.intellij.openapi.progress.ProcessCanceledException() },
+            )
+        }
+
+        assertEquals(0, sleepCalls)
+    }
+
+    @Test
     fun `test unresolved targeted analysis scope fails closed without widening`() {
         val productionHandler = InspectionHandler()
 
@@ -7032,6 +7282,21 @@ class InspectionHandlerTest {
         )
         method.isAccessible = true
         return method.invoke(handler, mockProject, snapshot, readiness, fingerprint) as InspectionResultsSnapshot
+    }
+
+    private fun pythonSdkReadiness(
+        ready: Boolean,
+        localInterpreterCandidate: Boolean,
+    ): InspectionProjectAnalysisReadiness {
+        return InspectionProjectAnalysisReadiness(
+            required = true,
+            ready = ready,
+            reason = if (ready) "ready" else "python_sdk_missing",
+            pythonFileCount = 1,
+            pythonSdkCount = if (ready) 1 else 0,
+            missingSdkFileCount = if (ready) 0 else 1,
+            localPythonInterpreterCandidate = localInterpreterCandidate,
+        )
     }
 
     private fun projectInputsFingerprint(
