@@ -5553,6 +5553,57 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open diagnostic expires after ttl`() {
+        val tempDir = Files.createTempDirectory("inspection-open-diagnostic-ttl")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var nowMs = 10L
+        handler.lifecycleOpenDiagnosticNow = { nowMs }
+        handler.lifecycleOpenDiagnosticTtlMs = 5L
+        handler.openProjectPath = { _, _ -> null }
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        nowMs = 20L
+        val probeBody = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+
+        assertTrue(probeBody.contains("\"diagnostic_available\": false"))
+        assertFalse(probeBody.contains("\"lifecycle_open_diagnostic\""))
+    }
+
+    @Test
+    fun `test lifecycle open diagnostic evicts oldest entry above limit`() {
+        val firstDir = Files.createTempDirectory("inspection-open-diagnostic-first")
+        val secondDir = Files.createTempDirectory("inspection-open-diagnostic-second")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var nowMs = 10L
+        handler.lifecycleOpenDiagnosticNow = { nowMs }
+        handler.maxLifecycleOpenDiagnostics = 1
+        handler.openProjectPath = { _, _ -> null }
+
+        processGetRequest(lifecycleOpenUri(firstDir))
+        nowMs = 20L
+        processGetRequest(lifecycleOpenUri(secondDir))
+
+        val firstProbe = processGetRequest(lifecycleOpenUri(firstDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+        val secondProbe = processGetRequest(lifecycleOpenUri(secondDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+
+        assertTrue(firstProbe.contains("\"diagnostic_available\": false"))
+        assertTrue(secondProbe.contains("\"diagnostic_available\": true"))
+        assertTrue(secondProbe.contains("\"phase\": \"open_returned_null\""))
+    }
+
+    @Test
     fun `test lifecycle open keeps opening guard until returned project is initialized`() {
         val tempDir = Files.createTempDirectory("inspection-open-initializing")
         val openProjects = arrayOfNulls<Project>(1)

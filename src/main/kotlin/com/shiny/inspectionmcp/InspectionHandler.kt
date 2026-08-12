@@ -3115,6 +3115,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun probeLifecycleOpen(target: LifecycleOpenTarget): Pair<Map<String, Any?>, HttpResponseStatus> {
+        cleanupLifecycleOpenDiagnostics(lifecycleOpenDiagnosticNow())
         unresolvedLifecycleOpenProjects[target.key]?.let { project ->
             if (isUnresolvedLifecycleOpenActive(project)) {
                 return lifecycleOpenStateUnknown(target, project)
@@ -3548,10 +3549,12 @@ class InspectionHandler : HttpRequestHandler() {
     private fun lifecycleOpenAlreadyOpen(
         project: Project,
         targetKey: String? = null,
+        probe: Boolean = false,
     ): Pair<Map<String, Any?>, HttpResponseStatus> {
         return mapOf(
             "status" to "already_open",
             "opened" to false,
+            "probe" to probe,
             "session_id" to InspectionIdeSession.sessionId,
             "route" to routeMetadata(ResolvedInspectionRoute(project, safeInspectionIdentity(), openProjectIdentity(project))),
             "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
