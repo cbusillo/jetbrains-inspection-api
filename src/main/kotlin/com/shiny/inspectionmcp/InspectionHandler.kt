@@ -2950,6 +2950,20 @@ class InspectionHandler : HttpRequestHandler() {
                             probe = true,
                         )
                     }
+                lifecycleOpenKeys(project)
+                    .firstOrNull { key -> openingProjectRequests.containsKey(key) }
+                    ?.let { key ->
+                        val projectRoot = Paths.get(key)
+                        return lifecycleOpenAlreadyOpening(
+                            LifecycleOpenTarget(
+                                path = path,
+                                openPath = projectRoot,
+                                projectRoot = projectRoot,
+                                key = key,
+                            ),
+                            probe = true,
+                        )
+                    }
                 return lifecycleOpenAlreadyOpen(project, probe = true)
             }
             return probeLifecycleOpen(resolveLifecycleOpenTarget(path))
@@ -3139,6 +3153,9 @@ class InspectionHandler : HttpRequestHandler() {
             if (isUnresolvedLifecycleOpenActive(project)) {
                 return lifecycleOpenStateUnknown(target, project, probe = true)
             }
+        }
+        if (openingProjectRequests.containsKey(target.key)) {
+            return lifecycleOpenAlreadyOpening(target, probe = true)
         }
         findOpenProjectForLifecycleOpenKey(target.key)?.let { project ->
             return if (isUsableProject(project)) {
