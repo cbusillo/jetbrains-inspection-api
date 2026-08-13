@@ -845,6 +845,14 @@ PY
 from pathlib import Path
 import re
 
+for workflow_path in sorted(Path(".github/workflows").glob("*.yml")):
+    for line in workflow_path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
+            raise SystemExit(
+                f"workflow action is not pinned to a full commit SHA in {workflow_path}: {stripped}"
+            )
+
 build = Path("build.gradle.kts").read_text(encoding="utf-8")
 canary_validator = Path("scripts/validate-canary-artifact.sh").read_text(encoding="utf-8")
 stable_validator = Path("scripts/validate-stable-artifact.sh").read_text(encoding="utf-8")
@@ -869,11 +877,6 @@ package = workflow.split("\n  package:\n", 1)[1].split("\n  verify:\n", 1)[0]
 verify = workflow.split("\n  verify:\n", 1)[1].split("\n  release:\n", 1)[0]
 release = workflow.split("\n  release:\n", 1)[1].split("\n  publish:\n", 1)[0]
 publish = workflow.split("\n  publish:\n", 1)[1]
-
-for line in workflow.splitlines():
-    stripped = line.strip()
-    if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
-        raise SystemExit(f"Stable workflow action is not pinned to a full commit SHA: {stripped}")
 
 if "Run commit gate" not in test or "PUBLISH_TOKEN" in test:
     raise SystemExit("Stable test job trust boundary is invalid")
@@ -965,11 +968,6 @@ package = workflow.split("\n  package:\n", 1)[1].split("\n  verify:\n", 1)[0]
 verify = workflow.split("\n  verify:\n", 1)[1].split("\n  publish:\n", 1)[0]
 publish = workflow.split("\n  publish:\n", 1)[1].split("\n  release:\n", 1)[0]
 release = workflow.split("\n  release:\n", 1)[1]
-
-for line in workflow.splitlines():
-    stripped = line.strip()
-    if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
-        raise SystemExit(f"canary workflow action is not pinned to a full commit SHA: {stripped}")
 
 build_steps = [
     "Verify trusted workflow ref",

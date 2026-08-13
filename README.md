@@ -210,7 +210,7 @@ Typical response (truncated):
       "name": "IntelliJ IDEA Ultimate",
       "product_code": "IU",
       "channel": "stable",
-      "plugin_version": "1.13.17",
+      "plugin_version": "1.14.0",
       "plugin_build_fingerprint": "abc123def456abc123def456abc123def456abcd-clean"
     }
   },
@@ -270,7 +270,7 @@ routing state.
       "version": "2025.1.1",
       "product_code": "IU",
       "channel": "stable",
-      "plugin_version": "1.13.17",
+      "plugin_version": "1.14.0",
       "plugin_build_fingerprint": "abc123def456abc123def456abc123def456abcd-clean"
     }
   },
@@ -932,7 +932,7 @@ Shortcut:
 ./scripts/release.sh --patch
 
 # After that PR merges and local main is updated
-./scripts/release.sh tag v1.13.17
+./scripts/release.sh tag vX.Y.Z
 ```
 
 Prepare mode never commits or pushes directly to `main` and never creates a
