@@ -5544,6 +5544,51 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle open probe reports active request while visible project awaits readiness`() {
+        val tempDir = Files.createTempDirectory("inspection-open-probe-active-request")
+        val openProjects = arrayOfNulls<Project>(1)
+        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
+        val initializingProject = mockk<Project>()
+        every { initializingProject.isDefault } returns false
+        every { initializingProject.isDisposed } returns false
+        every { initializingProject.isInitialized } returns true
+        every { initializingProject.name } returns "inspection-open-probe-active-request"
+        every { initializingProject.basePath } returns tempDir.toString()
+        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers {
+            scheduled += firstArg<Runnable>()
+        }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.openProjectPath = { _, beforeInit ->
+            openProjects[0] = initializingProject
+            beforeInit(initializingProject)
+            initializingProject
+        }
+
+        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        val probe = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+
+        val firstBody = first.content().toString(Charsets.UTF_8)
+        val probeBody = probe.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, first.status())
+        assertEquals(HttpResponseStatus.OK, probe.status())
+        assertTrue(firstBody.contains("\"status\": \"opening\""))
+        assertTrue(probeBody.contains("\"status\": \"opening\""))
+        assertTrue(probeBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(probeBody.contains("\"probe\": true"))
+        assertTrue(probeBody.contains("\"opening_scheduled\": false"))
+        assertEquals(1, scheduled.size)
+        assertEquals(1, guardPolls.size)
+    }
+
+    @Test
     fun `test lifecycle open resets diagnostic for a new attempt`() {
         val tempDir = Files.createTempDirectory("inspection-open-diagnostic-reset")
         every { mockProjectManager.openProjects } returns emptyArray()
