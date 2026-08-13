@@ -2,6 +2,7 @@
 /.name
 /shelf/
 /workspace.xml
+/editor.xml
 # Editor-based HTTP Client requests
 /httpRequests/
 # Datasource local storage ignored files
