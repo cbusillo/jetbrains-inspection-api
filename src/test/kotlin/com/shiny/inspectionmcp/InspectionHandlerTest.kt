@@ -4758,16 +4758,19 @@ class InspectionHandlerTest {
             basePath = tempDir.toString(),
             projectFilePath = tempDir.resolve(".idea/misc.xml").toString(),
         )
-        every { mockProjectManager.openProjects } returns emptyArray()
+        var openProjects = emptyArray<Project>()
+        every { mockProjectManager.openProjects } answers { openProjects }
         every { mockApplication.invokeLater(any()) } answers {
             firstArg<Runnable>().run()
         }
+        runPooledTasksInline()
         var trustedPath: Path? = null
         var openedPath: Path? = null
         handler.trustProjectPath = { path: Path -> trustedPath = path }
         handler.openProjectPath = { path: Path, beforeInit ->
             openedPath = path
             beforeInit(openedProject)
+            openProjects = arrayOf(openedProject)
             openedProject
         }
 
@@ -4779,6 +4782,10 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"opened\": false"))
         assertTrue(body.contains("\"opening_scheduled\": true"))
         assertTrue(body.contains("\"ownership_registered\": true"))
+        assertTrue(body.contains("\"lifecycle_open_diagnostic\""))
+        assertTrue(body.contains("\"phase\": \"ready\""))
+        assertTrue(body.contains("\"ownership_registered\": true"))
+        assertTrue(body.contains("\"project_instance_id\""))
         assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
         assertTrue(body.contains(tempDir.toString()))
         assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
@@ -5469,11 +5476,145 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, second.status())
         assertEquals(1, scheduled.size)
         assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
+        assertTrue(secondBody.contains("\"lifecycle_open_diagnostic\""))
+        assertTrue(secondBody.contains("\"phase\": \"scheduled\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
         scheduled.single().run()
         val third = processGetRequest(lifecycleOpenUri(tempDir))
         assertEquals(2, scheduled.size)
         assertEquals(HttpResponseStatus.OK, third.status())
+    }
+
+    @Test
+    fun `test lifecycle open records null project result`() {
+        val tempDir = Files.createTempDirectory("inspection-open-null-result")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        handler.openProjectPath = { _, _ -> null }
+
+        val response = processGetRequest(lifecycleOpenUri(tempDir))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"lifecycle_open_diagnostic\""))
+        assertTrue(body.contains("\"phase\": \"open_returned_null\""))
+        assertTrue(body.contains("\"reason\": \"project_open_returned_null\""))
+        assertTrue(body.contains("\"open_returned\": true"))
+
+        val probeBody = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+
+        assertTrue(probeBody.contains("\"status\": \"not_open\""))
+        assertTrue(probeBody.contains("\"probe\": true"))
+        assertTrue(probeBody.contains("\"phase\": \"open_returned_null\""))
+        verify(exactly = 1) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test lifecycle open probe never schedules a project open`() {
+        val tempDir = Files.createTempDirectory("inspection-open-probe")
+        every { mockProjectManager.openProjects } returns emptyArray()
+
+        val response = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"not_open\""))
+        assertTrue(body.contains("\"reason\": \"project_not_open\""))
+        assertTrue(body.contains("\"probe\": true"))
+        assertTrue(body.contains("\"opening_scheduled\": false"))
+        verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test lifecycle open probe marks already open response without scheduling`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+
+        val response = processGetRequest(lifecycleOpenUri("/tmp/TestProject", probe = true))
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"already_open\""))
+        assertTrue(body.contains("\"probe\": true"))
+        verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test lifecycle open resets diagnostic for a new attempt`() {
+        val tempDir = Files.createTempDirectory("inspection-open-diagnostic-reset")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var nowMs = 10L
+        var openResult: Project? = null
+        handler.lifecycleOpenDiagnosticNow = { nowMs }
+        handler.openProjectPath = { _, callback ->
+            openResult?.also(callback)
+        }
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        nowMs = 100L
+        val second = processGetRequest(lifecycleOpenUri(tempDir))
+        val secondBody = second.content().toString(Charsets.UTF_8)
+
+        assertTrue(secondBody.contains("\"started_at_ms\": 100"))
+        assertTrue(secondBody.contains("\"outcome_at_ms\": 100"))
+    }
+
+    @Test
+    fun `test lifecycle open diagnostic expires after ttl`() {
+        val tempDir = Files.createTempDirectory("inspection-open-diagnostic-ttl")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var nowMs = 10L
+        handler.lifecycleOpenDiagnosticNow = { nowMs }
+        handler.lifecycleOpenDiagnosticTtlMs = 5L
+        handler.openProjectPath = { _, _ -> null }
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        nowMs = 20L
+        val probeBody = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+
+        assertTrue(probeBody.contains("\"diagnostic_available\": false"))
+        assertFalse(probeBody.contains("\"lifecycle_open_diagnostic\""))
+    }
+
+    @Test
+    fun `test lifecycle open diagnostic evicts oldest entry above limit`() {
+        val firstDir = Files.createTempDirectory("inspection-open-diagnostic-first")
+        val secondDir = Files.createTempDirectory("inspection-open-diagnostic-second")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        every { mockApplication.invokeLater(any()) } answers {
+            firstArg<Runnable>().run()
+        }
+        var nowMs = 10L
+        handler.lifecycleOpenDiagnosticNow = { nowMs }
+        handler.maxLifecycleOpenDiagnostics = 1
+        handler.openProjectPath = { _, _ -> null }
+
+        processGetRequest(lifecycleOpenUri(firstDir))
+        nowMs = 20L
+        processGetRequest(lifecycleOpenUri(secondDir))
+
+        val firstProbe = processGetRequest(lifecycleOpenUri(firstDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+        val secondProbe = processGetRequest(lifecycleOpenUri(secondDir, probe = true))
+            .content()
+            .toString(Charsets.UTF_8)
+
+        assertTrue(firstProbe.contains("\"diagnostic_available\": false"))
+        assertTrue(secondProbe.contains("\"diagnostic_available\": true"))
+        assertTrue(secondProbe.contains("\"phase\": \"open_returned_null\""))
     }
 
     @Test
@@ -5748,6 +5889,9 @@ class InspectionHandlerTest {
         assertTrue(secondBody.contains("\"status\": \"failed\""))
         assertTrue(secondBody.contains("\"reason\": \"open_state_unknown\""))
         assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+        assertTrue(secondBody.contains("\"lifecycle_open_diagnostic\""))
+        assertTrue(secondBody.contains("\"phase\": \"unresolved\""))
+        assertTrue(secondBody.contains("\"outcome_reason\": \"readiness_guard_timeout\""))
     }
 
     @Test
@@ -7097,15 +7241,23 @@ class InspectionHandlerTest {
         return processGetRequest(uri)
     }
 
-    private fun lifecycleOpenUri(path: Path, leaseId: String = "test-open-lease"): String {
-        return lifecycleOpenUri(path.toString(), leaseId)
+    private fun lifecycleOpenUri(
+        path: Path,
+        leaseId: String = "test-open-lease",
+        probe: Boolean = false,
+    ): String {
+        return lifecycleOpenUri(path.toString(), leaseId, probe)
     }
 
-    private fun lifecycleOpenUri(path: String, leaseId: String = "test-open-lease"): String {
+    private fun lifecycleOpenUri(
+        path: String,
+        leaseId: String = "test-open-lease",
+        probe: Boolean = false,
+    ): String {
         val encodedPath = java.net.URLEncoder.encode(path, "UTF-8")
         val encodedSession = java.net.URLEncoder.encode(InspectionIdeSession.sessionId, "UTF-8")
         val encodedLeaseId = java.net.URLEncoder.encode(leaseId, "UTF-8")
-        return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession&lease_id=$encodedLeaseId"
+        return "/api/inspection/lifecycle/open?worktree_path=$encodedPath&session_id=$encodedSession&lease_id=$encodedLeaseId&probe=$probe"
     }
 
     private fun runPooledTasksInline() {
