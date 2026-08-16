@@ -1241,11 +1241,83 @@ class InspectionHandlerTest {
             assertFalse(registrationDisappeared.ready)
             assertEquals("python_sdk_missing", registrationDisappeared.reason)
             assertEquals(1, registrationDisappeared.mismatchedSdkFileCount)
+            verify(exactly = 4) {
+                mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
+            }
         } finally {
             unmockkStatic(ModuleUtilCore::class)
             unmockkStatic(ProjectRootManager::class)
             unmockkStatic(FileTypeManager::class)
             unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
+    fun `test worktree Python SDK symlink does not accept its system target`() {
+        val productionHandler = InspectionHandler()
+        val tempDir = Files.createTempDirectory("inspection-python-sdk-symlink")
+        val projectRoot = tempDir.resolve("project")
+        val virtualEnvironmentBin = projectRoot.resolve(".venv/bin")
+        val systemInterpreter = tempDir.resolve("system-python")
+        val localInterpreter = virtualEnvironmentBin.resolve("python")
+        Files.createDirectories(virtualEnvironmentBin)
+        Files.writeString(systemInterpreter, "#!/bin/sh\nexit 0\n")
+        assertTrue(systemInterpreter.toFile().setExecutable(true))
+        Files.createSymbolicLink(localInterpreter, systemInterpreter)
+
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val pythonFile = mockk<VirtualFile>(relaxed = true)
+        val pythonFileType = mockk<FileType>(relaxed = true)
+        val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
+        val rootManager = mockk<ProjectRootManager>(relaxed = true)
+        val systemSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val pythonPath = projectRoot.resolve("check.py").toString()
+        every { mockProject.basePath } returns projectRoot.toString()
+        every { pythonFile.path } returns pythonPath
+        every { pythonFile.name } returns "check.py"
+        every { pythonFile.isValid } returns true
+        every { pythonFile.isDirectory } returns false
+        every { pythonFile.isInLocalFileSystem } returns true
+        every { pythonFile.extension } returns "py"
+        every { pythonFileType.name } returns "Python"
+        every { rootManager.projectSdk } returns systemSdk
+        every { systemSdk.sdkType.name } returns "Python SDK"
+        every { systemSdk.name } returns "System Python"
+        every { systemSdk.homePath } returns systemInterpreter.toString()
+        mockkStatic(LocalFileSystem::class)
+        mockkStatic(FileTypeManager::class)
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(pythonPath) } returns pythonFile
+        every { FileTypeManager.getInstance() } returns fileTypeManager
+        every { fileTypeManager.getFileTypeByExtension("py") } returns pythonFileType
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleUtilCore.findModuleForFile(pythonFile, mockProject) } returns null
+        productionHandler.registeredPythonSdksProvider = { listOf(systemSdk) }
+        productionHandler.pythonSdkUpdateScheduledProvider = { false }
+
+        try {
+            val readiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf(pythonPath),
+                    resolvedFiles = listOf(pythonPath),
+                ),
+            )
+            assertFalse(readiness.ready)
+            assertEquals("python_sdk_missing", readiness.reason)
+            assertEquals(setOf(localInterpreter.toAbsolutePath().normalize().toString()), readiness.localPythonInterpreterPaths)
+            assertEquals(0, readiness.registeredLocalPythonSdkCount)
+            assertEquals(0, readiness.assignedLocalPythonFileCount)
+            assertEquals(1, readiness.mismatchedSdkFileCount)
+        } finally {
+            unmockkStatic(ModuleUtilCore::class)
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(FileTypeManager::class)
+            unmockkStatic(LocalFileSystem::class)
+            tempDir.toFile().deleteRecursively()
         }
     }
 

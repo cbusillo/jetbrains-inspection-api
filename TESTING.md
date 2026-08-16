@@ -125,9 +125,12 @@ or unavailable exact-scope resolution reports `project_analysis_not_ready`.
 Neither state may start inspection or publish decisive GREEN or RED findings.
 When the selected Python scope has an executable project-root `.venv`, that
 interpreter must be the effective SDK for every selected Python file; unrelated
-or mixed Python SDK assignments remain unready. Inspection preflight polls global
-SDK registration, per-file module/project assignment, and update state for an
-initial ten-second observation window before taking the stable input fingerprint.
+or mixed Python SDK assignments remain unready. The normalized worktree-local
+interpreter path is authoritative: the global target of a `.venv/bin/python`
+symlink is not accepted as the local SDK. Each observation captures scope
+resolution, global SDK registration, per-file module/project assignment, and
+update state in one IDE read action. Inspection preflight uses an initial
+ten-second observation window before taking the stable input fingerprint.
 Forward progress can extend the observation-start deadline to at most thirty
 seconds from settle start. No new observation starts at or after that deadline;
 an IDE read that began earlier may finish afterward, but its late result is

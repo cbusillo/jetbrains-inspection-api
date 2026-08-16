@@ -7034,26 +7034,24 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         return runCatching {
-            val pythonFiles = ApplicationManager.getApplication().runReadAction<List<VirtualFile>?, Exception> {
-                resolvedPythonScopeFiles ?: resolvePythonScopeFiles(project, captureScope)
-            }
-            if (pythonFiles == null) {
-                return@runCatching InspectionProjectAnalysisReadiness(
-                    required = true,
-                    ready = false,
-                    reason = "scope_resolution_unavailable",
-                )
-            }
-            if (pythonFiles.isEmpty()) {
-                return@runCatching InspectionProjectAnalysisReadiness(
-                    required = false,
-                    ready = true,
-                    reason = "python_not_in_scope",
-                )
-            }
             val localInterpreterPaths = resolvedLocalInterpreterPaths
                 ?: localPythonInterpreterPathsProvider(project)
             ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
+                val pythonFiles = resolvedPythonScopeFiles ?: resolvePythonScopeFiles(project, captureScope)
+                if (pythonFiles == null) {
+                    return@runReadAction InspectionProjectAnalysisReadiness(
+                        required = true,
+                        ready = false,
+                        reason = "scope_resolution_unavailable",
+                    )
+                }
+                if (pythonFiles.isEmpty()) {
+                    return@runReadAction InspectionProjectAnalysisReadiness(
+                        required = false,
+                        ready = true,
+                        reason = "python_not_in_scope",
+                    )
+                }
                 val pythonFileType = FileTypeManager.getInstance().getFileTypeByExtension("py")
                 if (!pythonFileType.name.contains("python", ignoreCase = true)) {
                     return@runReadAction InspectionProjectAnalysisReadiness(
@@ -7158,7 +7156,7 @@ class InspectionHandler : HttpRequestHandler() {
                 virtualEnvironmentRoot.resolve("Scripts/python"),
             ).filter { interpreter ->
                 Files.isRegularFile(interpreter) && Files.isExecutable(interpreter)
-            }.flatMap { interpreter -> normalizedPathAliases(interpreter.toString()) }
+            }.mapNotNull { interpreter -> normalizeFileSystemPath(interpreter.toString()) }
                 .toSet()
         }.getOrDefault(emptySet())
     }
@@ -7352,14 +7350,6 @@ class InspectionHandler : HttpRequestHandler() {
         if (interpreterPaths.isEmpty()) return false
         val sdkHomePath = normalizeFileSystemPath(sdk.homePath) ?: return false
         return sdkHomePath in interpreterPaths
-    }
-
-    private fun normalizedPathAliases(path: String?): Set<String> {
-        val normalizedPath = normalizeFileSystemPath(path) ?: return emptySet()
-        val realPath = runCatching { Paths.get(normalizedPath).toRealPath().toString() }
-            .getOrNull()
-            ?.let(::normalizeFileSystemPath)
-        return setOfNotNull(normalizedPath, realPath)
     }
 
     private fun pythonSdkUpdateScheduled(sdk: Sdk): Boolean? {
