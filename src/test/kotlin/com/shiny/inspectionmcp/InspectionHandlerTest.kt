@@ -616,7 +616,7 @@ class InspectionHandlerTest {
         val status = buildInspectionStatus()
 
         assertEquals(HttpResponseStatus.OK, response.status())
-        assertEquals(3, refreshCalls)
+        assertEquals(2, refreshCalls)
         assertEquals("language_sdk_missing", status["capture_incomplete_reason"])
         @Suppress("UNCHECKED_CAST")
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
@@ -641,7 +641,7 @@ class InspectionHandlerTest {
         handler.pythonSdkSettleTimeoutMs = 25
         handler.pythonSdkSettleProgressGraceMs = 25
         handler.pythonSdkSettleMaxTimeoutMs = 50
-        handler.pythonSdkSettlePollMs = 25
+        handler.pythonSdkSettlePollMs = 10
         handler.pythonSdkSettleNow = { 0L }
         handler.pythonSdkSettleSleep = {}
         handler.projectAnalysisReadinessProvider = { _, _ ->
@@ -671,7 +671,7 @@ class InspectionHandlerTest {
         assertEquals("environment", diagnostic["outcome_ownership"])
         assertEquals(true, diagnostic["python_sdk_settle_observed_registered_local_sdk"])
         assertEquals(1, diagnostic["python_sdk_settle_deadline_extension_count"])
-        assertEquals(50L, diagnostic["python_sdk_settle_active_deadline_ms"])
+        assertEquals(35L, diagnostic["python_sdk_settle_active_deadline_ms"])
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
     }
 
@@ -702,14 +702,15 @@ class InspectionHandlerTest {
         handler.pythonSdkSettleTimeoutMs = 25
         handler.pythonSdkSettleProgressGraceMs = 25
         handler.pythonSdkSettleMaxTimeoutMs = 50
-        handler.pythonSdkSettlePollMs = 25
+        handler.pythonSdkSettlePollMs = 10
         handler.pythonSdkSettleNow = { 0L }
         handler.pythonSdkSettleSleep = {}
         handler.projectAnalysisReadinessProvider = { _, _ ->
             pythonSdkReadiness(ready = false, localInterpreterCandidate = true)
         }
         handler.projectAnalysisReadinessRefreshProvider = { _, _, _, _ ->
-            refreshedReadiness.removeFirst()
+            refreshedReadiness.removeFirstOrNull()
+                ?: pythonSdkReadiness(ready = false, localInterpreterCandidate = true)
         }
 
         val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
@@ -809,7 +810,6 @@ class InspectionHandlerTest {
     fun `test Python SDK settle extends deadline for registration and assignment progress`() {
         val observations = ArrayDeque(
             listOf(
-                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
                 pythonSdkReadiness(
                     ready = false,
                     localInterpreterCandidate = true,
@@ -836,7 +836,7 @@ class InspectionHandlerTest {
             checkCanceled = {},
             timeoutMs = 20,
             pollMs = 10,
-            progressGraceMs = 20,
+            progressGraceMs = 30,
             maxTimeoutMs = 60,
         )
 
@@ -853,11 +853,6 @@ class InspectionHandlerTest {
     fun `test unrelated assigned Python SDK does not mask local registration progress`() {
         val observations = ArrayDeque(
             listOf(
-                pythonSdkReadiness(
-                    ready = false,
-                    localInterpreterCandidate = true,
-                    pythonSdkCount = 1,
-                ),
                 pythonSdkReadiness(
                     ready = false,
                     localInterpreterCandidate = true,
@@ -934,19 +929,18 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test Python SDK settle fails closed on single ready observation at deadline`() {
-        val observations = ArrayDeque(
-            listOf(
-                pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
-                pythonSdkReadiness(ready = true, localInterpreterCandidate = true),
-            ),
-        )
+    fun `test Python SDK settle does not start another observation at the deadline`() {
+        var currentTimeMs = 0L
+        var observationCalls = 0
 
         val result = settlePythonSdkReadiness(
             initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
-            now = { 0L },
-            sleep = {},
-            observe = { observations.removeFirst() },
+            now = { currentTimeMs },
+            sleep = { sleepMs -> currentTimeMs += sleepMs },
+            observe = {
+                observationCalls += 1
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true)
+            },
             checkCanceled = {},
             timeoutMs = 20,
             pollMs = 10,
@@ -959,6 +953,37 @@ class InspectionHandlerTest {
         assertEquals(1, result.evidence.stableReadyObservations)
         assertTrue(result.evidence.timedOut)
         assertEquals("python_sdk_missing", result.evidence.finalReason)
+        assertEquals(1, observationCalls)
+        assertEquals(20L, result.evidence.elapsedMs)
+    }
+
+    @Test
+    fun `test Python SDK settle discards an observation that overruns the deadline`() {
+        var currentTimeMs = 0L
+        var observationCalls = 0
+
+        val result = settlePythonSdkReadiness(
+            initialReadiness = pythonSdkReadiness(ready = false, localInterpreterCandidate = true),
+            now = { currentTimeMs },
+            sleep = { sleepMs -> currentTimeMs += sleepMs },
+            observe = {
+                observationCalls += 1
+                currentTimeMs += 11
+                pythonSdkReadiness(ready = true, localInterpreterCandidate = true)
+            },
+            checkCanceled = {},
+            timeoutMs = 20,
+            pollMs = 10,
+            progressGraceMs = 20,
+            maxTimeoutMs = 20,
+        )
+
+        assertFalse(result.readiness.ready)
+        assertEquals("python_sdk_missing", result.readiness.reason)
+        assertEquals(0, result.evidence.stableReadyObservations)
+        assertTrue(result.evidence.timedOut)
+        assertEquals(21L, result.evidence.elapsedMs)
+        assertEquals(1, observationCalls)
     }
 
     @Test
@@ -1131,16 +1156,19 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test registered worktree Python SDK is distinct from module assignment`() {
+    fun `test worktree Python SDK production readiness requires local registration and assignment`() {
         val productionHandler = InspectionHandler()
         val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
         val pythonFile = mockk<VirtualFile>(relaxed = true)
         val pythonFileType = mockk<FileType>(relaxed = true)
         val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
         val rootManager = mockk<ProjectRootManager>(relaxed = true)
-        val registeredSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val localSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val unrelatedSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
         val pythonPath = "/tmp/TestProject/scripts/check.py"
         val interpreterPath = "/tmp/TestProject/.venv/bin/python"
+        var projectSdk: com.intellij.openapi.projectRoots.Sdk? = unrelatedSdk
+        var registeredSdks = emptyList<com.intellij.openapi.projectRoots.Sdk>()
         every { pythonFile.path } returns pythonPath
         every { pythonFile.name } returns "check.py"
         every { pythonFile.isValid } returns true
@@ -1148,10 +1176,13 @@ class InspectionHandlerTest {
         every { pythonFile.isInLocalFileSystem } returns true
         every { pythonFile.extension } returns "py"
         every { pythonFileType.name } returns "Python"
-        every { rootManager.projectSdk } returns null
-        every { registeredSdk.sdkType.name } returns "Python SDK"
-        every { registeredSdk.name } returns "TestProject (.venv)"
-        every { registeredSdk.homePath } returns interpreterPath
+        every { rootManager.projectSdk } answers { projectSdk }
+        every { localSdk.sdkType.name } returns "Python SDK"
+        every { localSdk.name } returns "TestProject (.venv)"
+        every { localSdk.homePath } returns interpreterPath
+        every { unrelatedSdk.sdkType.name } returns "Python SDK"
+        every { unrelatedSdk.name } returns "System Python"
+        every { unrelatedSdk.homePath } returns "/usr/bin/python3"
         mockkStatic(LocalFileSystem::class)
         mockkStatic(FileTypeManager::class)
         mockkStatic(ProjectRootManager::class)
@@ -1163,10 +1194,11 @@ class InspectionHandlerTest {
         every { ProjectRootManager.getInstance(mockProject) } returns rootManager
         every { ModuleUtilCore.findModuleForFile(pythonFile, mockProject) } returns null
         productionHandler.localPythonInterpreterPathsProvider = { setOf(interpreterPath) }
-        productionHandler.registeredPythonSdksProvider = { listOf(registeredSdk) }
+        productionHandler.registeredPythonSdksProvider = { registeredSdks }
+        productionHandler.pythonSdkUpdateScheduledProvider = { false }
 
-        try {
-            val readiness = productionHandler.projectAnalysisReadinessProvider(
+        fun readiness(): InspectionProjectAnalysisReadiness =
+            productionHandler.projectAnalysisReadinessProvider(
                 mockProject,
                 InspectionCaptureScope(
                     scopeParam = "files",
@@ -1175,14 +1207,228 @@ class InspectionHandlerTest {
                 ),
             )
 
-            assertTrue(readiness.required)
+        try {
+            val neverRegistered = readiness()
+            assertFalse(neverRegistered.ready)
+            assertEquals("python_sdk_missing", neverRegistered.reason)
+            assertEquals(0, neverRegistered.missingSdkFileCount)
+            assertEquals(1, neverRegistered.mismatchedSdkFileCount)
+            assertEquals(0, neverRegistered.registeredLocalPythonSdkCount)
+            assertEquals(0, neverRegistered.assignedLocalPythonFileCount)
+            assertTrue(neverRegistered.localPythonInterpreterCandidate)
+
+            registeredSdks = listOf(localSdk)
+            val registeredButUnassigned = readiness()
+            assertFalse(registeredButUnassigned.ready)
+            assertEquals("python_sdk_assignment_pending", registeredButUnassigned.reason)
+            assertEquals(1, registeredButUnassigned.registeredLocalPythonSdkCount)
+            assertEquals(0, registeredButUnassigned.assignedLocalPythonSdkCount)
+            assertEquals(0, registeredButUnassigned.assignedLocalPythonFileCount)
+            assertEquals(1, registeredButUnassigned.mismatchedSdkFileCount)
+
+            projectSdk = localSdk
+            val assigned = readiness()
+            assertTrue(assigned.ready)
+            assertEquals("ready", assigned.reason)
+            assertEquals(1, assigned.registeredLocalPythonSdkCount)
+            assertEquals(1, assigned.assignedLocalPythonSdkCount)
+            assertEquals(1, assigned.assignedLocalPythonFileCount)
+            assertEquals(0, assigned.mismatchedSdkFileCount)
+
+            projectSdk = unrelatedSdk
+            registeredSdks = emptyList()
+            val registrationDisappeared = readiness()
+            assertFalse(registrationDisappeared.ready)
+            assertEquals("python_sdk_missing", registrationDisappeared.reason)
+            assertEquals(1, registrationDisappeared.mismatchedSdkFileCount)
+        } finally {
+            unmockkStatic(ModuleUtilCore::class)
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(FileTypeManager::class)
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
+    fun `test production Python SDK readiness settles real registration assignment and disappearance`() {
+        val productionHandler = InspectionHandler()
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val pythonFile = mockk<VirtualFile>(relaxed = true)
+        val pythonFileType = mockk<FileType>(relaxed = true)
+        val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
+        val rootManager = mockk<ProjectRootManager>(relaxed = true)
+        val localSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val unrelatedSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val pythonPath = "/tmp/TestProject/scripts/check.py"
+        val interpreterPath = "/tmp/TestProject/.venv/bin/python"
+        var projectSdk: com.intellij.openapi.projectRoots.Sdk? = unrelatedSdk
+        var registeredSdks = emptyList<com.intellij.openapi.projectRoots.Sdk>()
+        every { pythonFile.path } returns pythonPath
+        every { pythonFile.name } returns "check.py"
+        every { pythonFile.isValid } returns true
+        every { pythonFile.isDirectory } returns false
+        every { pythonFile.isInLocalFileSystem } returns true
+        every { pythonFile.extension } returns "py"
+        every { pythonFileType.name } returns "Python"
+        every { rootManager.projectSdk } answers { projectSdk }
+        every { localSdk.sdkType.name } returns "Python SDK"
+        every { localSdk.name } returns "TestProject (.venv)"
+        every { localSdk.homePath } returns interpreterPath
+        every { unrelatedSdk.sdkType.name } returns "Python SDK"
+        every { unrelatedSdk.name } returns "System Python"
+        every { unrelatedSdk.homePath } returns "/usr/bin/python3"
+        mockkStatic(LocalFileSystem::class)
+        mockkStatic(FileTypeManager::class)
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(pythonPath) } returns pythonFile
+        every { FileTypeManager.getInstance() } returns fileTypeManager
+        every { fileTypeManager.getFileTypeByExtension("py") } returns pythonFileType
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleUtilCore.findModuleForFile(pythonFile, mockProject) } returns null
+        productionHandler.localPythonInterpreterPathsProvider = { setOf(interpreterPath) }
+        productionHandler.registeredPythonSdksProvider = { registeredSdks }
+        productionHandler.pythonSdkUpdateScheduledProvider = { false }
+
+        fun readiness(): InspectionProjectAnalysisReadiness =
+            productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf(pythonPath),
+                    resolvedFiles = listOf(pythonPath),
+                ),
+            )
+
+        try {
+            var observation = 0
+            val successful = settlePythonSdkReadiness(
+                initialReadiness = readiness(),
+                now = { 0L },
+                sleep = {},
+                observe = {
+                    observation += 1
+                    when (observation) {
+                        1 -> registeredSdks = listOf(localSdk)
+                        2 -> projectSdk = localSdk
+                    }
+                    readiness()
+                },
+                checkCanceled = {},
+                timeoutMs = 100,
+                pollMs = 10,
+                progressGraceMs = 20,
+                maxTimeoutMs = 100,
+            )
+            assertTrue(successful.readiness.ready)
+            assertEquals(1, successful.readiness.assignedLocalPythonFileCount)
+            assertTrue(successful.evidence.observedRegisteredLocalSdk)
+            assertTrue(successful.evidence.observedAssignedLocalSdk)
+
+            projectSdk = unrelatedSdk
+            registeredSdks = emptyList()
+            observation = 0
+            val disappeared = settlePythonSdkReadiness(
+                initialReadiness = readiness(),
+                now = { 0L },
+                sleep = {},
+                observe = {
+                    observation += 1
+                    registeredSdks = if (observation == 1) listOf(localSdk) else emptyList()
+                    readiness()
+                },
+                checkCanceled = {},
+                timeoutMs = 20,
+                pollMs = 5,
+                progressGraceMs = 10,
+                maxTimeoutMs = 20,
+            )
+            assertTrue(disappeared.evidence.timedOut)
+            assertEquals("python_sdk_missing", disappeared.readiness.reason)
+            assertTrue(disappeared.evidence.observedRegisteredLocalSdk)
+            assertFalse(disappeared.evidence.observedAssignedLocalSdk)
+        } finally {
+            unmockkStatic(ModuleUtilCore::class)
+            unmockkStatic(ProjectRootManager::class)
+            unmockkStatic(FileTypeManager::class)
+            unmockkStatic(LocalFileSystem::class)
+        }
+    }
+
+    @Test
+    fun `test mixed production Python SDK assignment remains pending`() {
+        val productionHandler = InspectionHandler()
+        val localFileSystem = mockk<LocalFileSystem>(relaxed = true)
+        val localFile = mockk<VirtualFile>(relaxed = true)
+        val unrelatedFile = mockk<VirtualFile>(relaxed = true)
+        val localModule = mockk<com.intellij.openapi.module.Module>(relaxed = true)
+        val unrelatedModule = mockk<com.intellij.openapi.module.Module>(relaxed = true)
+        val localModuleRoots = mockk<ModuleRootManager>(relaxed = true)
+        val unrelatedModuleRoots = mockk<ModuleRootManager>(relaxed = true)
+        val pythonFileType = mockk<FileType>(relaxed = true)
+        val fileTypeManager = mockk<FileTypeManager>(relaxed = true)
+        val rootManager = mockk<ProjectRootManager>(relaxed = true)
+        val localSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val unrelatedSdk = mockk<com.intellij.openapi.projectRoots.Sdk>(relaxed = true)
+        val localPath = "/tmp/TestProject/local.py"
+        val unrelatedPath = "/tmp/TestProject/unrelated.py"
+        val interpreterPath = "/tmp/TestProject/.venv/bin/python"
+        listOf(localFile to localPath, unrelatedFile to unrelatedPath).forEach { (file, path) ->
+            every { file.path } returns path
+            every { file.name } returns path.substringAfterLast('/')
+            every { file.isValid } returns true
+            every { file.isDirectory } returns false
+            every { file.isInLocalFileSystem } returns true
+            every { file.extension } returns "py"
+        }
+        every { pythonFileType.name } returns "Python"
+        every { rootManager.projectSdk } returns null
+        every { localModuleRoots.sdk } returns localSdk
+        every { unrelatedModuleRoots.sdk } returns unrelatedSdk
+        every { localSdk.sdkType.name } returns "Python SDK"
+        every { localSdk.name } returns "TestProject (.venv)"
+        every { localSdk.homePath } returns interpreterPath
+        every { unrelatedSdk.sdkType.name } returns "Python SDK"
+        every { unrelatedSdk.name } returns "System Python"
+        every { unrelatedSdk.homePath } returns "/usr/bin/python3"
+        mockkStatic(LocalFileSystem::class)
+        mockkStatic(FileTypeManager::class)
+        mockkStatic(ProjectRootManager::class)
+        mockkStatic(ModuleUtilCore::class)
+        mockkStatic(ModuleRootManager::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath(localPath) } returns localFile
+        every { localFileSystem.findFileByPath(unrelatedPath) } returns unrelatedFile
+        every { FileTypeManager.getInstance() } returns fileTypeManager
+        every { fileTypeManager.getFileTypeByExtension("py") } returns pythonFileType
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { ModuleUtilCore.findModuleForFile(localFile, mockProject) } returns localModule
+        every { ModuleUtilCore.findModuleForFile(unrelatedFile, mockProject) } returns unrelatedModule
+        every { ModuleRootManager.getInstance(localModule) } returns localModuleRoots
+        every { ModuleRootManager.getInstance(unrelatedModule) } returns unrelatedModuleRoots
+        productionHandler.localPythonInterpreterPathsProvider = { setOf(interpreterPath) }
+        productionHandler.registeredPythonSdksProvider = { listOf(localSdk) }
+        productionHandler.pythonSdkUpdateScheduledProvider = { false }
+
+        try {
+            val readiness = productionHandler.projectAnalysisReadinessProvider(
+                mockProject,
+                InspectionCaptureScope(
+                    scopeParam = "files",
+                    files = listOf(localPath, unrelatedPath),
+                    resolvedFiles = listOf(localPath, unrelatedPath),
+                ),
+            )
             assertFalse(readiness.ready)
             assertEquals("python_sdk_assignment_pending", readiness.reason)
-            assertEquals(1, readiness.registeredLocalPythonSdkCount)
-            assertEquals(0, readiness.assignedLocalPythonSdkCount)
-            assertEquals(1, readiness.missingSdkFileCount)
-            assertTrue(readiness.localPythonInterpreterCandidate)
+            assertEquals(2, readiness.pythonFileCount)
+            assertEquals(0, readiness.missingSdkFileCount)
+            assertEquals(1, readiness.mismatchedSdkFileCount)
+            assertEquals(1, readiness.assignedLocalPythonSdkCount)
+            assertEquals(1, readiness.assignedLocalPythonFileCount)
         } finally {
+            unmockkStatic(ModuleRootManager::class)
             unmockkStatic(ModuleUtilCore::class)
             unmockkStatic(ProjectRootManager::class)
             unmockkStatic(FileTypeManager::class)

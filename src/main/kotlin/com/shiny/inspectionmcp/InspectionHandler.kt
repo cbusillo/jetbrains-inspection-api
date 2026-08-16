@@ -231,12 +231,14 @@ internal data class InspectionProjectAnalysisReadiness(
     val pythonFileCount: Int = 0,
     val pythonSdkCount: Int = 0,
     val missingSdkFileCount: Int = 0,
+    val mismatchedSdkFileCount: Int = 0,
     val updatingSdkCount: Int = 0,
     val daemonRunning: Boolean = false,
     val sdkUpdateStateUnavailable: Boolean = false,
     val localPythonInterpreterCandidate: Boolean = false,
     val registeredLocalPythonSdkCount: Int = 0,
     val assignedLocalPythonSdkCount: Int = 0,
+    val assignedLocalPythonFileCount: Int = 0,
     val localPythonInterpreterPaths: Set<String> = emptySet(),
     val pythonScopeFiles: List<VirtualFile> = emptyList(),
 )
@@ -355,7 +357,7 @@ internal fun settlePythonSdkReadiness(
         sleptMs += sleepDurationMs
         checkCanceled()
         val elapsedAfterSleep = elapsedMs()
-        if (elapsedAfterSleep > activeDeadlineMs) {
+        if (elapsedAfterSleep >= activeDeadlineMs) {
             return timeoutResult(elapsedAfterSleep)
         }
         val observedReadiness = observe()
@@ -1804,6 +1806,9 @@ class InspectionHandler : HttpRequestHandler() {
         }
     internal var registeredPythonSdksProvider: () -> List<Sdk> = {
         ProjectJdkTable.getInstance().allJdks.toList()
+    }
+    internal var pythonSdkUpdateScheduledProvider: (Sdk) -> Boolean? = { sdk ->
+        pythonSdkUpdateScheduled(sdk)
     }
     internal var localPythonInterpreterPathsProvider: (Project) -> Set<String> = { project ->
         worktreeLocalPythonInterpreterPaths(project)
@@ -7079,11 +7084,36 @@ class InspectionHandler : HttpRequestHandler() {
                 val assignedLocalPythonSdks = validPythonSdks
                     .filter { sdk -> sdkMatchesInterpreterPaths(sdk, localInterpreterPaths) }
                 val missingSdkFileCount = sdkByFile.count { (_, sdk) -> sdk == null || !isPythonSdk(sdk) }
-                val sdkUpdateStates = validPythonSdks.map(::pythonSdkUpdateScheduled)
+                val mismatchedSdkFileCount = if (localInterpreterPaths.isEmpty()) {
+                    0
+                } else {
+                    sdkByFile.count { (_, sdk) ->
+                        sdk != null && isPythonSdk(sdk) &&
+                            !sdkMatchesInterpreterPaths(sdk, localInterpreterPaths)
+                    }
+                }
+                val assignedLocalPythonFileCount = if (localInterpreterPaths.isEmpty()) {
+                    0
+                } else {
+                    sdkByFile.count { (_, sdk) ->
+                        sdk != null && isPythonSdk(sdk) &&
+                            sdkMatchesInterpreterPaths(sdk, localInterpreterPaths)
+                    }
+                }
+                val sdkUpdateCandidates = if (localInterpreterPaths.isEmpty()) {
+                    validPythonSdks
+                } else {
+                    assignedLocalPythonSdks
+                }
+                val sdkUpdateStates = sdkUpdateCandidates.map(pythonSdkUpdateScheduledProvider)
                 val updatingSdkCount = sdkUpdateStates.count { state -> state == true }
                 val updateStateUnavailable = sdkUpdateStates.any { state -> state == null }
+                val localPythonInterpreterCandidate = localInterpreterPaths.isNotEmpty()
                 val reason = when {
-                    missingSdkFileCount > 0 && registeredLocalPythonSdks.isNotEmpty() ->
+                    localPythonInterpreterCandidate && registeredLocalPythonSdks.isEmpty() ->
+                        "python_sdk_missing"
+                    localPythonInterpreterCandidate &&
+                        (missingSdkFileCount > 0 || mismatchedSdkFileCount > 0) ->
                         "python_sdk_assignment_pending"
                     missingSdkFileCount > 0 -> "python_sdk_missing"
                     updateStateUnavailable -> "python_sdk_update_state_unavailable"
@@ -7097,13 +7127,13 @@ class InspectionHandler : HttpRequestHandler() {
                     pythonFileCount = pythonFiles.size,
                     pythonSdkCount = validPythonSdks.size,
                     missingSdkFileCount = missingSdkFileCount,
+                    mismatchedSdkFileCount = mismatchedSdkFileCount,
                     updatingSdkCount = updatingSdkCount,
                     sdkUpdateStateUnavailable = updateStateUnavailable,
-                    localPythonInterpreterCandidate =
-                        (missingSdkFileCount > 0 || updatingSdkCount > 0) &&
-                            localInterpreterPaths.isNotEmpty(),
+                    localPythonInterpreterCandidate = localPythonInterpreterCandidate,
                     registeredLocalPythonSdkCount = registeredLocalPythonSdks.size,
                     assignedLocalPythonSdkCount = assignedLocalPythonSdks.size,
+                    assignedLocalPythonFileCount = assignedLocalPythonFileCount,
                     localPythonInterpreterPaths = localInterpreterPaths,
                     pythonScopeFiles = pythonFiles,
                 )
@@ -7215,6 +7245,8 @@ class InspectionHandler : HttpRequestHandler() {
             "sdk_assignment_state" to sdkAssignmentState,
             "registered_local_python_sdk_count" to readiness.registeredLocalPythonSdkCount,
             "assigned_local_python_sdk_count" to readiness.assignedLocalPythonSdkCount,
+            "assigned_local_python_file_count" to readiness.assignedLocalPythonFileCount,
+            "mismatched_sdk_file_count" to readiness.mismatchedSdkFileCount,
             "analysis_state" to readiness.reason,
             "inspection_started" to inspectionStarted,
             "outcome_ownership" to outcomeOwnership,
@@ -7269,11 +7301,13 @@ class InspectionHandler : HttpRequestHandler() {
             "python_file_count" to readiness.pythonFileCount,
             "python_sdk_count" to readiness.pythonSdkCount,
             "missing_sdk_file_count" to readiness.missingSdkFileCount,
+            "mismatched_sdk_file_count" to readiness.mismatchedSdkFileCount,
             "updating_sdk_count" to readiness.updatingSdkCount,
             "daemon_running" to readiness.daemonRunning,
             "sdk_update_state_unavailable" to readiness.sdkUpdateStateUnavailable,
             "registered_local_python_sdk_count" to readiness.registeredLocalPythonSdkCount,
             "assigned_local_python_sdk_count" to readiness.assignedLocalPythonSdkCount,
+            "assigned_local_python_file_count" to readiness.assignedLocalPythonFileCount,
             "exit_reason" to incompleteReason.apiValue,
         ) + sdkSettleEvidence?.let(::pythonSdkSettleDiagnostic).orEmpty() +
             additionalDiagnostic +
