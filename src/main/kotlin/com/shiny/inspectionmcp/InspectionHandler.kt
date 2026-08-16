@@ -7277,10 +7277,11 @@ class InspectionHandler : HttpRequestHandler() {
         sdkSettleEvidence: PythonSdkSettleEvidence? = null,
         additionalDiagnostic: Map<String, Any?> = emptyMap(),
     ) {
-        val registrationTransitionObserved = readiness.reason == "python_sdk_missing" &&
-            sdkSettleEvidence?.observedRegisteredLocalSdk == true
+        val sdkTransitionObserved = readiness.reason == "python_sdk_missing" &&
+            (sdkSettleEvidence?.observedRegisteredLocalSdk == true ||
+                sdkSettleEvidence?.observedAssignedLocalSdk == true)
         val incompleteReason = if (
-            (readiness.reason == "python_sdk_missing" && !registrationTransitionObserved) ||
+            (readiness.reason == "python_sdk_missing" && !sdkTransitionObserved) ||
             readiness.reason == "python_support_unavailable"
         ) {
             CaptureIncompleteReason.LANGUAGE_SDK_MISSING
@@ -7309,7 +7310,7 @@ class InspectionHandler : HttpRequestHandler() {
             "exit_reason" to incompleteReason.apiValue,
         ) + sdkSettleEvidence?.let(::pythonSdkSettleDiagnostic).orEmpty() +
             additionalDiagnostic +
-            if (registrationTransitionObserved) mapOf("outcome_ownership" to "environment") else emptyMap()
+            if (sdkTransitionObserved) mapOf("outcome_ownership" to "environment") else emptyMap()
         resultsStore.setSnapshot(
             key,
             InspectionResultsSnapshot(

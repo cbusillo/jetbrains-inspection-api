@@ -729,6 +729,51 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test observed Python SDK assignment remains retryable without registration`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockVirtualFileManager.syncRefresh() } returns 0L
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+
+        val assignedWithoutRegistration = pythonSdkReadiness(
+            ready = false,
+            localInterpreterCandidate = true,
+            assignedLocalPythonSdkCount = 1,
+            assignedLocalPythonFileCount = 1,
+            missingSdkFileCount = 0,
+        )
+        handler.pythonSdkSettleTimeoutMs = 20
+        handler.pythonSdkSettleProgressGraceMs = 10
+        handler.pythonSdkSettleMaxTimeoutMs = 20
+        handler.pythonSdkSettlePollMs = 10
+        handler.pythonSdkSettleNow = { 0L }
+        handler.pythonSdkSettleSleep = {}
+        handler.projectAnalysisReadinessProvider = { _, _ -> assignedWithoutRegistration }
+        handler.projectAnalysisReadinessRefreshProvider = { _, _, _, _ -> assignedWithoutRegistration }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val status = buildInspectionStatus()
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals("capture_incomplete", status["snapshot_outcome"])
+        assertEquals("project_analysis_not_ready", status["capture_incomplete_reason"])
+        @Suppress("UNCHECKED_CAST")
+        val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
+        assertEquals("python_sdk_missing", diagnostic["analysis_state"])
+        assertEquals("not_registered", diagnostic["sdk_registration_state"])
+        assertEquals("environment", diagnostic["outcome_ownership"])
+        assertEquals(true, diagnostic["python_sdk_settle_observed_assigned_local_sdk"])
+        assertEquals(false, diagnostic["python_sdk_settle_observed_registered_local_sdk"])
+        verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+    }
+
+    @Test
     fun `test Python SDK settle skips missing SDK without local interpreter candidate`() {
         var sleepCalls = 0
         var observationCalls = 0
@@ -1235,12 +1280,13 @@ class InspectionHandlerTest {
             assertEquals(1, assigned.assignedLocalPythonFileCount)
             assertEquals(0, assigned.mismatchedSdkFileCount)
 
-            projectSdk = unrelatedSdk
             registeredSdks = emptyList()
             val registrationDisappeared = readiness()
             assertFalse(registrationDisappeared.ready)
             assertEquals("python_sdk_missing", registrationDisappeared.reason)
-            assertEquals(1, registrationDisappeared.mismatchedSdkFileCount)
+            assertEquals(0, registrationDisappeared.mismatchedSdkFileCount)
+            assertEquals(1, registrationDisappeared.assignedLocalPythonSdkCount)
+            assertEquals(1, registrationDisappeared.assignedLocalPythonFileCount)
             verify(exactly = 4) {
                 mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
             }
@@ -8099,6 +8145,7 @@ class InspectionHandlerTest {
         assignedLocalPythonSdkCount: Int = if (ready) 1 else 0,
         pythonSdkCount: Int = assignedLocalPythonSdkCount,
         missingSdkFileCount: Int = if (ready || reason == "python_sdk_updating") 0 else 1,
+        assignedLocalPythonFileCount: Int = assignedLocalPythonSdkCount,
     ): InspectionProjectAnalysisReadiness {
         return InspectionProjectAnalysisReadiness(
             required = true,
@@ -8110,6 +8157,7 @@ class InspectionHandlerTest {
             localPythonInterpreterCandidate = localInterpreterCandidate,
             registeredLocalPythonSdkCount = registeredLocalPythonSdkCount,
             assignedLocalPythonSdkCount = assignedLocalPythonSdkCount,
+            assignedLocalPythonFileCount = assignedLocalPythonFileCount,
             localPythonInterpreterPaths = if (localInterpreterCandidate) setOf("/tmp/TestProject/.venv/bin/python") else emptySet(),
         )
     }
