@@ -123,13 +123,24 @@ scheduled SDK refresh or unsettled analysis. Missing support or SDK assignment
 reports `language_sdk_missing`; SDK refresh, analysis, unreadable update state,
 or unavailable exact-scope resolution reports `project_analysis_not_ready`.
 Neither state may start inspection or publish decisive GREEN or RED findings.
-When the selected Python scope has an executable project-root `.venv`, the
-inspection preflight polls SDK assignment/update state for at most five seconds
-before taking the stable input fingerprint. Two consecutive ready observations
-are required. Missing or invalid interpreter candidates skip the wait and remain
-terminal `language_sdk_missing`; an assigned SDK that is still updating remains
-`project_analysis_not_ready`. Timeout diagnostics expose the bounded
-`python_sdk_settle_*` evidence without modifying JetBrains' global SDK table.
+When the selected Python scope has an executable project-root `.venv`, that
+interpreter must be the effective SDK for every selected Python file; unrelated
+or mixed Python SDK assignments remain unready. The normalized worktree-local
+interpreter path is authoritative: the global target of a `.venv/bin/python`
+symlink is not accepted as the local SDK. Each observation captures scope
+resolution, global SDK registration, per-file module/project assignment, and
+update state in one IDE read action. Inspection preflight uses an initial
+ten-second observation window before taking the stable input fingerprint.
+Forward progress can extend the observation-start deadline to at most thirty
+seconds from settle start. No new observation starts at or after that deadline;
+an IDE read that began earlier may finish afterward, but its late result is
+discarded. Once settling is needed, two consecutive ready observations are
+required. Missing or invalid interpreter candidates skip the wait; a candidate
+that never registers remains terminal `language_sdk_missing`, while
+registered-but-unassigned, mismatched, mixed, or updating SDKs remain
+`project_analysis_not_ready`. Timeout diagnostics expose separate registration,
+distinct-SDK, per-file assignment, mismatch, and bounded `python_sdk_settle_*`
+evidence without modifying JetBrains' global SDK table.
 If configurators remove the initial raw-directory module, the plugin repairs
 the exact lease-bound helper-owned project with a non-persistent fallback module
 and reports `fallback_module_count`; the fallback must not create tracked

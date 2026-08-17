@@ -35,6 +35,7 @@ import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.project.ex.ProjectManagerEx
 import com.intellij.openapi.Disposable
@@ -105,8 +106,10 @@ private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
-private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 5_000L
+private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
+private const val DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS = 10_000L
+private const val DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS = 30_000L
 private const val REQUIRED_PYTHON_SDK_READY_OBSERVATIONS = 2
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
@@ -228,10 +231,15 @@ internal data class InspectionProjectAnalysisReadiness(
     val pythonFileCount: Int = 0,
     val pythonSdkCount: Int = 0,
     val missingSdkFileCount: Int = 0,
+    val mismatchedSdkFileCount: Int = 0,
     val updatingSdkCount: Int = 0,
     val daemonRunning: Boolean = false,
     val sdkUpdateStateUnavailable: Boolean = false,
     val localPythonInterpreterCandidate: Boolean = false,
+    val registeredLocalPythonSdkCount: Int = 0,
+    val assignedLocalPythonSdkCount: Int = 0,
+    val assignedLocalPythonFileCount: Int = 0,
+    val localPythonInterpreterPaths: Set<String> = emptySet(),
     val pythonScopeFiles: List<VirtualFile> = emptyList(),
 )
 
@@ -243,6 +251,10 @@ internal data class PythonSdkSettleEvidence(
     val elapsedMs: Long,
     val timedOut: Boolean,
     val finalReason: String,
+    val observedRegisteredLocalSdk: Boolean,
+    val observedAssignedLocalSdk: Boolean,
+    val deadlineExtensionCount: Int,
+    val activeDeadlineMs: Long,
 )
 
 internal data class PythonSdkSettleResult(
@@ -258,9 +270,15 @@ internal fun settlePythonSdkReadiness(
     checkCanceled: () -> Unit,
     timeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS,
     pollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS,
+    progressGraceMs: Long = DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS,
+    maxTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS,
     requiredReadyObservations: Int = REQUIRED_PYTHON_SDK_READY_OBSERVATIONS,
 ): PythonSdkSettleResult {
-    val settleReasons = setOf("python_sdk_missing", "python_sdk_updating")
+    val settleReasons = setOf(
+        "python_sdk_missing",
+        "python_sdk_assignment_pending",
+        "python_sdk_updating",
+    )
     val shouldSettle = initialReadiness.reason in settleReasons &&
         initialReadiness.localPythonInterpreterCandidate
     if (!shouldSettle) {
@@ -274,6 +292,10 @@ internal fun settlePythonSdkReadiness(
                 elapsedMs = 0,
                 timedOut = false,
                 finalReason = initialReadiness.reason,
+                observedRegisteredLocalSdk = initialReadiness.registeredLocalPythonSdkCount > 0,
+                observedAssignedLocalSdk = initialReadiness.assignedLocalPythonSdkCount > 0,
+                deadlineExtensionCount = 0,
+                activeDeadlineMs = 0,
             ),
         )
     }
@@ -281,46 +303,87 @@ internal fun settlePythonSdkReadiness(
     val startedAt = now()
     val boundedTimeoutMs = timeoutMs.coerceAtLeast(0)
     val boundedPollMs = pollMs.coerceAtLeast(1)
+    val boundedProgressGraceMs = progressGraceMs.coerceAtLeast(0)
+    val boundedMaxTimeoutMs = maxTimeoutMs.coerceAtLeast(boundedTimeoutMs)
     val requiredObservations = requiredReadyObservations.coerceAtLeast(1)
     var readiness = initialReadiness
     var lastNonReadyReadiness = initialReadiness
     var observationCount = 1
     var stableReadyObservations = 0
     var sleptMs = 0L
+    var activeDeadlineMs = boundedTimeoutMs
+    var deadlineExtensionCount = 0
+    var highestProgress = pythonSdkReadinessProgress(initialReadiness)
+    var observedRegisteredLocalSdk = initialReadiness.registeredLocalPythonSdkCount > 0
+    var observedAssignedLocalSdk = initialReadiness.assignedLocalPythonSdkCount > 0
 
     fun elapsedMs(): Long = maxOf((now() - startedAt).coerceAtLeast(0), sleptMs)
+
+    fun timeoutResult(elapsed: Long): PythonSdkSettleResult {
+        val finalReadiness = if (
+            readiness.ready && stableReadyObservations < requiredObservations
+        ) {
+            lastNonReadyReadiness
+        } else {
+            readiness
+        }
+        return PythonSdkSettleResult(
+            readiness = finalReadiness,
+            evidence = PythonSdkSettleEvidence(
+                attempted = true,
+                localInterpreterCandidate = true,
+                observationCount = observationCount,
+                stableReadyObservations = stableReadyObservations,
+                elapsedMs = elapsed,
+                timedOut = true,
+                finalReason = finalReadiness.reason,
+                observedRegisteredLocalSdk = observedRegisteredLocalSdk,
+                observedAssignedLocalSdk = observedAssignedLocalSdk,
+                deadlineExtensionCount = deadlineExtensionCount,
+                activeDeadlineMs = activeDeadlineMs,
+            ),
+        )
+    }
 
     while (true) {
         checkCanceled()
         val elapsed = elapsedMs()
-        if (elapsed >= boundedTimeoutMs) {
-            val finalReadiness = if (
-                readiness.ready && stableReadyObservations < requiredObservations
-            ) {
-                lastNonReadyReadiness
-            } else {
-                readiness
-            }
-            return PythonSdkSettleResult(
-                readiness = finalReadiness,
-                evidence = PythonSdkSettleEvidence(
-                    attempted = true,
-                    localInterpreterCandidate = true,
-                    observationCount = observationCount,
-                    stableReadyObservations = stableReadyObservations,
-                    elapsedMs = elapsed,
-                    timedOut = true,
-                    finalReason = finalReadiness.reason,
-                ),
-            )
+        if (elapsed >= activeDeadlineMs) {
+            return timeoutResult(elapsed)
         }
 
-        val sleepDurationMs = minOf(boundedPollMs, boundedTimeoutMs - elapsed)
+        val sleepDurationMs = minOf(boundedPollMs, activeDeadlineMs - elapsed)
         sleep(sleepDurationMs)
         sleptMs += sleepDurationMs
         checkCanceled()
-        readiness = observe()
+        val elapsedAfterSleep = elapsedMs()
+        if (elapsedAfterSleep >= activeDeadlineMs) {
+            return timeoutResult(elapsedAfterSleep)
+        }
+        val observedReadiness = observe()
+        checkCanceled()
+        val elapsedAfterObservation = elapsedMs()
+        if (elapsedAfterObservation > activeDeadlineMs) {
+            return timeoutResult(elapsedAfterObservation)
+        }
+        readiness = observedReadiness
         observationCount += 1
+        observedRegisteredLocalSdk = observedRegisteredLocalSdk ||
+            readiness.registeredLocalPythonSdkCount > 0
+        observedAssignedLocalSdk = observedAssignedLocalSdk ||
+            readiness.assignedLocalPythonSdkCount > 0
+        val progress = pythonSdkReadinessProgress(readiness)
+        if (progress > highestProgress) {
+            highestProgress = progress
+            val extendedDeadlineMs = minOf(
+                boundedMaxTimeoutMs,
+                elapsedAfterObservation + boundedProgressGraceMs,
+            )
+            if (extendedDeadlineMs > activeDeadlineMs) {
+                activeDeadlineMs = extendedDeadlineMs
+                deadlineExtensionCount += 1
+            }
+        }
         stableReadyObservations = if (readiness.ready) stableReadyObservations + 1 else 0
         if (!readiness.ready) {
             lastNonReadyReadiness = readiness
@@ -333,6 +396,10 @@ internal fun settlePythonSdkReadiness(
             elapsedMs = elapsedMs(),
             timedOut = false,
             finalReason = readiness.reason,
+            observedRegisteredLocalSdk = observedRegisteredLocalSdk,
+            observedAssignedLocalSdk = observedAssignedLocalSdk,
+            deadlineExtensionCount = deadlineExtensionCount,
+            activeDeadlineMs = activeDeadlineMs,
         )
         if (
             stableReadyObservations >= requiredObservations ||
@@ -340,6 +407,16 @@ internal fun settlePythonSdkReadiness(
         ) {
             return PythonSdkSettleResult(readiness, evidence)
         }
+    }
+}
+
+private fun pythonSdkReadinessProgress(readiness: InspectionProjectAnalysisReadiness): Int {
+    return when {
+        readiness.ready -> 4
+        readiness.assignedLocalPythonSdkCount > 0 -> 3
+        readiness.registeredLocalPythonSdkCount > 0 -> 2
+        readiness.localPythonInterpreterCandidate -> 1
+        else -> 0
     }
 }
 
@@ -1686,6 +1763,8 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var pythonSdkSettleTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS
     internal var pythonSdkSettlePollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS
+    internal var pythonSdkSettleProgressGraceMs: Long = DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS
+    internal var pythonSdkSettleMaxTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS
     internal var pythonSdkSettleNow: () -> Long = { System.currentTimeMillis() }
     internal var pythonSdkSettleSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var lifecycleOpenGuardPollMs: Long = 200
@@ -1716,10 +1795,24 @@ class InspectionHandler : HttpRequestHandler() {
             inspectProjectAnalysisReadiness(project, captureScope)
         }
     internal var projectAnalysisReadinessRefreshProvider:
-        (Project, InspectionCaptureScope?, List<VirtualFile>) -> InspectionProjectAnalysisReadiness =
-        { project, captureScope, pythonScopeFiles ->
-            inspectProjectAnalysisReadiness(project, captureScope, pythonScopeFiles)
+        (Project, InspectionCaptureScope?, List<VirtualFile>, Set<String>) -> InspectionProjectAnalysisReadiness =
+        { project, captureScope, pythonScopeFiles, localInterpreterPaths ->
+            inspectProjectAnalysisReadiness(
+                project,
+                captureScope,
+                pythonScopeFiles,
+                localInterpreterPaths,
+            )
         }
+    internal var registeredPythonSdksProvider: () -> List<Sdk> = {
+        ProjectJdkTable.getInstance().allJdks.toList()
+    }
+    internal var pythonSdkUpdateScheduledProvider: (Sdk) -> Boolean? = { sdk ->
+        pythonSdkUpdateScheduled(sdk)
+    }
+    internal var localPythonInterpreterPathsProvider: (Project) -> Set<String> = { project ->
+        worktreeLocalPythonInterpreterPaths(project)
+    }
     internal var projectContentTrackerFactory:
         (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
             createProjectContentTracker(project, fingerprint)
@@ -5913,11 +6006,14 @@ class InspectionHandler : HttpRequestHandler() {
                         project,
                         effectiveCaptureScope,
                         initialAnalysisReadiness.pythonScopeFiles,
+                        initialAnalysisReadiness.localPythonInterpreterPaths,
                     )
                 },
                 checkCanceled = { checkInspectionRunCancellation(key, runId) },
                 timeoutMs = pythonSdkSettleTimeoutMs,
                 pollMs = pythonSdkSettlePollMs,
+                progressGraceMs = pythonSdkSettleProgressGraceMs,
+                maxTimeoutMs = pythonSdkSettleMaxTimeoutMs,
             )
             val analysisReadiness = pythonSdkSettleResult.readiness
             val analysisReadinessDiagnostic = projectAnalysisReadinessDiagnostic(
@@ -5936,7 +6032,7 @@ class InspectionHandler : HttpRequestHandler() {
                     requestedScope = captureScope,
                     resolvedScope = effectiveCaptureScope,
                     readiness = analysisReadiness,
-                    additionalDiagnostic = pythonSdkSettleDiagnostic(pythonSdkSettleResult.evidence),
+                    sdkSettleEvidence = pythonSdkSettleResult.evidence,
                 )
                 return
             }
@@ -6928,6 +7024,7 @@ class InspectionHandler : HttpRequestHandler() {
         project: Project,
         captureScope: InspectionCaptureScope?,
         resolvedPythonScopeFiles: List<VirtualFile>? = null,
+        resolvedLocalInterpreterPaths: Set<String>? = null,
     ): InspectionProjectAnalysisReadiness {
         if (project.isDisposed) {
             return InspectionProjectAnalysisReadiness(
@@ -6937,6 +7034,8 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         return runCatching {
+            val localInterpreterPaths = resolvedLocalInterpreterPaths
+                ?: localPythonInterpreterPathsProvider(project)
             ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
                 val pythonFiles = resolvedPythonScopeFiles ?: resolvePythonScopeFiles(project, captureScope)
                 if (pythonFiles == null) {
@@ -6962,7 +7061,14 @@ class InspectionHandler : HttpRequestHandler() {
                         pythonFileCount = pythonFiles.size,
                     )
                 }
-
+                val registeredLocalPythonSdks = if (localInterpreterPaths.isEmpty()) {
+                    emptyList()
+                } else {
+                    registeredPythonSdksProvider()
+                        .filter(::isPythonSdk)
+                        .filter { sdk -> sdkMatchesInterpreterPaths(sdk, localInterpreterPaths) }
+                        .distinctBy(::inspectionSdkIdentity)
+                }
                 val projectSdk = ProjectRootManager.getInstance(project).projectSdk
                 val sdkByFile = pythonFiles.associateWith { file ->
                     ModuleUtilCore.findModuleForFile(file, project)
@@ -6973,11 +7079,40 @@ class InspectionHandler : HttpRequestHandler() {
                     .filterNotNull()
                     .filter(::isPythonSdk)
                     .distinctBy(::inspectionSdkIdentity)
+                val assignedLocalPythonSdks = validPythonSdks
+                    .filter { sdk -> sdkMatchesInterpreterPaths(sdk, localInterpreterPaths) }
                 val missingSdkFileCount = sdkByFile.count { (_, sdk) -> sdk == null || !isPythonSdk(sdk) }
-                val sdkUpdateStates = validPythonSdks.map(::pythonSdkUpdateScheduled)
+                val mismatchedSdkFileCount = if (localInterpreterPaths.isEmpty()) {
+                    0
+                } else {
+                    sdkByFile.count { (_, sdk) ->
+                        sdk != null && isPythonSdk(sdk) &&
+                            !sdkMatchesInterpreterPaths(sdk, localInterpreterPaths)
+                    }
+                }
+                val assignedLocalPythonFileCount = if (localInterpreterPaths.isEmpty()) {
+                    0
+                } else {
+                    sdkByFile.count { (_, sdk) ->
+                        sdk != null && isPythonSdk(sdk) &&
+                            sdkMatchesInterpreterPaths(sdk, localInterpreterPaths)
+                    }
+                }
+                val sdkUpdateCandidates = if (localInterpreterPaths.isEmpty()) {
+                    validPythonSdks
+                } else {
+                    assignedLocalPythonSdks
+                }
+                val sdkUpdateStates = sdkUpdateCandidates.map(pythonSdkUpdateScheduledProvider)
                 val updatingSdkCount = sdkUpdateStates.count { state -> state == true }
                 val updateStateUnavailable = sdkUpdateStates.any { state -> state == null }
+                val localPythonInterpreterCandidate = localInterpreterPaths.isNotEmpty()
                 val reason = when {
+                    localPythonInterpreterCandidate && registeredLocalPythonSdks.isEmpty() ->
+                        "python_sdk_missing"
+                    localPythonInterpreterCandidate &&
+                        (missingSdkFileCount > 0 || mismatchedSdkFileCount > 0) ->
+                        "python_sdk_assignment_pending"
                     missingSdkFileCount > 0 -> "python_sdk_missing"
                     updateStateUnavailable -> "python_sdk_update_state_unavailable"
                     updatingSdkCount > 0 -> "python_sdk_updating"
@@ -6990,11 +7125,14 @@ class InspectionHandler : HttpRequestHandler() {
                     pythonFileCount = pythonFiles.size,
                     pythonSdkCount = validPythonSdks.size,
                     missingSdkFileCount = missingSdkFileCount,
+                    mismatchedSdkFileCount = mismatchedSdkFileCount,
                     updatingSdkCount = updatingSdkCount,
                     sdkUpdateStateUnavailable = updateStateUnavailable,
-                    localPythonInterpreterCandidate =
-                        (missingSdkFileCount > 0 || updatingSdkCount > 0) &&
-                            hasWorktreeLocalPythonInterpreter(project),
+                    localPythonInterpreterCandidate = localPythonInterpreterCandidate,
+                    registeredLocalPythonSdkCount = registeredLocalPythonSdks.size,
+                    assignedLocalPythonSdkCount = assignedLocalPythonSdks.size,
+                    assignedLocalPythonFileCount = assignedLocalPythonFileCount,
+                    localPythonInterpreterPaths = localInterpreterPaths,
                     pythonScopeFiles = pythonFiles,
                 )
             }
@@ -7007,19 +7145,20 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun hasWorktreeLocalPythonInterpreter(project: Project): Boolean {
+    private fun worktreeLocalPythonInterpreterPaths(project: Project): Set<String> {
         return runCatching {
-            val projectRoot = project.basePath?.let(::normalizeFileSystemPath) ?: return false
+            val projectRoot = project.basePath?.let(::normalizeFileSystemPath) ?: return emptySet()
             val virtualEnvironmentRoot = Paths.get(projectRoot, ".venv")
             listOf(
                 virtualEnvironmentRoot.resolve("bin/python"),
                 virtualEnvironmentRoot.resolve("bin/python3"),
                 virtualEnvironmentRoot.resolve("Scripts/python.exe"),
                 virtualEnvironmentRoot.resolve("Scripts/python"),
-            ).any { interpreter ->
+            ).filter { interpreter ->
                 Files.isRegularFile(interpreter) && Files.isExecutable(interpreter)
-            }
-        }.getOrDefault(false)
+            }.mapNotNull { interpreter -> normalizeFileSystemPath(interpreter.toString()) }
+                .toSet()
+        }.getOrDefault(emptySet())
     }
 
     private fun resolvePythonScopeFiles(
@@ -7074,13 +7213,21 @@ class InspectionHandler : HttpRequestHandler() {
         }
         val sdkAssignmentState = when {
             !readiness.required -> "not_required"
+            readiness.reason == "python_sdk_assignment_pending" -> "pending"
+            readiness.assignedLocalPythonSdkCount > 0 -> "assigned"
             readiness.missingSdkFileCount > 0 || readiness.reason == "python_sdk_missing" -> "missing"
             readiness.pythonSdkCount > 0 -> "assigned"
             else -> "unknown"
         }
+        val sdkRegistrationState = when {
+            !readiness.required -> "not_required"
+            readiness.registeredLocalPythonSdkCount > 0 -> "registered"
+            !readiness.localPythonInterpreterCandidate -> "not_evaluated"
+            else -> "not_registered"
+        }
         val outcomeOwnership = when (readiness.reason) {
             "python_sdk_missing", "python_support_unavailable" -> "configuration"
-            "python_sdk_updating", "project_disposed" -> "environment"
+            "python_sdk_assignment_pending", "python_sdk_updating", "project_disposed" -> "environment"
             "python_sdk_update_state_unavailable", "analysis_readiness_unavailable", "scope_resolution_unavailable" -> "tool"
             else -> "none"
         }
@@ -7092,7 +7239,12 @@ class InspectionHandler : HttpRequestHandler() {
             "resolved_scope_directory" to resolvedScope.resolvedDirectory,
             "selected_python_file_count" to readiness.pythonFileCount,
             "language_support_state" to languageSupportState,
+            "sdk_registration_state" to sdkRegistrationState,
             "sdk_assignment_state" to sdkAssignmentState,
+            "registered_local_python_sdk_count" to readiness.registeredLocalPythonSdkCount,
+            "assigned_local_python_sdk_count" to readiness.assignedLocalPythonSdkCount,
+            "assigned_local_python_file_count" to readiness.assignedLocalPythonFileCount,
+            "mismatched_sdk_file_count" to readiness.mismatchedSdkFileCount,
             "analysis_state" to readiness.reason,
             "inspection_started" to inspectionStarted,
             "outcome_ownership" to outcomeOwnership,
@@ -7108,6 +7260,10 @@ class InspectionHandler : HttpRequestHandler() {
             "python_sdk_settle_elapsed_ms" to evidence.elapsedMs,
             "python_sdk_settle_timed_out" to evidence.timedOut,
             "python_sdk_settle_final_reason" to evidence.finalReason,
+            "python_sdk_settle_observed_registered_local_sdk" to evidence.observedRegisteredLocalSdk,
+            "python_sdk_settle_observed_assigned_local_sdk" to evidence.observedAssignedLocalSdk,
+            "python_sdk_settle_deadline_extension_count" to evidence.deadlineExtensionCount,
+            "python_sdk_settle_active_deadline_ms" to evidence.activeDeadlineMs,
         )
     }
 
@@ -7118,10 +7274,14 @@ class InspectionHandler : HttpRequestHandler() {
         requestedScope: InspectionCaptureScope,
         resolvedScope: InspectionCaptureScope,
         readiness: InspectionProjectAnalysisReadiness,
+        sdkSettleEvidence: PythonSdkSettleEvidence? = null,
         additionalDiagnostic: Map<String, Any?> = emptyMap(),
     ) {
+        val sdkTransitionObserved = readiness.reason == "python_sdk_missing" &&
+            (sdkSettleEvidence?.observedRegisteredLocalSdk == true ||
+                sdkSettleEvidence?.observedAssignedLocalSdk == true)
         val incompleteReason = if (
-            readiness.reason == "python_sdk_missing" ||
+            (readiness.reason == "python_sdk_missing" && !sdkTransitionObserved) ||
             readiness.reason == "python_support_unavailable"
         ) {
             CaptureIncompleteReason.LANGUAGE_SDK_MISSING
@@ -7140,11 +7300,17 @@ class InspectionHandler : HttpRequestHandler() {
             "python_file_count" to readiness.pythonFileCount,
             "python_sdk_count" to readiness.pythonSdkCount,
             "missing_sdk_file_count" to readiness.missingSdkFileCount,
+            "mismatched_sdk_file_count" to readiness.mismatchedSdkFileCount,
             "updating_sdk_count" to readiness.updatingSdkCount,
             "daemon_running" to readiness.daemonRunning,
             "sdk_update_state_unavailable" to readiness.sdkUpdateStateUnavailable,
+            "registered_local_python_sdk_count" to readiness.registeredLocalPythonSdkCount,
+            "assigned_local_python_sdk_count" to readiness.assignedLocalPythonSdkCount,
+            "assigned_local_python_file_count" to readiness.assignedLocalPythonFileCount,
             "exit_reason" to incompleteReason.apiValue,
-        ) + additionalDiagnostic
+        ) + sdkSettleEvidence?.let(::pythonSdkSettleDiagnostic).orEmpty() +
+            additionalDiagnostic +
+            if (sdkTransitionObserved) mapOf("outcome_ownership" to "environment") else emptyMap()
         resultsStore.setSnapshot(
             key,
             InspectionResultsSnapshot(
@@ -7179,6 +7345,12 @@ class InspectionHandler : HttpRequestHandler() {
             sdk.versionString.orEmpty(),
             sdk.homePath?.let(::normalizeFileSystemPath).orEmpty(),
         ).joinToString("\u0000")
+    }
+
+    private fun sdkMatchesInterpreterPaths(sdk: Sdk, interpreterPaths: Set<String>): Boolean {
+        if (interpreterPaths.isEmpty()) return false
+        val sdkHomePath = normalizeFileSystemPath(sdk.homePath) ?: return false
+        return sdkHomePath in interpreterPaths
     }
 
     private fun pythonSdkUpdateScheduled(sdk: Sdk): Boolean? {
