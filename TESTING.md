@@ -286,7 +286,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
 ```
 
 Key expectations:
-- supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation
+- supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation; the deterministic `buildVisitor` construction-failure regression confirms the tested platform propagates that failure and bounded proof remains non-GREEN
 - the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
 - a selected non-default profile excludes disabled obligations while preserving enabled findings, and a zero proof deadline remains `execution_not_proven`
 - platform metadata classifies only custom unpaired unfair local inspections as intentionally non-batch; custom paired-unfair, fair, and metadata-throwing wrappers remain fail-closed
@@ -295,6 +295,7 @@ Key expectations:
 - local/global-simple/true-global wrapper routing is automated evidence only; native global execution requires live IDE evidence
 - `current_file`/`files`/`changed_files` inspection with zero executed tools → `execution_not_proven`, not GREEN
 - `current_file`/`files`/`changed_files` inspection with tool errors → `execution_not_proven`, not GREEN
+- native broad execution that aborts after partial completion evidence remains unproven, not GREEN
 - bounded inspection with all applicable runnable obligations executed, no blocking obligations, and no findings → GREEN
 - multi-file bounded replay accounts for every tool/file obligation while running exact files concurrently with copied wrapper cleanup lifecycle
 - the reproduced two-file workload accounts for all 227 runnable obligations without timeout or unvisited work

@@ -134,6 +134,28 @@ class NativeInspectionExecutionProofTest {
     }
 
     @Test
+    fun `native inspection abort keeps partial completion fail closed`() {
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
+
+        collector.inspectionFinished(
+            10L,
+            1L,
+            0,
+            tool,
+            InspectListener.InspectionKind.LOCAL,
+            file,
+            project,
+        )
+        collector.recordExactFileAnalyzed(file, project)
+        collector.markUnavailable("native_inspection_aborted")
+
+        val result = collector.result()
+        assertFalse(result.proofEstablished)
+        assertFalse(result.proofClean)
+        assertEquals("native_inspection_aborted", result.proofBlockReason)
+    }
+
+    @Test
     fun `normal return without execution events remains unproven`() {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 

@@ -111,6 +111,34 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `build visitor construction failure escapes inspectEx and keeps bounded proof fail closed`() {
+        val project = projectExtension.project
+        val tool = ThrowingBuildVisitorInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(tool)
+        resetVisits(tool)
+
+        assertThatThrownBy { execute(listOf(tool)) }
+            .isInstanceOf(IllegalStateException::class.java)
+            .hasMessage("build visitor construction failure")
+        assertThat(visitCount(tool)).isZero()
+
+        val proof = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(tool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(psiFile),
+            cancellationCheck = {},
+        )
+
+        assertThat(proof.proofEstablished).isFalse()
+        assertThat(proof.proofClean).isFalse()
+        assertThat(proof.executedToolCount).isZero()
+        assertThat(proof.failedObligationCount).isZero()
+        assertThat(proof.proofBlockReason).isEqualTo("no_applicable_batch_tools")
+    }
+
+    @Test
     fun `pre-cancelled indicators escape before inspection execution`() {
         val indicator = EmptyProgressIndicator().apply { cancel() }
 
@@ -554,6 +582,14 @@ class SupportedInspectionExecutorPlatformTest {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {
             throw IllegalStateException("supported inspection failure")
         }
+    }
+
+    private class ThrowingBuildVisitorInspection : RecordingInspection() {
+        override fun buildVisitor(
+            holder: ProblemsHolder,
+            isOnTheFly: Boolean,
+            session: LocalInspectionToolSession,
+        ): PsiElementVisitor = throw IllegalStateException("build visitor construction failure")
     }
 
     private class EnabledProfileFindingInspection : FindingInspection()
