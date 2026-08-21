@@ -286,7 +286,7 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
 ```
 
 Key expectations:
-- supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation; the deterministic `buildVisitor` construction-failure regression confirms the tested platform propagates that failure and bounded proof remains non-GREEN
+- supported `inspectEx` execution returns direct descriptors for findings, omits clean/inapplicable/suppressed tools from its sparse result map, and propagates failures and cancellation; the deterministic `buildVisitor` construction-failure regression confirms the tested platform propagates that failure instead of returning an empty clean result
 - the caller-selected wrapper set is recorded separately from sparse results; profile and applicability classification remain explicit caller responsibilities
 - a selected non-default profile excludes disabled obligations while preserving enabled findings, and a zero proof deadline remains `execution_not_proven`
 - platform metadata classifies only custom unpaired unfair local inspections as intentionally non-batch; custom paired-unfair, fair, and metadata-throwing wrappers remain fail-closed
