@@ -41,6 +41,8 @@ import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.ui.InspectionResultsView
 import com.intellij.profile.codeInspection.InspectionProjectProfileManager
+import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
+import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.psi.PsiDirectory
@@ -243,8 +245,8 @@ class InspectionHandlerTest {
         mockProjectManager = mockk<ProjectManager>()
         mockVirtualFileManager = mockk<VirtualFileManager>()
         mockWindowManager = mockk<WindowManager>()
-        mockInspectionManager = mockk<InspectionManager>()
-        mockGlobalContext = mockk<GlobalInspectionContext>()
+        mockInspectionManager = mockk<InspectionManagerEx>()
+        mockGlobalContext = mockk<GlobalInspectionContextImpl>(relaxed = true)
         mockProfileManager = mockk<InspectionProjectProfileManager>()
         mockProfile = mockk<InspectionProfileImpl>()
         mockApplication = mockk<Application>()

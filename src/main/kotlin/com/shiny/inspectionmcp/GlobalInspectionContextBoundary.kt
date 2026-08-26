@@ -2,21 +2,25 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.GlobalInspectionContext
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
-import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
-import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
-import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.NotNullLazyValue
-import com.intellij.psi.PsiFile
-import com.intellij.ui.content.ContentManager
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.Comparator
+
+internal data class StandardGlobalInspectionExecutionResult(
+    val exportedResultPathCount: Int,
+    val exportedResultPathCountTruncated: Boolean,
+    val exportDirectoryDeleted: Boolean,
+)
 
 @Suppress("UnstableApiUsage")
 internal class GlobalInspectionContextBoundary private constructor(
     private val inspectionManager: InspectionManagerEx,
-    private val context: GlobalInspectionContextImpl,
+    private val context: GlobalInspectionContextEx,
 ) {
     fun configure(profile: InspectionProfileImpl, scope: AnalysisScope) {
         context.setExternalProfile(profile)
@@ -27,8 +31,32 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     fun presentation(toolWrapper: InspectionToolWrapper<*, *>) = context.getPresentation(toolWrapper)
 
-    fun performInspectionsWithProgress(scope: AnalysisScope) {
-        context.performInspectionsWithProgress(scope, false, false)
+    fun performInspectionsWithProgressAndExportResults(scope: AnalysisScope): StandardGlobalInspectionExecutionResult {
+        val exportDirectory = Files.createTempDirectory("jetbrains-inspection-export-")
+        val exportedResultPaths = mutableListOf<Path>()
+        var exportedResultPathCount = 0
+        var exportedResultPathCountTruncated = false
+        var exportDirectoryDeleted = false
+
+        try {
+            context.performInspectionsWithProgressAndExportResults(
+                scope,
+                false,
+                false,
+                exportDirectory,
+                exportedResultPaths,
+            )
+            exportedResultPathCount = exportedResultPaths.size.coerceAtMost(MAX_EXPORTED_RESULT_PATHS)
+            exportedResultPathCountTruncated = exportedResultPaths.size > MAX_EXPORTED_RESULT_PATHS
+        } finally {
+            exportDirectoryDeleted = deleteRecursively(exportDirectory)
+        }
+
+        return StandardGlobalInspectionExecutionResult(
+            exportedResultPathCount = exportedResultPathCount,
+            exportedResultPathCountTruncated = exportedResultPathCountTruncated,
+            exportDirectoryDeleted = exportDirectoryDeleted,
+        )
     }
 
     fun publicContext(): GlobalInspectionContext = context
@@ -52,88 +80,30 @@ internal class GlobalInspectionContextBoundary private constructor(
     }
 
     companion object {
-        fun create(inspectionManager: InspectionManagerEx): GlobalInspectionContextBoundary {
-            val context = inspectionManager.createNewGlobalContext()
-            return GlobalInspectionContextBoundary(inspectionManager, context)
+        fun createStandard(inspectionManager: InspectionManager): GlobalInspectionContextBoundary {
+            val context = inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
+                ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
+            val inspectionManagerEx = inspectionManager as? InspectionManagerEx
+                ?: error("InspectionManager did not provide InspectionManagerEx lifecycle support")
+            return GlobalInspectionContextBoundary(inspectionManagerEx, context)
         }
 
-        fun createForExactFile(inspectionManager: InspectionManagerEx): GlobalInspectionContextBoundary {
+        fun createForExactFile(inspectionManager: InspectionManager): GlobalInspectionContextBoundary {
             val context = synchronized(inspectionManager) {
-                inspectionManager.createNewGlobalContext()
+                inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
+                    ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
             }
-            return GlobalInspectionContextBoundary(inspectionManager, context)
+            val inspectionManagerEx = inspectionManager as? InspectionManagerEx
+                ?: error("InspectionManager did not provide InspectionManagerEx lifecycle support")
+            return GlobalInspectionContextBoundary(inspectionManagerEx, context)
         }
 
-        fun createAttested(
-            inspectionManager: InspectionManagerEx,
-            project: Project,
-            collector: NativeInspectionExecutionProofCollector,
-        ): GlobalInspectionContextBoundary {
-            val context = NativeAttestedGlobalInspectionContext(project, inspectionManager.contentManager, collector)
-            inspectionManager.runningContexts.add(context)
-            context.openSynchronousFileTraversalGate()
-            return GlobalInspectionContextBoundary(inspectionManager, context)
-        }
-    }
-}
+        private fun deleteRecursively(path: Path): Boolean = runCatching {
+            Files.walk(path).use { paths ->
+                paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists)
+            }
+        }.isSuccess
 
-@Suppress("UnstableApiUsage")
-private class NativeAttestedGlobalInspectionContext(
-    project: Project,
-    contentManager: NotNullLazyValue<out ContentManager>,
-    collector: NativeInspectionExecutionProofCollector,
-) : GlobalInspectionContextImpl(project, contentManager) {
-    private val platformPublisher = project.messageBus.syncPublisher(GlobalInspectionContextEx.INSPECT_TOPIC)
-    private val attestedPublisher = object : InspectListener {
-        override fun fileAnalyzed(file: PsiFile, eventProject: Project) {
-            platformPublisher.fileAnalyzed(file, eventProject)
-            collector.recordExactFileAnalyzed(file, eventProject)
-        }
-
-        override fun inspectionFinished(
-            durationMillis: Long,
-            threadId: Long,
-            problemCount: Int,
-            toolWrapper: InspectionToolWrapper<*, *>,
-            inspectionKind: InspectListener.InspectionKind,
-            file: PsiFile?,
-            eventProject: Project,
-        ) {
-            platformPublisher.inspectionFinished(
-                durationMillis,
-                threadId,
-                problemCount,
-                toolWrapper,
-                inspectionKind,
-                file,
-                eventProject,
-            )
-            collector.recordExactInspectionFinished(problemCount, toolWrapper, inspectionKind, eventProject)
-        }
-
-        override fun activityFinished(
-            durationMillis: Long,
-            threadId: Long,
-            activityKind: String,
-            eventProject: Project,
-        ) {
-            platformPublisher.activityFinished(durationMillis, threadId, activityKind, eventProject)
-            collector.recordExactActivityFinished(eventProject)
-        }
-
-        override fun inspectionFailed(
-            toolShortName: String,
-            throwable: Throwable,
-            file: PsiFile?,
-            eventProject: Project,
-        ) {
-            platformPublisher.inspectionFailed(toolShortName, throwable, file, eventProject)
-        }
-    }
-
-    override fun getInspectionEventPublisher(): InspectListener = attestedPublisher
-
-    fun openSynchronousFileTraversalGate() {
-        myViewClosed = false
+        private const val MAX_EXPORTED_RESULT_PATHS = 100
     }
 }

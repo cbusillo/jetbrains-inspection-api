@@ -82,9 +82,11 @@ internal class NativeInspectionExecutionProofCollector(
     @Volatile
     private var skippedReason: String? = null
 
-    override fun fileAnalyzed(file: PsiFile, eventProject: Project) = Unit
+    override fun fileAnalyzed(file: PsiFile, eventProject: Project) {
+        recordFileAnalyzed(file, eventProject)
+    }
 
-    fun recordExactFileAnalyzed(file: PsiFile, eventProject: Project) {
+    private fun recordFileAnalyzed(file: PsiFile, eventProject: Project) {
         if (eventProject !== project) return
         fileAnalyzedCount.incrementAndGet()
         runCatching { file.virtualFile?.path }.getOrNull()?.let(analyzedFiles::add)
@@ -102,29 +104,11 @@ internal class NativeInspectionExecutionProofCollector(
     ) {
         if (eventProject !== project) return
         if (
-            inspectionKind != InspectListener.InspectionKind.LOCAL &&
-            inspectionKind != InspectListener.InspectionKind.LOCAL_PRIORITY
-        ) {
-            return
-        }
-        val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
-        if (filePath !in expectedFiles) return
-        recordInspectionFinished(problemCount, toolWrapper, inspectionKind)
-    }
-
-    @Suppress("REDUNDANT_ELSE_IN_WHEN")
-    fun recordExactInspectionFinished(
-        problemCount: Int,
-        toolWrapper: InspectionToolWrapper<*, *>,
-        inspectionKind: InspectListener.InspectionKind,
-        eventProject: Project,
-    ) {
-        if (eventProject !== project) return
-        if (
             inspectionKind == InspectListener.InspectionKind.LOCAL ||
             inspectionKind == InspectListener.InspectionKind.LOCAL_PRIORITY
         ) {
-            return
+            val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
+            if (filePath !in expectedFiles) return
         }
         recordInspectionFinished(problemCount, toolWrapper, inspectionKind)
     }
@@ -153,9 +137,7 @@ internal class NativeInspectionExecutionProofCollector(
         threadId: Long,
         activityKind: String,
         eventProject: Project,
-    ) = Unit
-
-    fun recordExactActivityFinished(eventProject: Project) {
+    ) {
         if (eventProject === project) activityFinishedCount.incrementAndGet()
     }
 

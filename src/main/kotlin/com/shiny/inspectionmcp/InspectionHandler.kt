@@ -1817,11 +1817,6 @@ class InspectionHandler : HttpRequestHandler() {
         (Project, InspectionProjectInputsFingerprint) -> InspectionProjectContentTracker? = { project, fingerprint ->
             createProjectContentTracker(project, fingerprint)
         }
-    internal var nativeGlobalInspectionContextFactory:
-        (InspectionManagerEx, Project, NativeInspectionExecutionProofCollector) -> GlobalInspectionContextBoundary =
-        { inspectionManager, project, collector ->
-            GlobalInspectionContextBoundary.createAttested(inspectionManager, project, collector)
-        }
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
@@ -5866,8 +5861,9 @@ class InspectionHandler : HttpRequestHandler() {
         var captureScheduled = false
         var projectContentTracker: InspectionProjectContentTracker? = null
         var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
-        var nativeGlobalContext: GlobalInspectionContextBoundary? = null
+        var globalContextForCleanup: GlobalInspectionContextBoundary? = null
         var nativeProofConnection: MessageBusConnection? = null
+        var standardExecutionResult: StandardGlobalInspectionExecutionResult? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
                 return
@@ -6211,8 +6207,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
             val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
 
-            @Suppress("USELESS_CAST")
-            val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+            val inspectionManager = InspectionManager.getInstance(project)
             var nativeScopeEnumerationFailure: Throwable? = null
             val nativeExpectedFilePaths = if (executionProofMode == InspectionExecutionProofMode.NATIVE_ATTESTED) {
                 try {
@@ -6237,28 +6232,29 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 null
             }
-            val globalContext = if (nativeProofCollector == null) {
-                GlobalInspectionContextBoundary.create(inspectionManager)
-            } else {
+            val globalContext = GlobalInspectionContextBoundary.createStandard(inspectionManager)
+            globalContextForCleanup = globalContext
+            if (nativeProofCollector != null) {
                 try {
-                    val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                     nativeProofConnection = project.messageBus.connect().apply {
                         subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
                     }
-                    nativeGlobalContext = context
-                    context
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
-                    nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
-                    logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
-                    GlobalInspectionContextBoundary.create(inspectionManager)
+                    nativeProofCollector.markUnavailable("native_attestation_subscription_failed")
+                    logger.warn("Native inspection event subscription was unavailable; inspection remains fail-closed.", error)
                 }
             }
             globalContext.configure(profile, scope)
             try {
                 @Suppress("UnstableApiUsage")
-                globalContext.performInspectionsWithProgress(scope)
+                globalContext.performInspectionsWithProgressAndExportResults(scope).also {
+                    standardExecutionResult = it
+                    if (!it.exportDirectoryDeleted) {
+                        nativeProofCollector?.markUnavailable("native_export_directory_cleanup_failed")
+                    }
+                }
                 nativeProofCollector?.markCompletedNormally()
             } catch (error: Throwable) {
                 nativeProofCollector?.markUnavailable("native_inspection_aborted")
@@ -6631,6 +6627,7 @@ class InspectionHandler : HttpRequestHandler() {
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
                         val proofDiagnostic = buildProofDiagnostic(boundedProof) +
                             buildNativeProofDiagnostic(nativeProof) +
+                            buildStandardExecutionDiagnostic(standardExecutionResult) +
                             mapOf(
                                 "execution_proof_mapped_finding_count" to scopedProofFindingCount,
                             )
@@ -6811,7 +6808,7 @@ class InspectionHandler : HttpRequestHandler() {
         } finally {
             runCatching { nativeProofConnection?.disconnect() }
                 .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
-            nativeGlobalContext?.let { context ->
+            globalContextForCleanup?.let { context ->
                 val closeSucceeded = runCatching {
                     val closeAction = Runnable { context.close(false) }
                     val application = ApplicationManager.getApplication()
@@ -8943,6 +8940,18 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_established" to proof.proofEstablished,
             "execution_proof_clean" to proof.proofClean,
         ).filterValues { it != null }
+    }
+
+    private fun buildStandardExecutionDiagnostic(
+        result: StandardGlobalInspectionExecutionResult?,
+    ): Map<String, Any?> {
+        result ?: return emptyMap()
+        return mapOf(
+            "execution_proof_standard_context" to true,
+            "execution_proof_exported_result_path_count" to result.exportedResultPathCount,
+            "execution_proof_exported_result_path_count_truncated" to result.exportedResultPathCountTruncated,
+            "execution_proof_export_directory_deleted" to result.exportDirectoryDeleted,
+        )
     }
 
     internal data class EnabledLocalToolEnumeration(
