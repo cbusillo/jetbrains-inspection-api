@@ -95,6 +95,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.security.MessageDigest
 import java.util.UUID
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -5863,6 +5864,9 @@ class InspectionHandler : HttpRequestHandler() {
         var globalContextForCleanup: GlobalInspectionContextBoundary? = null
         var nativeProofConnection: MessageBusConnection? = null
         var standardExecutionResult: StandardGlobalInspectionExecutionResult? = null
+        val standardConsumedProblems = ConcurrentLinkedQueue<
+            Pair<com.intellij.codeInspection.CommonProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>
+            >()
         try {
             if (!isCurrentInspectionRun(key, runId)) {
                 return
@@ -6248,7 +6252,9 @@ class InspectionHandler : HttpRequestHandler() {
             globalContext.configure(profile, scope)
             try {
                 @Suppress("UnstableApiUsage")
-                globalContext.performInspectionsWithProgressAndExportResults(scope).also {
+                globalContext.launchInspectionsOffline(scope) { descriptor, toolWrapper ->
+                    standardConsumedProblems += descriptor to toolWrapper
+                }.also {
                     standardExecutionResult = it
                     if (!it.exportDirectoryDeleted) {
                         nativeProofCollector?.markUnavailable("native_export_directory_cleanup_failed")
@@ -6298,6 +6304,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 profile,
                                 targetToolShortNames,
                                 fallbackScopeFiles,
+                                standardConsumedProblems.toList(),
                                 cancellationCheck = { checkInspectionRunCancellation(key, runId) },
                             ).also {
                                 extractedFromContextSucceeded = true
@@ -8422,6 +8429,9 @@ class InspectionHandler : HttpRequestHandler() {
         selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
+        consumedProblems: List<
+            Pair<com.intellij.codeInspection.CommonProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>
+            >,
         cancellationCheck: () -> Unit,
     ): InspectionModelExtraction {
         cancellationCheck()
@@ -8431,12 +8441,18 @@ class InspectionHandler : HttpRequestHandler() {
             cancellationCheck()
             presentationHolder.set(
                 app.runReadAction<InspectionModelExtraction, Exception> {
-                    extractProblemsFromContext(
-                        globalContext,
-                        project,
-                        selectedProfile,
-                        targetToolShortNames,
-                        cancellationCheck,
+                    mergeProblemConsumerResults(
+                        base = extractProblemsFromContext(
+                            globalContext,
+                            project,
+                            selectedProfile,
+                            targetToolShortNames,
+                            cancellationCheck,
+                        ),
+                        consumedProblems = consumedProblems,
+                        selectedProfile = selectedProfile,
+                        project = project,
+                        cancellationCheck = cancellationCheck,
                     )
                 }
             )
@@ -8474,6 +8490,33 @@ class InspectionHandler : HttpRequestHandler() {
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
             cancellationCheck = cancellationCheck,
+        )
+    }
+
+    private fun mergeProblemConsumerResults(
+        base: InspectionModelExtraction,
+        consumedProblems: List<
+            Pair<com.intellij.codeInspection.CommonProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>
+            >,
+        selectedProfile: InspectionProfile?,
+        project: Project,
+        cancellationCheck: () -> Unit,
+    ): InspectionModelExtraction {
+        if (consumedProblems.isEmpty()) {
+            return base
+        }
+        val seen = base.problems.mapTo(LinkedHashSet(), ::problemKey)
+        val additionalProblems = mutableListOf<Map<String, Any>>()
+        for ((descriptor, toolWrapper) in consumedProblems) {
+            cancellationCheck()
+            val problem = buildProblemMap(descriptor, toolWrapper, selectedProfile, project) ?: continue
+            if (seen.add(problemKey(problem))) {
+                additionalProblems += problem
+            }
+        }
+        return base.copy(
+            problems = base.problems + additionalProblems,
+            problemDescriptorCount = maxOf(base.problemDescriptorCount, consumedProblems.size),
         )
     }
 
@@ -8950,6 +8993,8 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_exported_result_path_count" to result.exportedResultPathCount,
             "execution_proof_exported_result_path_count_truncated" to result.exportedResultPathCountTruncated,
             "execution_proof_export_directory_deleted" to result.exportDirectoryDeleted,
+            "execution_proof_problem_consumer_count" to result.consumedProblemCount,
+            "execution_proof_standard_execution_method" to "launch_inspections_offline",
         )
     }
 

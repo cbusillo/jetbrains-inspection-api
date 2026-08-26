@@ -1,11 +1,15 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeInspection.CommonProblemDescriptor
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
+import com.intellij.codeInspection.ex.InspectionProblemConsumer
+import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.openapi.progress.ProcessCanceledException
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
@@ -27,32 +31,41 @@ class GlobalInspectionContextBoundaryTest {
     }
 
     @Test
-    fun `executes through export results and removes the run export directory`() {
+    fun `launches offline with a problem consumer and removes the run export directory`() {
         val inspectionManager = mockk<InspectionManager>()
         val context = mockk<GlobalInspectionContextEx>()
         val scope = mockk<AnalysisScope>()
+        val descriptor = mockk<CommonProblemDescriptor>()
+        val toolWrapper = mockk<InspectionToolWrapper<*, *>>()
+        val consumerSlot = slot<InspectionProblemConsumer>()
+        val consumedProblems = mutableListOf<Pair<CommonProblemDescriptor, InspectionToolWrapper<*, *>>>()
         var exportDirectory: Path? = null
         every { inspectionManager.createNewGlobalContext() } returns context
+        every { context.setProblemConsumer(capture(consumerSlot)) } returns Unit
         every {
-            context.performInspectionsWithProgressAndExportResults(
+            context.launchInspectionsOffline(
                 scope,
-                false,
-                false,
                 any(),
+                false,
                 any(),
             )
         } answers {
-            exportDirectory = arg<Path>(3)
-            val exportedPaths = arg<MutableList<Path>>(4)
+            exportDirectory = arg<Path>(1)
+            val exportedPaths = arg<MutableList<Path>>(3)
             exportedPaths.add(requireNotNull(exportDirectory).resolve("result.xml"))
+            consumerSlot.captured.consume(mockk(), descriptor, toolWrapper)
         }
 
         val result = GlobalInspectionContextBoundary.createStandard(inspectionManager)
-            .performInspectionsWithProgressAndExportResults(scope)
+            .launchInspectionsOffline(scope) { problemDescriptor, wrapper ->
+                consumedProblems += problemDescriptor to wrapper
+            }
 
         assertThat(result.exportedResultPathCount).isEqualTo(1)
         assertThat(result.exportedResultPathCountTruncated).isFalse()
         assertThat(result.exportDirectoryDeleted).isTrue()
+        assertThat(result.consumedProblemCount).isEqualTo(1)
+        assertThat(consumedProblems).containsExactly(descriptor to toolWrapper)
         assertThat(Files.exists(requireNotNull(exportDirectory))).isFalse()
     }
 
@@ -63,24 +76,25 @@ class GlobalInspectionContextBoundaryTest {
         val scope = mockk<AnalysisScope>()
         var exportDirectory: Path? = null
         every { inspectionManager.createNewGlobalContext() } returns context
+        every { context.setProblemConsumer(any()) } returns Unit
         every {
-            context.performInspectionsWithProgressAndExportResults(
+            context.launchInspectionsOffline(
                 scope,
-                false,
-                false,
                 any(),
+                false,
                 any(),
             )
         } answers {
-            exportDirectory = arg<Path>(3)
+            exportDirectory = arg<Path>(1)
             throw ProcessCanceledException()
         }
 
         assertThatThrownBy {
             GlobalInspectionContextBoundary.createStandard(inspectionManager)
-                .performInspectionsWithProgressAndExportResults(scope)
+                .launchInspectionsOffline(scope) { _, _ -> }
         }.isInstanceOf(ProcessCanceledException::class.java)
 
         assertThat(Files.exists(requireNotNull(exportDirectory))).isFalse()
+        verify(exactly = 1) { context.setProblemConsumer(any()) }
     }
 }

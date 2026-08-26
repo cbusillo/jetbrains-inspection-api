@@ -1,19 +1,23 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
+import com.intellij.codeInspection.CommonProblemDescriptor
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
+import com.intellij.codeInspection.ex.InspectionProblemConsumer
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.Comparator
+import java.util.concurrent.atomic.AtomicInteger
 
 internal data class StandardGlobalInspectionExecutionResult(
     val exportedResultPathCount: Int,
     val exportedResultPathCountTruncated: Boolean,
     val exportDirectoryDeleted: Boolean,
+    val consumedProblemCount: Int,
 )
 
 @Suppress("UnstableApiUsage")
@@ -31,19 +35,28 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     fun presentation(toolWrapper: InspectionToolWrapper<*, *>) = context.getPresentation(toolWrapper)
 
-    fun performInspectionsWithProgressAndExportResults(scope: AnalysisScope): StandardGlobalInspectionExecutionResult {
+    fun launchInspectionsOffline(
+        scope: AnalysisScope,
+        consumeProblem: (CommonProblemDescriptor, InspectionToolWrapper<*, *>) -> Unit,
+    ): StandardGlobalInspectionExecutionResult {
         val exportDirectory = Files.createTempDirectory("jetbrains-inspection-export-")
         val exportedResultPaths = mutableListOf<Path>()
+        val consumedProblemCount = AtomicInteger()
         var exportedResultPathCount = 0
         var exportedResultPathCountTruncated = false
         var exportDirectoryDeleted = false
 
+        context.setProblemConsumer(
+            InspectionProblemConsumer { _, descriptor, toolWrapper ->
+                consumedProblemCount.incrementAndGet()
+                consumeProblem(descriptor, toolWrapper)
+            }
+        )
         try {
-            context.performInspectionsWithProgressAndExportResults(
+            context.launchInspectionsOffline(
                 scope,
-                false,
-                false,
                 exportDirectory,
+                false,
                 exportedResultPaths,
             )
             exportedResultPathCount = exportedResultPaths.size.coerceAtMost(MAX_EXPORTED_RESULT_PATHS)
@@ -56,6 +69,7 @@ internal class GlobalInspectionContextBoundary private constructor(
             exportedResultPathCount = exportedResultPathCount,
             exportedResultPathCountTruncated = exportedResultPathCountTruncated,
             exportDirectoryDeleted = exportDirectoryDeleted,
+            consumedProblemCount = consumedProblemCount.get(),
         )
     }
 
@@ -77,12 +91,14 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     companion object {
         fun createStandard(inspectionManager: InspectionManager): GlobalInspectionContextBoundary {
-            val context = inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
-                ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
+            val context = synchronized(inspectionManager) {
+                inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
+                    ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
+            }
             return GlobalInspectionContextBoundary(
                 inspectionManager = inspectionManager,
                 context = context,
-                synchronizeLifecycle = false,
+                synchronizeLifecycle = true,
             )
         }
 
