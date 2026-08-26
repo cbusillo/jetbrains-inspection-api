@@ -6,7 +6,6 @@ import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
-import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.ide.DataManager
 import com.intellij.ide.RecentProjectsManagerBase
@@ -6255,6 +6254,7 @@ class InspectionHandler : HttpRequestHandler() {
                         nativeProofCollector?.markUnavailable("native_export_directory_cleanup_failed")
                     }
                 }
+                nativeProofCollector?.markUnavailable("standard_context_event_attribution_unproven")
                 nativeProofCollector?.markCompletedNormally()
             } catch (error: Throwable) {
                 nativeProofCollector?.markUnavailable("native_inspection_aborted")
@@ -6810,7 +6810,7 @@ class InspectionHandler : HttpRequestHandler() {
                 .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
             globalContextForCleanup?.let { context ->
                 val closeSucceeded = runCatching {
-                    val closeAction = Runnable { context.close(false) }
+                    val closeAction = Runnable { context.close(true) }
                     val application = ApplicationManager.getApplication()
                     if (application.isDispatchThread) {
                         closeAction.run()
@@ -6824,7 +6824,6 @@ class InspectionHandler : HttpRequestHandler() {
                     runCatching { context.cleanup() }
                         .onFailure { error -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", error) }
                 }
-                context.removeFromRunningContexts()
             }
             projectContentTracker?.close()
             if (!captureScheduled) {
@@ -9029,7 +9028,7 @@ class InspectionHandler : HttpRequestHandler() {
         profile: InspectionProfileImpl,
         psiFile: com.intellij.psi.PsiFile,
     ): GlobalInspectionContextBoundary {
-        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val inspectionManager = InspectionManager.getInstance(project)
         val context = GlobalInspectionContextBoundary.createForExactFile(inspectionManager)
         return try {
             context.configure(profile, AnalysisScope(psiFile))
@@ -9045,15 +9044,14 @@ class InspectionHandler : HttpRequestHandler() {
     private fun cleanupExactFileExecutionContext(
         context: GlobalInspectionContextBoundary,
     ) {
-        var cleanupFailure: Exception? = null
         try {
-            context.cleanup()
-        } catch (error: Exception) {
-            cleanupFailure = error
-        } finally {
-            context.removeFromRunningContextsSynchronously()
+            context.close(true)
+        } catch (closeError: Exception) {
+            runCatching { context.cleanup() }
+                .exceptionOrNull()
+                ?.let(closeError::addSuppressed)
+            throw closeError
         }
-        cleanupFailure?.let { throw it }
     }
 
     @Suppress("UnstableApiUsage")

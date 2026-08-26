@@ -4,7 +4,6 @@ import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
-import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import java.nio.file.Files
@@ -19,8 +18,9 @@ internal data class StandardGlobalInspectionExecutionResult(
 
 @Suppress("UnstableApiUsage")
 internal class GlobalInspectionContextBoundary private constructor(
-    private val inspectionManager: InspectionManagerEx,
+    private val inspectionManager: InspectionManager,
     private val context: GlobalInspectionContextEx,
+    private val synchronizeLifecycle: Boolean,
 ) {
     fun configure(profile: InspectionProfileImpl, scope: AnalysisScope) {
         context.setExternalProfile(profile)
@@ -61,31 +61,29 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     fun publicContext(): GlobalInspectionContext = context
 
-    fun close(save: Boolean) {
-        context.close(save)
+    fun close(noSuspiciousCodeFound: Boolean) {
+        if (synchronizeLifecycle) {
+            synchronized(inspectionManager) {
+                context.close(noSuspiciousCodeFound)
+            }
+        } else {
+            context.close(noSuspiciousCodeFound)
+        }
     }
 
     fun cleanup() {
         context.cleanup()
     }
 
-    fun removeFromRunningContexts() {
-        inspectionManager.runningContexts.remove(context)
-    }
-
-    fun removeFromRunningContextsSynchronously() {
-        synchronized(inspectionManager) {
-            inspectionManager.runningContexts.remove(context)
-        }
-    }
-
     companion object {
         fun createStandard(inspectionManager: InspectionManager): GlobalInspectionContextBoundary {
             val context = inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
                 ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
-            val inspectionManagerEx = inspectionManager as? InspectionManagerEx
-                ?: error("InspectionManager did not provide InspectionManagerEx lifecycle support")
-            return GlobalInspectionContextBoundary(inspectionManagerEx, context)
+            return GlobalInspectionContextBoundary(
+                inspectionManager = inspectionManager,
+                context = context,
+                synchronizeLifecycle = false,
+            )
         }
 
         fun createForExactFile(inspectionManager: InspectionManager): GlobalInspectionContextBoundary {
@@ -93,9 +91,11 @@ internal class GlobalInspectionContextBoundary private constructor(
                 inspectionManager.createNewGlobalContext() as? GlobalInspectionContextEx
                     ?: error("InspectionManager.createNewGlobalContext() did not return GlobalInspectionContextEx")
             }
-            val inspectionManagerEx = inspectionManager as? InspectionManagerEx
-                ?: error("InspectionManager did not provide InspectionManagerEx lifecycle support")
-            return GlobalInspectionContextBoundary(inspectionManagerEx, context)
+            return GlobalInspectionContextBoundary(
+                inspectionManager = inspectionManager,
+                context = context,
+                synchronizeLifecycle = true,
+            )
         }
 
         private fun deleteRecursively(path: Path): Boolean = runCatching {

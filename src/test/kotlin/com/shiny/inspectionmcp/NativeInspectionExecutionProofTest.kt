@@ -172,6 +172,29 @@ class NativeInspectionExecutionProofTest {
     }
 
     @Test
+    fun `standard context events cannot establish run-bound proof`() {
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
+
+        collector.markUnavailable("standard_context_event_attribution_unproven")
+        collector.fileAnalyzed(file, project)
+        collector.inspectionFinished(
+            10L,
+            1L,
+            0,
+            tool,
+            InspectListener.InspectionKind.LOCAL,
+            file,
+            project,
+        )
+        collector.markCompletedNormally()
+
+        val result = collector.result()
+        assertFalse(result.proofEstablished)
+        assertFalse(result.proofClean)
+        assertEquals("standard_context_event_attribution_unproven", result.proofBlockReason)
+    }
+
+    @Test
     fun `normal return without execution events remains unproven`() {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 

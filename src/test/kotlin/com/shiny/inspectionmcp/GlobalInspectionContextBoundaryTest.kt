@@ -1,8 +1,8 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
-import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
-import com.intellij.codeInspection.ex.InspectionManagerEx
+import com.intellij.codeInspection.InspectionManager
+import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.openapi.progress.ProcessCanceledException
 import io.mockk.every
 import io.mockk.mockk
@@ -16,8 +16,8 @@ import java.nio.file.Path
 class GlobalInspectionContextBoundaryTest {
     @Test
     fun `creates the standard GlobalInspectionContextEx from InspectionManager`() {
-        val inspectionManager = mockk<InspectionManagerEx>()
-        val context = mockk<GlobalInspectionContextImpl>()
+        val inspectionManager = mockk<InspectionManager>()
+        val context = mockk<GlobalInspectionContextEx>()
         every { inspectionManager.createNewGlobalContext() } returns context
 
         val boundary = GlobalInspectionContextBoundary.createStandard(inspectionManager)
@@ -28,8 +28,8 @@ class GlobalInspectionContextBoundaryTest {
 
     @Test
     fun `executes through export results and removes the run export directory`() {
-        val inspectionManager = mockk<InspectionManagerEx>()
-        val context = mockk<GlobalInspectionContextImpl>()
+        val inspectionManager = mockk<InspectionManager>()
+        val context = mockk<GlobalInspectionContextEx>()
         val scope = mockk<AnalysisScope>()
         var exportDirectory: Path? = null
         every { inspectionManager.createNewGlobalContext() } returns context
@@ -58,8 +58,8 @@ class GlobalInspectionContextBoundaryTest {
 
     @Test
     fun `cancellation propagates and still removes the run export directory`() {
-        val inspectionManager = mockk<InspectionManagerEx>()
-        val context = mockk<GlobalInspectionContextImpl>()
+        val inspectionManager = mockk<InspectionManager>()
+        val context = mockk<GlobalInspectionContextEx>()
         val scope = mockk<AnalysisScope>()
         var exportDirectory: Path? = null
         every { inspectionManager.createNewGlobalContext() } returns context
