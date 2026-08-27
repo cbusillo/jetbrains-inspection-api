@@ -16,6 +16,7 @@ concurrency:
 env:
   ISSUE_NUMBER: "290"
   REQUIRED_LABEL: "plan:waiting"
+  ACTION_LABEL: "every-code"
   DUE_ON: "2026-09-02"
   EXPIRES_ON: "2026-09-04"
   REMINDER_MARKER: "<!-- issue-290-followup-reminder:v1 -->"
@@ -37,6 +38,7 @@ jobs:
           state=$(jq -r '.state' <<<"$issue_json")
           locked=$(jq -r '.locked' <<<"$issue_json")
           has_label=$(jq -r --arg label "$REQUIRED_LABEL" 'any(.labels[]; .name == $label)' <<<"$issue_json")
+          has_action_label=$(jq -r --arg label "$ACTION_LABEL" 'any(.labels[]; .name == $label)' <<<"$issue_json")
           comments_json=$(gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/${ISSUE_NUMBER}/comments")
           existing_comment=$(
             jq -r --arg marker "$REMINDER_MARKER" \
@@ -48,6 +50,7 @@ jobs:
           printf 'issue_state=%s\n' "$state"
           printf 'issue_locked=%s\n' "$locked"
           printf 'required_label_present=%s\n' "$has_label"
+          printf 'action_label_present=%s\n' "$has_action_label"
           printf 'reminder_already_posted=%s\n' "$([[ -n "$existing_comment" ]] && echo true || echo false)"
 
           if [[ "$state" == "open" && "$locked" == "false" && "$has_label" == "true" && -z "$existing_comment" ]]; then
@@ -98,9 +101,14 @@ jobs:
           state=$(jq -r '.state' <<<"$issue_json")
           locked=$(jq -r '.locked' <<<"$issue_json")
           has_label=$(jq -r --arg label "$REQUIRED_LABEL" 'any(.labels[]; .name == $label)' <<<"$issue_json")
+          has_action_label=$(jq -r --arg label "$ACTION_LABEL" 'any(.labels[]; .name == $label)' <<<"$issue_json")
           if [[ "$state" != "open" || "$locked" != "false" || "$has_label" != "true" ]]; then
             echo "Issue changed before the reminder write; skipping."
             exit 0
+          fi
+
+          if [[ "$has_action_label" != "true" ]]; then
+            gh issue edit "$ISSUE_NUMBER" --repo "$GITHUB_REPOSITORY" --add-label "$ACTION_LABEL"
           fi
 
           body=$(cat <<'EOF'
@@ -111,6 +119,8 @@ jobs:
           - If JetBrains replied, record the response and next decision in #290 and #324.
           - If there is no reply, send a short follow-up and keep the Stable release blocked.
           - Reconcile #270 and draft PR #325 before changing or replacing Stable update `1130387`.
+
+          The `every-code` label was added so local Every Code automation can pick up the actionable follow-up.
 
           Related consumer work: cbusillo/codex-skills#497.
           EOF
