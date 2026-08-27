@@ -19,7 +19,7 @@
         "./scripts/test-release-contracts.sh",
         "./gradlew buildPlugin"
       ],
-      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/canary-release.yml",
+      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml .github/workflows/canary-release.yml .github/workflows/issue-290-followup-reminder.yml",
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test",
@@ -87,6 +87,7 @@
     "CodeQL",
     "Dependabot Updates",
     "Dependency Graph",
+    "JetBrains Follow-up Reminder",
     "Release",
     "Canary Release"
   ],
