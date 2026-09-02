@@ -1,0 +1,26 @@
+<idea-plugin>
+    <id>com.shiny.ijpl252476.reproducer</id>
+    <name>IJPL-252476 Global Inspection Reproducer</name>
+    <vendor email="info@shinycomputers.com">Shiny Computers</vendor>
+
+    <description><![CDATA[
+        Minimal reproducer for IJPL-252476. It runs the global inspection XML export APIs
+        from a modal progress task and preserves the exported files and a detailed report.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+
+    <actions>
+        <group id="Ijpl252476.Reproducer.Group"
+               text="IJPL-252476 Reproducer"
+               popup="true">
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+            <action id="Ijpl252476.Reproducer.Export"
+                    class="com.shiny.ijpl252476.RunExportReproducerAction"
+                    text="Run XML Export"/>
+            <action id="Ijpl252476.Reproducer.Offline"
+                    class="com.shiny.ijpl252476.RunOfflineReproducerAction"
+                    text="Run Offline Export"/>
+        </group>
+    </actions>
+</idea-plugin>
