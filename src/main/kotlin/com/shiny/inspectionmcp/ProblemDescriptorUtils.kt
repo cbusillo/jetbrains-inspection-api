@@ -8,10 +8,12 @@ import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.injected.editor.DocumentWindow
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.injection.InjectedLanguageManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiDocumentManager
+import java.util.concurrent.CancellationException
 
 data class ProblemLocation(
     val filePath: String,
@@ -102,18 +104,27 @@ internal fun severityFromHighlightDisplayLevel(level: HighlightDisplayLevel?): S
     }
 }
 
-internal fun liftSeverityWithProfile(
-    baseSeverity: String,
+internal fun resolveProblemSeverity(
+    highlightType: ProblemHighlightType,
     selectedProfile: InspectionProfile?,
     displayKey: HighlightDisplayKey?,
     psiElement: PsiElement?,
 ): String {
-    if (selectedProfile == null || displayKey == null || psiElement == null) {
+    val baseSeverity = severityFromHighlightType(highlightType)
+    if (selectedProfile == null || displayKey == null || psiElement == null || !psiElement.isValid) {
         return baseSeverity
     }
-    val profileSeverity = runCatching { selectedProfile.getErrorLevel(displayKey, psiElement) }.getOrNull()
-        ?: return baseSeverity
+    val profileSeverity = try {
+        selectedProfile.getErrorLevel(displayKey, psiElement)
+    } catch (error: ProcessCanceledException) {
+        throw error
+    } catch (error: CancellationException) {
+        throw error
+    } catch (_: Exception) {
+        return baseSeverity
+    }
     val liftedSeverity = severityFromHighlightDisplayLevel(profileSeverity) ?: return baseSeverity
+    if (highlightType == ProblemHighlightType.GENERIC_ERROR_OR_WARNING) return liftedSeverity
     val baseRank = severityRank(baseSeverity) ?: return baseSeverity
     val liftedRank = severityRank(liftedSeverity) ?: return baseSeverity
     return if (liftedRank > baseRank) liftedSeverity else baseSeverity

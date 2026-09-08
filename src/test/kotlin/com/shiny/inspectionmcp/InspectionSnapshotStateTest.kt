@@ -8,6 +8,7 @@ import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindowManager
@@ -1128,6 +1129,113 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"view_ready_ok\": false"))
         assertTrue(response.contains("\"wait_completed\": true"))
         assertFalse(response.contains("\"completion_reason\": \"clean\""))
+    }
+
+    @Test
+    @DisplayName("Active wait timeout preserves the inspection stage")
+    fun testActiveWaitTimeoutPreservesInspectionStage() {
+        handler.inspectionRunNowNanos = { 7_000_000_000L }
+        setInspectionRunState(
+            InspectionRunState(
+                runId = 31L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 2_000_000_000L,
+                stage = InspectionRunStage.SMART_WAIT,
+                stageStartedNanos = 4_000_000_000L,
+            ),
+        )
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"timeout\""))
+        assertTrue(response.contains("\"timed_out\": true"))
+        assertTrue(response.contains("\"inspection_stage\": \"smart_wait\""))
+        assertTrue(response.contains("\"inspection_stage_at_failure\": \"smart_wait\""))
+        assertTrue(response.contains("\"source\": \"wait_timeout\""))
+        assertTrue(response.contains("\"inspection_stage_elapsed_ms\": 3000"))
+        assertTrue(response.contains("\"inspection_run_elapsed_ms\": 5000"))
+        assertTrue(response.contains("\"dumb_mode\": false"))
+    }
+
+    @Test
+    @DisplayName("Wait timeout response remains pinned when a newer run starts during diagnostic capture")
+    fun testWaitTimeoutResponseRemainsPinnedDuringDiagnosticCapture() {
+        val timedOutRun = InspectionRunState(
+            runId = 31L,
+            triggerTimeMs = System.currentTimeMillis(),
+            inProgress = true,
+            runStartedNanos = 2_000_000_000L,
+            stage = InspectionRunStage.SMART_WAIT,
+            stageStartedNanos = 4_000_000_000L,
+        )
+        setInspectionRunState(timedOutRun)
+        setInspectionRunControl(
+            InspectionRunControl(
+                runId = timedOutRun.runId,
+                indicator = mockk<ProgressIndicator>(relaxed = true),
+            ).also { it.workerThread.set(Thread.currentThread()) },
+        )
+        handler.inspectionWorkerStackProvider = {
+            setInspectionRunState(
+                InspectionRunState(
+                    runId = 32L,
+                    triggerTimeMs = System.currentTimeMillis(),
+                    inProgress = true,
+                    runStartedNanos = 8_000_000_000L,
+                    stage = InspectionRunStage.SYNC,
+                    stageStartedNanos = 8_000_000_000L,
+                ),
+            )
+            emptyList()
+        }
+
+        val response = waitForInspection(timeoutMs = 1000L, pollMs = 200L)
+
+        assertTrue(response.contains("\"completion_reason\": \"timeout\""))
+        assertTrue(response.contains("\"inspection_run_id\": 31"))
+        assertTrue(response.contains("\"inspection_stage\": \"smart_wait\""))
+        assertFalse(response.contains("\"inspection_run_id\": 32"))
+        assertFalse(response.contains("\"inspection_failure_diagnostic\""))
+    }
+
+    @Test
+    @DisplayName("Repeated wait timeout keeps live stage beside the historical primary observation")
+    fun testRepeatedWaitTimeoutKeepsLiveStage() {
+        handler.inspectionRunNowNanos = { 9_000_000_000L }
+        setInspectionRunState(
+            InspectionRunState(
+                runId = 31L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.NATIVE_EXECUTE,
+                stageStartedNanos = 8_000_000_000L,
+                failureDiagnostics = listOf(
+                    InspectionRunFailureDiagnostic(
+                        source = InspectionRunFailureSource.WAIT_TIMEOUT,
+                        stageAtFailure = InspectionRunStage.SMART_WAIT,
+                        stageElapsedMs = 3_000L,
+                        runElapsedMs = 5_000L,
+                        dumbMode = false,
+                        workerThreadName = null,
+                        workerStack = emptyList(),
+                    ),
+                ),
+            ),
+        )
+
+        val response = json.parseToJsonElement(
+            waitForInspection(timeoutMs = 1000L, pollMs = 200L),
+        ).jsonObject
+        val primaryFailure = requireNotNull(response["inspection_failure_diagnostic"]).jsonObject
+
+        assertEquals("native_execute", response.string("inspection_stage"))
+        assertEquals(1000L, response["inspection_stage_elapsed_ms"]?.jsonPrimitive?.contentOrNull?.toLong())
+        assertEquals(8000L, response["inspection_run_elapsed_ms"]?.jsonPrimitive?.contentOrNull?.toLong())
+        assertEquals("smart_wait", primaryFailure.string("inspection_stage_at_failure"))
+        assertEquals("wait_timeout", primaryFailure.string("source"))
+        assertEquals(3000L, primaryFailure["inspection_stage_elapsed_ms"]?.jsonPrimitive?.contentOrNull?.toLong())
     }
 
     @Test
@@ -3007,6 +3115,164 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Scoped proof findings settle bounded capture after the finding wait")
+    fun testScopedProofFindingsSettleBoundedCaptureAfterFindingWait() {
+        val firstProofFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/first.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "Unused first symbol",
+        )
+        val secondProofFinding = firstProofFinding + mapOf(
+            "file" to "/tmp/TestProject/src/second.js",
+            "description" to "Unused second symbol",
+        )
+        val observedResultEvidence = resultSettlingEvidence(
+            bestResults = emptyList(),
+            scopedProofFindings = listOf(firstProofFinding, secondProofFinding),
+        )
+
+        assertEquals(2, observedResultEvidence.count)
+        assertFalse(observedResultEvidence.isEmpty)
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 5000,
+                pollingElapsedMs = 14999,
+            ),
+        )
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 4999,
+                pollingElapsedMs = 15000,
+            ),
+        )
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 5000,
+                pollingElapsedMs = 15000,
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Result settling evidence and final union deduplicate proof and tool-window findings")
+    fun testResultSettlingEvidencePreservesDistinctFindings() {
+        val sharedFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/shared.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "Shared finding",
+        )
+        val toolWindowOnlyFinding = sharedFinding + mapOf(
+            "file" to "/tmp/TestProject/src/tool-window.js",
+            "description" to "Tool window finding",
+        )
+        val proofOnlyFinding = sharedFinding + mapOf(
+            "file" to "/tmp/TestProject/src/proof.js",
+            "description" to "Proof finding",
+        )
+
+        assertEquals(
+            3,
+            resultSettlingEvidence(
+                bestResults = listOf(sharedFinding, toolWindowOnlyFinding),
+                scopedProofFindings = listOf(sharedFinding, proofOnlyFinding),
+            ).count,
+        )
+        assertEquals(
+            listOf(sharedFinding, toolWindowOnlyFinding, proofOnlyFinding),
+            appendDistinctProblems(
+                bestResults = listOf(sharedFinding, toolWindowOnlyFinding),
+                scopedProofFindings = listOf(sharedFinding, proofOnlyFinding, proofOnlyFinding),
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Out-of-scope proof findings do not become capture evidence or permit clean confirmation")
+    fun testOutOfScopeProofFindingsDoNotCountAndScopedProofBlocksCleanConfirmation() {
+        val inScopeProofFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/in-scope.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "In scope proof finding",
+        )
+        val outOfScopeProofFinding = inScopeProofFinding + mapOf(
+            "file" to "/tmp/OtherProject/out-of-scope.js",
+            "description" to "Out of scope proof finding",
+        )
+        val scopedProofFindings = filterProblemsForScope(
+            listOf(inScopeProofFinding, outOfScopeProofFinding),
+        ) { problem ->
+            (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
+        }
+        val outOfScopeOnlyEvidence = resultSettlingEvidence(
+            emptyList(),
+            filterProblemsForScope(listOf(outOfScopeProofFinding)) { problem ->
+                (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
+            },
+        )
+        val observedResultEvidence = resultSettlingEvidence(emptyList(), scopedProofFindings)
+
+        assertEquals(listOf(inScopeProofFinding), scopedProofFindings)
+        assertEquals(0, outOfScopeOnlyEvidence.count)
+        assertTrue(outOfScopeOnlyEvidence.isEmpty)
+        assertEquals(1, observedResultEvidence.count)
+        assertFalse(observedResultEvidence.isEmpty)
+        assertEquals(listOf(inScopeProofFinding), appendDistinctProblems(emptyList(), scopedProofFindings))
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = outOfScopeOnlyEvidence.isEmpty,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = observedResultEvidence.isEmpty,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            ),
+        )
+    }
+
+    @Test
     @DisplayName("Capture polling does not stop on an empty inspection view until the view finishes updating")
     fun testShouldNotStopCapturePollingForUpdatingEmptyInspectionView() {
         assertFalse(
@@ -4659,6 +4925,22 @@ class InspectionSnapshotStateTest {
         )
         method.isAccessible = true
         method.invoke(handler, projectKey, runId)
+    }
+
+    private fun setInspectionRunState(state: InspectionRunState) {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val runStates = field.get(handler) as MutableMap<String, InspectionRunState>
+        runStates[snapshotKey()] = state
+    }
+
+    private fun setInspectionRunControl(control: InspectionRunControl) {
+        val field = InspectionHandler::class.java.getDeclaredField("inspectionRunControlsByProject")
+        field.isAccessible = true
+        @Suppress("UNCHECKED_CAST")
+        val runControls = field.get(handler) as MutableMap<String, InspectionRunControl>
+        runControls[snapshotKey()] = control
     }
 
     private fun setLastInspectionTriggerTime(value: Long) {

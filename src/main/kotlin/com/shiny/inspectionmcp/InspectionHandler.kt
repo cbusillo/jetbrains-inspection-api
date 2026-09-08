@@ -110,6 +110,9 @@ private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS = 30_000L
+private const val MAX_INSPECTION_RUN_STAGE_HISTORY = 8
+private const val MAX_INSPECTION_RUN_FAILURE_DIAGNOSTICS = 3
+private const val MAX_INSPECTION_WORKER_STACK_FRAMES = 64
 private const val REQUIRED_PYTHON_SDK_READY_OBSERVATIONS = 2
 private const val SCOPE_FILE_SEMANTIC_COVERAGE_SCHEMA_VERSION = 1
 private const val SCOPE_SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
@@ -737,6 +740,16 @@ internal fun buildFindingCaptureDiagnostic(
     return diagnostic.takeIf { it.isNotEmpty() }
 }
 
+internal fun mergeCaptureFailureDiagnostic(
+    captureDiagnostic: Map<String, Any?>?,
+    failureDiagnostic: Map<String, Any>?,
+): Map<String, Any?>? {
+    if (failureDiagnostic == null) {
+        return captureDiagnostic
+    }
+    return captureDiagnostic.orEmpty() + mapOf("inspection_failure_diagnostic" to failureDiagnostic)
+}
+
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
     val reconciled: Boolean,
@@ -945,19 +958,77 @@ internal data class InspectionRunState(
     val triggerTimeMs: Long,
     val inProgress: Boolean,
     val captureScope: InspectionCaptureScope? = null,
+    val runStartedNanos: Long = System.nanoTime(),
+    val stage: InspectionRunStage? = null,
+    val stageStartedNanos: Long? = null,
+    val stageHistory: List<InspectionRunStageTiming> = emptyList(),
+    val terminalOutcome: InspectionRunTerminalOutcome? = null,
+    val terminalAtNanos: Long? = null,
+    val failureDiagnostics: List<InspectionRunFailureDiagnostic> = emptyList(),
 ) {
     constructor(runId: Long, triggerTimeMs: Long, inProgress: Boolean) : this(
         runId = runId,
         triggerTimeMs = triggerTimeMs,
         inProgress = inProgress,
         captureScope = null,
+        runStartedNanos = System.nanoTime(),
     )
+}
+
+internal enum class InspectionRunStage(val apiValue: String) {
+    SYNC("sync"),
+    SMART_WAIT("smart_wait"),
+    PYTHON_SDK_READINESS("python_sdk_readiness"),
+    NATIVE_CONFIGURE("native_configure"),
+    NATIVE_EXECUTE("native_execute"),
+    EXACT_PROOF("exact_proof"),
+    RESULT_SETTLING("result_settling"),
+    PUBLISH("publish"),
+}
+
+internal data class InspectionRunStageTiming(
+    val stage: InspectionRunStage,
+    val elapsedMs: Long,
+)
+
+internal enum class InspectionRunTerminalOutcome(val apiValue: String) {
+    COMPLETED("completed"),
+    CANCELLED("cancelled"),
+    FAILED("failed"),
+}
+
+internal enum class InspectionRunFailureOutcome(val apiValue: String) {
+    TIMEOUT("timeout"),
+    CANCELLED("cancelled"),
+}
+
+internal enum class InspectionRunFailureSource(
+    val apiValue: String,
+    val outcome: InspectionRunFailureOutcome,
+) {
+    WAIT_TIMEOUT("wait_timeout", InspectionRunFailureOutcome.TIMEOUT),
+    CAPTURE_DEADLINE("capture_deadline", InspectionRunFailureOutcome.TIMEOUT),
+    CANCELLATION("cancellation", InspectionRunFailureOutcome.CANCELLED),
+}
+
+internal data class InspectionRunFailureDiagnostic(
+    val source: InspectionRunFailureSource,
+    val stageAtFailure: InspectionRunStage?,
+    val stageElapsedMs: Long,
+    val runElapsedMs: Long,
+    val dumbMode: Boolean?,
+    val workerThreadName: String?,
+    val workerStack: List<String>,
+) {
+    val outcome: InspectionRunFailureOutcome
+        get() = source.outcome
 }
 
 internal data class InspectionRunControl(
     val runId: Long,
     val indicator: ProgressIndicator,
     val cancellationRequested: AtomicBoolean = AtomicBoolean(false),
+    val workerThread: AtomicReference<Thread?> = AtomicReference(null),
 )
 
 private data class InspectionProof(
@@ -1513,6 +1584,41 @@ internal fun shouldStopCapturePolling(
     return false
 }
 
+internal data class ResultSettlingEvidence(
+    val count: Int,
+) {
+    val isEmpty: Boolean
+        get() = count == 0
+}
+
+internal fun resultSettlingEvidence(
+    bestResults: List<Map<String, Any>>,
+    scopedProofFindings: List<Map<String, Any>>,
+): ResultSettlingEvidence {
+    val observedKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
+    scopedProofFindings.forEach { observedKeys += problemKey(it) }
+    return ResultSettlingEvidence(observedKeys.size)
+}
+
+internal fun appendDistinctProblems(
+    bestResults: List<Map<String, Any>>,
+    scopedProofFindings: List<Map<String, Any>>,
+): List<Map<String, Any>> {
+    val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
+    return bestResults + scopedProofFindings.filter { existingKeys.add(problemKey(it)) }
+}
+
+internal fun problemKey(map: Map<String, Any>): String {
+    return listOf(
+        map["severity"],
+        map["inspectionType"],
+        map["file"],
+        map["line"],
+        map["column"],
+        map["description"],
+    ).joinToString("|")
+}
+
 internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
     hasExecutionProofCleanEvidence: Boolean = false,
@@ -1692,6 +1798,11 @@ class InspectionHandler : HttpRequestHandler() {
         val leaseId: String?,
     )
 
+    private data class PythonSdkPreparationControl(
+        val indicator: ProgressIndicator,
+        val responseSent: AtomicBoolean = AtomicBoolean(false),
+    )
+
     internal data class LifecycleOpenOwnership(
         val leaseId: String,
         val targetKey: String,
@@ -1753,6 +1864,8 @@ class InspectionHandler : HttpRequestHandler() {
     private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
     private val unresolvedLifecycleOpenProjects = java.util.concurrent.ConcurrentHashMap<String, Project>()
     private val lifecycleOpenDiagnosticsByTarget = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenDiagnostic>()
+    private val pythonSdkPreparationsByProjectInstance =
+        java.util.concurrent.ConcurrentHashMap<String, PythonSdkPreparationControl>()
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
@@ -1767,6 +1880,10 @@ class InspectionHandler : HttpRequestHandler() {
     internal var pythonSdkSettleMaxTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS
     internal var pythonSdkSettleNow: () -> Long = { System.currentTimeMillis() }
     internal var pythonSdkSettleSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
+    internal var inspectionRunNowNanos: () -> Long = System::nanoTime
+    internal var inspectionWorkerStackProvider: (Thread) -> List<String> = { thread ->
+        thread.stackTrace.take(MAX_INSPECTION_WORKER_STACK_FRAMES).map(StackTraceElement::toString)
+    }
     internal var lifecycleOpenGuardPollMs: Long = 200
     internal var lifecycleOpenGuardTimeoutMs: Long = 30_000
     internal var lifecycleOpenRootStabilizationMs: Long = 10_000
@@ -1825,6 +1942,18 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
+    internal var pythonSdkPreparationExecutor: (Runnable) -> Unit = { task ->
+        ApplicationManager.getApplication().executeOnPooledThread(task)
+    }
+    internal var pythonSdkPreparationTimeoutMs: Long = 60_000
+    internal var pythonSdkPreparationNow: () -> Long = { System.currentTimeMillis() }
+    internal var schedulePythonSdkPreparationTimeout: (Runnable, Long) -> (() -> Unit) = { task, delayMs ->
+        val future = AppExecutorUtil.getAppScheduledExecutorService().schedule(task, delayMs, TimeUnit.MILLISECONDS)
+        val cancel: () -> Unit = { future.cancel(false) }
+        cancel
+    }
+    internal var pythonSdkPreparationRunner: (PythonSdkPreparationRequest) -> PythonSdkPreparationResult =
+        PythonSdkPreparationService()::prepare
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
@@ -2256,6 +2385,46 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun attributionClassification(code: String): String {
+        if (code.startsWith("python_sdk_preparation_")) {
+            return when (code) {
+                "python_sdk_preparation_venv_configuration_missing",
+                "python_sdk_preparation_interpreter_missing",
+                "python_sdk_preparation_project_untrusted",
+                "python_sdk_preparation_unsupported",
+                "python_sdk_preparation_no_python_modules",
+                "python_sdk_preparation_sdk_conflict",
+                "python_sdk_preparation_ambiguous_registered_sdk",
+                "python_sdk_preparation_existing_sdk_incomplete",
+                "python_sdk_preparation_project_root_missing" -> "configuration_blocked"
+                "python_sdk_preparation_cancelled",
+                "python_sdk_preparation_claim_mismatch",
+                "python_sdk_preparation_existing_sdk_changed",
+                "python_sdk_preparation_in_progress",
+                "python_sdk_preparation_inspection_in_progress",
+                "python_sdk_preparation_interpreter_input_forbidden",
+                "python_sdk_preparation_lease_mismatch",
+                "python_sdk_preparation_method_not_allowed",
+                "python_sdk_preparation_module_model_changed",
+                "python_sdk_preparation_not_claimed",
+                "python_sdk_preparation_ownership_changed",
+                "python_sdk_preparation_session_drift",
+                "python_sdk_preparation_timeout",
+                "python_sdk_preparation_token_mismatch" -> "legitimate_fail_closed"
+                "python_sdk_preparation_setup_incomplete",
+                "python_sdk_preparation_registration_failed",
+                "python_sdk_preparation_assignment_failed",
+                "python_sdk_preparation_readback_failed",
+                "python_sdk_preparation_commit_failed",
+                "python_sdk_preparation_scheduling_failed",
+                "python_sdk_preparation_persistence_failed",
+                "python_sdk_preparation_failed" -> "tool_caused"
+                else -> if (code.startsWith("python_sdk_preparation_missing_")) {
+                    "legitimate_fail_closed"
+                } else {
+                    "tool_caused"
+                }
+            }
+        }
         return when (code) {
             "clean",
             "findings",
@@ -2429,7 +2598,12 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     override fun isSupported(request: FullHttpRequest): Boolean {
-        return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
+        val path = runCatching { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
+        return when {
+            path == "/api/inspection/lifecycle/prepare-python-sdk" -> request.method() == HttpMethod.POST
+            path.startsWith("/api/inspection") -> request.method() == HttpMethod.GET
+            else -> false
+        }
     }
 
     @Suppress("SameReturnValue")
@@ -2496,6 +2670,34 @@ class InspectionHandler : HttpRequestHandler() {
                     if (schedulingFailure != null) {
                         sendInternalServerError(context, requestAttribution, parameters, schedulingFailure)
                     }
+                }
+                "/api/inspection/lifecycle/prepare-python-sdk" -> {
+                    if (request.method() != HttpMethod.POST) {
+                        sendPythonSdkPreparationFailure(
+                            context,
+                            parameters,
+                            requestAttribution,
+                            "python_sdk_preparation_method_not_allowed",
+                            "This endpoint requires POST.",
+                            HttpResponseStatus.METHOD_NOT_ALLOWED,
+                        )
+                        return true
+                    }
+                    if (request.content().isReadable || parameters.keys.any { key ->
+                            key in setOf("interpreter", "interpreter_path", "sdk_home")
+                        }
+                    ) {
+                        sendPythonSdkPreparationFailure(
+                            context,
+                            parameters,
+                            requestAttribution,
+                            "python_sdk_preparation_interpreter_input_forbidden",
+                            "The interpreter is derived from the claimed project and cannot be supplied by the request.",
+                            HttpResponseStatus.BAD_REQUEST,
+                        )
+                        return true
+                    }
+                    processPythonSdkPreparationRequest(parameters, context, requestAttribution)
                 }
                 "/api/inspection/cancel" -> {
                     responseHasSessionDrift(parameters, requestAttribution)?.let {
@@ -2741,7 +2943,7 @@ class InspectionHandler : HttpRequestHandler() {
                     indicator = inspectionIndicatorFactory(project),
                 )
             } catch (error: Throwable) {
-                finishInspectionRun(key, runState.runId)
+                finishInspectionRunWithOutcome(key, runState.runId, InspectionRunTerminalOutcome.FAILED)
                 throw error
             }
             inspectionRunControlsByProject[key] = runControl
@@ -2758,7 +2960,7 @@ class InspectionHandler : HttpRequestHandler() {
             } catch (error: Throwable) {
                 runCatching { runControl.indicator.cancel() }
                 inspectionRunControlsByProject.remove(key, runControl)
-                finishInspectionRun(key, runState.runId)
+                finishInspectionRunWithOutcome(key, runState.runId, InspectionRunTerminalOutcome.FAILED)
                 throw error
             }
             val details = mutableMapOf<String, Any>(
@@ -3832,6 +4034,7 @@ class InspectionHandler : HttpRequestHandler() {
             leasesByProjectInstance[instanceId]?.takeIf { it.project === project }?.let { lease ->
                 leasesByProjectInstance.remove(instanceId, lease)
             }
+            pythonSdkPreparationsByProjectInstance[instanceId]?.indicator?.cancel()
         }
     }
 
@@ -3858,6 +4061,317 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Exception) {
             sendInternalServerError(context, requestAttribution, parameters, error)
         }
+    }
+
+    private fun processPythonSdkPreparationRequest(
+        parameters: Map<String, List<String>>,
+        context: ChannelHandlerContext,
+        requestAttribution: InspectionRequestAttribution,
+    ) {
+        val expectedProjectInstanceId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "project_instance_id",
+        ) ?: return
+        val expectedProjectKey = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "project_key",
+        ) ?: return
+        val expectedSessionId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "session_id",
+        ) ?: return
+        val expectedLeaseId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "lease_id",
+        ) ?: return
+        val closeToken = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "close_token",
+        ) ?: return
+
+        if (expectedSessionId != InspectionIdeSession.sessionId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_session_drift",
+                "The IDE session changed before Python SDK preparation.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        val lease = leasesByProjectInstance[expectedProjectInstanceId]
+        if (lease == null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_not_claimed",
+                "No helper lifecycle claim exists for this project instance.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        if (lease.closeToken != closeToken) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_token_mismatch",
+                "Close token did not match the helper lifecycle claim.",
+                HttpResponseStatus.FORBIDDEN,
+            )
+            return
+        }
+        if (lease.leaseId != expectedLeaseId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_lease_mismatch",
+                "Lease id did not match the helper lifecycle claim.",
+                HttpResponseStatus.FORBIDDEN,
+            )
+            return
+        }
+        if (lease.projectKey != expectedProjectKey || lease.sessionId != expectedSessionId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_claim_mismatch",
+                "The project or session no longer matches the lifecycle claim.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        val projectRoot = lease.basePath?.let { path ->
+            runCatching { Paths.get(path).normalize().toAbsolutePath() }.getOrNull()
+        }
+        if (projectRoot == null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_project_root_missing",
+                "The claimed project has no usable base path.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        if (isInspectionInProgress(lease.project)) {
+            val runState = inspectionRunStatesByProject[lease.projectKey]
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_inspection_in_progress",
+                "An inspection is already running for the claimed project.",
+                HttpResponseStatus.CONFLICT,
+                additional = mapOf(
+                    "inspection_in_progress" to true,
+                    "inspection_run_id" to runState?.runId,
+                ),
+            )
+            return
+        }
+
+        val control = PythonSdkPreparationControl(ProgressIndicatorBase())
+        if (pythonSdkPreparationsByProjectInstance.putIfAbsent(expectedProjectInstanceId, control) != null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_in_progress",
+                "Python SDK preparation is already active for this project instance.",
+                HttpResponseStatus.CONFLICT,
+                additional = mapOf("python_sdk_preparation_in_progress" to true),
+            )
+            return
+        }
+        val deadlineMs = pythonSdkPreparationNow() + pythonSdkPreparationTimeoutMs
+
+        val ownershipIsCurrent = {
+            pythonSdkPreparationsByProjectInstance[expectedProjectInstanceId] === control &&
+                leasesByProjectInstance[expectedProjectInstanceId] === lease &&
+                lease.sessionId == InspectionIdeSession.sessionId &&
+                pythonSdkPreparationNow() < deadlineMs &&
+                !control.indicator.isCanceled &&
+                !control.responseSent.get() &&
+                !lease.project.isDisposed &&
+                findOpenProjectByInstanceId(expectedProjectInstanceId) === lease.project &&
+                projectKey(lease.project) == lease.projectKey &&
+                !isInspectionInProgress(lease.project)
+        }
+        val timeoutTask = Runnable {
+            control.indicator.cancel()
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationFailure(
+                    context,
+                    parameters,
+                    requestAttribution,
+                    "python_sdk_preparation_timeout",
+                    "Python SDK preparation exceeded its bounded deadline.",
+                    HttpResponseStatus.REQUEST_TIMEOUT,
+                    additional = mapOf("python_sdk_preparation_in_progress" to true),
+                )
+            }
+        }
+        val cancelTimeout = try {
+            schedulePythonSdkPreparationTimeout(timeoutTask, pythonSdkPreparationTimeoutMs)
+        } catch (error: Throwable) {
+            pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_scheduling_failed",
+                error.message ?: error::class.java.simpleName,
+                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+        }
+        val worker = Runnable {
+            val result = try {
+                if (!ownershipIsCurrent()) {
+                    PythonSdkPreparationResult(false, "python_sdk_preparation_ownership_changed")
+                } else {
+                    pythonSdkPreparationRunner(
+                        PythonSdkPreparationRequest(
+                            project = lease.project,
+                            projectRoot = projectRoot,
+                            deadlineMs = deadlineMs,
+                            indicator = control.indicator,
+                            ownershipIsCurrent = ownershipIsCurrent,
+                        )
+                    )
+                }
+            } catch (error: Throwable) {
+                PythonSdkPreparationResult(
+                    prepared = false,
+                    reason = "python_sdk_preparation_failed",
+                    detail = error.message ?: error::class.java.simpleName,
+                )
+            } finally {
+                pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+                runCatching { cancelTimeout() }
+            }
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationResult(context, parameters, requestAttribution, result)
+            }
+        }
+        try {
+            pythonSdkPreparationExecutor(worker)
+        } catch (error: Throwable) {
+            runCatching { cancelTimeout() }
+            pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationFailure(
+                    context,
+                    parameters,
+                    requestAttribution,
+                    "python_sdk_preparation_scheduling_failed",
+                    error.message ?: error::class.java.simpleName,
+                    HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
+    }
+
+    private fun requiredPythonSdkPreparationParameter(
+        parameters: Map<String, List<String>>,
+        context: ChannelHandlerContext,
+        requestAttribution: InspectionRequestAttribution,
+        name: String,
+    ): String? {
+        firstParameter(parameters, name)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        sendPythonSdkPreparationFailure(
+            context,
+            parameters,
+            requestAttribution,
+            "python_sdk_preparation_missing_$name",
+            "Parameter '$name' is required.",
+            HttpResponseStatus.BAD_REQUEST,
+        )
+        return null
+    }
+
+    private fun sendPythonSdkPreparationResult(
+        context: ChannelHandlerContext,
+        parameters: Map<String, List<String>>,
+        requestAttribution: InspectionRequestAttribution,
+        result: PythonSdkPreparationResult,
+    ) {
+        val response = mutableMapOf<String, Any?>(
+            "status" to if (result.prepared) "prepared" else "error",
+            "sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
+            "session_id" to InspectionIdeSession.sessionId,
+            "project_instance_id" to firstParameter(parameters, "project_instance_id"),
+            "project_key" to firstParameter(parameters, "project_key"),
+            "lease_id" to firstParameter(parameters, "lease_id"),
+            "reason" to result.reason,
+            "operation" to result.operation,
+            "interpreter_home" to result.interpreterHome,
+            "sdk_name" to result.sdkName,
+            "python_module_count" to result.pythonModuleCount,
+            "registered_local_python_sdk_count" to result.registeredLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_local_python_sdk_count" to result.assignedLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_python_module_count" to result.assignedPythonModuleCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "project_sdk_assigned" to result.projectSdkAssigned
+                .takeIf { result.prepared || result.readbackObserved },
+            "detail" to result.detail,
+        )
+        val status = if (result.prepared) HttpResponseStatus.OK else pythonSdkPreparationFailureStatus(result.reason)
+        if (!result.prepared) {
+            addInspectionAttribution(response, requestAttribution, result.reason, status, parameters)
+        }
+        sendJsonResponse(context, formatJsonManually(response.filterValues { value -> value != null }), status)
+    }
+
+    private fun sendPythonSdkPreparationFailure(
+        context: ChannelHandlerContext,
+        parameters: Map<String, List<String>>,
+        requestAttribution: InspectionRequestAttribution,
+        reason: String,
+        detail: String,
+        status: HttpResponseStatus,
+        additional: Map<String, Any?> = emptyMap(),
+    ) {
+        val response = mutableMapOf<String, Any?>(
+            "status" to "error",
+            "sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
+            "session_id" to InspectionIdeSession.sessionId,
+            "project_instance_id" to firstParameter(parameters, "project_instance_id"),
+            "project_key" to firstParameter(parameters, "project_key"),
+            "lease_id" to firstParameter(parameters, "lease_id"),
+            "reason" to reason,
+            "detail" to detail,
+        )
+        response.putAll(additional)
+        addInspectionAttribution(response, requestAttribution, reason, status, parameters)
+        sendJsonResponse(context, formatJsonManually(response.filterValues { value -> value != null }), status)
+    }
+
+    private fun pythonSdkPreparationFailureStatus(reason: String): HttpResponseStatus = when {
+        reason.endsWith("_unsupported") -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+        reason.endsWith("_venv_configuration_missing") || reason.endsWith("_interpreter_missing") ->
+            HttpResponseStatus.UNPROCESSABLE_ENTITY
+        reason.endsWith("_existing_sdk_incomplete") -> HttpResponseStatus.CONFLICT
+        reason.endsWith("_failed") || reason.endsWith("_incomplete") -> HttpResponseStatus.INTERNAL_SERVER_ERROR
+        else -> HttpResponseStatus.CONFLICT
     }
 
     private fun buildInspectionCancellationResponse(parameters: Map<String, List<String>>): String {
@@ -3914,16 +4428,26 @@ class InspectionHandler : HttpRequestHandler() {
 
         control.cancellationRequested.set(true)
         control.indicator.cancel()
+        val failureDiagnostic = recordInspectionRunFailureDiagnostic(
+            key = key,
+            runId = runState.runId,
+            project = resolved.project,
+            source = InspectionRunFailureSource.CANCELLATION,
+        )
+        val response = mutableMapOf(
+            "status" to "cancel_requested",
+            "inspection_in_progress" to true,
+            "inspection_cancellation_requested" to true,
+            "inspection_run_id" to runState.runId,
+            "project_key" to key,
+            "session_id" to InspectionIdeSession.sessionId,
+            "route" to routeMetadata(resolved),
+        )
+        failureDiagnostic?.let { diagnostic ->
+            response["inspection_failure_diagnostic"] = inspectionFailureDiagnosticMap(diagnostic)
+        }
         return formatJsonManually(
-            mapOf(
-                "status" to "cancel_requested",
-                "inspection_in_progress" to true,
-                "inspection_cancellation_requested" to true,
-                "inspection_run_id" to runState.runId,
-                "project_key" to key,
-                "session_id" to InspectionIdeSession.sessionId,
-                "route" to routeMetadata(resolved),
-            )
+            response
         )
     }
 
@@ -3940,6 +4464,19 @@ class InspectionHandler : HttpRequestHandler() {
         val expectedLeaseId = firstParameter(parameters, "lease_id")
         if (expectedLeaseId != null && expectedLeaseId != lease.leaseId) {
             return lifecycleCloseSkipped("lease_mismatch", "Lease id did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
+        }
+        if (pythonSdkPreparationsByProjectInstance.containsKey(expectedProjectInstanceId)) {
+            return lifecycleCloseSkipped(
+                "python_sdk_preparation_in_progress",
+                "Python SDK preparation is still active for the claimed project; leaving it open for a later cleanup retry.",
+                HttpResponseStatus.CONFLICT,
+                details = mapOf(
+                    "project_instance_id" to expectedProjectInstanceId,
+                    "project_key" to lease.projectKey,
+                    "lease_id" to lease.leaseId,
+                    "python_sdk_preparation_in_progress" to true,
+                ),
+            )
         }
         if (!leasesByProjectInstance.remove(expectedProjectInstanceId, lease)) {
             return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
@@ -4198,6 +4735,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "plugin_build_dirty" to null,
                 "plugin_build_time" to null,
                 "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
+                "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
@@ -4242,6 +4780,7 @@ class InspectionHandler : HttpRequestHandler() {
             "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
             "plugin_build_dirty" to identity["plugin_build_dirty"],
             "inspection_execution_proof_version" to identity["inspection_execution_proof_version"],
+            "python_sdk_preparation_version" to identity["python_sdk_preparation_version"],
         ).filterValues { value -> value != null }
     }
 
@@ -4863,6 +5402,7 @@ class InspectionHandler : HttpRequestHandler() {
         status["time_since_last_trigger_ms"] = timeSinceLastTrigger
         if (runState != null) {
             status["inspection_run_id"] = runState.runId
+            status.putAll(inspectionRunDiagnostic(runState))
             val runControl = inspectionRunControlsByProject[key]
             status["inspection_cancellation_requested"] =
                 runControl?.runId == runState.runId && runControl.cancellationRequested.get()
@@ -5014,6 +5554,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (!isCurrentInspectionRun(key, runId)) {
             return
         }
+        transitionInspectionRunStage(key, runId, InspectionRunStage.PUBLISH)
 
         val stableInputValidationScope = supportsStableInputValidation(snapshot.captureScope)
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
@@ -5542,6 +6083,25 @@ class InspectionHandler : HttpRequestHandler() {
                     status["wait_note"] = "Inspection finished but no trustworthy result was captured. Treat this as UNKNOWN, not clean; rerun inspection or open the Inspection Results tool window for the exact worktree."
                     return formatWaitResponse(status, start, timeoutMs, pollMs, true, "no_results", requestAttribution)
                 }
+                val timedOutRunId = inspectionRunId(status)
+                if (inProgress && timedOutRunId != null) {
+                    recordInspectionRunFailureDiagnostic(
+                        key = projectKey(activeProject),
+                        runId = timedOutRunId,
+                        project = activeProject,
+                        source = InspectionRunFailureSource.WAIT_TIMEOUT,
+                    )
+                    inspectionRunStatesByProject[projectKey(activeProject)]
+                        ?.takeIf { it.runId == timedOutRunId }
+                        ?.let { state ->
+                            state.failureDiagnostics.firstOrNull()?.let { failure ->
+                                status["inspection_failure_diagnostic"] = inspectionFailureDiagnosticMap(failure)
+                            }
+                            if (state.failureDiagnostics.size > 1) {
+                                status["inspection_failure_history"] = state.failureDiagnostics.map(::inspectionFailureDiagnosticMap)
+                            }
+                        }
+                }
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout", requestAttribution)
             }
 
@@ -5839,14 +6399,25 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionProcessRunner(
                 Runnable {
                     taskStarted.set(true)
-                    runInspectionUnderProgress(project, runId, captureScope, profileName)
+                    val workerThread = Thread.currentThread()
+                    control.workerThread.set(workerThread)
+                    try {
+                        runInspectionUnderProgress(project, runId, captureScope, profileName)
+                    } finally {
+                        control.workerThread.compareAndSet(workerThread, null)
+                    }
                 },
                 control.indicator,
             )
         } catch (error: Throwable) {
             if (!taskStarted.get()) {
                 runCatching { control.indicator.cancel() }
-                finishInspectionRun(key, runId)
+                val outcome = if (error is ProcessCanceledException) {
+                    InspectionRunTerminalOutcome.CANCELLED
+                } else {
+                    InspectionRunTerminalOutcome.FAILED
+                }
+                finishInspectionRunWithOutcome(key, runId, outcome)
             }
             throw error
         } finally {
@@ -5875,9 +6446,11 @@ class InspectionHandler : HttpRequestHandler() {
             checkInspectionRunCancellation(key, runId)
             resultsStore.clear(key)
 
+            transitionInspectionRunStage(key, runId, InspectionRunStage.SYNC)
             clearPriorInspectionResults(project)
             
             syncProjectState(project)
+            transitionInspectionRunStage(key, runId, InspectionRunStage.SMART_WAIT)
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
             var inspectionInputState = captureStableProjectState(project)
@@ -5996,6 +6569,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
                 return
             }
+            transitionInspectionRunStage(key, runId, InspectionRunStage.PYTHON_SDK_READINESS)
             val initialAnalysisReadiness = projectAnalysisReadinessProvider(project, effectiveCaptureScope)
             val pythonSdkSettleResult = settlePythonSdkReadiness(
                 initialReadiness = initialAnalysisReadiness,
@@ -6211,6 +6785,7 @@ class InspectionHandler : HttpRequestHandler() {
             )
             val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
 
+            transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_CONFIGURE)
             @Suppress("USELESS_CAST")
             val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
             var nativeScopeEnumerationFailure: Throwable? = null
@@ -6257,6 +6832,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             globalContext.configure(profile, scope)
             try {
+                transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
                 @Suppress("UnstableApiUsage")
                 globalContext.performInspectionsWithProgress(scope)
                 nativeProofCollector?.markCompletedNormally()
@@ -6334,6 +6910,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var proofFindings: List<Map<String, Any>> = emptyList()
                         when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> {
+                                transitionInspectionRunStage(key, runId, InspectionRunStage.EXACT_PROOF)
                                 if (capturedScopeFiles.isEmpty()) {
                                     boundedProof = BoundedExecutionProofResult(
                                         proofProblems = emptyList(),
@@ -6371,13 +6948,17 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> Unit
                             InspectionExecutionProofMode.NONE -> Unit
                         }
+                        // Exact proof has completed before result settling; retain its scoped snapshot separately from tool-window results.
+                        val settlingScopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
+                            .distinctBy(::problemKey)
                         val executionProofClean = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofClean == true
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProofCollector?.result()?.proofClean == true
                             InspectionExecutionProofMode.NONE -> false
                         }
 
-                        var lastSize = bestResults.size
+                        transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
+                        var lastSize = resultSettlingEvidence(bestResults, settlingScopedProofFindings).count
                         var lastChangeMs = System.currentTimeMillis()
                         val observedInspectionView = false
                         val observedSettledEmptyInspectionView = false
@@ -6452,8 +7033,10 @@ class InspectionHandler : HttpRequestHandler() {
                                 bestSource = "tool_window"
                             }
 
-                            if (bestResults.size != lastSize) {
-                                lastSize = bestResults.size
+                            val observedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
+                            // Tool-window rediscovery of a proof-known finding does not postpone the settled union.
+                            if (observedResultEvidence.count != lastSize) {
+                                lastSize = observedResultEvidence.count
                                 lastChangeMs = loopNow
                             }
 
@@ -6481,7 +7064,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         lastToolExtractionSucceeded = lastToolExtractionSucceeded,
                                     ),
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
-                                    bestResultsEmpty = bestResults.isEmpty(),
+                                    bestResultsEmpty = observedResultEvidence.isEmpty,
                                     observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
@@ -6493,7 +7076,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 !observedModelCleanInspection &&
                                 executionProofClean &&
                                 modelExtractionClean &&
-                                bestResults.isEmpty() &&
+                                observedResultEvidence.isEmpty &&
                                 !effectiveObservedNonEmptyInspectionTree &&
                                 stableForMs >= 5000L &&
                                 pollingElapsedMs >= 30000L
@@ -6509,7 +7092,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                                     observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                                     observedModelCleanInspection = observedModelCleanInspection,
-                                    bestResultsCount = bestResults.size,
+                                    bestResultsCount = observedResultEvidence.count,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
                                 )
@@ -6528,6 +7111,7 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         val effectiveObservedNonEmptyInspectionTree = false
+                        val finalObservedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
                             shouldTrustStableScopedEmptyResults(
@@ -6549,7 +7133,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     lastToolExtractionSucceeded = lastToolExtractionSucceeded,
                                 ),
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
-                                bestResultsEmpty = bestResults.isEmpty(),
+                                bestResultsEmpty = finalObservedResultEvidence.isEmpty,
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                 stableForMs = System.currentTimeMillis() - lastChangeMs,
                                 pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
@@ -6563,7 +7147,7 @@ class InspectionHandler : HttpRequestHandler() {
                             !observedModelCleanInspection &&
                             executionProofClean &&
                             modelExtractionClean &&
-                            bestResults.isEmpty() &&
+                            finalObservedResultEvidence.isEmpty &&
                             !effectiveObservedNonEmptyInspectionTree &&
                             finalStableForMs >= 5000L &&
                             finalPollingElapsedMs >= 30000L
@@ -6571,20 +7155,26 @@ class InspectionHandler : HttpRequestHandler() {
                             observedModelCleanInspection = true
                         }
 
-                        // Fix 3: After polling completes, scope-filter proof findings and union/dedupe into bestResults
-                        var scopedProofFindingCount = 0
-                        if (proofFindings.isNotEmpty()) {
-                            val scopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
-                            if (scopedProofFindings.isNotEmpty()) {
-                                scopedProofFindingCount = scopedProofFindings.size
-                                val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
-                                val newProofProblems = scopedProofFindings.filter { problemKey(it) !in existingKeys }
-                                if (newProofProblems.isNotEmpty()) {
-                                    bestResults = bestResults + newProofProblems
-                                    if (bestSource == "inspection_view") bestSource = "global_context"
-                                }
+                        val scopedProofFindingCount = settlingScopedProofFindings.size
+                        if (settlingScopedProofFindings.isNotEmpty()) {
+                            val mergedResults = appendDistinctProblems(bestResults, settlingScopedProofFindings)
+                            if (mergedResults.size > bestResults.size) {
+                                bestResults = mergedResults
+                                if (bestSource == "inspection_view") bestSource = "global_context"
                             }
                         }
+                        val captureTimeoutDiagnostic = if (captureExitReason == "deadline") {
+                            recordInspectionRunFailureDiagnostic(
+                                key = key,
+                                runId = runId,
+                                project = project,
+                                source = InspectionRunFailureSource.CAPTURE_DEADLINE,
+                            )
+                        } else {
+                            null
+                        }
+                        val captureFailureDiagnostic = captureTimeoutDiagnostic
+                            ?.let(::inspectionFailureDiagnosticMap)
 
                         val captureEndState = captureStableProjectState(project)
                         val projectStateChangedDuringCapture = captureEndState != inspectionInputState
@@ -6639,7 +7229,7 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofEstablished
                             InspectionExecutionProofMode.NONE -> null
                         }
-                        val captureDiagnostic = if (bestResults.isEmpty()) {
+                        val baseCaptureDiagnostic = if (bestResults.isEmpty()) {
                             val lastObservation = lastViewObservation
                             val stableForMs = captureEndMs - lastChangeMs
                             val readableStableForMs = readableEmptyInspectionViewStableSince?.let { captureEndMs - it } ?: 0L
@@ -6705,6 +7295,10 @@ class InspectionHandler : HttpRequestHandler() {
                                 projectStateChangedDuringCapture = projectStateChangedDuringCapture,
                             )
                         }
+                        val captureDiagnostic = mergeCaptureFailureDiagnostic(
+                            baseCaptureDiagnostic,
+                            captureFailureDiagnostic,
+                        )
                         val snapshot = buildInspectionCaptureSnapshot(
                             InspectionCaptureSnapshotInput(
                                 bestResults = bestResults,
@@ -6771,6 +7365,13 @@ class InspectionHandler : HttpRequestHandler() {
                             projectContentTracker = projectContentTracker,
                         )
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+                            recordInspectionRunFailureDiagnostic(
+                                key = key,
+                                runId = runId,
+                                project = project,
+                                source = InspectionRunFailureSource.CANCELLATION,
+                            )
+                            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
                             throw e
                         } catch (error: Exception) {
                             logger.warn("Inspection result capture failed for ${project.name}", error)
@@ -6792,6 +7393,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     )
                                 )
                             }
+                            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
                         } finally {
                             finishInspectionRun(key, runId)
                         }
@@ -6802,12 +7404,21 @@ class InspectionHandler : HttpRequestHandler() {
             } catch (error: Exception) {
                 logger.warn("Inspection setup or capture scheduling failed for ${project.name}", error)
                 publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
+                finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
             }
         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+            recordInspectionRunFailureDiagnostic(
+                key = key,
+                runId = runId,
+                project = project,
+                source = InspectionRunFailureSource.CANCELLATION,
+            )
+            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
             throw e
         } catch (error: Exception) {
             logger.warn("Inspection execution failed for ${project.name}", error)
             publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
+            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
         } finally {
             runCatching { nativeProofConnection?.disconnect() }
                 .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
@@ -6849,11 +7460,13 @@ class InspectionHandler : HttpRequestHandler() {
     private fun beginInspectionRunInternal(project: Project, captureScope: InspectionCaptureScope?): InspectionRunState {
         val key = projectKey(project)
         val now = System.currentTimeMillis()
+        val nowNanos = currentInspectionRunNanos()
         val runState = InspectionRunState(
             runId = runIdSequence.incrementAndGet(),
             triggerTimeMs = now,
             inProgress = true,
             captureScope = captureScope,
+            runStartedNanos = nowNanos,
         )
         var activeRun: InspectionRunState? = null
         inspectionRunStatesByProject.compute(key) { _, existing ->
@@ -6897,10 +7510,98 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun transitionInspectionRunStage(key: String, runId: Long, stage: InspectionRunStage) {
+        runCatching {
+            val nowNanos = currentInspectionRunNanos()
+            inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
+                if (state.runId != runId || !state.inProgress || state.stage == stage) {
+                    state
+                } else {
+                    val history = state.stage?.let { previousStage ->
+                        val previousStartedNanos = state.stageStartedNanos ?: nowNanos
+                        (state.stageHistory + InspectionRunStageTiming(
+                            stage = previousStage,
+                            elapsedMs = nanosToElapsedMs(nowNanos - previousStartedNanos),
+                        )).takeLast(MAX_INSPECTION_RUN_STAGE_HISTORY)
+                    } ?: state.stageHistory
+                    state.copy(
+                        stage = stage,
+                        stageStartedNanos = nowNanos,
+                        stageHistory = history,
+                    )
+                }
+            }
+        }.onFailure { error ->
+            logger.warn("Failed to record inspection stage ${stage.apiValue} for run $runId", error)
+        }
+    }
+
+    private fun recordInspectionRunFailureDiagnostic(
+        key: String,
+        runId: Long,
+        project: Project,
+        source: InspectionRunFailureSource,
+    ): InspectionRunFailureDiagnostic? {
+        return runCatching {
+            val nowNanos = currentInspectionRunNanos()
+            val runControl = inspectionRunControlsByProject[key]
+            val workerThread = runControl?.takeIf { it.runId == runId }?.workerThread?.get()
+            val workerStack = workerThread?.let { thread ->
+                runCatching { inspectionWorkerStackProvider(thread) }
+                    .onFailure { error -> logger.warn("Failed to capture inspection worker stack for run $runId", error) }
+                    .getOrDefault(emptyList())
+                    .take(MAX_INSPECTION_WORKER_STACK_FRAMES)
+            }.orEmpty()
+            val dumbMode = runCatching { DumbService.getInstance(project).isDumb }.getOrNull()
+            var recorded: InspectionRunFailureDiagnostic? = null
+            inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
+                if (state.runId != runId || !state.inProgress) {
+                    state
+                } else {
+                    val existingDiagnostic = state.failureDiagnostics.firstOrNull { it.source == source }
+                    if (existingDiagnostic != null) {
+                        recorded = existingDiagnostic
+                        return@computeIfPresent state
+                    }
+                    val diagnostic = InspectionRunFailureDiagnostic(
+                        source = source,
+                        stageAtFailure = state.stage,
+                        stageElapsedMs = elapsedInspectionStageMs(state, nowNanos),
+                        runElapsedMs = nanosToElapsedMs(nowNanos - state.runStartedNanos),
+                        dumbMode = dumbMode,
+                        workerThreadName = workerThread?.name?.take(160),
+                        workerStack = workerStack,
+                    )
+                    recorded = diagnostic
+                    state.copy(
+                        failureDiagnostics = (state.failureDiagnostics + diagnostic)
+                            .take(MAX_INSPECTION_RUN_FAILURE_DIAGNOSTICS),
+                    )
+                }
+            }
+            recorded
+        }.onFailure { error ->
+            logger.warn("Failed to record inspection ${source.apiValue} diagnostic for run $runId", error)
+        }.getOrNull()
+    }
+
     private fun finishInspectionRun(key: String, runId: Long) {
+        finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.COMPLETED)
+    }
+
+    private fun finishInspectionRunWithOutcome(
+        key: String,
+        runId: Long,
+        requestedOutcome: InspectionRunTerminalOutcome,
+    ) {
+        val nowNanos = currentInspectionRunNanos()
         inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
-            if (state.runId == runId) {
-                state.copy(inProgress = false)
+            if (state.runId == runId && state.inProgress) {
+                state.copy(
+                    inProgress = false,
+                    terminalOutcome = requestedOutcome,
+                    terminalAtNanos = nowNanos,
+                )
             } else {
                 state
             }
@@ -6908,6 +7609,63 @@ class InspectionHandler : HttpRequestHandler() {
         inspectionRunControlsByProject.computeIfPresent(key) { _, control ->
             if (control.runId == runId) null else control
         }
+    }
+
+    private fun currentInspectionRunNanos(): Long {
+        return runCatching(inspectionRunNowNanos).getOrElse { error ->
+            logger.warn("Inspection run monotonic clock failed; using the system monotonic clock", error)
+            System.nanoTime()
+        }
+    }
+
+    private fun nanosToElapsedMs(nanos: Long): Long = (nanos.coerceAtLeast(0L) / 1_000_000L)
+
+    private fun elapsedInspectionStageMs(state: InspectionRunState, nowNanos: Long): Long {
+        val stageStartedNanos = state.stageStartedNanos ?: return 0L
+        return nanosToElapsedMs(nowNanos - stageStartedNanos)
+    }
+
+    private fun inspectionRunDiagnostic(state: InspectionRunState): Map<String, Any> {
+        val elapsedAtNanos = state.terminalAtNanos ?: currentInspectionRunNanos()
+        val diagnostic = mutableMapOf<String, Any>(
+            "inspection_run_elapsed_ms" to nanosToElapsedMs(elapsedAtNanos - state.runStartedNanos),
+        )
+        state.stage?.let { stage ->
+            diagnostic["inspection_stage"] = stage.apiValue
+            diagnostic["inspection_stage_elapsed_ms"] = elapsedInspectionStageMs(state, elapsedAtNanos)
+        }
+        if (state.stageHistory.isNotEmpty()) {
+            diagnostic["inspection_stage_history"] = state.stageHistory.map { timing ->
+                mapOf(
+                    "stage" to timing.stage.apiValue,
+                    "elapsed_ms" to timing.elapsedMs,
+                )
+            }
+        }
+        state.terminalOutcome?.let { outcome ->
+            diagnostic["inspection_terminal_outcome"] = outcome.apiValue
+        }
+        state.failureDiagnostics.firstOrNull()?.let { failure ->
+            diagnostic["inspection_failure_diagnostic"] = inspectionFailureDiagnosticMap(failure)
+        }
+        if (state.failureDiagnostics.size > 1) {
+            diagnostic["inspection_failure_history"] = state.failureDiagnostics.map(::inspectionFailureDiagnosticMap)
+        }
+        return diagnostic
+    }
+
+    private fun inspectionFailureDiagnosticMap(diagnostic: InspectionRunFailureDiagnostic): Map<String, Any> {
+        val fields = mutableMapOf(
+            "source" to diagnostic.source.apiValue,
+            "outcome" to diagnostic.outcome.apiValue,
+            "inspection_stage_elapsed_ms" to diagnostic.stageElapsedMs,
+            "inspection_run_elapsed_ms" to diagnostic.runElapsedMs,
+            "inspection_worker_stack" to diagnostic.workerStack,
+        )
+        diagnostic.stageAtFailure?.let { fields["inspection_stage_at_failure"] = it.apiValue }
+        diagnostic.dumbMode?.let { fields["dumb_mode"] = it }
+        diagnostic.workerThreadName?.let { fields["inspection_worker_thread"] = it }
+        return fields
     }
 
     private fun publishCaptureFailureIfCurrent(
@@ -8687,17 +9445,6 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    private fun problemKey(map: Map<String, Any>): String {
-        return listOf(
-            map["severity"],
-            map["inspectionType"],
-            map["file"],
-            map["line"],
-            map["column"],
-            map["description"],
-        ).joinToString("|")
-    }
-
     private fun markInspectionEngineSkippedOnEdt(
         states: List<Map<String, Any?>>,
         targetToolShortNames: Set<String>,
@@ -9419,9 +10166,8 @@ class InspectionHandler : HttpRequestHandler() {
                 line = location.line
                 column = location.column
             }
-            severity = severityFromHighlightType(descriptor.highlightType)
             val displayKey = HighlightDisplayKey.find(inspectionType)
-            severity = liftSeverityWithProfile(severity, selectedProfile, displayKey, psiElement)
+            severity = resolveProblemSeverity(descriptor.highlightType, selectedProfile, displayKey, psiElement)
         }
 
         val typeLower = inspectionType.lowercase()
