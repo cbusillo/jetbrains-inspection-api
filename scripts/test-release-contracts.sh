@@ -845,10 +845,41 @@ PY
 from pathlib import Path
 import re
 
-for workflow_path in sorted(Path(".github/workflows").glob("*.yml")):
+workflow_uses = re.compile(r"^(?:-\s+)?uses:")
+pinned_workflow_action = re.compile(
+    r"^(?:-\s+)?uses:\s+[^@#\s]+@[0-9a-f]{40}(?:\s+#.*)?$"
+)
+
+def is_unpinned_workflow_action(line: str) -> bool:
+    return bool(workflow_uses.match(line)) and not bool(pinned_workflow_action.fullmatch(line))
+
+valid_pinned_actions = (
+    "uses: actions/example@0123456789abcdef0123456789abcdef01234567 # v6.0.0",
+    "- uses: actions/example@0123456789abcdef0123456789abcdef01234567 # arbitrary note",
+    "uses: actions/example@0123456789abcdef0123456789abcdef01234567",
+)
+invalid_pinned_actions = (
+    "uses:",
+    "- uses:",
+    "uses: #@0123456789abcdef0123456789abcdef01234567",
+    "uses: actions/example@0123456789abcdef0123456789abcdef0123456 # short",
+    "uses: actions/example@0123456789abcdef0123456789abcdef0123456g # nonhex",
+    "uses: actions/example@v6 # floating",
+    "uses: actions/example@0123456789abcdef0123456789abcdef012345678 # long",
+    "uses: actions/example@0123456789abcdef0123456789abcdef01234567 trailing",
+)
+if any(is_unpinned_workflow_action(line) for line in valid_pinned_actions):
+    raise SystemExit("workflow action pin regression fixture unexpectedly rejected")
+if not all(is_unpinned_workflow_action(line) for line in invalid_pinned_actions):
+    raise SystemExit("workflow action pin regression fixture unexpectedly accepted")
+
+workflow_paths = sorted(
+    (*Path(".github/workflows").glob("*.yml"), *Path(".github/workflows").glob("*.yaml")),
+)
+for workflow_path in workflow_paths:
     for line in workflow_path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
-        if stripped.startswith("uses:") and not re.search(r"@[0-9a-f]{40}(?:\s+#\s+v\d+)?$", stripped):
+        if is_unpinned_workflow_action(stripped):
             raise SystemExit(
                 f"workflow action is not pinned to a full commit SHA in {workflow_path}: {stripped}"
             )
