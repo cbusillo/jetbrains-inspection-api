@@ -5,10 +5,15 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.projectRoots.Sdk
+import com.intellij.openapi.projectRoots.SdkAdditionalData
+import com.intellij.openapi.projectRoots.SdkModificator
 import com.intellij.openapi.projectRoots.SdkType
 import com.intellij.openapi.util.SystemInfo
+import io.mockk.Runs
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.slot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -54,7 +59,7 @@ class PythonSdkPreparationServiceTest {
         assertEquals(1, result.assignedLocalPythonSdkCount)
         assertEquals(1, result.assignedPythonModuleCount)
         assertTrue(result.projectSdkAssigned)
-        assertEquals(listOf("create", "setup", "commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
         assertSame(platform.detachedSdk, platform.registered.single())
         assertSame(platform.detachedSdk, platform.committedDetachedSdk)
         assertEquals(interpreter.toString(), platform.createdHome)
@@ -70,7 +75,7 @@ class PythonSdkPreparationServiceTest {
 
         assertTrue(result.prepared)
         assertEquals("reused", result.operation)
-        assertEquals(listOf("commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("commit", "persist", "readback"), platform.mutationEvents)
         assertNull(platform.committedDetachedSdk)
         assertEquals(listOf(existing), platform.registered)
     }
@@ -105,6 +110,25 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `application persistence failure is reported after safe readback`() {
+        createVenv()
+        platform.persistenceResult = PythonSdkPersistenceResult(
+            false,
+            "python_sdk_preparation_persistence_failed",
+            "settings store failed",
+        )
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_persistence_failed", result.reason)
+        assertEquals("settings store failed", result.detail)
+        assertEquals(1, result.registeredLocalPythonSdkCount)
+        assertEquals(1, result.assignedLocalPythonSdkCount)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
+    }
+
+    @Test
     fun `reuses one exact SDK that appears between lookup and commit`() {
         val interpreter = createVenv()
         val racingSdk = sdk("racing", interpreter.toString())
@@ -117,7 +141,7 @@ class PythonSdkPreparationServiceTest {
         assertEquals(listOf(racingSdk), platform.registered)
         assertSame(platform.detachedSdk, platform.committedDetachedSdk)
         assertEquals(1, platform.assignmentMutationCount)
-        assertEquals(listOf("create", "setup", "commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
     }
 
     @Test
@@ -138,7 +162,7 @@ class PythonSdkPreparationServiceTest {
         assertTrue(result.prepared)
         assertEquals("already_assigned", result.operation)
         assertEquals(0, platform.assignmentMutationCount)
-        assertEquals(listOf("commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("commit", "persist", "readback"), platform.mutationEvents)
     }
 
     @Test
@@ -189,7 +213,8 @@ class PythonSdkPreparationServiceTest {
 
         assertFalse(result.prepared)
         assertEquals("python_sdk_preparation_ambiguous_registered_sdk", result.reason)
-        assertTrue(platform.mutationEvents.isEmpty())
+        assertEquals(2, result.registeredLocalPythonSdkCount)
+        assertEquals(listOf("readback"), platform.mutationEvents)
         assertEquals(1, platform.pythonTypeQueries)
     }
 
@@ -204,7 +229,7 @@ class PythonSdkPreparationServiceTest {
         assertTrue(result.prepared)
         assertEquals("created", result.operation)
         assertEquals(listOf(otherType, platform.detachedSdk), platform.registered)
-        assertEquals(listOf("create", "setup", "commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
     }
 
     @Test
@@ -212,12 +237,145 @@ class PythonSdkPreparationServiceTest {
         val interpreter = createVenv()
         platform.registered += sdk("incomplete", interpreter.toString())
         platform.setupComplete = false
+        platform.forcedReadback = PythonSdkReadback(
+            registeredCount = 1,
+            assignedLocalSdkCount = 0,
+            assignedPythonModuleCount = 0,
+            projectSdkAssigned = false,
+            currentModuleModelMatches = true,
+            sdkName = "incomplete",
+        )
+
+        val result = prepare(deadlineMs = 20_000)
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_existing_sdk_incomplete", result.reason)
+        assertEquals(1, result.registeredLocalPythonSdkCount)
+        assertEquals(0, result.assignedLocalPythonSdkCount)
+        assertEquals(listOf("readback"), platform.mutationEvents)
+        assertEquals(0, platform.commitQueries)
+    }
+
+    @Test
+    fun `waits for an exact registered SDK whose platform setup is still completing`() {
+        val interpreter = createVenv()
+        val existing = sdk("starting", interpreter.toString())
+        platform.registered += existing
+        platform.setupCompleteResults = ArrayDeque(listOf(false, false, true))
+
+        val result = prepare()
+
+        assertTrue(result.prepared)
+        assertEquals("reused", result.operation)
+        assertEquals(3, platform.setupCompleteQueries)
+        assertEquals(listOf("commit", "persist", "readback"), platform.mutationEvents)
+        assertNull(platform.committedDetachedSdk)
+    }
+
+    @Test
+    fun `initializes detached SDK additional data before Python path setup`() {
+        val type = mockk<SdkType>()
+        val sdk = mockk<Sdk>()
+        val additionalData = mockk<SdkAdditionalData>()
+        val modificator = mockk<SdkModificator>(relaxed = true)
+        val assignedData = slot<SdkAdditionalData>()
+        every { type.loadAdditionalData(sdk, match { element -> element.name == "additional" }) } returns additionalData
+        every { sdk.sdkModificator } returns modificator
+        every { sdk.sdkAdditionalData } returns additionalData
+        every { modificator.sdkAdditionalData = capture(assignedData) } just Runs
+
+        JetBrainsPythonSdkPreparationPlatform(runSdkWriteAction = { action -> action() })
+            .initializeDetachedSdkAdditionalData(type, sdk)
+
+        assertSame(additionalData, assignedData.captured)
+    }
+
+    @Test
+    fun `cancels while waiting for an existing SDK setup without committing`() {
+        val interpreter = createVenv()
+        platform.registered += sdk("starting", interpreter.toString())
+        platform.setupComplete = false
+
+        val result = prepare(onCancellationCheck = { checks ->
+            if (checks == 5) throw ProcessCanceledException()
+        })
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_cancelled", result.reason)
+        assertEquals(0, platform.commitQueries)
+        assertTrue(platform.mutationEvents.isEmpty())
+    }
+
+    @Test
+    fun `refuses when the exact registered SDK identity changes during setup wait`() {
+        val interpreter = createVenv()
+        val expected = sdk("starting", interpreter.toString())
+        val replacement = sdk("replacement", interpreter.toString())
+        platform.registered += expected
+        platform.registeredSdkResults = ArrayDeque(listOf(listOf(expected), listOf(replacement)))
+        platform.setupComplete = false
 
         val result = prepare()
 
         assertFalse(result.prepared)
-        assertEquals("python_sdk_preparation_existing_sdk_incomplete", result.reason)
-        assertTrue(platform.mutationEvents.isEmpty())
+        assertEquals("python_sdk_preparation_existing_sdk_changed", result.reason)
+        assertEquals(0, platform.commitQueries)
+        assertEquals(listOf("readback"), platform.mutationEvents)
+    }
+
+    @Test
+    fun `refuses when another matching registration appears during setup wait`() {
+        val interpreter = createVenv()
+        val expected = sdk("starting", interpreter.toString())
+        val duplicate = sdk("duplicate", interpreter.toString())
+        platform.registered += expected
+        platform.registeredSdkResults = ArrayDeque(listOf(listOf(expected), listOf(expected, duplicate)))
+        platform.setupComplete = false
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_ambiguous_registered_sdk", result.reason)
+        assertEquals(0, platform.commitQueries)
+        assertEquals(listOf("readback"), platform.mutationEvents)
+    }
+
+    @Test
+    fun `bounds an existing SDK setup wait by the request deadline`() {
+        val interpreter = createVenv()
+        platform.registered += sdk("starting", interpreter.toString())
+        platform.setupComplete = false
+        platform.forcedReadback = PythonSdkReadback(
+            registeredCount = 1,
+            assignedLocalSdkCount = 0,
+            assignedPythonModuleCount = 0,
+            projectSdkAssigned = false,
+            currentModuleModelMatches = true,
+            sdkName = "starting",
+        )
+
+        val result = prepare(deadlineMs = 600)
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_timeout", result.reason)
+        assertEquals(600, clock.timeMs)
+        assertFalse(result.readbackObserved)
+        assertEquals(0, platform.commitQueries)
+    }
+
+    @Test
+    fun `cancellation during failure readback remains cancellation`() {
+        val interpreter = createVenv()
+        platform.registered += sdk("first", interpreter.toString())
+        platform.registered += sdk("second", interpreter.toString())
+        platform.readbackFailure = ProcessCanceledException()
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_cancelled", result.reason)
+        assertFalse(result.readbackObserved)
+        assertEquals(listOf("readback"), platform.mutationEvents)
         assertEquals(0, platform.commitQueries)
     }
 
@@ -267,7 +425,7 @@ class PythonSdkPreparationServiceTest {
 
         val result = prepare(deadlineMs = 600)
 
-        assertEquals("python_sdk_preparation_no_python_modules", result.reason)
+        assertEquals("python_sdk_preparation_timeout", result.reason)
         assertTrue(platform.snapshotQueries >= 2)
         assertEquals(600, clock.timeMs)
         assertTrue(platform.mutationEvents.isEmpty())
@@ -307,7 +465,7 @@ class PythonSdkPreparationServiceTest {
             if (checkCount == 6) clock.timeMs = deadline
         }
 
-        assertEquals("python_sdk_preparation_cancelled", result.reason)
+        assertEquals("python_sdk_preparation_timeout", result.reason)
         assertEquals(listOf("create", "setup"), platform.mutationEvents)
         assertTrue(platform.registered.isEmpty())
         assertEquals(0, platform.commitQueries)
@@ -371,7 +529,7 @@ class PythonSdkPreparationServiceTest {
         assertEquals("python_sdk_preparation_readback_failed", result.reason)
         assertEquals(0, result.registeredLocalPythonSdkCount)
         assertEquals(1, result.assignedLocalPythonSdkCount)
-        assertEquals(listOf("create", "setup", "commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
     }
 
     @Test
@@ -448,7 +606,7 @@ class PythonSdkPreparationServiceTest {
 
         assertFalse(result.prepared)
         assertEquals("python_sdk_preparation_readback_failed", result.reason)
-        assertEquals(listOf("create", "setup", "commit", "readback"), platform.mutationEvents)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
     }
 
     private fun prepare(
@@ -546,9 +704,13 @@ class PythonSdkPreparationServiceTest {
         }
         var createdHome: String? = null
         var setupComplete = true
+        var setupCompleteResults: ArrayDeque<Boolean>? = null
+        var registeredSdkResults: ArrayDeque<List<Sdk>>? = null
         var setupFailure: Throwable? = null
+        var readbackFailure: Throwable? = null
         var forcedReadback: PythonSdkReadback? = null
         var forcedCommitResult: PythonSdkCommitResult? = null
+        var persistenceResult = PythonSdkPersistenceResult(true, "python_sdk_preparation_persisted")
         var sdkAppearingAtCommit: Sdk? = null
         var alreadyAssigned = false
         var committedDetachedSdk: Sdk? = null
@@ -558,6 +720,7 @@ class PythonSdkPreparationServiceTest {
         var pythonTypeQueries = 0
         var commitQueries = 0
         var readbackQueries = 0
+        var setupCompleteQueries = 0
 
         override fun isProjectTrusted(project: Project): Boolean {
             assertSame(this.project, project)
@@ -571,7 +734,10 @@ class PythonSdkPreparationServiceTest {
             return if (snapshots.size > 1) snapshots.removeFirst() else snapshots.first()
         }
 
-        override fun registeredSdks(): List<Sdk> = registered.toList()
+        override fun registeredSdks(): List<Sdk> {
+            val results = registeredSdkResults ?: return registered.toList()
+            return if (results.size > 1) results.removeFirst() else results.first()
+        }
 
         override fun pythonSdkType(): SdkType? {
             pythonTypeQueries += 1
@@ -606,7 +772,9 @@ class PythonSdkPreparationServiceTest {
 
         override fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean {
             assertEquals(interpreterHome, homes[sdk])
-            return setupComplete
+            setupCompleteQueries += 1
+            val results = setupCompleteResults ?: return setupComplete
+            return if (results.size > 1) results.removeFirst() else results.first()
         }
 
         override fun commit(
@@ -648,6 +816,11 @@ class PythonSdkPreparationServiceTest {
             )
         }
 
+        override fun persistSdkRegistry(): PythonSdkPersistenceResult {
+            mutationEvents += "persist"
+            return persistenceResult
+        }
+
         override fun readback(
             project: Project,
             expectedModules: List<Module>,
@@ -656,6 +829,7 @@ class PythonSdkPreparationServiceTest {
             assertSame(this.project, project)
             readbackQueries += 1
             mutationEvents += "readback"
+            readbackFailure?.let { throw it }
             return forcedReadback ?: PythonSdkReadback(
                 registeredCount = registered.count { sdk ->
                     homes[sdk] == interpreterHome && typeNames[sdk] == "Python SDK"

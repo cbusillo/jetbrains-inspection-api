@@ -2275,6 +2275,46 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun attributionClassification(code: String): String {
+        if (code.startsWith("python_sdk_preparation_")) {
+            return when (code) {
+                "python_sdk_preparation_venv_configuration_missing",
+                "python_sdk_preparation_interpreter_missing",
+                "python_sdk_preparation_project_untrusted",
+                "python_sdk_preparation_unsupported",
+                "python_sdk_preparation_no_python_modules",
+                "python_sdk_preparation_sdk_conflict",
+                "python_sdk_preparation_ambiguous_registered_sdk",
+                "python_sdk_preparation_existing_sdk_incomplete",
+                "python_sdk_preparation_project_root_missing" -> "configuration_blocked"
+                "python_sdk_preparation_cancelled",
+                "python_sdk_preparation_claim_mismatch",
+                "python_sdk_preparation_existing_sdk_changed",
+                "python_sdk_preparation_in_progress",
+                "python_sdk_preparation_inspection_in_progress",
+                "python_sdk_preparation_interpreter_input_forbidden",
+                "python_sdk_preparation_lease_mismatch",
+                "python_sdk_preparation_method_not_allowed",
+                "python_sdk_preparation_module_model_changed",
+                "python_sdk_preparation_not_claimed",
+                "python_sdk_preparation_ownership_changed",
+                "python_sdk_preparation_session_drift",
+                "python_sdk_preparation_timeout",
+                "python_sdk_preparation_token_mismatch" -> "legitimate_fail_closed"
+                "python_sdk_preparation_setup_incomplete",
+                "python_sdk_preparation_registration_failed",
+                "python_sdk_preparation_assignment_failed",
+                "python_sdk_preparation_readback_failed",
+                "python_sdk_preparation_commit_failed",
+                "python_sdk_preparation_scheduling_failed",
+                "python_sdk_preparation_persistence_failed",
+                "python_sdk_preparation_failed" -> "tool_caused"
+                else -> if (code.startsWith("python_sdk_preparation_missing_")) {
+                    "legitimate_fail_closed"
+                } else {
+                    "tool_caused"
+                }
+            }
+        }
         return when (code) {
             "clean",
             "findings",
@@ -4174,10 +4214,14 @@ class InspectionHandler : HttpRequestHandler() {
             "interpreter_home" to result.interpreterHome,
             "sdk_name" to result.sdkName,
             "python_module_count" to result.pythonModuleCount,
-            "registered_local_python_sdk_count" to result.registeredLocalPythonSdkCount,
-            "assigned_local_python_sdk_count" to result.assignedLocalPythonSdkCount,
-            "assigned_python_module_count" to result.assignedPythonModuleCount,
-            "project_sdk_assigned" to result.projectSdkAssigned,
+            "registered_local_python_sdk_count" to result.registeredLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_local_python_sdk_count" to result.assignedLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_python_module_count" to result.assignedPythonModuleCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "project_sdk_assigned" to result.projectSdkAssigned
+                .takeIf { result.prepared || result.readbackObserved },
             "detail" to result.detail,
         )
         val status = if (result.prepared) HttpResponseStatus.OK else pythonSdkPreparationFailureStatus(result.reason)

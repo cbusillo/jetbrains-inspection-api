@@ -386,7 +386,14 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   already in progress returns HTTP 409 without cancellation, and a run that
   starts during setup prevents the final registration and assignment. SDK path setup
   runs on a cancellable background worker; the bounded response deadline is 60
-  seconds. Successful responses use `status: "prepared"`,
+  seconds. If the IDE has just registered the exact local SDK and is still
+  populating its version and class roots, preparation observes that same SDK
+  for up to ten seconds without mutating it; identity or registration-count
+  changes fail closed, and an SDK that remains incomplete returns HTTP 409.
+  The endpoint does not create Python modules. A helper-owned project that has
+  no `PYTHON_MODULE` after its files are prepared must be closed and reopened
+  through the lease-bound lifecycle before retrying preparation. Successful
+  responses use `status: "prepared"`,
   `sdk_preparation_version: 1`, and `operation: "created"`, `"reused"`, or
   `"already_assigned"`, with registration and assignment readback counts.
   A successful version 1 response has one unique registered and assigned local
@@ -399,7 +406,16 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   bounds the HTTP response and requests cancellation. If platform SDK setup
   does not honor cancellation promptly, the worker remains marked active and
   lifecycle close remains blocked until that worker exits, preventing a late
-  SDK write against a closed project.
+  SDK write against a closed project. SDK preparation failures use the same
+  bounded attribution envelope as other lifecycle anomalies: missing IDE or
+  project configuration is `configuration_blocked`, ownership and concurrency
+  refusals are `legitimate_fail_closed`, and plugin setup/commit/readback
+  failures are `tool_caused`. Before returning `prepared`, the worker makes a
+  synchronous request through the public IDE API to save application settings;
+  a reported save exception fails preparation with the observed registration
+  and assignment readback. This is a save attempt, not a direct write to the
+  IDE SDK table file. A prepared response is lifecycle evidence only and is
+  never classified as a decisive inspection result.
 - `GET /api/inspection/lifecycle/close`: requires `project_key`,
   `project_instance_id`, `session_id`, and `close_token`, and accepts the
   original `lease_id` for an additional binding check. It closes the project

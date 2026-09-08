@@ -17,6 +17,7 @@ import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.SystemInfo
+import org.jdom.Element
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -26,7 +27,11 @@ private const val PYTHON_MODULE_TYPE_ID = "PYTHON_MODULE"
 private const val PYTHON_SDK_TYPE_NAME = "Python SDK"
 private const val PYTHON_MODULE_SETTLE_TIMEOUT_MS = 30_000L
 private const val PYTHON_MODULE_SETTLE_POLL_MS = 200L
+private const val EXISTING_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
+private const val EXISTING_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val REQUIRED_STABLE_MODULE_OBSERVATIONS = 2
+
+private class PythonSdkPreparationDeadlineExceededException : RuntimeException()
 
 internal data class PythonSdkPreparationRequest(
     val project: Project,
@@ -47,6 +52,7 @@ internal data class PythonSdkPreparationResult(
     val assignedLocalPythonSdkCount: Int = 0,
     val assignedPythonModuleCount: Int = 0,
     val projectSdkAssigned: Boolean = false,
+    val readbackObserved: Boolean = false,
     val detail: String? = null,
 )
 
@@ -65,6 +71,12 @@ internal data class PythonSdkCommitResult(
     val reason: String,
     val operation: String? = null,
     val sdk: Sdk? = null,
+    val detail: String? = null,
+)
+
+internal data class PythonSdkPersistenceResult(
+    val succeeded: Boolean,
+    val reason: String,
     val detail: String? = null,
 )
 
@@ -96,6 +108,7 @@ internal interface PythonSdkPreparationPlatform {
         ownershipIsCurrent: () -> Boolean,
         indicator: ProgressIndicator,
     ): PythonSdkCommitResult
+    fun persistSdkRegistry(): PythonSdkPersistenceResult
     fun readback(project: Project, expectedModules: List<Module>, interpreterHome: String): PythonSdkReadback
 }
 
@@ -143,19 +156,23 @@ internal class PythonSdkPreparationService(
 
             val matches = matchingSdks(interpreterHome)
             if (matches.size > 1) {
-                return failure(
-                    "python_sdk_preparation_ambiguous_registered_sdk",
-                    interpreterHome,
-                    snapshot.modules.size,
+                return failureWithReadback(
+                    reason = "python_sdk_preparation_ambiguous_registered_sdk",
+                    request = request,
+                    expectedModules = snapshot.modules,
+                    interpreterHome = interpreterHome,
                 )
             }
             val existing = matches.singleOrNull()
-            if (existing != null && !platform.isSetupComplete(existing, interpreterHome)) {
-                return failure(
-                    "python_sdk_preparation_existing_sdk_incomplete",
-                    interpreterHome,
-                    snapshot.modules.size,
-                )
+            if (existing != null) {
+                awaitExistingSdkSetup(request, existing, interpreterHome)?.let { reason ->
+                    return failureWithReadback(
+                        reason = reason,
+                        request = request,
+                        expectedModules = snapshot.modules,
+                        interpreterHome = interpreterHome,
+                    )
+                }
             }
             val detached = if (existing == null) {
                 request.checkCurrent()
@@ -184,14 +201,13 @@ internal class PythonSdkPreparationService(
                 indicator = request.indicator,
             )
             if (!commit.succeeded) {
-                val observed = runCatching {
-                    platform.readback(request.project, snapshot.modules, interpreterHome)
-                }.getOrNull()
+                val observed = safeReadback(request, snapshot.modules, interpreterHome)
                 return failure(commit.reason, interpreterHome, snapshot.modules.size, commit.detail).copy(
                     registeredLocalPythonSdkCount = observed?.registeredCount ?: 0,
                     assignedLocalPythonSdkCount = observed?.assignedLocalSdkCount ?: 0,
                     assignedPythonModuleCount = observed?.assignedPythonModuleCount ?: 0,
                     projectSdkAssigned = observed?.projectSdkAssigned ?: false,
+                    readbackObserved = observed != null,
                 )
             }
             if (commit.operation !in setOf("created", "reused", "already_assigned")) {
@@ -200,6 +216,17 @@ internal class PythonSdkPreparationService(
                     interpreterHome,
                     snapshot.modules.size,
                     "The commit did not report a supported operation.",
+                )
+            }
+            request.checkCurrent()
+            val persistence = platform.persistSdkRegistry()
+            if (!persistence.succeeded) {
+                return failureWithReadback(
+                    reason = persistence.reason,
+                    request = request,
+                    expectedModules = snapshot.modules,
+                    interpreterHome = interpreterHome,
+                    detail = persistence.detail,
                 )
             }
             request.checkCurrent()
@@ -220,6 +247,7 @@ internal class PythonSdkPreparationService(
                     assignedLocalPythonSdkCount = readback.assignedLocalSdkCount,
                     assignedPythonModuleCount = readback.assignedPythonModuleCount,
                     projectSdkAssigned = readback.projectSdkAssigned,
+                    readbackObserved = true,
                 )
             }
             PythonSdkPreparationResult(
@@ -233,7 +261,10 @@ internal class PythonSdkPreparationService(
                 assignedLocalPythonSdkCount = readback.assignedLocalSdkCount,
                 assignedPythonModuleCount = readback.assignedPythonModuleCount,
                 projectSdkAssigned = readback.projectSdkAssigned,
+                readbackObserved = true,
             )
+        } catch (_: PythonSdkPreparationDeadlineExceededException) {
+            failure("python_sdk_preparation_timeout", interpreterHome)
         } catch (_: ProcessCanceledException) {
             failure("python_sdk_preparation_cancelled", interpreterHome)
         } catch (_: InterruptedException) {
@@ -267,7 +298,33 @@ internal class PythonSdkPreparationService(
             }
             sleep(minOf(PYTHON_MODULE_SETTLE_POLL_MS, (settleDeadline - now()).coerceAtLeast(1)))
         }
+        request.checkCurrent()
         return null
+    }
+
+    private fun awaitExistingSdkSetup(
+        request: PythonSdkPreparationRequest,
+        expectedSdk: Sdk,
+        interpreterHome: String,
+    ): String? {
+        request.checkCurrent()
+        val settleDeadline = minOf(request.deadlineMs, now() + EXISTING_PYTHON_SDK_SETTLE_TIMEOUT_MS)
+        while (now() < settleDeadline) {
+            request.checkCurrent()
+            val matches = matchingSdks(interpreterHome)
+            if (matches.size > 1) {
+                return "python_sdk_preparation_ambiguous_registered_sdk"
+            }
+            if (matches.singleOrNull() !== expectedSdk) {
+                return "python_sdk_preparation_existing_sdk_changed"
+            }
+            if (platform.isSetupComplete(expectedSdk, interpreterHome)) {
+                return null
+            }
+            sleep(minOf(EXISTING_PYTHON_SDK_SETTLE_POLL_MS, (settleDeadline - now()).coerceAtLeast(1)))
+        }
+        request.checkCurrent()
+        return "python_sdk_preparation_existing_sdk_incomplete"
     }
 
     private fun conflict(snapshot: PythonSdkModelSnapshot, interpreterHome: String): Sdk? {
@@ -286,10 +343,39 @@ internal class PythonSdkPreparationService(
         runCatching { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
     }
 
+    private fun failureWithReadback(
+        reason: String,
+        request: PythonSdkPreparationRequest,
+        expectedModules: List<Module>,
+        interpreterHome: String,
+        detail: String? = null,
+    ): PythonSdkPreparationResult {
+        val observed = safeReadback(request, expectedModules, interpreterHome)
+        return failure(reason, interpreterHome, expectedModules.size, detail).copy(
+            registeredLocalPythonSdkCount = observed?.registeredCount ?: 0,
+            assignedLocalPythonSdkCount = observed?.assignedLocalSdkCount ?: 0,
+            assignedPythonModuleCount = observed?.assignedPythonModuleCount ?: 0,
+            projectSdkAssigned = observed?.projectSdkAssigned ?: false,
+            readbackObserved = observed != null,
+        )
+    }
+
+    private fun safeReadback(
+        request: PythonSdkPreparationRequest,
+        expectedModules: List<Module>,
+        interpreterHome: String,
+    ): PythonSdkReadback? = try {
+        platform.readback(request.project, expectedModules, interpreterHome)
+    } catch (error: ProcessCanceledException) {
+        throw error
+    } catch (_: Throwable) {
+        null
+    }
+
     private fun PythonSdkPreparationRequest.checkCurrent() {
         indicator.checkCanceled()
         if (now() >= deadlineMs) {
-            throw ProcessCanceledException()
+            throw PythonSdkPreparationDeadlineExceededException()
         }
         if (project.isDisposed || !ownershipIsCurrent()) {
             throw ProcessCanceledException()
@@ -310,7 +396,13 @@ internal class PythonSdkPreparationService(
     )
 }
 
-internal class JetBrainsPythonSdkPreparationPlatform : PythonSdkPreparationPlatform {
+internal class JetBrainsPythonSdkPreparationPlatform(
+    private val runSdkWriteAction: ((() -> Unit) -> Unit) = { action ->
+        ApplicationManager.getApplication().invokeAndWait {
+            ApplicationManager.getApplication().runWriteAction(action)
+        }
+    },
+) : PythonSdkPreparationPlatform {
     override fun isProjectTrusted(project: Project): Boolean = TrustedProjects.isProjectTrusted(project)
 
     override fun snapshot(project: Project): PythonSdkModelSnapshot =
@@ -336,8 +428,25 @@ internal class JetBrainsPythonSdkPreparationPlatform : PythonSdkPreparationPlatf
         runCatching { Files.exists(Paths.get(path)) }.getOrDefault(false)
     } ?: false
 
-    override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk =
-        SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, "Inspection .venv")
+    override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk {
+        val sdk = SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, "Inspection .venv")
+        initializeDetachedSdkAdditionalData(type, sdk)
+        return sdk
+    }
+
+    internal fun initializeDetachedSdkAdditionalData(type: SdkType, sdk: Sdk) {
+        val additionalData = type.loadAdditionalData(sdk, Element("additional"))
+            ?: error("The Python SDK type did not provide required additional data.")
+        runSdkWriteAction {
+            sdk.sdkModificator.apply {
+                sdkAdditionalData = additionalData
+                commitChanges()
+            }
+        }
+        check(sdk.sdkAdditionalData != null) {
+            "The Python SDK additional data was not retained after initialization."
+        }
+    }
 
     override fun setupSdkPaths(type: SdkType, sdk: Sdk, indicator: ProgressIndicator) {
         ProgressManager.getInstance().runProcess({ type.setupSdkPaths(sdk) }, indicator)
@@ -371,6 +480,22 @@ internal class JetBrainsPythonSdkPreparationPlatform : PythonSdkPreparationPlatf
             }
         }
         return result.get() ?: PythonSdkCommitResult(false, "python_sdk_preparation_commit_failed")
+    }
+
+    override fun persistSdkRegistry(): PythonSdkPersistenceResult {
+        val application = ApplicationManager.getApplication()
+        return try {
+            application.saveSettings()
+            PythonSdkPersistenceResult(true, "python_sdk_preparation_persisted")
+        } catch (error: ProcessCanceledException) {
+            throw error
+        } catch (error: Throwable) {
+            PythonSdkPersistenceResult(
+                false,
+                "python_sdk_preparation_persistence_failed",
+                error.message ?: error::class.java.simpleName,
+            )
+        }
     }
 
     private fun commitUnderWriteAction(

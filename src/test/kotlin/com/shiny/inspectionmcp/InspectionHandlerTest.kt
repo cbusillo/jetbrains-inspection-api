@@ -5220,6 +5220,56 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"assigned_python_module_count\": 1"))
         assertTrue(body.contains("\"project_sdk_assigned\": true"))
         assertTrue(timeoutCancelled)
+
+        handler.pythonSdkPreparationExecutor = { worker -> worker.run() }
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_existing_sdk_incomplete",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                readbackObserved = true,
+            )
+        }
+        val incomplete = processRequest(uri, HttpMethod.POST)
+        val incompleteBody = incomplete.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.CONFLICT, incomplete.status())
+        assertTrue(incompleteBody.contains("\"registered_local_python_sdk_count\": 1"), incompleteBody)
+        assertTrue(incompleteBody.contains("\"classification\": \"configuration_blocked\""), incompleteBody)
+
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_existing_sdk_changed",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                readbackObserved = true,
+            )
+        }
+        val changed = processRequest(uri, HttpMethod.POST)
+        val changedBody = changed.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.CONFLICT, changed.status())
+        assertTrue(changedBody.contains("\"classification\": \"legitimate_fail_closed\""), changedBody)
+
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_persistence_failed",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                assignedLocalPythonSdkCount = 1,
+                assignedPythonModuleCount = 1,
+                projectSdkAssigned = true,
+                readbackObserved = true,
+            )
+        }
+        val persistenceFailed = processRequest(uri, HttpMethod.POST)
+        val persistenceFailedBody = persistenceFailed.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, persistenceFailed.status())
+        assertTrue(persistenceFailedBody.contains("\"classification\": \"tool_caused\""), persistenceFailedBody)
     }
 
     @Test
@@ -5250,7 +5300,9 @@ class InspectionHandlerTest {
         )
 
         assertEquals(HttpResponseStatus.CONFLICT, notClaimed.status())
-        assertTrue(notClaimed.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_not_claimed"))
+        val notClaimedBody = notClaimed.content().toString(Charsets.UTF_8)
+        assertTrue(notClaimedBody.contains("python_sdk_preparation_not_claimed"))
+        assertTrue(notClaimedBody.contains("\"classification\": \"legitimate_fail_closed\""), notClaimedBody)
         forbiddenAliases.forEach { forbidden ->
             assertEquals(HttpResponseStatus.BAD_REQUEST, forbidden.status())
             assertTrue(forbidden.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_interpreter_input_forbidden"))
@@ -5290,7 +5342,9 @@ class InspectionHandlerTest {
         )
 
         assertEquals(HttpResponseStatus.FORBIDDEN, wrongToken.status())
-        assertTrue(wrongToken.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_token_mismatch"))
+        val wrongTokenBody = wrongToken.content().toString(Charsets.UTF_8)
+        assertTrue(wrongTokenBody.contains("python_sdk_preparation_token_mismatch"))
+        assertTrue(wrongTokenBody.contains("\"classification\": \"legitimate_fail_closed\""), wrongTokenBody)
         assertEquals(HttpResponseStatus.FORBIDDEN, wrongLease.status())
         assertTrue(wrongLease.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_lease_mismatch"))
         assertEquals(HttpResponseStatus.CONFLICT, staleSession.status())
@@ -5418,7 +5472,11 @@ class InspectionHandlerTest {
         val retry = processRequest(uri, HttpMethod.POST)
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, failed.status())
-        assertTrue(failed.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_failed"))
+        val failedBody = failed.content().toString(Charsets.UTF_8)
+        assertTrue(failedBody.contains("python_sdk_preparation_failed"))
+        assertTrue(failedBody.contains("\"classification\": \"tool_caused\""), failedBody)
+        assertFalse(failedBody.contains("registered_local_python_sdk_count"), failedBody)
+        assertFalse(failedBody.contains("assigned_local_python_sdk_count"), failedBody)
         assertEquals(HttpResponseStatus.OK, retry.status())
     }
 
