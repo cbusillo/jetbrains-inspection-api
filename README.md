@@ -475,6 +475,8 @@ For stale responses, the same scope filters are applied before cached counts and
 optional cached findings are returned. A scoped `include_stale=true` response is
 still `UNKNOWN`/`stale_results`; it is diagnostic data, not current proof.
 
+Generic inspection descriptors use the selected profile severity for the affected element, including `info` and `weak_warning`. Explicit descriptor severities retain their severity floor; unavailable profile data falls back to the descriptor severity. Profiles using `DO_NOT_SHOW` normalize to `info`; unrecognized profile severity names retain the descriptor fallback. Profile lookup uses the descriptor PSI element; host-file scope overrides for injected code have not been validated.
+
 Invalid `limit`, `offset`, `severity`, boolean, `changed_files_mode`, or pattern
 values return HTTP 400 with `error`, `parameter`, and `message` fields. Explicit
 `files`, `directory`, `current_file`, and `changed_files` scopes are resolved
@@ -612,6 +614,10 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 - `is_scanning`: `true` if inspection is currently running
 - `has_inspection_results`: `true` when problems were found and are available
 - `time_since_last_trigger_ms`: Time since last inspection was triggered
+- `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`
+- `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
+- `inspection_stage_history`: Bounded completed-stage timings for diagnosing a slow run
+- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `cancelled`, or `failed`. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
 
 ## Proper Usage Workflow
 
@@ -684,6 +690,19 @@ When a bounded wait times out while `inspection_in_progress` is true, automation
 may call `/api/inspection/cancel` and wait briefly for cancellation to settle.
 This keeps a stalled inspection from holding the project and HTTP lifecycle
 queue indefinitely.
+
+While the run remains active, a wait timeout and an accepted cancellation include
+`inspection_failure_diagnostic`. It preserves `inspection_stage_at_failure`,
+the stage and run elapsed times, the current dumb-mode flag, and up to 64 stack
+frames from the inspection worker. The stack is best-effort and covers only the
+plugin worker thread; it is not a full IDE thread dump or a platform scanner
+state signal. Its `source` distinguishes `wait_timeout`, `capture_deadline`, and
+`cancellation` observations. If later observations follow a timeout, the first
+timeout remains the primary diagnostic and `inspection_failure_history` retains
+up to three observations. These observations can remain on a subsequently
+completed run because they describe what a caller saw, while
+`inspection_terminal_outcome` describes how execution ended. The fields do not
+change the deadline, retry policy, or inspection verdict.
 
 For agent-facing reports from the plugin API, use `inspection_verdict` and the
 companion `inspection_verdict_reason`, `inspection_verdict_message`, and

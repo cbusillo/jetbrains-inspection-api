@@ -388,13 +388,12 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `selected profile severity raises inspectEx descriptor severity`() {
+    fun `selected profile severity controls generic inspectEx descriptor severity`() {
         val project = projectExtension.project
         val tool = SeverityProfileFindingInspection()
         val psiFile = createPhysicalFile()
         val profile = profileWith(tool)
         val key = requireNotNull(HighlightDisplayKey.find(tool.shortName))
-        profile.setErrorLevel(key, HighlightDisplayLevel.ERROR, project)
         val wrapper = requireNotNull(profile.getInspectionTool(tool.shortName, psiFile)) as LocalInspectionToolWrapper
         val descriptor = ReadAction.compute<com.intellij.codeInspection.ProblemDescriptor, RuntimeException> {
             SupportedInspectionExecutor().executePreparedFile(
@@ -403,11 +402,22 @@ class SupportedInspectionExecutorPlatformTest {
                 EmptyProgressIndicator(),
             ).returnedDescriptorsByToolShortName.getValue(tool.shortName).single()
         }
-        val mapped = InspectionHandler().buildProblemMap(descriptor, wrapper, profile, project)
-
-        assertThat(profile.getErrorLevel(key, psiFile)).isEqualTo(HighlightDisplayLevel.ERROR)
-        assertThat(mapped).isNotNull()
-        assertThat(mapped!!["severity"]).isEqualTo("error")
+        assertThat(descriptor.highlightType)
+            .isEqualTo(com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR_OR_WARNING)
+        for ((level, expected) in listOf(
+            requireNotNull(HighlightDisplayLevel.find("INFORMATION")) to "info",
+            HighlightDisplayLevel.WEAK_WARNING to "weak_warning",
+            HighlightDisplayLevel.WARNING to "warning",
+            HighlightDisplayLevel.ERROR to "error",
+        )) {
+            profile.setErrorLevel(key, level, project)
+            val mapped = ReadAction.compute<Map<String, Any>?, RuntimeException> {
+                InspectionHandler().buildProblemMap(descriptor, wrapper, profile, project)
+            }
+            assertThat(profile.getErrorLevel(key, psiFile)).isEqualTo(level)
+            assertThat(mapped).isNotNull()
+            assertThat(requireNotNull(mapped)["severity"]).isEqualTo(expected)
+        }
     }
 
     @Test
