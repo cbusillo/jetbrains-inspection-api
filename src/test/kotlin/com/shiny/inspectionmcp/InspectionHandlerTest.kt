@@ -68,6 +68,7 @@ import java.nio.file.Paths
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -3414,7 +3415,13 @@ class InspectionHandlerTest {
         val key = projectKey(mockProject)
         val indicator = mockk<ProgressIndicator>(relaxed = true)
         handler.inspectionRunNowNanos = { 2_000_000_000L }
-        handler.inspectionWorkerStackProvider = { error("stack unavailable") }
+        val cancellationSignalled = AtomicBoolean(false)
+        val signalledBeforeStack = AtomicBoolean(false)
+        every { indicator.cancel() } answers { cancellationSignalled.set(true) }
+        handler.inspectionWorkerStackProvider = {
+            signalledBeforeStack.set(cancellationSignalled.get())
+            error("stack unavailable")
+        }
         setInspectionRunState(
             key,
             InspectionRunState(
@@ -3442,11 +3449,12 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"status\": \"cancel_requested\""))
         assertTrue(body.contains("\"inspection_stage_at_failure\": \"smart_wait\""))
         assertTrue(body.contains("\"inspection_worker_stack\": []"))
+        assertTrue(signalledBeforeStack.get())
         verify(exactly = 1) { indicator.cancel() }
     }
 
     @Test
-    fun `test cancellation preserves the earlier timeout location`() {
+    fun `test cancellation request preserves timeout evidence without changing completed outcome`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         val key = projectKey(mockProject)
@@ -3518,7 +3526,7 @@ class InspectionHandlerTest {
         assertEquals("cancel-frame", diagnostics[1].workerStack.single())
         assertEquals("cancel-frame", diagnostics.last().workerStack.single())
         assertEquals(false, terminalState.inProgress)
-        assertEquals(InspectionRunTerminalOutcome.CANCELLED, terminalState.terminalOutcome)
+        assertEquals(InspectionRunTerminalOutcome.COMPLETED, terminalState.terminalOutcome)
         verify(exactly = 1) { indicator.cancel() }
     }
 
@@ -3614,6 +3622,9 @@ class InspectionHandlerTest {
             queuedTasks.single().run()
         }
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
+        val terminalState = requireNotNull(inspectionRunState(projectKey(mockProject)))
+        assertFalse(terminalState.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.CANCELLED, terminalState.terminalOutcome)
     }
 
     @Test
@@ -3668,6 +3679,35 @@ class InspectionHandlerTest {
         assertEquals(false, state?.inProgress)
         assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
         assertEquals(InspectionRunStage.NATIVE_CONFIGURE, state?.stage)
+    }
+
+    @Test
+    fun `test failure after cancellation request retains failed terminal outcome`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
+        every { InspectionManager.getInstance(mockProject) } answers {
+            processGetRequest("/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=1")
+            throw IllegalStateException("native setup failed")
+        }
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(false, state?.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
+        assertEquals(InspectionRunStage.NATIVE_CONFIGURE, state?.stage)
+        assertEquals(InspectionRunFailureOutcome.CANCELLED, state?.failureDiagnostics?.single()?.outcome)
     }
 
     @Test
@@ -4131,6 +4171,40 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"schema_version\": 1"), body)
         assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
+    }
+
+    @Test
+    fun `test wait timeout preserves earlier capture failure and complete history`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                stage = InspectionRunStage.NATIVE_EXECUTE,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        recordInspectionRunFailureDiagnostic(key, 7L, InspectionRunFailureSource.CAPTURE_DEADLINE)
+        transitionInspectionRunStage(key, 7L, InspectionRunStage.RESULT_SETTLING)
+
+        val response = processGetRequest(
+            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+        )
+        val body = com.google.gson.JsonParser.parseString(response.content().toString(Charsets.UTF_8)).asJsonObject
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals("timeout", body["completion_reason"].asString)
+        assertEquals("result_settling", body["inspection_stage"].asString)
+        assertEquals("capture_deadline", body["inspection_failure_diagnostic"].asJsonObject["source"].asString)
+        val history = body["inspection_failure_history"].asJsonArray
+        assertEquals(listOf("capture_deadline", "wait_timeout"), history.map { it.asJsonObject["source"].asString })
     }
 
     @Test

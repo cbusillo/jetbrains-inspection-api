@@ -568,7 +568,7 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 - `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`
 - `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
 - `inspection_stage_history`: Bounded completed-stage timings for diagnosing a slow run
-- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `cancelled`, or `failed`
+- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `cancelled`, or `failed`. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
 
 ## Proper Usage Workflow
 
@@ -642,7 +642,7 @@ may call `/api/inspection/cancel` and wait briefly for cancellation to settle.
 This keeps a stalled inspection from holding the project and HTTP lifecycle
 queue indefinitely.
 
-An active wait timeout and an accepted cancellation include
+While the run remains active, a wait timeout and an accepted cancellation include
 `inspection_failure_diagnostic`. It preserves `inspection_stage_at_failure`,
 the stage and run elapsed times, the current dumb-mode flag, and up to 64 stack
 frames from the inspection worker. The stack is best-effort and covers only the

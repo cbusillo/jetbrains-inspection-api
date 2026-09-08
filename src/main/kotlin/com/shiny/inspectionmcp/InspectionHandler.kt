@@ -3987,14 +3987,14 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
 
+        control.cancellationRequested.set(true)
+        control.indicator.cancel()
         val failureDiagnostic = recordInspectionRunFailureDiagnostic(
             key = key,
             runId = runState.runId,
             project = resolved.project,
             source = InspectionRunFailureSource.CANCELLATION,
         )
-        control.cancellationRequested.set(true)
-        control.indicator.cancel()
         val response = mutableMapOf<String, Any>(
             "status" to "cancel_requested",
             "inspection_in_progress" to true,
@@ -5631,15 +5631,22 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 val timedOutRunId = inspectionRunId(status)
                 if (inProgress && timedOutRunId != null) {
-                    val failureDiagnostic = recordInspectionRunFailureDiagnostic(
+                    recordInspectionRunFailureDiagnostic(
                         key = projectKey(activeProject),
                         runId = timedOutRunId,
                         project = activeProject,
                         source = InspectionRunFailureSource.WAIT_TIMEOUT,
                     )
-                    failureDiagnostic?.let { diagnostic ->
-                        status["inspection_failure_diagnostic"] = inspectionFailureDiagnosticMap(diagnostic)
-                    }
+                    inspectionRunStatesByProject[projectKey(activeProject)]
+                        ?.takeIf { it.runId == timedOutRunId }
+                        ?.let { state ->
+                            state.failureDiagnostics.firstOrNull()?.let { failure ->
+                                status["inspection_failure_diagnostic"] = inspectionFailureDiagnosticMap(failure)
+                            }
+                            if (state.failureDiagnostics.size > 1) {
+                                status["inspection_failure_history"] = state.failureDiagnostics.map(::inspectionFailureDiagnosticMap)
+                            }
+                        }
                 }
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "timeout", requestAttribution)
             }
@@ -5951,7 +5958,12 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Throwable) {
             if (!taskStarted.get()) {
                 runCatching { control.indicator.cancel() }
-                finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
+                val outcome = if (error is com.intellij.openapi.progress.ProcessCanceledException) {
+                    InspectionRunTerminalOutcome.CANCELLED
+                } else {
+                    InspectionRunTerminalOutcome.FAILED
+                }
+                finishInspectionRunWithOutcome(key, runId, outcome)
             }
             throw error
         } finally {
@@ -6905,6 +6917,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 project = project,
                                 source = InspectionRunFailureSource.CANCELLATION,
                             )
+                            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
                             throw e
                         } catch (error: Exception) {
                             logger.warn("Inspection result capture failed for ${project.name}", error)
@@ -6946,6 +6959,7 @@ class InspectionHandler : HttpRequestHandler() {
                 project = project,
                 source = InspectionRunFailureSource.CANCELLATION,
             )
+            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
             throw e
         } catch (error: Exception) {
             logger.warn("Inspection execution failed for ${project.name}", error)
@@ -7129,16 +7143,9 @@ class InspectionHandler : HttpRequestHandler() {
         val nowNanos = currentInspectionRunNanos()
         inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
             if (state.runId == runId && state.inProgress) {
-                val terminalOutcome = if (
-                    state.failureDiagnostics.any { it.outcome == InspectionRunFailureOutcome.CANCELLED }
-                ) {
-                    InspectionRunTerminalOutcome.CANCELLED
-                } else {
-                    requestedOutcome
-                }
                 state.copy(
                     inProgress = false,
-                    terminalOutcome = terminalOutcome,
+                    terminalOutcome = requestedOutcome,
                     terminalAtNanos = nowNanos,
                 )
             } else {
