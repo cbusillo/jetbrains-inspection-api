@@ -57,6 +57,7 @@ import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpResponseStatus
+import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import org.jdom.Element
 import org.jetbrains.concurrency.Promise
@@ -5506,6 +5507,336 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_instance_id\""))
         assertTrue(body.contains("\"inspection_execution_proof_version\": 4"))
+        assertTrue(body.contains("\"python_sdk_preparation_version\": 1"))
+    }
+
+    @Test
+    fun `test Python SDK preparation endpoint supports only POST`() {
+        val post = mockk<FullHttpRequest>()
+        every { post.uri() } returns "/api/inspection/lifecycle/prepare-python-sdk"
+        every { post.method() } returns HttpMethod.POST
+        val get = mockk<FullHttpRequest>()
+        every { get.uri() } returns "/api/inspection/lifecycle/prepare-python-sdk"
+        every { get.method() } returns HttpMethod.GET
+
+        assertTrue(handler.isSupported(post))
+        assertFalse(handler.isSupported(get))
+
+        val malformed = mockk<FullHttpRequest>()
+        every { malformed.uri() } returns "/api/inspection/%ZZ"
+        every { malformed.method() } returns HttpMethod.GET
+        assertDoesNotThrow { handler.isSupported(malformed) }
+    }
+
+    @Test
+    fun `test Python SDK preparation requires exact ownership pins and returns readback evidence`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        val scheduledWorker = AtomicReference<Runnable?>()
+        var timeoutCancelled = false
+        handler.pythonSdkPreparationExecutor = { worker -> scheduledWorker.set(worker) }
+        handler.schedulePythonSdkPreparationTimeout = { _, _ -> { timeoutCancelled = true } }
+        handler.pythonSdkPreparationRunner = { request ->
+            assertSame(mockProject, request.project)
+            assertEquals(Paths.get("/repo/app").toAbsolutePath().normalize(), request.projectRoot)
+            PythonSdkPreparationResult(
+                prepared = true,
+                reason = "python_sdk_preparation_prepared",
+                operation = "created",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                sdkName = "Inspection .venv",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                assignedLocalPythonSdkCount = 1,
+                assignedPythonModuleCount = 1,
+                projectSdkAssigned = true,
+            )
+        }
+        val uri = pythonSdkPreparationUri(instanceId, token)
+
+        val responses = processRequestResponses(uri, HttpMethod.POST)
+        assertTrue(responses.isEmpty())
+        requireNotNull(scheduledWorker.get()).run()
+
+        assertEquals(1, responses.size)
+        val response = responses.single()
+        val body = response.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"prepared\""))
+        assertTrue(body.contains("\"sdk_preparation_version\": 1"))
+        assertTrue(body.contains("\"project_instance_id\": \"$instanceId\""))
+        assertTrue(body.contains("\"project_key\": \"path:/repo/app\""))
+        assertTrue(body.contains("\"session_id\": \"${InspectionIdeSession.sessionId}\""))
+        assertTrue(body.contains("\"operation\": \"created\""))
+        assertTrue(body.contains("\"registered_local_python_sdk_count\": 1"))
+        assertTrue(body.contains("\"assigned_local_python_sdk_count\": 1"))
+        assertTrue(body.contains("\"assigned_python_module_count\": 1"))
+        assertTrue(body.contains("\"project_sdk_assigned\": true"))
+        assertTrue(timeoutCancelled)
+
+        handler.pythonSdkPreparationExecutor = { worker -> worker.run() }
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_existing_sdk_incomplete",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                readbackObserved = true,
+            )
+        }
+        val incomplete = processRequest(uri, HttpMethod.POST)
+        val incompleteBody = incomplete.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.CONFLICT, incomplete.status())
+        assertTrue(incompleteBody.contains("\"registered_local_python_sdk_count\": 1"), incompleteBody)
+        assertTrue(incompleteBody.contains("\"classification\": \"configuration_blocked\""), incompleteBody)
+
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_existing_sdk_changed",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                readbackObserved = true,
+            )
+        }
+        val changed = processRequest(uri, HttpMethod.POST)
+        val changedBody = changed.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.CONFLICT, changed.status())
+        assertTrue(changedBody.contains("\"classification\": \"legitimate_fail_closed\""), changedBody)
+
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_persistence_failed",
+                interpreterHome = "/repo/app/.venv/bin/python",
+                pythonModuleCount = 1,
+                registeredLocalPythonSdkCount = 1,
+                assignedLocalPythonSdkCount = 1,
+                assignedPythonModuleCount = 1,
+                projectSdkAssigned = true,
+                readbackObserved = true,
+            )
+        }
+        val persistenceFailed = processRequest(uri, HttpMethod.POST)
+        val persistenceFailedBody = persistenceFailed.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, persistenceFailed.status())
+        assertTrue(persistenceFailedBody.contains("\"classification\": \"tool_caused\""), persistenceFailedBody)
+    }
+
+    @Test
+    fun `test Python SDK preparation refuses missing ownership and forbidden interpreter input`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        var runnerCalls = 0
+        handler.pythonSdkPreparationRunner = {
+            runnerCalls += 1
+            error("must not run")
+        }
+
+        val notClaimed = processRequest(
+            pythonSdkPreparationUri(instanceId, "missing-token"),
+            HttpMethod.POST,
+        )
+        val forbiddenAliases = listOf("interpreter", "interpreter_path", "sdk_home").map { alias ->
+            processRequest(
+                pythonSdkPreparationUri(instanceId, "missing-token") + "&$alias=/tmp/python",
+                HttpMethod.POST,
+            )
+        }
+        val forbiddenBody = processRequest(
+            pythonSdkPreparationUri(instanceId, "missing-token"),
+            HttpMethod.POST,
+            Unpooled.copiedBuffer("{}", Charsets.UTF_8),
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, notClaimed.status())
+        val notClaimedBody = notClaimed.content().toString(Charsets.UTF_8)
+        assertTrue(notClaimedBody.contains("python_sdk_preparation_not_claimed"))
+        assertTrue(notClaimedBody.contains("\"classification\": \"legitimate_fail_closed\""), notClaimedBody)
+        forbiddenAliases.forEach { forbidden ->
+            assertEquals(HttpResponseStatus.BAD_REQUEST, forbidden.status())
+            assertTrue(forbidden.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_interpreter_input_forbidden"))
+        }
+        assertEquals(HttpResponseStatus.BAD_REQUEST, forbiddenBody.status())
+        assertTrue(forbiddenBody.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_interpreter_input_forbidden"))
+        assertEquals(0, runnerCalls)
+    }
+
+    @Test
+    fun `test Python SDK preparation rejects every stale or mismatched ownership pin`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        var runnerCalls = 0
+        handler.pythonSdkPreparationRunner = {
+            runnerCalls += 1
+            error("must not run")
+        }
+        val valid = pythonSdkPreparationUri(instanceId, token)
+
+        val wrongToken = processRequest(valid.replace("close_token=$token", "close_token=wrong"), HttpMethod.POST)
+        val wrongLease = processRequest(valid.replace("lease_id=test-lease", "lease_id=other"), HttpMethod.POST)
+        val staleSession = processRequest(
+            valid.replace("session_id=${InspectionIdeSession.sessionId}", "session_id=old-session"),
+            HttpMethod.POST,
+        )
+        val wrongProject = processRequest(valid.replace("project_key=path:/repo/app", "project_key=path:/repo/other"), HttpMethod.POST)
+        val missingSession = processRequest(
+            valid.replace("&session_id=${InspectionIdeSession.sessionId}", ""),
+            HttpMethod.POST,
+        )
+
+        assertEquals(HttpResponseStatus.FORBIDDEN, wrongToken.status())
+        val wrongTokenBody = wrongToken.content().toString(Charsets.UTF_8)
+        assertTrue(wrongTokenBody.contains("python_sdk_preparation_token_mismatch"))
+        assertTrue(wrongTokenBody.contains("\"classification\": \"legitimate_fail_closed\""), wrongTokenBody)
+        assertEquals(HttpResponseStatus.FORBIDDEN, wrongLease.status())
+        assertTrue(wrongLease.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_lease_mismatch"))
+        assertEquals(HttpResponseStatus.CONFLICT, staleSession.status())
+        assertTrue(staleSession.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_session_drift"))
+        assertEquals(HttpResponseStatus.CONFLICT, wrongProject.status())
+        assertTrue(wrongProject.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_claim_mismatch"))
+        assertEquals(HttpResponseStatus.BAD_REQUEST, missingSession.status())
+        assertTrue(missingSession.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_missing_session_id"))
+        assertEquals(0, runnerCalls)
+    }
+
+    @Test
+    fun `test Python SDK preparation serializes calls and close while worker is active`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        val worker = AtomicReference<Runnable?>()
+        val timeout = AtomicReference<Runnable?>()
+        handler.pythonSdkPreparationExecutor = { task -> worker.set(task) }
+        handler.schedulePythonSdkPreparationTimeout = { task, _ ->
+            timeout.set(task)
+            val cancel: () -> Unit = {}
+            cancel
+        }
+        handler.lifecycleCloseExecutor = { task -> task.run() }
+        val uri = pythonSdkPreparationUri(instanceId, token)
+        val firstResponses = processRequestResponses(uri, HttpMethod.POST)
+
+        val duplicate = processRequest(uri, HttpMethod.POST)
+        val close = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+        )
+
+        assertTrue(firstResponses.isEmpty())
+        assertEquals(HttpResponseStatus.CONFLICT, duplicate.status())
+        assertTrue(duplicate.content().toString(Charsets.UTF_8).contains("python_sdk_preparation_in_progress"))
+        assertEquals(HttpResponseStatus.CONFLICT, close.status())
+        assertTrue(close.content().toString(Charsets.UTF_8).contains("\"python_sdk_preparation_in_progress\": true"))
+        assertTrue(lifecycleLeases().containsKey(instanceId))
+
+        requireNotNull(timeout.get()).run()
+        assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, firstResponses.single().status())
+        assertTrue(firstResponses.single().content().toString(Charsets.UTF_8).contains("python_sdk_preparation_timeout"))
+        handler.pythonSdkPreparationRunner = { request ->
+            assertTrue(request.indicator.isCanceled)
+            PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
+        }
+        requireNotNull(worker.get()).run()
+        assertEquals(1, firstResponses.size)
+
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(true, "python_sdk_preparation_prepared", operation = "reused")
+        }
+        handler.pythonSdkPreparationExecutor = { task -> task.run() }
+        handler.schedulePythonSdkPreparationTimeout = { _, _ -> {} }
+        val retry = processRequest(uri, HttpMethod.POST)
+        assertEquals(HttpResponseStatus.OK, retry.status())
+    }
+
+    @Test
+    fun `test Python SDK preparation refuses an active inspection without cancelling it`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        setInspectionRunState(
+            projectKey(mockProject),
+            InspectionRunState(
+                runId = 17L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            ),
+        )
+        val inspectionIndicator = mockk<ProgressIndicator>(relaxed = true)
+        setInspectionRunControl(
+            projectKey(mockProject),
+            InspectionRunControl(runId = 17L, indicator = inspectionIndicator),
+        )
+        var runnerCalls = 0
+        handler.pythonSdkPreparationRunner = {
+            runnerCalls += 1
+            error("must not run")
+        }
+
+        val response = processRequest(pythonSdkPreparationUri(instanceId, token), HttpMethod.POST)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        val body = response.content().toString(Charsets.UTF_8)
+        assertTrue(body.contains("python_sdk_preparation_inspection_in_progress"))
+        assertTrue(body.contains("\"inspection_in_progress\": true"))
+        assertTrue(body.contains("\"inspection_run_id\": 17"))
+        assertEquals(0, runnerCalls)
+        verify(exactly = 0) { inspectionIndicator.cancel() }
+    }
+
+    @Test
+    fun `test Python SDK preparation worker exception releases serialization`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        handler.pythonSdkPreparationExecutor = { task -> task.run() }
+        handler.schedulePythonSdkPreparationTimeout = { _, _ -> {} }
+        handler.pythonSdkPreparationRunner = { error("setup failed") }
+        val uri = pythonSdkPreparationUri(instanceId, token)
+
+        val failed = processRequest(uri, HttpMethod.POST)
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(true, "python_sdk_preparation_prepared", operation = "reused")
+        }
+        val retry = processRequest(uri, HttpMethod.POST)
+
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, failed.status())
+        val failedBody = failed.content().toString(Charsets.UTF_8)
+        assertTrue(failedBody.contains("python_sdk_preparation_failed"))
+        assertTrue(failedBody.contains("\"classification\": \"tool_caused\""), failedBody)
+        assertFalse(failedBody.contains("registered_local_python_sdk_count"), failedBody)
+        assertFalse(failedBody.contains("assigned_local_python_sdk_count"), failedBody)
+        assertEquals(HttpResponseStatus.OK, retry.status())
     }
 
     @Test
@@ -8382,20 +8713,49 @@ class InspectionHandlerTest {
         "scope_file_diagnostics" to emptyList<Map<String, Any?>>(),
     )
 
-    private fun processGetRequest(uri: String): FullHttpResponse {
+    private fun processGetRequest(uri: String): FullHttpResponse = processRequest(uri, HttpMethod.GET)
+
+    private fun processRequest(
+        uri: String,
+        method: HttpMethod,
+        content: io.netty.buffer.ByteBuf = Unpooled.EMPTY_BUFFER,
+    ): FullHttpResponse {
+        val responses = processRequestResponses(uri, method, content)
+        assertEquals(1, responses.size)
+        return responses.single()
+    }
+
+    private fun processRequestResponses(
+        uri: String,
+        method: HttpMethod,
+        content: io.netty.buffer.ByteBuf = Unpooled.EMPTY_BUFFER,
+    ): MutableList<FullHttpResponse> {
         val urlDecoder = QueryStringDecoder(uri)
         val mockRequest = mockk<FullHttpRequest>()
         val mockContext = mockk<ChannelHandlerContext>()
-        val responseSlot = slot<Any>()
+        val responses = mutableListOf<FullHttpResponse>()
 
         every { mockRequest.uri() } returns uri
-        every { mockContext.writeAndFlush(capture(responseSlot)) } returns mockk(relaxed = true)
+        every { mockRequest.method() } returns method
+        every { mockRequest.content() } returns content
+        every { mockContext.writeAndFlush(any()) } answers {
+            responses += firstArg<FullHttpResponse>()
+            mockk(relaxed = true)
+        }
 
         val result = handler.process(urlDecoder, mockRequest, mockContext)
 
         assertTrue(result)
-        return responseSlot.captured as FullHttpResponse
+        return responses
     }
+
+    private fun pythonSdkPreparationUri(projectInstanceId: String, closeToken: String): String =
+        "/api/inspection/lifecycle/prepare-python-sdk" +
+            "?project_instance_id=$projectInstanceId" +
+            "&project_key=path:/repo/app" +
+            "&session_id=${InspectionIdeSession.sessionId}" +
+            "&lease_id=test-lease" +
+            "&close_token=$closeToken"
 
     private fun buildInspectionStatus(): MutableMap<String, Any> {
         val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)

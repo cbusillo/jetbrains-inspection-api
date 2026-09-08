@@ -1763,6 +1763,11 @@ class InspectionHandler : HttpRequestHandler() {
         val leaseId: String?,
     )
 
+    private data class PythonSdkPreparationControl(
+        val indicator: ProgressIndicator,
+        val responseSent: AtomicBoolean = AtomicBoolean(false),
+    )
+
     internal data class LifecycleOpenOwnership(
         val leaseId: String,
         val targetKey: String,
@@ -1824,6 +1829,8 @@ class InspectionHandler : HttpRequestHandler() {
     private val lifecycleOpenOwnershipByProjectInstance = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenOwnership>()
     private val unresolvedLifecycleOpenProjects = java.util.concurrent.ConcurrentHashMap<String, Project>()
     private val lifecycleOpenDiagnosticsByTarget = java.util.concurrent.ConcurrentHashMap<String, LifecycleOpenDiagnostic>()
+    private val pythonSdkPreparationsByProjectInstance =
+        java.util.concurrent.ConcurrentHashMap<String, PythonSdkPreparationControl>()
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
@@ -1900,6 +1907,18 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
+    internal var pythonSdkPreparationExecutor: (Runnable) -> Unit = { task ->
+        ApplicationManager.getApplication().executeOnPooledThread(task)
+    }
+    internal var pythonSdkPreparationTimeoutMs: Long = 60_000
+    internal var pythonSdkPreparationNow: () -> Long = { System.currentTimeMillis() }
+    internal var schedulePythonSdkPreparationTimeout: (Runnable, Long) -> (() -> Unit) = { task, delayMs ->
+        val future = AppExecutorUtil.getAppScheduledExecutorService().schedule(task, delayMs, TimeUnit.MILLISECONDS)
+        val cancel: () -> Unit = { future.cancel(false) }
+        cancel
+    }
+    internal var pythonSdkPreparationRunner: (PythonSdkPreparationRequest) -> PythonSdkPreparationResult =
+        PythonSdkPreparationService()::prepare
     internal var trustProjectPath: (Path) -> Unit = { path ->
         TrustedProjects.setProjectTrusted(canonicalTrustPath(path), true)
     }
@@ -2331,6 +2350,46 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun attributionClassification(code: String): String {
+        if (code.startsWith("python_sdk_preparation_")) {
+            return when (code) {
+                "python_sdk_preparation_venv_configuration_missing",
+                "python_sdk_preparation_interpreter_missing",
+                "python_sdk_preparation_project_untrusted",
+                "python_sdk_preparation_unsupported",
+                "python_sdk_preparation_no_python_modules",
+                "python_sdk_preparation_sdk_conflict",
+                "python_sdk_preparation_ambiguous_registered_sdk",
+                "python_sdk_preparation_existing_sdk_incomplete",
+                "python_sdk_preparation_project_root_missing" -> "configuration_blocked"
+                "python_sdk_preparation_cancelled",
+                "python_sdk_preparation_claim_mismatch",
+                "python_sdk_preparation_existing_sdk_changed",
+                "python_sdk_preparation_in_progress",
+                "python_sdk_preparation_inspection_in_progress",
+                "python_sdk_preparation_interpreter_input_forbidden",
+                "python_sdk_preparation_lease_mismatch",
+                "python_sdk_preparation_method_not_allowed",
+                "python_sdk_preparation_module_model_changed",
+                "python_sdk_preparation_not_claimed",
+                "python_sdk_preparation_ownership_changed",
+                "python_sdk_preparation_session_drift",
+                "python_sdk_preparation_timeout",
+                "python_sdk_preparation_token_mismatch" -> "legitimate_fail_closed"
+                "python_sdk_preparation_setup_incomplete",
+                "python_sdk_preparation_registration_failed",
+                "python_sdk_preparation_assignment_failed",
+                "python_sdk_preparation_readback_failed",
+                "python_sdk_preparation_commit_failed",
+                "python_sdk_preparation_scheduling_failed",
+                "python_sdk_preparation_persistence_failed",
+                "python_sdk_preparation_failed" -> "tool_caused"
+                else -> if (code.startsWith("python_sdk_preparation_missing_")) {
+                    "legitimate_fail_closed"
+                } else {
+                    "tool_caused"
+                }
+            }
+        }
         return when (code) {
             "clean",
             "findings",
@@ -2504,7 +2563,12 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     override fun isSupported(request: FullHttpRequest): Boolean {
-        return request.uri().startsWith("/api/inspection") && request.method() == HttpMethod.GET
+        val path = runCatching { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
+        return when {
+            path == "/api/inspection/lifecycle/prepare-python-sdk" -> request.method() == HttpMethod.POST
+            path.startsWith("/api/inspection") -> request.method() == HttpMethod.GET
+            else -> false
+        }
     }
 
     @Suppress("SameReturnValue")
@@ -2571,6 +2635,34 @@ class InspectionHandler : HttpRequestHandler() {
                     if (schedulingFailure != null) {
                         sendInternalServerError(context, requestAttribution, parameters, schedulingFailure)
                     }
+                }
+                "/api/inspection/lifecycle/prepare-python-sdk" -> {
+                    if (request.method() != HttpMethod.POST) {
+                        sendPythonSdkPreparationFailure(
+                            context,
+                            parameters,
+                            requestAttribution,
+                            "python_sdk_preparation_method_not_allowed",
+                            "This endpoint requires POST.",
+                            HttpResponseStatus.METHOD_NOT_ALLOWED,
+                        )
+                        return true
+                    }
+                    if (request.content().isReadable || parameters.keys.any { key ->
+                            key in setOf("interpreter", "interpreter_path", "sdk_home")
+                        }
+                    ) {
+                        sendPythonSdkPreparationFailure(
+                            context,
+                            parameters,
+                            requestAttribution,
+                            "python_sdk_preparation_interpreter_input_forbidden",
+                            "The interpreter is derived from the claimed project and cannot be supplied by the request.",
+                            HttpResponseStatus.BAD_REQUEST,
+                        )
+                        return true
+                    }
+                    processPythonSdkPreparationRequest(parameters, context, requestAttribution)
                 }
                 "/api/inspection/cancel" -> {
                     responseHasSessionDrift(parameters, requestAttribution)?.let {
@@ -3907,6 +3999,7 @@ class InspectionHandler : HttpRequestHandler() {
             leasesByProjectInstance[instanceId]?.takeIf { it.project === project }?.let { lease ->
                 leasesByProjectInstance.remove(instanceId, lease)
             }
+            pythonSdkPreparationsByProjectInstance[instanceId]?.indicator?.cancel()
         }
     }
 
@@ -3933,6 +4026,317 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Exception) {
             sendInternalServerError(context, requestAttribution, parameters, error)
         }
+    }
+
+    private fun processPythonSdkPreparationRequest(
+        parameters: Map<String, List<String>>,
+        context: ChannelHandlerContext,
+        requestAttribution: InspectionRequestAttribution,
+    ) {
+        val expectedProjectInstanceId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "project_instance_id",
+        ) ?: return
+        val expectedProjectKey = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "project_key",
+        ) ?: return
+        val expectedSessionId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "session_id",
+        ) ?: return
+        val expectedLeaseId = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "lease_id",
+        ) ?: return
+        val closeToken = requiredPythonSdkPreparationParameter(
+            parameters,
+            context,
+            requestAttribution,
+            "close_token",
+        ) ?: return
+
+        if (expectedSessionId != InspectionIdeSession.sessionId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_session_drift",
+                "The IDE session changed before Python SDK preparation.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        val lease = leasesByProjectInstance[expectedProjectInstanceId]
+        if (lease == null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_not_claimed",
+                "No helper lifecycle claim exists for this project instance.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        if (lease.closeToken != closeToken) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_token_mismatch",
+                "Close token did not match the helper lifecycle claim.",
+                HttpResponseStatus.FORBIDDEN,
+            )
+            return
+        }
+        if (lease.leaseId != expectedLeaseId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_lease_mismatch",
+                "Lease id did not match the helper lifecycle claim.",
+                HttpResponseStatus.FORBIDDEN,
+            )
+            return
+        }
+        if (lease.projectKey != expectedProjectKey || lease.sessionId != expectedSessionId) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_claim_mismatch",
+                "The project or session no longer matches the lifecycle claim.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        val projectRoot = lease.basePath?.let { path ->
+            runCatching { Paths.get(path).normalize().toAbsolutePath() }.getOrNull()
+        }
+        if (projectRoot == null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_project_root_missing",
+                "The claimed project has no usable base path.",
+                HttpResponseStatus.CONFLICT,
+            )
+            return
+        }
+        if (isInspectionInProgress(lease.project)) {
+            val runState = inspectionRunStatesByProject[lease.projectKey]
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_inspection_in_progress",
+                "An inspection is already running for the claimed project.",
+                HttpResponseStatus.CONFLICT,
+                additional = mapOf(
+                    "inspection_in_progress" to true,
+                    "inspection_run_id" to runState?.runId,
+                ),
+            )
+            return
+        }
+
+        val control = PythonSdkPreparationControl(ProgressIndicatorBase())
+        if (pythonSdkPreparationsByProjectInstance.putIfAbsent(expectedProjectInstanceId, control) != null) {
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_in_progress",
+                "Python SDK preparation is already active for this project instance.",
+                HttpResponseStatus.CONFLICT,
+                additional = mapOf("python_sdk_preparation_in_progress" to true),
+            )
+            return
+        }
+        val deadlineMs = pythonSdkPreparationNow() + pythonSdkPreparationTimeoutMs
+
+        val ownershipIsCurrent = {
+            pythonSdkPreparationsByProjectInstance[expectedProjectInstanceId] === control &&
+                leasesByProjectInstance[expectedProjectInstanceId] === lease &&
+                lease.sessionId == InspectionIdeSession.sessionId &&
+                pythonSdkPreparationNow() < deadlineMs &&
+                !control.indicator.isCanceled &&
+                !control.responseSent.get() &&
+                !lease.project.isDisposed &&
+                findOpenProjectByInstanceId(expectedProjectInstanceId) === lease.project &&
+                projectKey(lease.project) == lease.projectKey &&
+                !isInspectionInProgress(lease.project)
+        }
+        val timeoutTask = Runnable {
+            control.indicator.cancel()
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationFailure(
+                    context,
+                    parameters,
+                    requestAttribution,
+                    "python_sdk_preparation_timeout",
+                    "Python SDK preparation exceeded its bounded deadline.",
+                    HttpResponseStatus.REQUEST_TIMEOUT,
+                    additional = mapOf("python_sdk_preparation_in_progress" to true),
+                )
+            }
+        }
+        val cancelTimeout = try {
+            schedulePythonSdkPreparationTimeout(timeoutTask, pythonSdkPreparationTimeoutMs)
+        } catch (error: Throwable) {
+            pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            sendPythonSdkPreparationFailure(
+                context,
+                parameters,
+                requestAttribution,
+                "python_sdk_preparation_scheduling_failed",
+                error.message ?: error::class.java.simpleName,
+                HttpResponseStatus.INTERNAL_SERVER_ERROR,
+            )
+            return
+        }
+        val worker = Runnable {
+            val result = try {
+                if (!ownershipIsCurrent()) {
+                    PythonSdkPreparationResult(false, "python_sdk_preparation_ownership_changed")
+                } else {
+                    pythonSdkPreparationRunner(
+                        PythonSdkPreparationRequest(
+                            project = lease.project,
+                            projectRoot = projectRoot,
+                            deadlineMs = deadlineMs,
+                            indicator = control.indicator,
+                            ownershipIsCurrent = ownershipIsCurrent,
+                        )
+                    )
+                }
+            } catch (error: Throwable) {
+                PythonSdkPreparationResult(
+                    prepared = false,
+                    reason = "python_sdk_preparation_failed",
+                    detail = error.message ?: error::class.java.simpleName,
+                )
+            } finally {
+                pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+                runCatching { cancelTimeout() }
+            }
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationResult(context, parameters, requestAttribution, result)
+            }
+        }
+        try {
+            pythonSdkPreparationExecutor(worker)
+        } catch (error: Throwable) {
+            runCatching { cancelTimeout() }
+            pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            if (control.responseSent.compareAndSet(false, true)) {
+                sendPythonSdkPreparationFailure(
+                    context,
+                    parameters,
+                    requestAttribution,
+                    "python_sdk_preparation_scheduling_failed",
+                    error.message ?: error::class.java.simpleName,
+                    HttpResponseStatus.INTERNAL_SERVER_ERROR,
+                )
+            }
+        }
+    }
+
+    private fun requiredPythonSdkPreparationParameter(
+        parameters: Map<String, List<String>>,
+        context: ChannelHandlerContext,
+        requestAttribution: InspectionRequestAttribution,
+        name: String,
+    ): String? {
+        firstParameter(parameters, name)?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        sendPythonSdkPreparationFailure(
+            context,
+            parameters,
+            requestAttribution,
+            "python_sdk_preparation_missing_$name",
+            "Parameter '$name' is required.",
+            HttpResponseStatus.BAD_REQUEST,
+        )
+        return null
+    }
+
+    private fun sendPythonSdkPreparationResult(
+        context: ChannelHandlerContext,
+        parameters: Map<String, List<String>>,
+        requestAttribution: InspectionRequestAttribution,
+        result: PythonSdkPreparationResult,
+    ) {
+        val response = mutableMapOf<String, Any?>(
+            "status" to if (result.prepared) "prepared" else "error",
+            "sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
+            "session_id" to InspectionIdeSession.sessionId,
+            "project_instance_id" to firstParameter(parameters, "project_instance_id"),
+            "project_key" to firstParameter(parameters, "project_key"),
+            "lease_id" to firstParameter(parameters, "lease_id"),
+            "reason" to result.reason,
+            "operation" to result.operation,
+            "interpreter_home" to result.interpreterHome,
+            "sdk_name" to result.sdkName,
+            "python_module_count" to result.pythonModuleCount,
+            "registered_local_python_sdk_count" to result.registeredLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_local_python_sdk_count" to result.assignedLocalPythonSdkCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "assigned_python_module_count" to result.assignedPythonModuleCount
+                .takeIf { result.prepared || result.readbackObserved },
+            "project_sdk_assigned" to result.projectSdkAssigned
+                .takeIf { result.prepared || result.readbackObserved },
+            "detail" to result.detail,
+        )
+        val status = if (result.prepared) HttpResponseStatus.OK else pythonSdkPreparationFailureStatus(result.reason)
+        if (!result.prepared) {
+            addInspectionAttribution(response, requestAttribution, result.reason, status, parameters)
+        }
+        sendJsonResponse(context, formatJsonManually(response.filterValues { value -> value != null }), status)
+    }
+
+    private fun sendPythonSdkPreparationFailure(
+        context: ChannelHandlerContext,
+        parameters: Map<String, List<String>>,
+        requestAttribution: InspectionRequestAttribution,
+        reason: String,
+        detail: String,
+        status: HttpResponseStatus,
+        additional: Map<String, Any?> = emptyMap(),
+    ) {
+        val response = mutableMapOf<String, Any?>(
+            "status" to "error",
+            "sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
+            "session_id" to InspectionIdeSession.sessionId,
+            "project_instance_id" to firstParameter(parameters, "project_instance_id"),
+            "project_key" to firstParameter(parameters, "project_key"),
+            "lease_id" to firstParameter(parameters, "lease_id"),
+            "reason" to reason,
+            "detail" to detail,
+        )
+        response.putAll(additional)
+        addInspectionAttribution(response, requestAttribution, reason, status, parameters)
+        sendJsonResponse(context, formatJsonManually(response.filterValues { value -> value != null }), status)
+    }
+
+    private fun pythonSdkPreparationFailureStatus(reason: String): HttpResponseStatus = when {
+        reason.endsWith("_unsupported") -> HttpResponseStatus.UNPROCESSABLE_ENTITY
+        reason.endsWith("_venv_configuration_missing") || reason.endsWith("_interpreter_missing") ->
+            HttpResponseStatus.UNPROCESSABLE_ENTITY
+        reason.endsWith("_existing_sdk_incomplete") -> HttpResponseStatus.CONFLICT
+        reason.endsWith("_failed") || reason.endsWith("_incomplete") -> HttpResponseStatus.INTERNAL_SERVER_ERROR
+        else -> HttpResponseStatus.CONFLICT
     }
 
     private fun buildInspectionCancellationResponse(parameters: Map<String, List<String>>): String {
@@ -4025,6 +4429,19 @@ class InspectionHandler : HttpRequestHandler() {
         val expectedLeaseId = firstParameter(parameters, "lease_id")
         if (expectedLeaseId != null && expectedLeaseId != lease.leaseId) {
             return lifecycleCloseSkipped("lease_mismatch", "Lease id did not match the helper lifecycle claim.", HttpResponseStatus.FORBIDDEN)
+        }
+        if (pythonSdkPreparationsByProjectInstance.containsKey(expectedProjectInstanceId)) {
+            return lifecycleCloseSkipped(
+                "python_sdk_preparation_in_progress",
+                "Python SDK preparation is still active for the claimed project; leaving it open for a later cleanup retry.",
+                HttpResponseStatus.CONFLICT,
+                details = mapOf(
+                    "project_instance_id" to expectedProjectInstanceId,
+                    "project_key" to lease.projectKey,
+                    "lease_id" to lease.leaseId,
+                    "python_sdk_preparation_in_progress" to true,
+                ),
+            )
         }
         if (!leasesByProjectInstance.remove(expectedProjectInstanceId, lease)) {
             return lifecycleCloseSkipped("not_claimed", "No helper lifecycle claim exists for this project instance.")
@@ -4283,6 +4700,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "plugin_build_dirty" to null,
                 "plugin_build_time" to null,
                 "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
+                "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
@@ -4327,6 +4745,7 @@ class InspectionHandler : HttpRequestHandler() {
             "plugin_build_fingerprint" to identity["plugin_build_fingerprint"],
             "plugin_build_dirty" to identity["plugin_build_dirty"],
             "inspection_execution_proof_version" to identity["inspection_execution_proof_version"],
+            "python_sdk_preparation_version" to identity["python_sdk_preparation_version"],
         ).filterValues { value -> value != null }
     }
 

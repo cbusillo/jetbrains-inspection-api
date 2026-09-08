@@ -62,6 +62,7 @@ internal fun inspectionPluginVersion(): String? = pluginBuildInfo.version
 internal fun inspectionIdeChannel(isEap: Boolean): String = if (isEap) "eap" else "stable"
 
 internal const val INSPECTION_EXECUTION_PROOF_VERSION = 4
+internal const val PYTHON_SDK_PREPARATION_VERSION = 1
 
 internal fun buildInspectionIdentity(): Map<String, Any?> {
     val appInfo = ApplicationInfo.getInstance()
@@ -83,6 +84,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "plugin_build_dirty" to buildInfo.dirty,
         "plugin_build_time" to buildInfo.time,
         "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
+        "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
         "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
         "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
         "open_projects" to openProjectIdentities(),
