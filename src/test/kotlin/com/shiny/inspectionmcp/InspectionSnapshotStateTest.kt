@@ -3115,6 +3115,164 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Scoped proof findings settle bounded capture after the finding wait")
+    fun testScopedProofFindingsSettleBoundedCaptureAfterFindingWait() {
+        val firstProofFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/first.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "Unused first symbol",
+        )
+        val secondProofFinding = firstProofFinding + mapOf(
+            "file" to "/tmp/TestProject/src/second.js",
+            "description" to "Unused second symbol",
+        )
+        val observedResultEvidence = resultSettlingEvidence(
+            bestResults = emptyList(),
+            scopedProofFindings = listOf(firstProofFinding, secondProofFinding),
+        )
+
+        assertEquals(2, observedResultEvidence.count)
+        assertFalse(observedResultEvidence.isEmpty)
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 5000,
+                pollingElapsedMs = 14999,
+            ),
+        )
+        assertFalse(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 4999,
+                pollingElapsedMs = 15000,
+            ),
+        )
+        assertTrue(
+            shouldStopCapturePolling(
+                viewReadyOk = false,
+                observedInspectionView = false,
+                inspectionViewUpdating = false,
+                observedSettledEmptyInspectionView = false,
+                observedStableReadableEmptyInspectionView = false,
+                bestResultsCount = observedResultEvidence.count,
+                stableForMs = 5000,
+                pollingElapsedMs = 15000,
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Result settling evidence and final union deduplicate proof and tool-window findings")
+    fun testResultSettlingEvidencePreservesDistinctFindings() {
+        val sharedFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/shared.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "Shared finding",
+        )
+        val toolWindowOnlyFinding = sharedFinding + mapOf(
+            "file" to "/tmp/TestProject/src/tool-window.js",
+            "description" to "Tool window finding",
+        )
+        val proofOnlyFinding = sharedFinding + mapOf(
+            "file" to "/tmp/TestProject/src/proof.js",
+            "description" to "Proof finding",
+        )
+
+        assertEquals(
+            3,
+            resultSettlingEvidence(
+                bestResults = listOf(sharedFinding, toolWindowOnlyFinding),
+                scopedProofFindings = listOf(sharedFinding, proofOnlyFinding),
+            ).count,
+        )
+        assertEquals(
+            listOf(sharedFinding, toolWindowOnlyFinding, proofOnlyFinding),
+            appendDistinctProblems(
+                bestResults = listOf(sharedFinding, toolWindowOnlyFinding),
+                scopedProofFindings = listOf(sharedFinding, proofOnlyFinding, proofOnlyFinding),
+            ),
+        )
+    }
+
+    @Test
+    @DisplayName("Out-of-scope proof findings do not become capture evidence or permit clean confirmation")
+    fun testOutOfScopeProofFindingsDoNotCountAndScopedProofBlocksCleanConfirmation() {
+        val inScopeProofFinding = mapOf(
+            "severity" to "WARNING",
+            "inspectionType" to "UnusedSymbol",
+            "file" to "/tmp/TestProject/src/in-scope.js",
+            "line" to 1,
+            "column" to 1,
+            "description" to "In scope proof finding",
+        )
+        val outOfScopeProofFinding = inScopeProofFinding + mapOf(
+            "file" to "/tmp/OtherProject/out-of-scope.js",
+            "description" to "Out of scope proof finding",
+        )
+        val scopedProofFindings = filterProblemsForScope(
+            listOf(inScopeProofFinding, outOfScopeProofFinding),
+        ) { problem ->
+            (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
+        }
+        val outOfScopeOnlyEvidence = resultSettlingEvidence(
+            emptyList(),
+            filterProblemsForScope(listOf(outOfScopeProofFinding)) { problem ->
+                (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
+            },
+        )
+        val observedResultEvidence = resultSettlingEvidence(emptyList(), scopedProofFindings)
+
+        assertEquals(listOf(inScopeProofFinding), scopedProofFindings)
+        assertEquals(0, outOfScopeOnlyEvidence.count)
+        assertTrue(outOfScopeOnlyEvidence.isEmpty)
+        assertEquals(1, observedResultEvidence.count)
+        assertFalse(observedResultEvidence.isEmpty)
+        assertEquals(listOf(inScopeProofFinding), appendDistinctProblems(emptyList(), scopedProofFindings))
+        assertTrue(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = outOfScopeOnlyEvidence.isEmpty,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            ),
+        )
+        assertFalse(
+            shouldTrustStableScopedEmptyResults(
+                viewReadyOk = false,
+                hasExecutionProofCleanEvidence = true,
+                executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+                hasScopedMatcher = true,
+                scopedContextResultsEmpty = true,
+                bestResultsEmpty = observedResultEvidence.isEmpty,
+                observedNonEmptyInspectionTree = false,
+                stableForMs = 6000,
+                pollingElapsedMs = 30000,
+            ),
+        )
+    }
+
+    @Test
     @DisplayName("Capture polling does not stop on an empty inspection view until the view finishes updating")
     fun testShouldNotStopCapturePollingForUpdatingEmptyInspectionView() {
         assertFalse(

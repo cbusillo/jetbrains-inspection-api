@@ -1584,6 +1584,41 @@ internal fun shouldStopCapturePolling(
     return false
 }
 
+internal data class ResultSettlingEvidence(
+    val count: Int,
+) {
+    val isEmpty: Boolean
+        get() = count == 0
+}
+
+internal fun resultSettlingEvidence(
+    bestResults: List<Map<String, Any>>,
+    scopedProofFindings: List<Map<String, Any>>,
+): ResultSettlingEvidence {
+    val observedKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
+    scopedProofFindings.forEach { observedKeys += problemKey(it) }
+    return ResultSettlingEvidence(observedKeys.size)
+}
+
+internal fun appendDistinctProblems(
+    bestResults: List<Map<String, Any>>,
+    scopedProofFindings: List<Map<String, Any>>,
+): List<Map<String, Any>> {
+    val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
+    return bestResults + scopedProofFindings.filter { existingKeys.add(problemKey(it)) }
+}
+
+internal fun problemKey(map: Map<String, Any>): String {
+    return listOf(
+        map["severity"],
+        map["inspectionType"],
+        map["file"],
+        map["line"],
+        map["column"],
+        map["description"],
+    ).joinToString("|")
+}
+
 internal fun shouldTrustStableScopedEmptyResults(
     viewReadyOk: Boolean,
     hasExecutionProofCleanEvidence: Boolean = false,
@@ -6913,6 +6948,9 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> Unit
                             InspectionExecutionProofMode.NONE -> Unit
                         }
+                        // Exact proof has completed before result settling; retain its scoped snapshot separately from tool-window results.
+                        val settlingScopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
+                            .distinctBy(::problemKey)
                         val executionProofClean = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofClean == true
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProofCollector?.result()?.proofClean == true
@@ -6920,7 +6958,7 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
-                        var lastSize = bestResults.size
+                        var lastSize = resultSettlingEvidence(bestResults, settlingScopedProofFindings).count
                         var lastChangeMs = System.currentTimeMillis()
                         val observedInspectionView = false
                         val observedSettledEmptyInspectionView = false
@@ -6995,8 +7033,10 @@ class InspectionHandler : HttpRequestHandler() {
                                 bestSource = "tool_window"
                             }
 
-                            if (bestResults.size != lastSize) {
-                                lastSize = bestResults.size
+                            val observedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
+                            // Tool-window rediscovery of a proof-known finding does not postpone the settled union.
+                            if (observedResultEvidence.count != lastSize) {
+                                lastSize = observedResultEvidence.count
                                 lastChangeMs = loopNow
                             }
 
@@ -7024,7 +7064,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         lastToolExtractionSucceeded = lastToolExtractionSucceeded,
                                     ),
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
-                                    bestResultsEmpty = bestResults.isEmpty(),
+                                    bestResultsEmpty = observedResultEvidence.isEmpty,
                                     observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
@@ -7036,7 +7076,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 !observedModelCleanInspection &&
                                 executionProofClean &&
                                 modelExtractionClean &&
-                                bestResults.isEmpty() &&
+                                observedResultEvidence.isEmpty &&
                                 !effectiveObservedNonEmptyInspectionTree &&
                                 stableForMs >= 5000L &&
                                 pollingElapsedMs >= 30000L
@@ -7052,7 +7092,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                                     observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                                     observedModelCleanInspection = observedModelCleanInspection,
-                                    bestResultsCount = bestResults.size,
+                                    bestResultsCount = observedResultEvidence.count,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
                                 )
@@ -7071,6 +7111,7 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         val effectiveObservedNonEmptyInspectionTree = false
+                        val finalObservedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
                             shouldTrustStableScopedEmptyResults(
@@ -7092,7 +7133,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     lastToolExtractionSucceeded = lastToolExtractionSucceeded,
                                 ),
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
-                                bestResultsEmpty = bestResults.isEmpty(),
+                                bestResultsEmpty = finalObservedResultEvidence.isEmpty,
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                 stableForMs = System.currentTimeMillis() - lastChangeMs,
                                 pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
@@ -7106,7 +7147,7 @@ class InspectionHandler : HttpRequestHandler() {
                             !observedModelCleanInspection &&
                             executionProofClean &&
                             modelExtractionClean &&
-                            bestResults.isEmpty() &&
+                            finalObservedResultEvidence.isEmpty &&
                             !effectiveObservedNonEmptyInspectionTree &&
                             finalStableForMs >= 5000L &&
                             finalPollingElapsedMs >= 30000L
@@ -7114,18 +7155,12 @@ class InspectionHandler : HttpRequestHandler() {
                             observedModelCleanInspection = true
                         }
 
-                        // Fix 3: After polling completes, scope-filter proof findings and union/dedupe into bestResults
-                        var scopedProofFindingCount = 0
-                        if (proofFindings.isNotEmpty()) {
-                            val scopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
-                            if (scopedProofFindings.isNotEmpty()) {
-                                scopedProofFindingCount = scopedProofFindings.size
-                                val existingKeys = bestResults.mapTo(linkedSetOf()) { problemKey(it) }
-                                val newProofProblems = scopedProofFindings.filter { problemKey(it) !in existingKeys }
-                                if (newProofProblems.isNotEmpty()) {
-                                    bestResults = bestResults + newProofProblems
-                                    if (bestSource == "inspection_view") bestSource = "global_context"
-                                }
+                        val scopedProofFindingCount = settlingScopedProofFindings.size
+                        if (settlingScopedProofFindings.isNotEmpty()) {
+                            val mergedResults = appendDistinctProblems(bestResults, settlingScopedProofFindings)
+                            if (mergedResults.size > bestResults.size) {
+                                bestResults = mergedResults
+                                if (bestSource == "inspection_view") bestSource = "global_context"
                             }
                         }
                         val captureTimeoutDiagnostic = if (captureExitReason == "deadline") {
@@ -9408,17 +9443,6 @@ class InspectionHandler : HttpRequestHandler() {
             problemDescriptorCount = base.problemDescriptorCount + fallbackDescriptorCount,
             targetToolStates = targetStates.values.map { it.toMap() },
         )
-    }
-
-    private fun problemKey(map: Map<String, Any>): String {
-        return listOf(
-            map["severity"],
-            map["inspectionType"],
-            map["file"],
-            map["line"],
-            map["column"],
-            map["description"],
-        ).joinToString("|")
     }
 
     private fun markInspectionEngineSkippedOnEdt(
