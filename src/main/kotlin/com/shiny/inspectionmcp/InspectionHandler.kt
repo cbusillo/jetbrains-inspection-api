@@ -4434,7 +4434,7 @@ class InspectionHandler : HttpRequestHandler() {
             project = resolved.project,
             source = InspectionRunFailureSource.CANCELLATION,
         )
-        val response = mutableMapOf<String, Any>(
+        val response = mutableMapOf(
             "status" to "cancel_requested",
             "inspection_in_progress" to true,
             "inspection_cancellation_requested" to true,
@@ -6412,7 +6412,7 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Throwable) {
             if (!taskStarted.get()) {
                 runCatching { control.indicator.cancel() }
-                val outcome = if (error is com.intellij.openapi.progress.ProcessCanceledException) {
+                val outcome = if (error is ProcessCanceledException) {
                     InspectionRunTerminalOutcome.CANCELLED
                 } else {
                     InspectionRunTerminalOutcome.FAILED
@@ -7655,7 +7655,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun inspectionFailureDiagnosticMap(diagnostic: InspectionRunFailureDiagnostic): Map<String, Any> {
-        val fields = mutableMapOf<String, Any>(
+        val fields = mutableMapOf(
             "source" to diagnostic.source.apiValue,
             "outcome" to diagnostic.outcome.apiValue,
             "inspection_stage_elapsed_ms" to diagnostic.stageElapsedMs,
