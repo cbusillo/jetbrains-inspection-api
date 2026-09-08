@@ -428,6 +428,8 @@ For stale responses, the same scope filters are applied before cached counts and
 optional cached findings are returned. A scoped `include_stale=true` response is
 still `UNKNOWN`/`stale_results`; it is diagnostic data, not current proof.
 
+Generic inspection descriptors use the selected profile severity for the affected element, including `info` and `weak_warning`. Explicit descriptor severities retain their severity floor; unavailable profile data falls back to the descriptor severity. Profiles using `DO_NOT_SHOW` normalize to `info`; unrecognized profile severity names retain the descriptor fallback. Profile lookup uses the descriptor PSI element; host-file scope overrides for injected code have not been validated.
+
 Invalid `limit`, `offset`, `severity`, boolean, `changed_files_mode`, or pattern
 values return HTTP 400 with `error`, `parameter`, and `message` fields. Explicit
 `files`, `directory`, `current_file`, and `changed_files` scopes are resolved
