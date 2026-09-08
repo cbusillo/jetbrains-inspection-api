@@ -9723,9 +9723,8 @@ class InspectionHandler : HttpRequestHandler() {
                 line = location.line
                 column = location.column
             }
-            severity = severityFromHighlightType(descriptor.highlightType)
             val displayKey = HighlightDisplayKey.find(inspectionType)
-            severity = liftSeverityWithProfile(severity, selectedProfile, displayKey, psiElement)
+            severity = resolveProblemSeverity(descriptor.highlightType, selectedProfile, displayKey, psiElement)
         }
 
         val typeLower = inspectionType.lowercase()

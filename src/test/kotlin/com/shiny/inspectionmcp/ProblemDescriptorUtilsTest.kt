@@ -6,10 +6,13 @@ import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.openapi.util.TextRange
+import com.intellij.openapi.progress.ProcessCanceledException
+import java.util.concurrent.CancellationException
 import com.intellij.psi.PsiElement
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 
@@ -121,16 +124,17 @@ class ProblemDescriptorUtilsTest {
 
     @Test
     @DisplayName("Profile severity can raise a warning descriptor to error")
-    fun liftSeverityWithProfileRaisesWarningToError() {
+    fun resolveProblemSeverityRaisesWarningToError() {
         val profile = mockk<InspectionProfile>()
         val displayKey = mockk<HighlightDisplayKey>()
         val element = mockk<PsiElement>()
+        every { element.isValid } returns true
         every { profile.getErrorLevel(displayKey, element) } returns HighlightDisplayLevel.ERROR
 
         assertEquals(
             "error",
-            liftSeverityWithProfile(
-                baseSeverity = severityFromHighlightType(ProblemHighlightType.WARNING),
+            resolveProblemSeverity(
+                highlightType = ProblemHighlightType.WARNING,
                 selectedProfile = profile,
                 displayKey = displayKey,
                 psiElement = element,
@@ -140,16 +144,17 @@ class ProblemDescriptorUtilsTest {
 
     @Test
     @DisplayName("Profile severity does not lower a descriptor-derived error")
-    fun liftSeverityWithProfileDoesNotLowerErrorSeverity() {
+    fun resolveProblemSeverityDoesNotLowerErrorSeverity() {
         val profile = mockk<InspectionProfile>()
         val displayKey = mockk<HighlightDisplayKey>()
         val element = mockk<PsiElement>()
+        every { element.isValid } returns true
         every { profile.getErrorLevel(displayKey, element) } returns HighlightDisplayLevel.WARNING
 
         assertEquals(
             "error",
-            liftSeverityWithProfile(
-                baseSeverity = severityFromHighlightType(ProblemHighlightType.ERROR),
+            resolveProblemSeverity(
+                highlightType = ProblemHighlightType.ERROR,
                 selectedProfile = profile,
                 displayKey = displayKey,
                 psiElement = element,
@@ -168,16 +173,17 @@ class ProblemDescriptorUtilsTest {
 
     @Test
     @DisplayName("Missing profile data falls back to the highlight-type severity")
-    fun liftSeverityWithProfileFallsBackSafely() {
+    fun resolveProblemSeverityFallsBackSafely() {
         val profile = mockk<InspectionProfile>()
         val displayKey = mockk<HighlightDisplayKey>()
         val element = mockk<PsiElement>()
+        every { element.isValid } returns true
         every { profile.getErrorLevel(displayKey, element) } throws IllegalStateException("missing")
 
         assertEquals(
             "warning",
-            liftSeverityWithProfile(
-                baseSeverity = severityFromHighlightType(ProblemHighlightType.GENERIC_ERROR_OR_WARNING),
+            resolveProblemSeverity(
+                highlightType = ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
                 selectedProfile = profile,
                 displayKey = displayKey,
                 psiElement = element,
@@ -185,13 +191,88 @@ class ProblemDescriptorUtilsTest {
         )
         assertEquals(
             "warning",
-            liftSeverityWithProfile(
-                baseSeverity = severityFromHighlightType(ProblemHighlightType.GENERIC_ERROR_OR_WARNING),
+            resolveProblemSeverity(
+                highlightType = ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
                 selectedProfile = null,
                 displayKey = displayKey,
                 psiElement = element,
             ),
         )
+    }
+
+    @Test
+    fun genericDescriptorsUseSelectedProfileSeverity() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { element.isValid } returns true
+        val levels = listOf(
+            requireNotNull(HighlightDisplayLevel.find("INFORMATION")) to "info",
+            HighlightDisplayLevel.WEAK_WARNING to "weak_warning",
+            HighlightDisplayLevel.WARNING to "warning",
+            HighlightDisplayLevel.ERROR to "error",
+            HighlightDisplayLevel.DO_NOT_SHOW to "info",
+            HighlightDisplayLevel.CONSIDERATION_ATTRIBUTES to "warning",
+        )
+        for ((level, expected) in levels) {
+            every { profile.getErrorLevel(displayKey, element) } returns level
+            assertEquals(expected, resolveProblemSeverity(
+                ProblemHighlightType.GENERIC_ERROR_OR_WARNING, profile, displayKey, element,
+            ))
+        }
+    }
+
+    @Test
+    fun unknownProfileSeverityKeepsGenericFallback() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        val level = mockk<HighlightDisplayLevel>()
+        every { element.isValid } returns true
+        every { level.severity.name } returns "CUSTOM_LEVEL"
+        every { profile.getErrorLevel(displayKey, element) } returns level
+        assertEquals("warning", resolveProblemSeverity(
+            ProblemHighlightType.GENERIC_ERROR_OR_WARNING, profile, displayKey, element,
+        ))
+    }
+
+    @Test
+    fun explicitDescriptorsKeepTheirSeverityFloor() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { element.isValid } returns true
+        every { profile.getErrorLevel(displayKey, element) } returns requireNotNull(HighlightDisplayLevel.find("INFORMATION"))
+        for (type in listOf(ProblemHighlightType.ERROR, ProblemHighlightType.GENERIC_ERROR)) {
+            assertEquals("error", resolveProblemSeverity(type, profile, displayKey, element))
+        }
+        assertEquals("warning", resolveProblemSeverity(ProblemHighlightType.WARNING, profile, displayKey, element))
+    }
+
+    @Test
+    fun unavailableProfileContextKeepsGenericFallback() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { element.isValid } returns false
+        val type = ProblemHighlightType.GENERIC_ERROR_OR_WARNING
+        assertEquals("warning", resolveProblemSeverity(type, profile, null, element))
+        assertEquals("warning", resolveProblemSeverity(type, profile, displayKey, null))
+        assertEquals("warning", resolveProblemSeverity(type, profile, displayKey, element))
+    }
+
+    @Test
+    fun profileLookupPreservesCancellation() {
+        val profile = mockk<InspectionProfile>()
+        val displayKey = mockk<HighlightDisplayKey>()
+        val element = mockk<PsiElement>()
+        every { element.isValid } returns true
+        for (error in listOf(ProcessCanceledException(), CancellationException())) {
+            every { profile.getErrorLevel(displayKey, element) } throws error
+            assertThrows(error.javaClass) {
+                resolveProblemSeverity(ProblemHighlightType.GENERIC_ERROR_OR_WARNING, profile, displayKey, element)
+            }
+        }
     }
 
     private fun mockProblemDescriptor(
