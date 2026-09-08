@@ -224,7 +224,7 @@ Notes:
 - `GREEN` and `RED` cover run-attributed classic inspection-profile results and enabled local inspection tools that the IDE exposes for batch execution. They do not include every editor or Problems-view diagnostic source. LSP-backed or daemon-only diagnostics, such as PyCharm Ruff diagnostics, may appear in the editor or Problems view without being part of the API verdict unless the IDE also exposes those checks as batch-capable inspections.
 - On the tested IntelliJ Platform, a local inspection whose `buildVisitor` throws causes `InspectionEngine.inspectEx` to propagate the exception instead of returning an empty clean result. This is a platform-return guarantee, not a claim that the plugin can independently detect a future platform version that suppresses the failure without exposing a supported failure signal. Separately, broad native execution that aborts remains unproven even after partial completion events.
 - `status: "capture_incomplete"` means an inspection finished, but the plugin could not conclusively capture the IDE results. Re-run the inspection or open the Problems/Inspection Results view before treating the project as clean. `capture_incomplete_reason` is a stable machine-readable bucket: `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `extractor_failure`, `non_empty_unmapped_tree`, `scope_not_covered`, `current_run_psi_churn`, `inspection_inputs_changed`, `language_sdk_missing`, `project_analysis_not_ready`, `timeout`, `profile_resolution_error`, `inspection_trigger_empty_model`, `helper_plugin_error`, `execution_not_proven`, or `unknown`. Use `capture_diagnostic` only when debugging capture or extractor behavior; normal agent workflows should use the external helper's compact `agent_result` envelope.
-- For a selected Python scope with a real executable at the project-root `.venv`, that interpreter must be the effective SDK for every selected Python file before inspection starts; a system or other unrelated Python SDK does not satisfy readiness. SDK identity preserves the normalized project-root interpreter path, so resolving a `.venv/bin/python` symlink to its global target does not make that target a worktree-local SDK. The plugin gives PyCharm an initial ten-second SDK-readiness observation window before stable input fingerprinting. Registration, scope resolution, and module/project assignment are captured in one IDE read observation, and each forward transition can extend the observation-start deadline to at most thirty seconds from settle start. No new observation starts at or after that deadline; an IDE read that began earlier may finish afterward, but a late result is discarded and remains fail-closed. Once settling is needed, readiness requires two consecutive ready observations. A missing or invalid local interpreter fails immediately, a valid candidate that never registers remains terminal `language_sdk_missing`, and a registered SDK whose assignment is still propagating remains `project_analysis_not_ready`. Debug payloads expose per-file local assignment, mismatched SDKs, registration, deadline-extension, and `python_sdk_settle_*` evidence; the plugin never writes JetBrains' global SDK table.
+- For a selected Python scope with a real executable at the project-root `.venv`, that interpreter must be the effective SDK for every selected Python file before inspection starts; a system or other unrelated Python SDK does not satisfy readiness. SDK identity preserves the normalized project-root interpreter path, so resolving a `.venv/bin/python` symlink to its global target does not make that target a worktree-local SDK. The plugin gives PyCharm an initial ten-second SDK-readiness observation window before stable input fingerprinting. Registration, scope resolution, and module/project assignment are captured in one IDE read observation, and each forward transition can extend the observation-start deadline to at most thirty seconds from settle start. No new observation starts at or after that deadline; an IDE read that began earlier may finish afterward, but a late result is discarded and remains fail-closed. Once settling is needed, readiness requires two consecutive ready observations. A missing or invalid local interpreter fails immediately, a valid candidate that never registers remains terminal `language_sdk_missing`, and a registered SDK whose assignment is still propagating remains `project_analysis_not_ready`. Debug payloads expose per-file local assignment, mismatched SDKs, registration, deadline-extension, and `python_sdk_settle_*` evidence. Inspection, status, and readiness endpoints do not write JetBrains' global SDK table. The explicit lease-bound Python SDK preparation endpoint described below is the only API path that can register and assign an SDK.
 - For `current_file`, `files`, and `changed_files` scopes, the plugin first converts globally enabled local tools into exact tool/file obligations. Profile-disabled and positively language-inapplicable tools are excluded; applicable batch-runnable tools execute in parallel by exact file through the supported `InspectionEngine.inspectEx` API with isolated copied wrappers and one shared 25-file/60-second deadline. Every copied wrapper is cleaned up after execution, and all workers finish or cancel before proof returns. The native API omits clean tools from its sparse descriptor map, so clean proof comes from explicit submitted/executed obligation accounting rather than an empty map alone and does not require an Inspection Results or Problems tool window to have been created in the current IDE session. A presentation model that is unreadable or reports unmapped descriptors remains fail-closed because it may hide diagnostics outside the exact bounded denominator. If JetBrains returns no batch wrapper for an `isUnfair` tool that is not a `PairedUnfairLocalInspectionTool`, the plugin records that exact tool/file obligation as intentionally non-batch-capable and excludes it from the batch denominator. It is never counted as executed or as clean evidence. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unreadable metadata remain fail-closed. GREEN still requires at least one real batch execution in the scope and at least one real batch execution for every requested file with an applicable obligation; a file containing only excluded applicable tools remains `UNKNOWN`/`execution_not_proven`, while a file with no applicable tools does not create a false blocker. Current mapped findings remain decisive `RED` even when clean proof is incomplete. Exact scopes report `execution_proof_mode: "exact_bounded"` with candidate/applicable/executed scope-file counts, runnable/executed/non-batch obligation counts, and bounded blocking, non-batch, and non-applicable examples.
 - For `whole_project` and `directory`, GREEN requires native-run attestation from the request's `GlobalInspectionContext` plus a run-bounded subscription to the JetBrains inspection event topic. The synchronous run must traverse at least one physical scope file, complete at least one applicable local or global-simple file inspection, return normally, report no inspection failures or unmapped problem counts, and survive the existing run/session/scope/profile/input freshness checks. Global-only completion or lifecycle activity without file traversal is not proof. A settled empty Problems/Inspection Results presentation remains insufficient by itself. Real findings remain RED; missing, aborted, failed, zero-file, or zero-file-scoped-tool attestation remains `UNKNOWN`/`execution_not_proven`. Broad-scope diagnostics use `execution_proof_mode: "native_attested"` plus native completion, file, local/global-simple/global tool, activity, problem, and failure counts; targeted bounded scopes use the exact obligation counts described above.
 - Response filters may hide findings, but they cannot hide missing proof: if severity, type, path, or pagination filtering reduces an unproven snapshot to zero current findings, the verdict remains `UNKNOWN`/`execution_not_proven`, not `GREEN`/`no_matching_findings`. An exactly empty `changed_files` scope is the intentional exception because there are no files to inspect.
@@ -293,7 +293,9 @@ Identity responses and registry instance files share the same schema:
 `session_id`, `started_at_ms`, `heartbeat_ms`, `pid`, `port`, `ide_name`,
 `ide_version`, `ide_product_code`, `ide_channel`, `plugin_version`,
 `plugin_build_fingerprint`, `plugin_build_commit`, `plugin_build_short_commit`,
-`plugin_build_dirty`, `plugin_build_time`, and `open_projects`. `ide_channel` is
+`plugin_build_dirty`, `plugin_build_time`, `python_sdk_preparation_version`, and
+`open_projects`. `python_sdk_preparation_version: 1` advertises support for the
+explicit lease-bound endpoint below. `ide_channel` is
 `stable` or `eap`. The build fingerprint uses the full source commit plus its
 clean/dirty state so same-version local or unreleased plugin builds remain
 distinguishable when diagnosing stale running IDE processes. Repeated route
@@ -371,6 +373,33 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   retaining lease-bound close authority for cleanup. Readiness that appears too
   close to the guard deadline remains fail-closed as
   `project_configuration_unstable` until cleanup.
+- `POST /api/inspection/lifecycle/prepare-python-sdk`: explicitly prepares the
+  Python SDK for a helper-opened and claimed project. It requires the exact
+  `project_key`, `project_instance_id`, `session_id`, `lease_id`, and
+  `close_token` returned by lifecycle routing and claim. The endpoint accepts no
+  request body or interpreter path. It derives `.venv/bin/python` (or
+  `.venv/Scripts/python.exe` on Windows) from the claimed project root, requires
+  `pyvenv.cfg`, an executable interpreter, a trusted project, and a stable set
+  of real `PYTHON_MODULE` modules. It refuses a different valid project or
+  module SDK before any registration and rechecks ownership, model identity,
+  conflicts, and duplicate SDKs at the final write boundary. An inspection
+  already in progress returns HTTP 409 without cancellation, and a run that
+  starts during setup prevents the final registration and assignment. SDK path setup
+  runs on a cancellable background worker; the bounded response deadline is 60
+  seconds. Successful responses use `status: "prepared"`,
+  `sdk_preparation_version: 1`, and `operation: "created"`, `"reused"`, or
+  `"already_assigned"`, with registration and assignment readback counts.
+  A successful version 1 response has one unique registered and assigned local
+  SDK, `project_sdk_assigned: true`, and an
+  `assigned_python_module_count` equal to `python_module_count`.
+  Preparation evidence does not imply an inspection verdict; clients must run
+  and assess an independent inspection. The generic local SDK has no claimed
+  uv-association metadata. Failures use a
+  `python_sdk_preparation_*` reason and remain fail-closed. The 60-second limit
+  bounds the HTTP response and requests cancellation. If platform SDK setup
+  does not honor cancellation promptly, the worker remains marked active and
+  lifecycle close remains blocked until that worker exits, preventing a late
+  SDK write against a closed project.
 - `GET /api/inspection/lifecycle/close`: requires `project_key`,
   `project_instance_id`, `session_id`, and `close_token`, and accepts the
   original `lease_id` for an additional binding check. It closes the project
@@ -378,7 +407,9 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   Token or supplied lease mismatch, session drift, or route ambiguity returns a
   skipped/error response and leaves the project open. Close work runs off the
   built-in HTTP server event loop so a slow IDE close cannot block identity,
-  route, or status requests from other agents.
+  route, or status requests from other agents. An active Python SDK preparation
+  also returns HTTP 409 with `python_sdk_preparation_in_progress: true`; the
+  claim remains available for a later cleanup retry after the worker exits.
 - `GET /api/inspection/cancel`: accepts the normal route selectors plus the
   required `inspection_run_id` and requests cancellation only when that exact
   run is still active for the project. It returns `cancel_requested`,
