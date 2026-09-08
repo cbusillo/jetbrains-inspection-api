@@ -357,6 +357,14 @@ class InspectionHandlerTest {
         assertEquals(false, status["capture_incomplete"])
         assertEquals(false, status["results_may_be_stale"])
         assertEquals(0, status["total_problems"])
+        assertEquals("publish", status["inspection_stage"])
+        assertEquals("completed", status["inspection_terminal_outcome"])
+        @Suppress("UNCHECKED_CAST")
+        val stageHistory = status["inspection_stage_history"] as List<Map<String, Any>>
+        assertEquals(
+            listOf("sync", "smart_wait", "python_sdk_readiness"),
+            stageHistory.map { it["stage"] },
+        )
     }
 
     @Test
@@ -3263,11 +3271,24 @@ class InspectionHandlerTest {
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         val key = projectKey(mockProject)
         val indicator = mockk<ProgressIndicator>(relaxed = true)
+        val worker = Thread.currentThread()
+        handler.inspectionRunNowNanos = { 5_000_000_000L }
+        handler.inspectionWorkerStackProvider = { listOf("inspection-worker-frame") }
         setInspectionRunState(
             key,
-            InspectionRunState(runId = 7L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.NATIVE_EXECUTE,
+                stageStartedNanos = 3_000_000_000L,
+            ),
         )
-        setInspectionRunControl(key, InspectionRunControl(runId = 7L, indicator = indicator))
+        setInspectionRunControl(
+            key,
+            InspectionRunControl(runId = 7L, indicator = indicator).also { it.workerThread.set(worker) },
+        )
 
         val response = processGetRequest(
             "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
@@ -3277,6 +3298,227 @@ class InspectionHandlerTest {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"cancel_requested\""))
         assertTrue(body.contains("\"inspection_run_id\": 7"))
+        assertTrue(body.contains("\"source\": \"cancellation\""))
+        assertTrue(body.contains("\"inspection_stage_at_failure\": \"native_execute\""))
+        assertTrue(body.contains("\"inspection_stage_elapsed_ms\": 2000"))
+        assertTrue(body.contains("\"inspection_run_elapsed_ms\": 4000"))
+        assertTrue(body.contains("\"inspection_worker_stack\": [\"inspection-worker-frame\"]"))
+        verify(exactly = 1) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test inspection stage timing uses the monotonic clock`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        val nowNanos = AtomicLong(2_000_000_000L)
+        handler.inspectionRunNowNanos = nowNanos::get
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 11L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.SYNC,
+                stageStartedNanos = 1_500_000_000L,
+            ),
+        )
+
+        val syncStatus = buildInspectionStatus()
+        nowNanos.set(3_000_000_000L)
+        transitionInspectionRunStage(key, 11L, InspectionRunStage.SMART_WAIT)
+        val smartWaitStatus = buildInspectionStatus()
+
+        assertEquals("sync", syncStatus["inspection_stage"])
+        assertEquals(500L, syncStatus["inspection_stage_elapsed_ms"])
+        assertEquals(1000L, syncStatus["inspection_run_elapsed_ms"])
+        assertEquals("smart_wait", smartWaitStatus["inspection_stage"])
+        assertEquals(0L, smartWaitStatus["inspection_stage_elapsed_ms"])
+        assertEquals(2000L, smartWaitStatus["inspection_run_elapsed_ms"])
+        @Suppress("UNCHECKED_CAST")
+        val history = smartWaitStatus["inspection_stage_history"] as List<Map<String, Any>>
+        assertEquals(listOf(mapOf("stage" to "sync", "elapsed_ms" to 1500L)), history)
+
+        repeat(12) { index ->
+            nowNanos.addAndGet(1_000_000L)
+            val nextStage = InspectionRunStage.entries[(index + 2) % InspectionRunStage.entries.size]
+            transitionInspectionRunStage(key, 11L, nextStage)
+        }
+        assertEquals(8, requireNotNull(inspectionRunState(key)).stageHistory.size)
+    }
+
+    @Test
+    fun `test stale run cannot replace current stage or terminal state`() {
+        val key = projectKey(mockProject)
+        handler.inspectionRunNowNanos = { 4_000_000_000L }
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 22L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.SMART_WAIT,
+                stageStartedNanos = 2_000_000_000L,
+            ),
+        )
+
+        transitionInspectionRunStage(key, 21L, InspectionRunStage.NATIVE_EXECUTE)
+        recordInspectionRunFailureDiagnostic(key, 21L, InspectionRunFailureSource.WAIT_TIMEOUT)
+        finishInspectionRun(key, 21L)
+
+        val state = requireNotNull(inspectionRunState(key))
+        assertEquals(22L, state.runId)
+        assertEquals(true, state.inProgress)
+        assertEquals(InspectionRunStage.SMART_WAIT, state.stage)
+        assertNull(state.terminalOutcome)
+    }
+
+    @Test
+    fun `test terminal timing freezes and rejects a late stage update`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        val nowNanos = AtomicLong(4_000_000_000L)
+        handler.inspectionRunNowNanos = nowNanos::get
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 22L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.SMART_WAIT,
+                stageStartedNanos = 2_000_000_000L,
+            ),
+        )
+
+        finishInspectionRun(key, 22L)
+        nowNanos.set(9_000_000_000L)
+        transitionInspectionRunStage(key, 22L, InspectionRunStage.NATIVE_EXECUTE)
+        val status = buildInspectionStatus()
+
+        assertEquals("smart_wait", status["inspection_stage"])
+        assertEquals(2000L, status["inspection_stage_elapsed_ms"])
+        assertEquals(3000L, status["inspection_run_elapsed_ms"])
+        assertEquals("completed", status["inspection_terminal_outcome"])
+    }
+
+    @Test
+    fun `test worker stack capture failure does not block cancellation`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        handler.inspectionRunNowNanos = { 2_000_000_000L }
+        handler.inspectionWorkerStackProvider = { error("stack unavailable") }
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.SMART_WAIT,
+                stageStartedNanos = 1_500_000_000L,
+            ),
+        )
+        setInspectionRunControl(
+            key,
+            InspectionRunControl(runId = 7L, indicator = indicator).also {
+                it.workerThread.set(Thread.currentThread())
+            },
+        )
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertTrue(body.contains("\"status\": \"cancel_requested\""))
+        assertTrue(body.contains("\"inspection_stage_at_failure\": \"smart_wait\""))
+        assertTrue(body.contains("\"inspection_worker_stack\": []"))
+        verify(exactly = 1) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test cancellation preserves the earlier timeout location`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val indicator = mockk<ProgressIndicator>(relaxed = true)
+        val timeoutDiagnostic = InspectionRunFailureDiagnostic(
+            source = InspectionRunFailureSource.WAIT_TIMEOUT,
+            stageAtFailure = InspectionRunStage.NATIVE_EXECUTE,
+            stageElapsedMs = 118_000L,
+            runElapsedMs = 120_000L,
+            dumbMode = false,
+            workerThreadName = "inspection-worker",
+            workerStack = listOf("blocked-native-frame"),
+        )
+        val nowNanos = AtomicLong(123_000_000_000L)
+        handler.inspectionRunNowNanos = nowNanos::get
+        handler.inspectionWorkerStackProvider = { listOf("cancel-frame") }
+        setInspectionRunState(
+            key,
+            InspectionRunState(
+                runId = 7L,
+                triggerTimeMs = System.currentTimeMillis(),
+                inProgress = true,
+                runStartedNanos = 1_000_000_000L,
+                stage = InspectionRunStage.NATIVE_EXECUTE,
+                stageStartedNanos = 3_000_000_000L,
+                failureDiagnostics = listOf(timeoutDiagnostic),
+            ),
+        )
+        transitionInspectionRunStage(key, 7L, InspectionRunStage.RESULT_SETTLING)
+        setInspectionRunControl(
+            key,
+            InspectionRunControl(runId = 7L, indicator = indicator).also {
+                it.workerThread.set(Thread.currentThread())
+            },
+        )
+        nowNanos.set(124_000_000_000L)
+        recordInspectionRunFailureDiagnostic(
+            key,
+            7L,
+            InspectionRunFailureSource.CAPTURE_DEADLINE,
+        )
+        nowNanos.set(125_000_000_000L)
+
+        val response = processGetRequest(
+            "/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=7",
+        )
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        finishInspectionRun(key, 7L)
+        val terminalState = requireNotNull(inspectionRunState(key))
+        val diagnostics = terminalState.failureDiagnostics
+        assertEquals(
+            listOf(
+                InspectionRunFailureOutcome.TIMEOUT,
+                InspectionRunFailureOutcome.TIMEOUT,
+                InspectionRunFailureOutcome.CANCELLED,
+            ),
+            diagnostics.map { it.outcome },
+        )
+        assertEquals(
+            listOf(
+                InspectionRunFailureSource.WAIT_TIMEOUT,
+                InspectionRunFailureSource.CAPTURE_DEADLINE,
+                InspectionRunFailureSource.CANCELLATION,
+            ),
+            diagnostics.map { it.source },
+        )
+        assertEquals("blocked-native-frame", diagnostics.first().workerStack.single())
+        assertEquals("cancel-frame", diagnostics[1].workerStack.single())
+        assertEquals("cancel-frame", diagnostics.last().workerStack.single())
+        assertEquals(false, terminalState.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.CANCELLED, terminalState.terminalOutcome)
         verify(exactly = 1) { indicator.cancel() }
     }
 
@@ -3385,6 +3627,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
         assertEquals(false, state?.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
     }
 
     @Test
@@ -3399,6 +3642,32 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
         assertEquals(false, state?.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
+    }
+
+    @Test
+    fun `test native inspection setup failure records failed terminal outcome`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectContentTrackerFactory = { _, _ -> FakeInspectionProjectContentTracker() }
+        every { InspectionManager.getInstance(mockProject) } throws IllegalStateException("native setup failed")
+
+        val response = processTriggerRequest("/api/inspection/trigger?scope=whole_project")
+        val state = inspectionRunState(projectKey(mockProject))
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(false, state?.inProgress)
+        assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
+        assertEquals(InspectionRunStage.NATIVE_CONFIGURE, state?.stage)
     }
 
     @Test
@@ -3415,6 +3684,22 @@ class InspectionHandlerTest {
         assertEquals("helper_plugin_error", diagnostic["exit_reason"])
         assertEquals(IllegalStateException::class.java.name, diagnostic["exception_type"])
         assertEquals("capture exploded", diagnostic["exception_message"])
+    }
+
+    @Test
+    fun `test capture failure merge preserves nullable finding diagnostics`() {
+        val findingDiagnostic = mapOf<String, Any?>("execution_proof_established" to true)
+        val failureDiagnostic = mapOf<String, Any>(
+            "source" to "capture_deadline",
+            "outcome" to "timeout",
+        )
+
+        assertNull(mergeCaptureFailureDiagnostic(null, null))
+        assertEquals(findingDiagnostic, mergeCaptureFailureDiagnostic(findingDiagnostic, null))
+        assertEquals(
+            findingDiagnostic + mapOf("inspection_failure_diagnostic" to failureDiagnostic),
+            mergeCaptureFailureDiagnostic(findingDiagnostic, failureDiagnostic),
+        )
     }
 
     @Test
@@ -8355,6 +8640,43 @@ class InspectionHandlerTest {
         @Suppress("UNCHECKED_CAST")
         val states = field.get(handler) as Map<String, InspectionRunState>
         return states[projectKey]
+    }
+
+    private fun transitionInspectionRunStage(projectKey: String, runId: Long, stage: InspectionRunStage) {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "transitionInspectionRunStage",
+            String::class.java,
+            Long::class.javaPrimitiveType,
+            InspectionRunStage::class.java,
+        )
+        method.isAccessible = true
+        method.invoke(handler, projectKey, runId, stage)
+    }
+
+    private fun finishInspectionRun(projectKey: String, runId: Long) {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "finishInspectionRun",
+            String::class.java,
+            Long::class.javaPrimitiveType,
+        )
+        method.isAccessible = true
+        method.invoke(handler, projectKey, runId)
+    }
+
+    private fun recordInspectionRunFailureDiagnostic(
+        projectKey: String,
+        runId: Long,
+        source: InspectionRunFailureSource,
+    ): InspectionRunFailureDiagnostic? {
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "recordInspectionRunFailureDiagnostic",
+            String::class.java,
+            Long::class.javaPrimitiveType,
+            Project::class.java,
+            InspectionRunFailureSource::class.java,
+        )
+        method.isAccessible = true
+        return method.invoke(handler, projectKey, runId, mockProject, source) as InspectionRunFailureDiagnostic?
     }
 
     private fun setInspectionRunControl(projectKey: String, control: InspectionRunControl) {
