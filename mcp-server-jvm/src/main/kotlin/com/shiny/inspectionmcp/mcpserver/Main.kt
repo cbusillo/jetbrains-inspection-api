@@ -37,6 +37,15 @@ private const val DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 private const val DEFAULT_WAIT_TIMEOUT_MS = 180_000
 private const val MIN_WAIT_TIMEOUT_MS = 1_000
 private const val MAX_WAIT_TIMEOUT_MS = 300_000
+private val INSPECTION_AGENT_EVIDENCE_KEYS = listOf(
+    "inspection_stage",
+    "inspection_stage_elapsed_ms",
+    "inspection_run_elapsed_ms",
+    "inspection_stage_history",
+    "inspection_terminal_outcome",
+    "inspection_failure_diagnostic",
+    "inspection_failure_history",
+)
 
 private val json = Json {
     ignoreUnknownKeys = true
@@ -228,7 +237,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. Follow-ups pin the accepted inspection_run_id, and omitted scope arguments reuse the triggered scope and its defining parameters. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. Follow-ups pin the accepted inspection_run_id, and omitted scope arguments reuse the triggered scope and its defining parameters. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -256,7 +265,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. Preferred after inspection_trigger; call inspection_get_problems after results or clean. In auto mode, pass project_path or project_key when available. capture_incomplete means do not treat as clean; retry once, preferably with a narrower scope."
+                            "Block until inspection completes or timeout. Preferred after inspection_trigger; call inspection_get_problems after results or clean. In auto mode, pass project_path or project_key when available. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -1021,6 +1030,12 @@ internal class ToolExecutor(
         val verdict = blockerVerdict(obj)?.verdict
             ?: obj["inspection_verdict"]?.jsonPrimitive?.contentOrNull
         val keep = obj.toMutableMap()
+        val captureDiagnostic = captureDiagnosticForCurrentRun(obj)
+        INSPECTION_AGENT_EVIDENCE_KEYS.forEach { key ->
+            if (keep[key] == null) {
+                captureDiagnostic?.get(key)?.let { keep[key] = it }
+            }
+        }
         keep.remove("capture_diagnostic")
         val includeStale = obj["include_stale"]?.jsonPrimitive?.booleanOrNull == true
         if (verdict == "UNKNOWN" && !includeStale) {
@@ -1034,6 +1049,59 @@ internal class ToolExecutor(
             keep.remove("inspection_verdict_next_action")
         }
         return JsonObject(keep)
+    }
+
+    private fun captureDiagnosticForCurrentRun(obj: JsonObject): JsonObject? {
+        val captureDiagnostic = obj["capture_diagnostic"] as? JsonObject ?: return null
+        val inspectionRunId = obj["inspection_run_id"]?.jsonPrimitive?.longOrNull?.takeIf { it > 0 } ?: return null
+        val nestedRunId = captureDiagnostic["inspection_run_id"]?.jsonPrimitive?.longOrNull
+        if (captureDiagnostic.containsKey("inspection_run_id") && nestedRunId != inspectionRunId) return null
+        return captureDiagnostic
+    }
+
+    private fun exactProofExecutionFailure(obj: JsonObject, captureReason: String?): Boolean {
+        val proofFailure = proofFailures(obj).contains("execution_not_proven")
+        val verdictReason = obj["inspection_verdict_reason"]?.jsonPrimitive?.contentOrNull == "execution_not_proven"
+        val captureDiagnostic = captureDiagnosticForCurrentRun(obj)
+        val failureDiagnostics = buildList {
+            listOf(
+                obj["inspection_failure_diagnostic"],
+                captureDiagnostic?.get("inspection_failure_diagnostic"),
+            ).mapNotNull { it as? JsonObject }.forEach { add(it) }
+            listOf(
+                obj["inspection_failure_history"],
+                captureDiagnostic?.get("inspection_failure_history"),
+            ).mapNotNull { it as? JsonArray }
+                .flatMap { history -> history.mapNotNull { it as? JsonObject } }
+                .forEach { add(it) }
+        }
+        val exactProofSource = failureDiagnostics
+            .mapNotNull { it["source"]?.jsonPrimitive?.contentOrNull }
+            .any { it == "exact_proof_deadline" || it == "exact_proof_write_preempted" }
+        return exactProofSource && (proofFailure || verdictReason || captureReason == "execution_not_proven")
+    }
+
+    private fun exactProofExecutionVerdict(): McpInspectionVerdict {
+        return McpInspectionVerdict(
+            "UNKNOWN",
+            "execution_not_proven",
+            "Exact inspection proof did not complete, so the run cannot establish a trustworthy GREEN or RED result.",
+            "Stop retrying this result; report inspection_failure_diagnostic and resolve the exact-proof execution blocker before a fresh run.",
+        )
+    }
+
+    private fun retainsDecisiveRed(obj: JsonObject): Boolean {
+        val total = obj["total_problems"]?.jsonPrimitive?.intOrNull
+        val hasProblems = (obj["problems"] as? JsonArray)?.isNotEmpty() == true
+        val current = (hasProblems || (total != null && total > 0)) &&
+            obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull != true &&
+            obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull != true
+        val failures = proofFailures(obj)
+        return current && failures.isNotEmpty() && failures.all {
+            it == "execution_not_proven" ||
+                it == "scope_semantic_coverage_missing" ||
+                it == "scope_semantic_coverage_truncated"
+        }
     }
 
     private data class McpInspectionVerdict(
@@ -1117,7 +1185,8 @@ internal class ToolExecutor(
                     "Trigger inspection again before trusting cached results. Pass include_stale=true only for explicit cached-result diagnostics.",
                 )
             obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull == true || status == "capture_incomplete" || completionReason == "capture_incomplete" ->
-                unknownCaptureVerdict(captureReason)
+                unknownCaptureVerdict(captureReason, exactProofExecutionFailure(obj, captureReason))
+            exactProofExecutionFailure(obj, captureReason) && !retainsDecisiveRed(obj) -> exactProofExecutionVerdict()
             obj["timed_out"]?.jsonPrimitive?.booleanOrNull == true || completionReason == "timeout" -> McpInspectionVerdict(
                 "UNKNOWN",
                 "timeout",
@@ -1158,13 +1227,18 @@ internal class ToolExecutor(
                 "Inspection wait was interrupted.",
                 "Try again.",
             )
+            exactProofExecutionFailure(obj, captureReason) && retainsDecisiveRed(obj) -> null
             proofFailures(obj).isNotEmpty() -> {
                 val proofFailures = proofFailures(obj)
                 McpInspectionVerdict(
                     "UNKNOWN",
                     "inspection_proof_failed",
                     "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
-                    "Resolve the proof failure (${proofFailures.joinToString(", ")}), then trigger and wait for a fresh inspection before reporting GREEN or RED.",
+                    if (exactProofExecutionFailure(obj, captureReason)) {
+                        "Stop retrying this result; report inspection_failure_diagnostic and resolve the exact-proof execution blocker before a fresh run."
+                    } else {
+                        "Resolve the proof failure (${proofFailures.joinToString(", ")}), then trigger and wait for a fresh inspection before reporting GREEN or RED."
+                    },
                 )
             }
             else -> null
@@ -1181,24 +1255,26 @@ internal class ToolExecutor(
         return (topLevel + nested).distinct()
     }
 
-    private fun unknownCaptureVerdict(reason: String?): McpInspectionVerdict {
+    private fun unknownCaptureVerdict(reason: String?, exactProofFailure: Boolean = false): McpInspectionVerdict {
         val safeReason = reason?.takeIf { it.isNotBlank() } ?: "capture_incomplete"
-        val nextAction = when (safeReason) {
-            "non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error" ->
+        val nextAction = when {
+            safeReason == "execution_not_proven" && exactProofFailure ->
+                "Stop retrying this result; report inspection_failure_diagnostic and resolve the exact-proof execution blocker before a fresh run."
+            safeReason in setOf("non_empty_unmapped_tree", "extractor_failure", "helper_plugin_error") ->
                 "Treat this as a plugin/helper bug: capture the diagnostic payload, update the inspection plugin or helper skill, and rerun."
-            "view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results" ->
+            safeReason in setOf("view_not_ready", "view_updating_unreadable", "unreadable_tree", "no_results") ->
                 "Open the IDE Inspection Results or Problems view for the exact worktree, then rerun inspection."
-            "current_run_psi_churn" ->
+            safeReason == "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
-            "inspection_inputs_changed" ->
+            safeReason == "inspection_inputs_changed" ->
                 "Rerun inspection after project files, VCS state, and inspection settings finish changing."
-            "language_sdk_missing" ->
+            safeReason == "language_sdk_missing" ->
                 "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
-            "project_analysis_not_ready" ->
+            safeReason == "project_analysis_not_ready" ->
                 "Wait for the configured language SDK and background analysis to settle, then rerun inspection."
-            "timeout" ->
+            safeReason == "timeout" ->
                 "Wait for indexing/scanning to settle or rerun with a larger timeout."
-            "profile_resolution_error" ->
+            safeReason == "profile_resolution_error" ->
                 "Verify the requested inspection profile exists and is loaded in the target project, then rerun inspection."
             else ->
                 "Retry once, preferably with a narrower scope; if it repeats, report the reason and capture_diagnostic."

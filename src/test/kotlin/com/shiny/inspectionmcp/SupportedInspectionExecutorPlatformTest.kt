@@ -14,12 +14,18 @@ import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool
 import com.intellij.codeInspection.ex.UnfairLocalInspectionTool
+import com.intellij.openapi.Disposable
+import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.roots.ModuleRootManager
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.vfs.VfsUtil
+import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
@@ -31,9 +37,17 @@ import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Order
+import org.junit.jupiter.api.extension.AfterAllCallback
+import org.junit.jupiter.api.extension.BeforeAllCallback
+import org.junit.jupiter.api.extension.ExtensionContext
 import org.junit.jupiter.api.extension.RegisterExtension
+import java.nio.file.Paths
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 
 class SupportedInspectionExecutorPlatformTest {
     @Test
@@ -211,6 +225,100 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(result.proofEstablished).isFalse()
         assertThat(result.proofBlockReason).isEqualTo("time_limit")
         assertThat(result.unvisitedClassificationObligationCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `bounded proof preempts cooperative inspection before a pending write`() {
+        val project = projectExtension.project
+        val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger())
+        val writeRan = CountDownLatch(1)
+        val observedBeforeToolUnwind = AtomicReference<Boolean>()
+        val observedFailure = AtomicReference<ExactProofFailureContext>()
+        val observedSource = AtomicReference<InspectionRunFailureSource>()
+        blockingInspectionControl.set(control)
+        val tool = WritePriorityBlockingInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(tool)
+        profile.setToolEnabled(tool.shortName, true, project)
+        val result = AtomicReference<BoundedExecutionProofResult>()
+
+        val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+            result.set(
+                InspectionHandler().runBoundedExecutionProof(
+                    enabledTools = enabledTools(tool),
+                    profile = profile,
+                    project = project,
+                    scopeFiles = listOf(psiFile),
+                    failureObserver = { source, context ->
+                        observedSource.set(source)
+                        observedFailure.set(context)
+                        observedBeforeToolUnwind.set(control.toolExited.get() == 0)
+                    },
+                    cancellationCheck = {},
+                ),
+            )
+        }
+
+        assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
+        ApplicationManager.getApplication().invokeLater {
+            WriteAction.run<RuntimeException> { writeRan.countDown() }
+        }
+
+        assertThat(writeRan.await(5, TimeUnit.SECONDS)).isTrue()
+        future.get(5, TimeUnit.SECONDS)
+        val proof = requireNotNull(result.get())
+        assertThat(proof.hitWritePreemption).isTrue()
+        assertThat(proof.proofEstablished).isFalse()
+        assertThat(proof.proofBlockReason).isEqualTo("write_action_preempted")
+        assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED)
+        assertThat(observedFailure.get()?.toolShortName).isEqualTo(tool.shortName)
+        assertThat(observedFailure.get()?.filePath).isEqualTo(psiFile.virtualFile.path)
+        assertThat(observedFailure.get()?.workerThread).isNotNull()
+        assertThat(observedBeforeToolUnwind.get()).isTrue()
+        assertThat(control.toolExited.get()).isEqualTo(1)
+        blockingInspectionControl.compareAndSet(control, null)
+    }
+
+    @Test
+    fun `bounded proof deadline captures cooperative inspection before unwind`() {
+        val project = projectExtension.project
+        val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger())
+        val observedBeforeToolUnwind = AtomicReference<Boolean>()
+        val observedSource = AtomicReference<InspectionRunFailureSource>()
+        blockingInspectionControl.set(control)
+        val tool = WritePriorityBlockingInspection()
+        val psiFile = createPhysicalFile()
+        val profile = profileWith(tool)
+        profile.setToolEnabled(tool.shortName, true, project)
+        val result = AtomicReference<BoundedExecutionProofResult>()
+        val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 250L }
+
+        val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+            result.set(
+                handler.runBoundedExecutionProof(
+                    enabledTools = enabledTools(tool),
+                    profile = profile,
+                    project = project,
+                    scopeFiles = listOf(psiFile),
+                    failureObserver = { source, _ ->
+                        observedSource.set(source)
+                        observedBeforeToolUnwind.set(control.toolExited.get() == 0)
+                    },
+                    cancellationCheck = {},
+                ),
+            )
+        }
+
+        assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
+        future.get(5, TimeUnit.SECONDS)
+        val proof = requireNotNull(result.get())
+        assertThat(proof.hitTimeLimit).isTrue()
+        assertThat(proof.proofEstablished).isFalse()
+        assertThat(proof.proofBlockReason).isEqualTo("time_limit")
+        assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_DEADLINE)
+        assertThat(observedBeforeToolUnwind.get()).isTrue()
+        assertThat(control.toolExited.get()).isEqualTo(1)
+        blockingInspectionControl.compareAndSet(control, null)
     }
 
     @Test
@@ -593,6 +701,25 @@ class SupportedInspectionExecutorPlatformTest {
 
     private class TimeoutProfileInspection : RecordingInspection()
 
+    private class WritePriorityBlockingInspection : RecordingInspection() {
+        override fun buildVisitor(
+            holder: ProblemsHolder,
+            isOnTheFly: Boolean,
+            session: LocalInspectionToolSession,
+        ): PsiElementVisitor {
+            val control = requireNotNull(blockingInspectionControl.get())
+            control.enteredTool.countDown()
+            try {
+                while (true) {
+                    CountDownLatch(1).await(25, TimeUnit.MILLISECONDS)
+                    ProgressManager.checkCanceled()
+                }
+            } finally {
+                control.toolExited.incrementAndGet()
+            }
+        }
+    }
+
     private class UnpairedUnfairInspection : RecordingInspection(), UnfairLocalInspectionTool
 
     private class PairedUnfairInspection : RecordingInspection(), PairedUnfairLocalInspectionTool {
@@ -616,16 +743,46 @@ class SupportedInspectionExecutorPlatformTest {
     companion object {
         @JvmField
         @RegisterExtension
+        @Order(0)
+        val pluginLibraryRootAccess = PluginLibraryRootAccessExtension()
+
+        @JvmField
+        @RegisterExtension
+        @Order(1)
         val projectExtension = ProjectExtension()
 
         private val fileCounter = AtomicInteger()
         private val profileCounter = AtomicInteger()
         private val visitCounts = ConcurrentHashMap<String, AtomicInteger>()
+        private val blockingInspectionControl = AtomicReference<BlockingInspectionControl?>()
 
         private fun resetVisits(tool: LocalInspectionTool) {
             visitCounts.remove(tool.shortName)
         }
 
         private fun visitCount(tool: LocalInspectionTool): Int = visitCounts[tool.shortName]?.get() ?: 0
+    }
+
+    private data class BlockingInspectionControl(
+        val enteredTool: CountDownLatch,
+        val toolExited: AtomicInteger,
+    )
+
+    class PluginLibraryRootAccessExtension : BeforeAllCallback, AfterAllCallback {
+        private var disposable: Disposable? = null
+
+        override fun beforeAll(context: ExtensionContext) {
+            val codeSource = Paths.get(PathManager.getJarPathForClass(InspectionHandler::class.java)).toRealPath()
+            val libraryRoot = requireNotNull(codeSource.parent) { "Plugin code source has no parent: $codeSource" }
+            require(libraryRoot.fileName.toString() == "lib") { "Expected plugin code source below lib: $codeSource" }
+            val rootDisposable = Disposer.newDisposable("supported-inspection-plugin-library-root")
+            VfsRootAccess.allowRootAccess(rootDisposable, libraryRoot.toString())
+            disposable = rootDisposable
+        }
+
+        override fun afterAll(context: ExtensionContext) {
+            disposable?.let(Disposer::dispose)
+            disposable = null
+        }
     }
 }

@@ -523,3 +523,22 @@ with the harness output rooted in this checkout and
 IDEA config directory. The 2026.2 fixture is an exact EAP compatibility gate; do
 not use it for ordinary local agent-readiness checks unless the matching 2026.2
 EAP app and config directory are installed.
+
+### Exact-proof write contention
+
+`WritePriorityInspectionReadPlatformTest` queues an IDE write while a cooperative
+inspection read is blocked. The write must complete within the test's bounded
+wait, the interrupted read must report preemption, and the callback must observe
+the worker before it unwinds. Separate cases preserve caller cancellation and
+ensure a diagnostic callback failure cannot prevent cancellation.
+`ExactFileExecutionProofTest` checks retained findings, incomplete obligations,
+worker shutdown, and wrapper cleanup. `InspectionCaptureTimingTest` verifies that
+proof time cannot substitute for the clean-result observation window or extend
+the total capture budget. Run these with `InspectionHandlerTest` for terminal
+outcome and frozen diagnostic coverage.
+
+These controls prove cooperative cancellation, not a forced stop of an arbitrary
+third-party inspection. For a real recurrence, preserve the exact scope/revision,
+`inspection_run_id`, `inspection_failure_diagnostic`, stage history, and owned
+cleanup. `exact_proof_deadline` and `exact_proof_write_preempted` identify the
+first interrupted tool and file; they do not authorize an automatic retry.

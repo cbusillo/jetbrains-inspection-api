@@ -632,7 +632,7 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 - `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`
 - `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
 - `inspection_stage_history`: Bounded completed-stage timings for diagnosing a slow run
-- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `cancelled`, or `failed`. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
+- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `timed_out`, `preempted`, `cancelled`, or `failed`. An execution proof deadline or actual capture deadline marks `timed_out`; yielding to an IDE write marks `preempted`. A caller wait timeout alone does not determine the execution outcome. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
 
 ## Proper Usage Workflow
 
@@ -709,15 +709,26 @@ queue indefinitely.
 While the run remains active, a wait timeout and an accepted cancellation include
 `inspection_failure_diagnostic`. It preserves `inspection_stage_at_failure`,
 the stage and run elapsed times, the current dumb-mode flag, and up to 64 stack
-frames from the inspection worker. The stack is best-effort and covers only the
-plugin worker thread; it is not a full IDE thread dump or a platform scanner
-state signal. Its `source` distinguishes `wait_timeout`, `capture_deadline`, and
-`cancellation` observations. If later observations follow a timeout, the first
+frames from the inspection worker. Exact-proof interruption records capture the
+active tool worker before cancellation unwinds it, with `inspection_tool_short_name`
+(up to 160 characters), `inspection_file` (up to 4096), and
+`inspection_worker_phase=execution`. This is the first observed interruption;
+it is not a complete dump of every parallel worker or a platform scanner signal.
+Its `source` distinguishes `wait_timeout`, `capture_deadline`,
+`exact_proof_deadline`, `exact_proof_write_preempted`, and `cancellation` observations. If later observations follow a timeout, the first
 timeout remains the primary diagnostic and `inspection_failure_history` retains
 up to three observations. These observations can remain on a subsequently
 completed run because they describe what a caller saw, while
 `inspection_terminal_outcome` describes how execution ended. The fields do not
 change the deadline, retry policy, or inspection verdict.
+
+Exact local inspections yield cooperatively to pending IDE writes. An interrupted
+obligation does not establish execution proof and is not retried automatically;
+already captured findings remain available with their proof gap. Tools that ignore
+cancellation can still delay completion; worker diagnostics do not claim forcible
+termination. The existing 60-second capture budget includes proof execution,
+but clean-result settling counts only observations after proof returns. Diagnostics
+separate `polling_elapsed_ms` (settling) from `capture_elapsed_ms` (total).
 
 For agent-facing reports from the plugin API, use `inspection_verdict` and the
 companion `inspection_verdict_reason`, `inspection_verdict_message`, and

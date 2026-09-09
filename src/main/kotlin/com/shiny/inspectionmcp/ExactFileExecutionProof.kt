@@ -11,6 +11,8 @@ internal const val MAX_EXACT_FILE_PROOF_EXAMPLES = 12
 
 internal class ExactFileProofTimeLimitExceededException : RuntimeException()
 
+internal class ExactFileProofWritePreemptedException : RuntimeException()
+
 internal enum class ExactFileProofClassification(val diagnosticValue: String) {
     PROFILE_DISABLED("profile_disabled"),
     LANGUAGE_NOT_APPLICABLE("language_not_applicable"),
@@ -23,6 +25,7 @@ internal enum class ExactFileProofClassification(val diagnosticValue: String) {
     EXECUTION_FAILED("execution_failed"),
     DESCRIPTOR_UNMAPPED("descriptor_unmapped"),
     TIME_LIMIT("time_limit"),
+    WRITE_ACTION_PREEMPTED("write_action_preempted"),
 }
 
 internal data class ExactFileProofCandidate<T>(
@@ -111,6 +114,7 @@ internal data class BoundedExecutionProofResult(
     val errorCount: Int = 0,
     val hitFileLimit: Boolean = false,
     val hitTimeLimit: Boolean = false,
+    val hitWritePreemption: Boolean = false,
     val elapsedMs: Long = 0,
     val blockingExamples: List<Map<String, Any?>> = emptyList(),
     val nonBatchExamples: List<Map<String, Any?>> = emptyList(),
@@ -120,6 +124,7 @@ internal data class BoundedExecutionProofResult(
         get() = skippedReason == null &&
             !hitFileLimit &&
             !hitTimeLimit &&
+            !hitWritePreemption &&
             enumerationErrorCount == 0 &&
             displayKeyMissingCount == 0 &&
             sourceWrapperMissingCount == 0 &&
@@ -144,6 +149,7 @@ internal data class BoundedExecutionProofResult(
             skippedReason != null -> skippedReason
             hitFileLimit -> "file_limit"
             hitTimeLimit -> "time_limit"
+            hitWritePreemption -> "write_action_preempted"
             enumerationErrorCount > 0 -> "enabled_tool_enumeration_incomplete"
             displayKeyMissingCount > 0 -> "display_key_unresolved"
             sourceWrapperMissingCount > 0 -> "source_wrapper_unresolved"
@@ -184,6 +190,7 @@ private class ExactFileProofExecutionState<T, W, D>(
     val unmappedDetails = mutableListOf<String>()
     var failureDetail: String? = null
     var timeoutStage: String? = null
+    var writePreempted = false
 }
 
 private class ExactFileProofAccumulator(
@@ -216,6 +223,7 @@ private class ExactFileProofAccumulator(
     var unvisitedDescriptorCount = 0
     var errorCount = 0
     var hitTimeLimit = false
+    var hitWritePreemption = false
     val nonBatchExamples = mutableListOf<Map<String, Any?>>()
     val applicableScopeFiles = linkedSetOf<String>()
     val executedScopeFiles = linkedSetOf<String>()
@@ -262,6 +270,7 @@ private class ExactFileProofAccumulator(
             errorCount = errorCount,
             skippedReason = null,
             hitTimeLimit = hitTimeLimit,
+            hitWritePreemption = hitWritePreemption,
             elapsedMs = ((nowNanos() - startNanos).coerceAtLeast(0L) / 1_000_000L),
             blockingExamples = blockingExamples,
             nonBatchExamples = nonBatchExamples,
@@ -485,6 +494,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
 
     val executionStates = runnable.map { obligation -> ExactFileProofExecutionState<T, W, D>(obligation) }
     val deadlineTriggered = AtomicBoolean(false)
+    val writePreempted = AtomicBoolean(false)
     val externalCancellation = AtomicReference<RuntimeException?>()
 
     fun requestExternalCancellation(error: RuntimeException) {
@@ -504,11 +514,16 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             deadlineTriggered.set(true)
             throw ExactFileProofTimeLimitExceededException()
         }
+        if (writePreempted.get()) throw ExactFileProofWritePreemptedException()
     }
 
     fun classifyExecutionError(error: Exception): RuntimeException? {
         if (error is ExactFileProofTimeLimitExceededException) {
             deadlineTriggered.set(true)
+            return null
+        }
+        if (error is ExactFileProofWritePreemptedException) {
+            writePreempted.set(true)
             return null
         }
         val cancellation = try {
@@ -543,16 +558,20 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             state.descriptorCount = descriptors.size
             try {
                 checkExecutionBudget()
-            } catch (error: ExactFileProofTimeLimitExceededException) {
-                state.unvisitedDescriptorCount = descriptors.size
+            } catch (error: Exception) {
+                if (error is ExactFileProofTimeLimitExceededException || error is ExactFileProofWritePreemptedException) {
+                    state.unvisitedDescriptorCount = descriptors.size
+                }
                 throw error
             }
             stage = "descriptor_mapping"
             for ((descriptorIndex, descriptor) in descriptors.withIndex()) {
                 try {
                     checkExecutionBudget()
-                } catch (error: ExactFileProofTimeLimitExceededException) {
-                    state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                } catch (error: Exception) {
+                    if (error is ExactFileProofTimeLimitExceededException || error is ExactFileProofWritePreemptedException) {
+                        state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                    }
                     throw error
                 }
                 val mapped = try {
@@ -564,13 +583,19 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                         state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
                         throw ExactFileProofTimeLimitExceededException()
                     }
+                    if (writePreempted.get()) {
+                        state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                        throw ExactFileProofWritePreemptedException()
+                    }
                     state.mappingErrorCount++
                     null
                 }
                 try {
                     checkExecutionBudget()
-                } catch (error: ExactFileProofTimeLimitExceededException) {
-                    state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                } catch (error: Exception) {
+                    if (error is ExactFileProofTimeLimitExceededException || error is ExactFileProofWritePreemptedException) {
+                        state.unvisitedDescriptorCount = descriptors.size - descriptorIndex
+                    }
                     throw error
                 }
                 if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
@@ -587,6 +612,10 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             val cancellation = classifyExecutionError(error)
             when {
                 cancellation != null -> stopFileWorker = true
+                writePreempted.get() -> {
+                    state.writePreempted = true
+                    stopFileWorker = true
+                }
                 deadlineTriggered.get() -> {
                     state.timeoutStage = stage
                     stopFileWorker = true
@@ -601,6 +630,10 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                     val cancellation = classifyExecutionError(error)
                     when {
                         cancellation != null -> stopFileWorker = true
+                        writePreempted.get() -> {
+                            state.writePreempted = true
+                            stopFileWorker = true
+                        }
                         deadlineTriggered.get() -> {
                             state.timeoutStage = state.timeoutStage ?: "wrapper_cleanup"
                             stopFileWorker = true
@@ -613,12 +646,17 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         state.completed = state.executed &&
             state.unvisitedDescriptorCount == 0 &&
             state.failureDetail == null &&
-            state.timeoutStage == null
-        return !stopFileWorker && externalCancellation.get() == null && !deadlineTriggered.get()
+            state.timeoutStage == null &&
+            !state.writePreempted
+        return !stopFileWorker &&
+            externalCancellation.get() == null &&
+            !deadlineTriggered.get() &&
+            !writePreempted.get()
     }
 
     fun executeFile(states: List<ExactFileProofExecutionState<T, W, D>>) {
         for (state in states) {
+            if (writePreempted.get()) break
             if (!executeState(state)) break
         }
     }
@@ -627,7 +665,10 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         exactFileProofNormalizedPath(state.obligation.candidate.filePath)
     }
     if (statesByFile.size <= 1 || maxParallelFiles <= 1) {
-        statesByFile.values.forEach(::executeFile)
+        for (states in statesByFile.values) {
+            if (writePreempted.get()) break
+            executeFile(states)
+        }
     } else {
         val threadNumber = AtomicInteger()
         val executor = Executors.newFixedThreadPool(
@@ -673,6 +714,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
     if (cancellation != null) throw cancellation
 
     accumulator.hitTimeLimit = deadlineTriggered.get()
+    accumulator.hitWritePreemption = writePreempted.get()
     for (state in executionStates) {
         cancellationCheck()
         if (deadlineExceeded()) accumulator.hitTimeLimit = true
@@ -708,6 +750,17 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                     obligation.sourceWrapper,
                     diagnosticWrapper,
                     state.timeoutStage,
+                ),
+            )
+        }
+        if (state.writePreempted) {
+            accumulator.addBlockingExample(
+                safeDiagnostic(
+                    obligation.candidate,
+                    ExactFileProofClassification.WRITE_ACTION_PREEMPTED,
+                    obligation.sourceWrapper,
+                    diagnosticWrapper,
+                    "write_action_preempted",
                 ),
             )
         }
