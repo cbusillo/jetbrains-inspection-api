@@ -1853,6 +1853,25 @@ class InspectionHandler : HttpRequestHandler() {
         val closedVerified: Boolean,
         val projectDisposed: Boolean,
     )
+
+    internal data class LifecycleCloseGuardRefusal(
+        val reason: String,
+        val unsavedDocumentCount: Int? = null,
+        val matchingDocumentCount: Int? = null,
+        val unresolvedDocumentCount: Int? = null,
+        val matchingPaths: List<String> = emptyList(),
+        val matchingPathsOmittedCount: Int = 0,
+    )
+
+    private data class LifecycleCloseResult(
+        val attempts: List<LifecycleCloseAttempt>,
+        val guardRefusal: LifecycleCloseGuardRefusal? = null,
+    )
+
+    private sealed interface LifecycleCloseInvocation {
+        data class Attempted(val forceCloseReturned: Boolean) : LifecycleCloseInvocation
+        data class Refused(val refusal: LifecycleCloseGuardRefusal) : LifecycleCloseInvocation
+    }
     
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
@@ -1869,6 +1888,8 @@ class InspectionHandler : HttpRequestHandler() {
     internal var forceCloseProject: (Project, Boolean) -> Boolean = { project, save ->
         ProjectManagerEx.getInstanceEx().forceCloseProject(project, save)
     }
+    internal var lifecycleCloseUnsavedDocumentGuard: (Project, Path) -> LifecycleCloseGuardRefusal? =
+        { project, worktreeRoot -> inspectUnsavedDocumentsBeforeLifecycleClose(project, worktreeRoot) }
     internal var closeVerificationTimeoutMs: Long = 10_000
     internal var boundedExecutionProofTimeoutMs: Long = DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS
     internal var closeVerificationPollMs: Long = 100
@@ -4523,7 +4544,37 @@ class InspectionHandler : HttpRequestHandler() {
                 )
             }
 
-            val closeAttempts = closeClaimedProject(project, expectedProjectInstanceId)
+            val closeResult = closeClaimedProject(project, expectedProjectInstanceId, Paths.get(lease.basePath))
+            val closeAttempts = closeResult.attempts
+            closeResult.guardRefusal?.let { refusal ->
+                leasesByProjectInstance.putIfAbsent(expectedProjectInstanceId, lease)
+                return lifecycleCloseSkipped(
+                    refusal.reason,
+                    when (refusal.reason) {
+                        "unsaved_documents" ->
+                            "Unsaved documents associated with the claimed project could be discarded; leaving it open."
+                        "unsaved_document_association_unknown" ->
+                            "The IDE could not establish whether every unsaved document is outside the claimed project; leaving it open."
+                        else ->
+                            "The IDE could not run the unsaved-document guard; leaving the claimed project open."
+                    },
+                    HttpResponseStatus.CONFLICT,
+                    closeAttempts,
+                    details = buildMap {
+                        put("project_instance_id", expectedProjectInstanceId)
+                        put("project_key", lease.projectKey)
+                        put("lease_id", lease.leaseId)
+                        refusal.unsavedDocumentCount?.let { put("unsaved_document_count", it) }
+                        refusal.matchingDocumentCount?.let { put("matching_unsaved_document_count", it) }
+                        refusal.unresolvedDocumentCount?.let { put("unresolved_unsaved_document_count", it) }
+                        if (refusal.matchingPaths.isNotEmpty()) {
+                            put("matching_unsaved_document_paths", refusal.matchingPaths)
+                            put("matching_unsaved_document_paths_limit", 10)
+                            put("matching_unsaved_document_paths_omitted_count", refusal.matchingPathsOmittedCount)
+                        }
+                    },
+                )
+            }
             val closed = closeAttempts.any { attempt -> attempt.closedVerified }
 
             if (!closed) {
@@ -4557,42 +4608,132 @@ class InspectionHandler : HttpRequestHandler() {
             ?.let { ownership -> lifecycleOpenOwnershipByProjectInstance.remove(projectInstanceId, ownership) }
     }
 
-    private fun closeClaimedProject(project: Project, projectInstanceId: String): List<LifecycleCloseAttempt> {
+    private fun closeClaimedProject(project: Project, projectInstanceId: String, worktreeRoot: Path): LifecycleCloseResult {
         val attempts = mutableListOf<LifecycleCloseAttempt>()
-        val saveModes = listOf(true, false, false)
-        for ((index, save) in saveModes.withIndex()) {
-            val forceCloseReturned = closeProjectOnEdt(project, save)
+        repeat(3) { index ->
+            val invocation = closeProjectOnEdt(project, worktreeRoot)
+            val forceCloseReturned = when (invocation) {
+                is LifecycleCloseInvocation.Refused -> return LifecycleCloseResult(attempts, invocation.refusal)
+                is LifecycleCloseInvocation.Attempted -> invocation.forceCloseReturned
+            }
             val verificationDeadline = closeVerificationNow() + closeVerificationTimeoutMs
             val closedVerified = waitForProjectClosed(project, projectInstanceId, verificationDeadline)
             attempts.add(
                 LifecycleCloseAttempt(
                     attempt = index + 1,
-                    save = save,
+                    save = false,
                     forceCloseReturned = forceCloseReturned,
                     closedVerified = closedVerified,
                     projectDisposed = project.isDisposed,
                 )
             )
             if (closedVerified) {
-                break
+                return LifecycleCloseResult(attempts)
             }
         }
-        return attempts
+        return LifecycleCloseResult(attempts)
     }
 
-    private fun closeProjectOnEdt(project: Project, save: Boolean): Boolean {
-        return runCatching {
-            val application = ApplicationManager.getApplication()
-            if (application.isDispatchThread) {
-                forceCloseProject(project, save)
-            } else {
-                val closeResult = AtomicReference<Boolean>()
-                application.invokeAndWait {
-                    closeResult.set(forceCloseProject(project, save))
-                }
-                closeResult.get() == true
+    private fun closeProjectOnEdt(project: Project, worktreeRoot: Path): LifecycleCloseInvocation {
+        val application = ApplicationManager.getApplication()
+        if (application.isDispatchThread) {
+            return closeProjectWithoutSaveAfterGuard(project, worktreeRoot)
+        }
+        val closeResult = AtomicReference<LifecycleCloseInvocation?>()
+        return try {
+            application.invokeAndWait {
+                closeProjectWithoutSaveAfterGuard(project, worktreeRoot)
+                    .let(closeResult::set)
             }
-        }.getOrDefault(false)
+            closeResult.get() ?: lifecycleCloseGuardUnavailable()
+        } catch (_: Throwable) {
+            closeResult.get() ?: lifecycleCloseGuardUnavailable()
+        }
+    }
+
+    private fun closeProjectWithoutSaveAfterGuard(project: Project, worktreeRoot: Path): LifecycleCloseInvocation {
+        val refusal = try {
+            lifecycleCloseUnsavedDocumentGuard(project, worktreeRoot)
+        } catch (_: Throwable) {
+            return lifecycleCloseGuardUnavailable()
+        }
+        return if (refusal != null) {
+            LifecycleCloseInvocation.Refused(refusal)
+        } else {
+            LifecycleCloseInvocation.Attempted(
+                runCatching { forceCloseProject(project, false) }.getOrDefault(false)
+            )
+        }
+    }
+
+    private fun lifecycleCloseGuardUnavailable(): LifecycleCloseInvocation.Refused =
+        LifecycleCloseInvocation.Refused(
+            LifecycleCloseGuardRefusal(reason = "unsaved_document_guard_unavailable")
+        )
+
+    internal fun inspectUnsavedDocumentsBeforeLifecycleClose(
+        project: Project,
+        worktreeRoot: Path,
+    ): LifecycleCloseGuardRefusal? {
+        val fileDocumentManager = FileDocumentManager.getInstance()
+        val unsavedDocuments = fileDocumentManager.unsavedDocuments
+        if (unsavedDocuments.isEmpty()) {
+            return null
+        }
+        val lexicalProjectRoots = buildList {
+            add(worktreeRoot.normalize().toAbsolutePath())
+            project.basePath?.let { basePath ->
+                add(Paths.get(basePath).normalize().toAbsolutePath())
+            }
+            ProjectRootManager.getInstance(project).contentRoots.forEach { root ->
+                val rootPath = localInspectionRootPath(root)
+                    ?: throw IllegalStateException("Project content root is not a local path")
+                add(Paths.get(rootPath).normalize().toAbsolutePath())
+            }
+        }.distinct()
+        val canonicalProjectRoots = lexicalProjectRoots.map(Path::toRealPath).distinct()
+        val matchingPaths = mutableListOf<String>()
+        var matchingDocumentCount = 0
+        var unresolvedDocumentCount = 0
+        for (document in unsavedDocuments) {
+            val file = fileDocumentManager.getFile(document)
+            if (file == null || !file.isInLocalFileSystem) {
+                unresolvedDocumentCount++
+                continue
+            }
+            val lexicalFilePath = try {
+                Paths.get(file.path).normalize().toAbsolutePath()
+            } catch (_: Exception) {
+                unresolvedDocumentCount++
+                continue
+            }
+            val canonicalFilePath = try {
+                lexicalFilePath.toRealPath()
+            } catch (_: Exception) {
+                unresolvedDocumentCount++
+                continue
+            }
+            if (
+                lexicalProjectRoots.any(lexicalFilePath::startsWith) ||
+                canonicalProjectRoots.any(canonicalFilePath::startsWith)
+            ) {
+                matchingDocumentCount++
+                if (matchingPaths.size < 10) {
+                    matchingPaths.add(lexicalFilePath.toString())
+                }
+            }
+        }
+        if (matchingDocumentCount == 0 && unresolvedDocumentCount == 0) {
+            return null
+        }
+        return LifecycleCloseGuardRefusal(
+            reason = if (matchingDocumentCount > 0) "unsaved_documents" else "unsaved_document_association_unknown",
+            unsavedDocumentCount = unsavedDocuments.size,
+            matchingDocumentCount = matchingDocumentCount,
+            unresolvedDocumentCount = unresolvedDocumentCount,
+            matchingPaths = matchingPaths,
+            matchingPathsOmittedCount = matchingDocumentCount - matchingPaths.size,
+        )
     }
 
     private fun waitForProjectClosed(project: Project, projectInstanceId: String, deadline: Long): Boolean {

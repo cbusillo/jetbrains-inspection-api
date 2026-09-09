@@ -17,6 +17,7 @@ import com.intellij.openapi.fileTypes.FileType
 import com.intellij.openapi.fileTypes.FileTypeManager
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.editor.Document
 import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.roots.ModuleRootModificationUtil
@@ -239,6 +240,7 @@ class InspectionHandlerTest {
             )
         }
         handler.lifecycleCloseExecutor = { task -> task.run() }
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ -> null }
         enhancedTreeExtractorFactory = { EnhancedTreeExtractor() }
         
         mockProject = mockk<Project>()
@@ -7717,6 +7719,285 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test lifecycle close refuses unsaved claimed project documents and retains claim`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns true
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ ->
+            InspectionHandler.LifecycleCloseGuardRefusal(
+                reason = "unsaved_documents",
+                unsavedDocumentCount = 2,
+                matchingDocumentCount = 1,
+                unresolvedDocumentCount = 1,
+                matchingPaths = listOf("/repo/app/src/main.kt"),
+            )
+        }
+        var closeCalls = 0
+        handler.forceCloseProject = { _, _ -> closeCalls++; true }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("\"reason\": \"unsaved_documents\""), body)
+        assertTrue(body.contains("\"matching_unsaved_document_count\": 1"), body)
+        assertTrue(body.contains("/repo/app/src/main.kt"), body)
+        assertEquals(0, closeCalls)
+        assertTrue(lifecycleLeases().containsKey(instanceId))
+        assertTrue(lifecycleOpenOwnership().containsKey(instanceId))
+    }
+
+    @Test
+    fun `test lifecycle close reports guard failure without closing or losing claim`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns true
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ -> error("unavailable") }
+        var closeCalls = 0
+        handler.forceCloseProject = { _, _ -> closeCalls++; true }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(response.content().toString(Charsets.UTF_8).contains("unsaved_document_guard_unavailable"))
+        assertEquals(0, closeCalls)
+        assertTrue(lifecycleLeases().containsKey(instanceId))
+        assertTrue(lifecycleOpenOwnership().containsKey(instanceId))
+    }
+
+    @Test
+    fun `test lifecycle close dispatches guard and no-save close in the same EDT runnable`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
+        val events = mutableListOf<String>()
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ -> events.add("guard"); null }
+        handler.forceCloseProject = { _, save ->
+            events.add("close:$save")
+            every { mockProjectManager.openProjects } returns emptyArray()
+            true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(listOf("guard", "close:false"), events)
+    }
+
+    @Test
+    fun `test lifecycle close dispatch failure refuses without retrying or losing claim`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns false
+        var dispatchCalls = 0
+        every { mockApplication.invokeAndWait(any()) } answers {
+            dispatchCalls++
+            throw IllegalStateException("dispatch unavailable")
+        }
+        var closeCalls = 0
+        handler.forceCloseProject = { _, _ -> closeCalls++; true }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(body.contains("unsaved_document_guard_unavailable"), body)
+        assertFalse(body.contains("unsaved_document_count"), body)
+        assertEquals(1, dispatchCalls)
+        assertEquals(0, closeCalls)
+        assertTrue(lifecycleLeases().containsKey(instanceId))
+    }
+
+    @Test
+    fun `test lifecycle close preserves completed EDT result when dispatcher throws afterward`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns false
+        every { mockApplication.invokeAndWait(any()) } answers {
+            firstArg<Runnable>().run()
+            throw IllegalStateException("dispatcher failed after execution")
+        }
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ -> null }
+        var closeCalls = 0
+        handler.forceCloseProject = { _, save ->
+            assertFalse(save)
+            closeCalls++
+            every { mockProjectManager.openProjects } returns emptyArray()
+            true
+        }
+
+        val response = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals(1, closeCalls)
+    }
+
+    @Test
+    fun `test lifecycle close retries with the same claim after unsaved document is saved`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        every { mockApplication.isDispatchThread } returns true
+        var unsaved = true
+        handler.lifecycleCloseUnsavedDocumentGuard = { _, _ ->
+            if (unsaved) {
+                InspectionHandler.LifecycleCloseGuardRefusal(
+                    reason = "unsaved_documents",
+                    unsavedDocumentCount = 1,
+                    matchingDocumentCount = 1,
+                    unresolvedDocumentCount = 0,
+                )
+            } else {
+                null
+            }
+        }
+        var closed = false
+        handler.forceCloseProject = { _, save ->
+            assertFalse(save)
+            closed = true
+            true
+        }
+        every { mockProjectManager.openProjects } answers { if (closed) emptyArray() else arrayOf(mockProject) }
+
+        val refused = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+        unsaved = false
+        val closedResponse = processGetRequest(
+            "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token"
+        )
+
+        assertEquals(HttpResponseStatus.CONFLICT, refused.status())
+        assertEquals(HttpResponseStatus.OK, closedResponse.status())
+        assertTrue(closedResponse.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
+    }
+
+    @Test
+    fun `test lifecycle unsaved document guard covers external roots and lexical symlink files`() {
+        val worktreeRoot = Files.createTempDirectory("inspection-close-worktree")
+        every { mockProject.basePath } returns worktreeRoot.toString()
+        val externalRoot = Files.createTempDirectory("inspection-close-external")
+        val externalFile = Files.writeString(externalRoot.resolve("external.kt"), "external")
+        val linkedFile = worktreeRoot.resolve("linked.kt")
+        Files.createSymbolicLink(linkedFile, externalFile)
+        val unrelatedRoot = Files.createTempDirectory("inspection-close-unrelated")
+        val unrelatedFile = Files.writeString(unrelatedRoot.resolve("unrelated.kt"), "unrelated")
+        val rootFile = mockk<VirtualFile>()
+        every { rootFile.path } returns externalRoot.toString()
+        every { rootFile.isInLocalFileSystem } returns true
+        val rootManager = mockk<ProjectRootManager>()
+        mockkStatic(ProjectRootManager::class)
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { rootManager.contentRoots } returns arrayOf(rootFile)
+        val linkedDocument = mockk<Document>()
+        val externalDocument = mockk<Document>()
+        val unrelatedDocument = mockk<Document>()
+        val linkedVirtualFile = mockk<VirtualFile>()
+        val externalVirtualFile = mockk<VirtualFile>()
+        val unrelatedVirtualFile = mockk<VirtualFile>()
+        every { linkedVirtualFile.path } returns linkedFile.toString()
+        every { externalVirtualFile.path } returns externalFile.toString()
+        every { unrelatedVirtualFile.path } returns unrelatedFile.toString()
+        every { linkedVirtualFile.isInLocalFileSystem } returns true
+        every { externalVirtualFile.isInLocalFileSystem } returns true
+        every { unrelatedVirtualFile.isInLocalFileSystem } returns true
+        val fileDocumentManager = mockk<FileDocumentManager>()
+        mockkStatic(FileDocumentManager::class)
+        every { FileDocumentManager.getInstance() } returns fileDocumentManager
+        every { fileDocumentManager.unsavedDocuments } returns
+            arrayOf(linkedDocument, externalDocument, unrelatedDocument)
+        every { fileDocumentManager.getFile(linkedDocument) } returns linkedVirtualFile
+        every { fileDocumentManager.getFile(externalDocument) } returns externalVirtualFile
+        every { fileDocumentManager.getFile(unrelatedDocument) } returns unrelatedVirtualFile
+
+        val refusal = requireNotNull(handler.inspectUnsavedDocumentsBeforeLifecycleClose(mockProject, worktreeRoot))
+
+        assertEquals("unsaved_documents", refusal.reason)
+        assertEquals(3, refusal.unsavedDocumentCount)
+        assertEquals(2, refusal.matchingDocumentCount)
+        assertEquals(0, refusal.unresolvedDocumentCount)
+        assertTrue(refusal.matchingPaths.contains(linkedFile.toString()))
+        assertTrue(refusal.matchingPaths.contains(externalFile.toString()))
+    }
+
+    @Test
+    fun `test lifecycle unsaved document guard refuses unknown association and ignores proven unrelated local file`() {
+        val worktreeRoot = Files.createTempDirectory("inspection-close-worktree")
+        every { mockProject.basePath } returns worktreeRoot.toString()
+        val unrelatedFile = Files.writeString(
+            Files.createTempDirectory("inspection-close-unrelated").resolve("unrelated.kt"),
+            "unrelated",
+        )
+        val rootManager = mockk<ProjectRootManager>()
+        mockkStatic(ProjectRootManager::class)
+        every { ProjectRootManager.getInstance(mockProject) } returns rootManager
+        every { rootManager.contentRoots } returns emptyArray()
+        val unknownDocument = mockk<Document>()
+        val unrelatedDocument = mockk<Document>()
+        val unrelatedVirtualFile = mockk<VirtualFile>()
+        every { unrelatedVirtualFile.path } returns unrelatedFile.toString()
+        every { unrelatedVirtualFile.isInLocalFileSystem } returns true
+        val fileDocumentManager = mockk<FileDocumentManager>()
+        mockkStatic(FileDocumentManager::class)
+        every { FileDocumentManager.getInstance() } returns fileDocumentManager
+        every { fileDocumentManager.unsavedDocuments } returns arrayOf(unknownDocument, unrelatedDocument)
+        every { fileDocumentManager.getFile(unknownDocument) } returns null
+        every { fileDocumentManager.getFile(unrelatedDocument) } returns unrelatedVirtualFile
+
+        val refusal = requireNotNull(handler.inspectUnsavedDocumentsBeforeLifecycleClose(mockProject, worktreeRoot))
+
+        assertEquals("unsaved_document_association_unknown", refusal.reason)
+        assertEquals(0, refusal.matchingDocumentCount)
+        assertEquals(1, refusal.unresolvedDocumentCount)
+    }
+
+    @Test
     fun `test lifecycle close releases the HTTP event loop before close work`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
@@ -8034,7 +8315,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close retries no-save fallback after transient refusal`() {
+    fun `test lifecycle close retries without saving after transient refusal`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -8053,7 +8334,7 @@ class InspectionHandlerTest {
         val saveModes = mutableListOf<Boolean>()
         handler.forceCloseProject = { _, save ->
             saveModes.add(save)
-            if (!save) {
+            if (saveModes.size == 2) {
                 every { mockProjectManager.openProjects } returns emptyArray()
                 true
             } else {
@@ -8068,7 +8349,7 @@ class InspectionHandlerTest {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"closed\""))
-        assertEquals(listOf(true, false), saveModes)
+        assertEquals(listOf(false, false), saveModes)
         assertTrue(body.contains("\"attempt\": 2"))
         assertTrue(body.contains("\"save\": false"))
     }
@@ -8108,7 +8389,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close gives no-save retry a fresh verification window`() {
+    fun `test lifecycle close gives retry without saving a fresh verification window`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
         val instanceId = projectInstanceId(mockProject)
@@ -8129,7 +8410,7 @@ class InspectionHandlerTest {
         val saveModes = mutableListOf<Boolean>()
         handler.forceCloseProject = { _, save ->
             saveModes.add(save)
-            if (save) {
+            if (saveModes.size == 1) {
                 false
             } else {
                 noSaveStartMs = nowMs
@@ -8147,7 +8428,7 @@ class InspectionHandlerTest {
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
-        assertEquals(listOf(true, false), saveModes)
+        assertEquals(listOf(false, false), saveModes)
         assertTrue(body.contains("\"status\": \"closed\""))
         assertTrue(body.contains("\"attempt\": 2"))
         assertTrue(body.contains("\"closed_verified\": true"))
@@ -8223,7 +8504,7 @@ class InspectionHandlerTest {
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"client_run_id\": \"dddddddd-dddd-4ddd-8ddd-dddddddddddd\""))
         assertEquals(HttpResponseStatus.OK, second.status())
         assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
-        assertEquals(listOf(true, false, false, true), saveModes)
+        assertEquals(listOf(false, false, false, false), saveModes)
         assertTrue(first.content().toString(Charsets.UTF_8).contains("\"closed_verified\": false"))
     }
 
@@ -8663,6 +8944,13 @@ class InspectionHandlerTest {
         val field = InspectionHandler::class.java.getDeclaredField("leasesByProjectInstance")
         field.isAccessible = true
         return field.get(handler) as MutableMap<String, InspectionProjectLease>
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    private fun lifecycleOpenOwnership(): MutableMap<String, InspectionHandler.LifecycleOpenOwnership> {
+        val field = InspectionHandler::class.java.getDeclaredField("lifecycleOpenOwnershipByProjectInstance")
+        field.isAccessible = true
+        return field.get(handler) as MutableMap<String, InspectionHandler.LifecycleOpenOwnership>
     }
 
     @Suppress("UNCHECKED_CAST")
