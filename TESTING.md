@@ -88,8 +88,21 @@ endpoint only for projects opened by the helper. Projects that were open before
 the helper started are left open. On macOS, lifecycle opens use `open -g` by
 default so the IDE should not take focus while readiness inspection is preparing
 a worktree. Auto-open requires a global trusted-root policy in
-`${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/jetbrains-inspection.json`; test
+`${XDG_CONFIG_HOME:-$HOME/.config}/jetbrains-inspection/config.json`; test
 worktrees should be created under those roots, not random temp directories.
+Lifecycle cleanup closes an exact helper-owned lease without saving IDE project
+settings. It refuses cleanup and retains the lease when an unsaved document is
+associated with the worktree or any project content root, when document
+association is unknown, or when the guard cannot complete. Tests must cover
+external roots, lexical symlink paths, unrelated local documents, guard errors,
+and repeated no-save attempts.
+The IDE may still persist project settings through autosave before lifecycle
+cleanup. No-save close removes the helper's forced close-time save but does not
+guarantee a clean worktree; mutation detection remains fail-closed. Coverage
+must also exercise non-EDT dispatch failures and recovery with the same claim
+after the blocking document is saved. Missing roots with unsaved documents are
+an intentional conservative refusal until ownership can be established or the
+project is closed manually.
 
 Before it starts lifecycle auto-open, the helper adds the matching trusted root
 to the selected JetBrains product's Trusted Locations and sets project opening

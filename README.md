@@ -427,6 +427,20 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   route, or status requests from other agents. An active Python SDK preparation
   also returns HTTP 409 with `python_sdk_preparation_in_progress: true`; the
   claim remains available for a later cleanup retry after the worker exits.
+  Helper-owned projects close without saving IDE project settings. Immediately
+  before every close attempt, the plugin checks unsaved documents on the IDE
+  event thread against the claimed worktree, project base path, and all project content roots,
+  including external and symlinked roots. Matching or unresolved document
+  ownership returns HTTP 409 with `unsaved_documents`,
+  `unsaved_document_association_unknown`, or
+  `unsaved_document_guard_unavailable`; the project, claim, and ownership stay
+  intact for a later retry. Unsaved local documents proven outside those roots
+  do not block cleanup.
+  This removes the helper's forced save on close, including its former
+  application-wide document save. The IDE may still persist `.idea` settings
+  through autosave or other lifecycle events before cleanup; the worktree
+  mutation gate remains authoritative and this close behavior is not a
+  clean-worktree guarantee.
 - `GET /api/inspection/cancel`: accepts the normal route selectors plus the
   required `inspection_run_id` and requests cancellation only when that exact
   run is still active for the project. It returns `cancel_requested`,
