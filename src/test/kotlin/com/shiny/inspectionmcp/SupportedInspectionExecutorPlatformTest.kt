@@ -193,7 +193,7 @@ class SupportedInspectionExecutorPlatformTest {
             val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
                 try {
                     ProgressManager.getInstance().runProcess(
-                        Runnable { boundary.performInspectionsWithProgress(AnalysisScope(file)) },
+                        { boundary.performInspectionsWithProgress(AnalysisScope(file)) },
                         indicator,
                     )
                 } catch (error: Throwable) {
@@ -234,7 +234,7 @@ class SupportedInspectionExecutorPlatformTest {
                 InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(findingTool))
             }
 
-            assertThat(findingDescriptors).singleElement().extracting<String> { it.descriptionTemplate }
+            assertThat(findingDescriptors).singleElement().extracting { it.descriptionTemplate }
                 .isEqualTo("supported finding")
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -316,7 +316,7 @@ class SupportedInspectionExecutorPlatformTest {
             assertThat(control.enteredTool.await(2, TimeUnit.SECONDS)).isTrue()
 
             requireNotNull(parent.currentIndicator.get()).cancel()
-            requireNotNull(future).get(5, TimeUnit.SECONDS)
+            future.get(5, TimeUnit.SECONDS)
 
             assertThat(failure.get()).isInstanceOf(ProcessCanceledException::class.java)
             assertThat(control.toolExited.get()).isEqualTo(1)
@@ -347,8 +347,8 @@ class SupportedInspectionExecutorPlatformTest {
                 )
             }
 
-            assertThat(descriptors).singleElement().extracting<String> { it.descriptionTemplate }
-                .isEqualTo("global simple finding")
+            assertThat(descriptors).singleElement().extracting { it.descriptionTemplate }
+                .isEqualTo("Global simple finding")
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
@@ -822,7 +822,7 @@ class SupportedInspectionExecutorPlatformTest {
             context.configure(profile, scope)
             ApplicationManager.getApplication().executeOnPooledThread<Unit> {
                 ProgressManager.getInstance().runProcess(
-                    Runnable { context.performInspectionsWithProgress(scope) },
+                    { context.performInspectionsWithProgress(scope) },
                     indicator,
                 )
             }.get(5, TimeUnit.SECONDS)
@@ -858,7 +858,7 @@ class SupportedInspectionExecutorPlatformTest {
         ApplicationManager.getApplication().executeOnPooledThread<Unit> {
             try {
                 ProgressManager.getInstance().runProcess(
-                    Runnable {
+                    {
                         result.set(ReadAction.compute<T, RuntimeException> { action() })
                         ProgressManager.checkCanceled()
                     },
@@ -885,7 +885,7 @@ class SupportedInspectionExecutorPlatformTest {
         return ApplicationManager.getApplication().executeOnPooledThread<Unit> {
             try {
                 ProgressManager.getInstance().runProcess(
-                    Runnable {
+                    {
                         ReadAction.compute<Unit, RuntimeException> { action() }
                         ProgressManager.checkCanceled()
                     },
@@ -1104,7 +1104,7 @@ class SupportedInspectionExecutorPlatformTest {
     private class FindingGlobalSimpleInspection : GlobalSimpleInspectionTool() {
         override fun getDisplayName(): String = shortName
 
-        override fun getGroupDisplayName(): String = "Supported Inspection Tests"
+        override fun getGroupDisplayName(): String = "Supported inspection tests"
 
         override fun checkFile(
             file: PsiFile,
@@ -1113,7 +1113,7 @@ class SupportedInspectionExecutorPlatformTest {
             context: com.intellij.codeInspection.GlobalInspectionContext,
             processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
         ) {
-            holder.registerProblem(file, "global simple finding")
+            holder.registerProblem(file, "Global simple finding")
             processor.addProblemElement(
                 requireNotNull(context.refManager.getReference(file)),
                 *holder.resultsArray,

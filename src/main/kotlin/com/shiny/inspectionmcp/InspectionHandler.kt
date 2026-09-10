@@ -9748,7 +9748,7 @@ class InspectionHandler : HttpRequestHandler() {
                 InspectionEngine.runInspectionOnFile(
                     psiFile,
                     executionWrapper,
-                    requireNotNull(executionContext).publicContext(),
+                    executionContext.publicContext(),
                 )
             }
             engineCompleted = true
