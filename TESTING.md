@@ -534,12 +534,19 @@ plugin's synchronous context. Closing a context and caller cancellation must
 still stop work. Live acceptance uses the same clean files-scope fixture that
 previously cancelled in `native_execute`, plus a deliberate finding control;
 an UNKNOWN result is not a clean pass.
+Test-only platform references and reflection seed the normal-mode gate, parent
+indicator, and retained tool state that headless fixtures otherwise omit; the
+release-contract boundary check applies to production sources.
 
-The `RedLane` targeted fallback must use its own context for each file:
-`InspectionEngine.runInspectionOnFile` cleans up the supplied context, including
-its progress indicator. Tests must keep the native context's progress and tool
-state intact through both clean and finding-bearing fallback runs, and verify
-that temporary contexts are removed even when execution is cancelled.
+The `RedLane` targeted fallback must isolate copied wrappers from the native run.
+Local wrappers use `inspectEx` with the current caller indicator: the platform's
+`runInspectionOnFile` substitutes an `EmptyProgressIndicator` for local tools,
+which prevents mid-file caller cancellation. Non-local wrappers retain a private
+context per file because `runInspectionOnFile` cleans the supplied context and
+its progress indicator. Tests keep the parent progress and tool state intact,
+verify cleanup on failure, and cancel a running local tool through the actual
+caller indicator. These tests do not establish mid-file cancellation for global
+tools or broad operational reliability.
 An empty `RedLane` run deliberately remains `UNKNOWN/inspection_trigger_empty_model`;
 its successful execution is not a GREEN control. Use a separately named fixture
 profile with the same inspection settings for clean-result acceptance.

@@ -9724,32 +9724,49 @@ class InspectionHandler : HttpRequestHandler() {
         val executionWrapper = synchronized(batchWrapper) {
             InspectionProfileImpl.copyToolSettings(batchWrapper)
         }
-        val executionContext = GlobalInspectionContextBoundary.createForExactFile(
-            InspectionManager.getInstance(project) as InspectionManagerEx,
-        )
+        val executionContext = if (canExecuteWithInspectEx(executionWrapper)) {
+            null
+        } else {
+            GlobalInspectionContextBoundary.createForExactFile(
+                InspectionManager.getInstance(project) as InspectionManagerEx,
+            )
+        }
         var primaryFailure: Throwable? = null
         var engineCompleted = false
         try {
-            val descriptors = InspectionEngine.runInspectionOnFile(
-                psiFile,
-                executionWrapper,
-                executionContext.publicContext(),
-            )
+            ProgressManager.checkCanceled()
+            val descriptors = if (executionContext == null) {
+                val localWrapper = executionWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                SupportedInspectionExecutor().executePreparedFile(
+                    psiFile,
+                    listOf(localWrapper),
+                    requireNotNull(ProgressManager.getInstance().progressIndicator) {
+                        "Targeted local inspection requires the caller progress indicator"
+                    },
+                ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
+            } else {
+                InspectionEngine.runInspectionOnFile(
+                    psiFile,
+                    executionWrapper,
+                    requireNotNull(executionContext).publicContext(),
+                )
+            }
             engineCompleted = true
+            ProgressManager.checkCanceled()
             return descriptors
         } catch (error: Throwable) {
             primaryFailure = error
             throw error
         } finally {
             var cleanupFailure: Throwable? = null
-            if (!engineCompleted) {
+            if (!engineCompleted || executionContext == null) {
                 try {
                     executionWrapper.cleanup(project)
                 } catch (error: Throwable) {
                     cleanupFailure = error
                 }
                 try {
-                    executionContext.cleanup()
+                    executionContext?.cleanup()
                 } catch (error: Throwable) {
                     if (cleanupFailure == null) {
                         cleanupFailure = error
@@ -9759,7 +9776,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
             try {
-                executionContext.removeFromRunningContextsSynchronously()
+                executionContext?.removeFromRunningContextsSynchronously()
             } catch (error: Throwable) {
                 if (cleanupFailure == null) {
                     cleanupFailure = error
