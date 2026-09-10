@@ -3457,7 +3457,7 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test cancellation request preserves timeout evidence without changing completed outcome`() {
+    fun `test cancellation request preserves observed capture timeout outcome`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         val key = projectKey(mockProject)
@@ -3529,8 +3529,73 @@ class InspectionHandlerTest {
         assertEquals("cancel-frame", diagnostics[1].workerStack.single())
         assertEquals("cancel-frame", diagnostics.last().workerStack.single())
         assertEquals(false, terminalState.inProgress)
-        assertEquals(InspectionRunTerminalOutcome.COMPLETED, terminalState.terminalOutcome)
+        assertEquals(InspectionRunTerminalOutcome.TIMED_OUT, terminalState.terminalOutcome)
         verify(exactly = 1) { indicator.cancel() }
+    }
+
+    @Test
+    fun `test exact proof interruption keeps original worker evidence and freezes its terminal outcome`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        val key = projectKey(mockProject)
+        val now = AtomicLong(10_000_000_000L)
+        handler.inspectionRunNowNanos = now::get
+        val worker = Thread("blocked-exact-proof")
+        handler.inspectionWorkerStackProvider = { thread ->
+            assertSame(worker, thread)
+            listOf("BlockedInspection.awaitData")
+        }
+        val record = InspectionHandler::class.java.getDeclaredMethod(
+            "recordInspectionRunFailureDiagnostic", String::class.java, Long::class.javaPrimitiveType,
+            Project::class.java, InspectionRunFailureSource::class.java, ExactProofFailureContext::class.java,
+        ).apply { isAccessible = true }
+        listOf(
+            InspectionRunFailureSource.EXACT_PROOF_DEADLINE to InspectionRunTerminalOutcome.TIMED_OUT,
+            InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED to InspectionRunTerminalOutcome.PREEMPTED,
+        ).forEachIndexed { index, (source, expectedOutcome) ->
+            val runId = 70L + index
+            setInspectionRunState(key, InspectionRunState(
+                runId = runId, triggerTimeMs = 1L, inProgress = true,
+                runStartedNanos = 1_000_000_000L, stage = InspectionRunStage.EXACT_PROOF,
+                stageStartedNanos = 2_000_000_000L,
+            ))
+            val initialDiagnostic = record.invoke(handler, key, runId, mockProject, source,
+                ExactProofFailureContext("BlockedInspection", "/tmp/TestProject/test.py", worker))
+            assertSame(initialDiagnostic, recordInspectionRunFailureDiagnostic(key, runId, source))
+            assertEquals(1, inspectionRunState(key)?.failureDiagnostics?.size)
+            transitionInspectionRunStage(key, runId, InspectionRunStage.PUBLISH)
+            finishInspectionRun(key, runId)
+            val state = requireNotNull(inspectionRunState(key))
+            assertEquals(expectedOutcome, state.terminalOutcome)
+            val evidence = state.failureDiagnostics.single()
+            assertEquals(InspectionRunStage.EXACT_PROOF, evidence.stageAtFailure)
+            assertEquals("BlockedInspection", evidence.toolShortName)
+            assertEquals("/tmp/TestProject/test.py", evidence.filePath)
+            assertEquals("execution", evidence.workerPhase)
+            assertEquals("blocked-exact-proof", evidence.workerThreadName)
+            assertEquals(listOf("BlockedInspection.awaitData"), evidence.workerStack)
+            now.addAndGet(5_000_000_000L)
+            record.invoke(handler, key, runId, mockProject, source,
+                ExactProofFailureContext("LaterInspection", "/tmp/TestProject/other.py", worker))
+            finishInspectionRun(key, runId)
+            assertEquals(state, inspectionRunState(key))
+        }
+    }
+
+    @Test
+    fun `test wait timeout alone does not mark a normally completed run timed out`() {
+        val key = projectKey(mockProject)
+        setInspectionRunState(key, InspectionRunState(
+            runId = 81L, triggerTimeMs = 1L, inProgress = true,
+            failureDiagnostics = listOf(InspectionRunFailureDiagnostic(
+                source = InspectionRunFailureSource.WAIT_TIMEOUT,
+                stageAtFailure = InspectionRunStage.EXACT_PROOF,
+                stageElapsedMs = 1L, runElapsedMs = 1L,
+                dumbMode = false, workerThreadName = null, workerStack = emptyList(),
+            )),
+        ))
+        finishInspectionRun(key, 81L)
+        assertEquals(InspectionRunTerminalOutcome.COMPLETED, inspectionRunState(key)?.terminalOutcome)
     }
 
     @Test

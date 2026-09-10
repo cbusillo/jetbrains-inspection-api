@@ -993,12 +993,15 @@ internal data class InspectionRunStageTiming(
 
 internal enum class InspectionRunTerminalOutcome(val apiValue: String) {
     COMPLETED("completed"),
+    TIMED_OUT("timed_out"),
+    PREEMPTED("preempted"),
     CANCELLED("cancelled"),
     FAILED("failed"),
 }
 
 internal enum class InspectionRunFailureOutcome(val apiValue: String) {
     TIMEOUT("timeout"),
+    PREEMPTED("preempted"),
     CANCELLED("cancelled"),
 }
 
@@ -1008,6 +1011,8 @@ internal enum class InspectionRunFailureSource(
 ) {
     WAIT_TIMEOUT("wait_timeout", InspectionRunFailureOutcome.TIMEOUT),
     CAPTURE_DEADLINE("capture_deadline", InspectionRunFailureOutcome.TIMEOUT),
+    EXACT_PROOF_DEADLINE("exact_proof_deadline", InspectionRunFailureOutcome.TIMEOUT),
+    EXACT_PROOF_WRITE_PREEMPTED("exact_proof_write_preempted", InspectionRunFailureOutcome.PREEMPTED),
     CANCELLATION("cancellation", InspectionRunFailureOutcome.CANCELLED),
 }
 
@@ -1019,10 +1024,29 @@ internal data class InspectionRunFailureDiagnostic(
     val dumbMode: Boolean?,
     val workerThreadName: String?,
     val workerStack: List<String>,
+    val toolShortName: String? = null,
+    val filePath: String? = null,
+    val workerPhase: String? = null,
 ) {
     val outcome: InspectionRunFailureOutcome
         get() = source.outcome
 }
+
+internal data class InspectionCaptureTiming(
+    val captureStartedMs: Long,
+    val settlingStartedMs: Long,
+) {
+    val deadlineMs: Long get() = captureStartedMs + 60_000L
+    fun pollingElapsedMs(nowMs: Long): Long = (nowMs - settlingStartedMs).coerceAtLeast(0L)
+    fun captureElapsedMs(nowMs: Long): Long = (nowMs - captureStartedMs).coerceAtLeast(0L)
+    fun hasBudget(nowMs: Long): Boolean = nowMs < deadlineMs
+}
+
+internal data class ExactProofFailureContext(
+    val toolShortName: String,
+    val filePath: String,
+    val workerThread: Thread,
+)
 
 internal data class InspectionRunControl(
     val runId: Long,
@@ -2162,8 +2186,14 @@ class InspectionHandler : HttpRequestHandler() {
         val executionProofReason =
             diagnostic?.get("execution_proof_block_reason") as? String
                 ?: diagnostic?.get("execution_proof_skipped_reason") as? String
-        if (reason == "execution_not_proven") {
+        if (reason == "execution_not_proven" ||
+            (reason == "inspection_proof_failed" && executionProofReason in setOf("write_action_preempted", "time_limit"))
+        ) {
             return when (executionProofReason) {
+                "write_action_preempted" ->
+                    "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
+                "time_limit" ->
+                    "Inspection execution exhausted its proof budget. Stop retrying and report the exact-proof tool, file, and worker diagnostic; do not report GREEN."
                 "native_attestation_context_creation_failed" ->
                     "Update or reinstall the inspection plugin, restart the IDE, and include execution_proof diagnostics if native attestation remains unavailable."
                 "native_inspection_failures", "native_inspection_reported_problems" ->
@@ -7042,7 +7072,6 @@ class InspectionHandler : HttpRequestHandler() {
                             scopedContextResults.isEmpty()
 
                         val captureStartMs = System.currentTimeMillis()
-                        val deadlineMs = captureStartMs + 60000
                         var bestResults: List<Map<String, Any>> = scopedContextResults
                         var bestSource = if (scopedContextResults.isNotEmpty()) "global_context" else "inspection_view"
 
@@ -7070,6 +7099,9 @@ class InspectionHandler : HttpRequestHandler() {
                                             profile,
                                             project,
                                             capturedScopeFiles,
+                                            failureObserver = { source, context ->
+                                                recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
+                                            },
                                         ) { checkInspectionRunCancellation(key, runId) }
                                         boundedProof = proofRun
                                         proofFindings = proofRun.proofProblems
@@ -7098,7 +7130,19 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NONE -> false
                         }
 
-                        transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
+                        val proofInterruptionSource = when {
+                            boundedProof?.hitTimeLimit == true -> InspectionRunFailureSource.EXACT_PROOF_DEADLINE
+                            boundedProof?.hitWritePreemption == true -> InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED
+                            else -> null
+                        }
+                        val proofFailureDiagnostic = proofInterruptionSource?.let { source ->
+                            recordInspectionRunFailureDiagnostic(key, runId, project, source)
+                        }
+                        val captureTiming = InspectionCaptureTiming(captureStartMs, System.currentTimeMillis())
+                        val canSettleResults = proofInterruptionSource == null && captureTiming.hasBudget(System.currentTimeMillis())
+                        if (canSettleResults) {
+                            transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
+                        }
                         var lastSize = resultSettlingEvidence(bestResults, settlingScopedProofFindings).count
                         var lastChangeMs = System.currentTimeMillis()
                         val observedInspectionView = false
@@ -7124,10 +7168,12 @@ class InspectionHandler : HttpRequestHandler() {
                         var successfulExtractionCount = if (extractedFromContextSucceeded) 1 else 0
                         var lastExtractionCycleSucceeded = extractedFromContextSucceeded
                         var lastToolExtractionSucceeded = false
-                        var captureExitReason = "deadline"
+                        var captureExitReason = proofInterruptionSource?.apiValue ?: "deadline"
                         val viewReadyOk = false
 
-                        while (System.currentTimeMillis() < deadlineMs) {
+                        while (captureTiming.hasBudget(System.currentTimeMillis()) &&
+                            (canSettleResults || toolWindowObservationCount == 0)
+                        ) {
                             checkInspectionRunCancellation(key, runId)
                             if (!isCurrentInspectionRun(key, runId)) {
                                 captureExitReason = "superseded"
@@ -7137,8 +7183,14 @@ class InspectionHandler : HttpRequestHandler() {
                             var toolExtractionSucceeded = false
                             var toolExtractionSource = ProblemExtractionSource.NONE
                             val toolResults = try {
-                                val extraction = ApplicationManager.getApplication().runReadAction<ProblemExtractionResult, Exception> {
-                                    extractor.extractAllProblemsWithStatus(project)
+                                val extraction = if (proofInterruptionSource != null) {
+                                    runWritePriorityInspectionRead(ProgressIndicatorBase(), {}) {
+                                        extractor.extractAllProblemsWithStatus(project)
+                                    }
+                                } else {
+                                    ApplicationManager.getApplication().runReadAction<ProblemExtractionResult, Exception> {
+                                        extractor.extractAllProblemsWithStatus(project)
+                                    }
                                 }
                                 toolExtractionSucceeded = extraction.succeeded
                                 toolExtractionSource = extraction.source
@@ -7174,6 +7226,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 bestSource = "tool_window"
                             }
 
+                            if (!canSettleResults) break
                             val observedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
                             // Tool-window rediscovery of a proof-known finding does not postpone the settled union.
                             if (observedResultEvidence.count != lastSize) {
@@ -7182,7 +7235,7 @@ class InspectionHandler : HttpRequestHandler() {
                             }
 
                             val stableForMs = loopNow - lastChangeMs
-                            val pollingElapsedMs = loopNow - captureStartMs
+                            val pollingElapsedMs = captureTiming.pollingElapsedMs(loopNow)
                             val effectiveObservedNonEmptyInspectionTree = false
                             if (
                                 !observedStableEmptyResultsWithoutInspectionView &&
@@ -7277,13 +7330,13 @@ class InspectionHandler : HttpRequestHandler() {
                                 bestResultsEmpty = finalObservedResultEvidence.isEmpty,
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                 stableForMs = System.currentTimeMillis() - lastChangeMs,
-                                pollingElapsedMs = System.currentTimeMillis() - captureStartMs,
+                                pollingElapsedMs = captureTiming.pollingElapsedMs(System.currentTimeMillis()),
                             )
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
                         }
                         val finalStableForMs = System.currentTimeMillis() - lastChangeMs
-                        val finalPollingElapsedMs = System.currentTimeMillis() - captureStartMs
+                        val finalPollingElapsedMs = captureTiming.pollingElapsedMs(System.currentTimeMillis())
                         if (
                             !observedModelCleanInspection &&
                             executionProofClean &&
@@ -7314,7 +7367,7 @@ class InspectionHandler : HttpRequestHandler() {
                         } else {
                             null
                         }
-                        val captureFailureDiagnostic = captureTimeoutDiagnostic
+                        val captureFailureDiagnostic = (proofFailureDiagnostic ?: captureTimeoutDiagnostic)
                             ?.let(::inspectionFailureDiagnosticMap)
 
                         val captureEndState = captureStableProjectState(project)
@@ -7331,6 +7384,7 @@ class InspectionHandler : HttpRequestHandler() {
                             boundedProof.skippedReason != null -> boundedProof.skippedReason
                             boundedProof.hitFileLimit -> "proof_file_limit_exceeded"
                             boundedProof.hitTimeLimit -> "proof_time_limit_exceeded"
+                            boundedProof.hitWritePreemption -> "proof_write_preempted"
                             boundedProof.errorCount > 0 -> "proof_execution_errors"
                             else -> null
                         }
@@ -7384,7 +7438,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 "exit_reason" to (suspiciousEmptyModelReason ?: captureExitReason),
                                 "ide_product_code" to ideProductCode,
                                 "suspicious_empty_model" to (suspiciousEmptyModelReason != null),
-                                "polling_elapsed_ms" to (captureEndMs - captureStartMs),
+                                "polling_elapsed_ms" to captureTiming.pollingElapsedMs(captureEndMs),
+                                "capture_elapsed_ms" to captureTiming.captureElapsedMs(captureEndMs),
                                 "stable_for_ms" to stableForMs,
                                 "has_scoped_matcher" to (scopeProblemMatcher != null),
                                 "view_ready_ok" to viewReadyOk,
@@ -7682,11 +7737,20 @@ class InspectionHandler : HttpRequestHandler() {
         runId: Long,
         project: Project,
         source: InspectionRunFailureSource,
+    ): InspectionRunFailureDiagnostic? = recordInspectionRunFailureDiagnostic(key, runId, project, source, null)
+
+    private fun recordInspectionRunFailureDiagnostic(
+        key: String,
+        runId: Long,
+        project: Project,
+        source: InspectionRunFailureSource,
+        proofContext: ExactProofFailureContext?,
     ): InspectionRunFailureDiagnostic? {
         return runCatching {
             val nowNanos = currentInspectionRunNanos()
             val runControl = inspectionRunControlsByProject[key]
-            val workerThread = runControl?.takeIf { it.runId == runId }?.workerThread?.get()
+            val workerThread = proofContext?.workerThread
+                ?: runControl?.takeIf { it.runId == runId }?.workerThread?.get()
             val workerStack = workerThread?.let { thread ->
                 runCatching { inspectionWorkerStackProvider(thread) }
                     .onFailure { error -> logger.warn("Failed to capture inspection worker stack for run $runId", error) }
@@ -7712,6 +7776,9 @@ class InspectionHandler : HttpRequestHandler() {
                         dumbMode = dumbMode,
                         workerThreadName = workerThread?.name?.take(160),
                         workerStack = workerStack,
+                        toolShortName = proofContext?.toolShortName?.take(160),
+                        filePath = proofContext?.filePath?.take(4096),
+                        workerPhase = proofContext?.let { "execution" },
                     )
                     recorded = diagnostic
                     state.copy(
@@ -7727,7 +7794,14 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun finishInspectionRun(key: String, runId: Long) {
-        finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.COMPLETED)
+        val failures = inspectionRunStatesByProject[key]?.takeIf { it.runId == runId }?.failureDiagnostics.orEmpty()
+        val outcome = when {
+            failures.any { it.source == InspectionRunFailureSource.EXACT_PROOF_DEADLINE } -> InspectionRunTerminalOutcome.TIMED_OUT
+            failures.any { it.source == InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED } -> InspectionRunTerminalOutcome.PREEMPTED
+            failures.any { it.source == InspectionRunFailureSource.CAPTURE_DEADLINE } -> InspectionRunTerminalOutcome.TIMED_OUT
+            else -> InspectionRunTerminalOutcome.COMPLETED
+        }
+        finishInspectionRunWithOutcome(key, runId, outcome)
     }
 
     private fun finishInspectionRunWithOutcome(
@@ -7806,6 +7880,9 @@ class InspectionHandler : HttpRequestHandler() {
         diagnostic.stageAtFailure?.let { fields["inspection_stage_at_failure"] = it.apiValue }
         diagnostic.dumbMode?.let { fields["dumb_mode"] = it }
         diagnostic.workerThreadName?.let { fields["inspection_worker_thread"] = it }
+        diagnostic.toolShortName?.let { fields["inspection_tool_short_name"] = it }
+        diagnostic.filePath?.let { fields["inspection_file"] = it }
+        diagnostic.workerPhase?.let { fields["inspection_worker_phase"] = it }
         return fields
     }
 
@@ -9764,6 +9841,7 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_error_count" to proof.errorCount,
             "execution_proof_hit_file_limit" to proof.hitFileLimit,
             "execution_proof_hit_time_limit" to proof.hitTimeLimit,
+            "execution_proof_hit_write_preemption" to proof.hitWritePreemption,
             "execution_proof_candidate_obligation_count" to proof.candidateObligationCount,
             "execution_proof_candidate_scope_file_count" to proof.candidateScopeFileCount,
             "execution_proof_applicable_scope_file_count" to proof.applicableScopeFileCount,
@@ -9941,6 +10019,7 @@ class InspectionHandler : HttpRequestHandler() {
         profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
+        failureObserver: (InspectionRunFailureSource, ExactProofFailureContext) -> Unit = { _, _ -> },
         cancellationCheck: () -> Unit,
     ): BoundedExecutionProofResult {
         val app = ApplicationManager.getApplication()
@@ -9961,8 +10040,16 @@ class InspectionHandler : HttpRequestHandler() {
             if (proofDeadlineExceeded()) throw ExactFileProofTimeLimitExceededException()
         }
 
-        fun <T> runDeadlineAwareProofProcess(action: (ProgressIndicator) -> T): T {
+        fun <T> runDeadlineAwareProofProcess(
+            candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+            action: (ProgressIndicator, () -> Unit) -> T,
+        ): T {
             val indicator = ProgressIndicatorBase()
+            val context = ExactProofFailureContext(candidate.shortName, candidate.filePath, Thread.currentThread())
+            fun observeFailure(source: InspectionRunFailureSource) {
+                runCatching { failureObserver(source, context) }
+                    .onFailure { logger.warn("Failed to capture exact inspection proof interruption", it) }
+            }
             val deadlineTriggered = AtomicBoolean(false)
             val externalCancellation = AtomicReference<RuntimeException?>()
             val monitor = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
@@ -9974,7 +10061,9 @@ class InspectionHandler : HttpRequestHandler() {
                         indicator.cancel()
                     }
                     if (externalCancellation.get() == null && proofDeadlineExceeded()) {
-                        deadlineTriggered.set(true)
+                        if (deadlineTriggered.compareAndSet(false, true)) {
+                            observeFailure(InspectionRunFailureSource.EXACT_PROOF_DEADLINE)
+                        }
                         indicator.cancel()
                     }
                 },
@@ -9986,10 +10075,16 @@ class InspectionHandler : HttpRequestHandler() {
                 ProgressManager.getInstance().runProcess(
                     Computable {
                         checkProofBudget()
-                        action(indicator).also { checkProofBudget() }
+                        action(indicator) {
+                            observeFailure(InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED)
+                        }.also { checkProofBudget() }
                     },
                     indicator,
                 )
+            } catch (error: ExactFileProofWritePreemptedException) {
+                externalCancellation.get()?.let { throw it }
+                checkProofBudget()
+                throw error
             } catch (error: ProcessCanceledException) {
                 externalCancellation.get()?.let { throw it }
                 if (deadlineTriggered.get() || proofDeadlineExceeded()) {
@@ -10168,8 +10263,8 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
-                runDeadlineAwareProofProcess { indicator ->
-                    app.runReadAction<List<com.intellij.codeInspection.ProblemDescriptor>, Exception> {
+                runDeadlineAwareProofProcess(candidate) { indicator, onPreempt ->
+                    runWritePriorityInspectionRead(indicator, onPreempt) {
                         if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
                             val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                             SupportedInspectionExecutor().executePreparedFile(

@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.openapi.progress.ProcessCanceledException
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -122,7 +123,7 @@ class ExactFileExecutionProofTest {
 
     private fun runProof(
         names: List<String>,
-        adapter: FakeAdapter,
+        adapter: ExactFileProofAdapter<String, String, Wrapper, String>,
         timeoutMs: Long = 1_000,
         clock: () -> Long = { 0L },
         cancellationCheck: () -> Unit = {},
@@ -476,6 +477,180 @@ class ExactFileExecutionProofTest {
         assertEquals(1, proof.unvisitedObligationCount)
         assertEquals(0, proof.unvisitedClassificationObligationCount)
         assertEquals(1, proof.unexecutedRunnableObligationCount)
+    }
+
+    @Test
+    fun `write preemption keeps completed findings and leaves remaining obligations unproven`() {
+        val cleanupCount = AtomicInteger()
+        val proof = runProof(
+            names = listOf("Fast", "Preempted", "Unstarted"),
+            adapter = FakeAdapter(
+                wrappers = mapOf(
+                    "Fast" to Wrapper(),
+                    "Preempted" to Wrapper(),
+                    "Unstarted" to Wrapper(),
+                ),
+                descriptors = mapOf("Fast" to listOf("completed")),
+                onExecution = { name ->
+                    if (name == "Preempted") throw ExactFileProofWritePreemptedException()
+                },
+                onCleanup = { _, _ -> cleanupCount.incrementAndGet() },
+            ),
+            maxParallelFiles = 1,
+        )
+
+        assertFalse(proof.proofEstablished)
+        assertTrue(proof.hitWritePreemption)
+        assertFalse(proof.hitTimeLimit)
+        assertEquals("write_action_preempted", proof.proofBlockReason)
+        assertEquals(1, proof.executedToolCount)
+        assertEquals(2, proof.unexecutedRunnableObligationCount)
+        assertEquals(1, proof.proofProblems.size)
+        assertEquals("Fast", proof.proofProblems.single()["tool"])
+        assertEquals(2, cleanupCount.get())
+        assertTrue(proof.blockingExamples.any { it["classification"] == "write_action_preempted" })
+    }
+
+    @Test
+    fun `execution failures and write preemptions retain distinct classifications`() {
+        val proof = runProof(
+            names = listOf("Failed", "Preempted"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Failed" to Wrapper(), "Preempted" to Wrapper()),
+                onExecution = { name ->
+                    when (name) {
+                        "Failed" -> throw IllegalStateException("execution failed")
+                        "Preempted" -> throw ExactFileProofWritePreemptedException()
+                    }
+                },
+            ),
+            maxParallelFiles = 1,
+        )
+
+        assertTrue(proof.hitWritePreemption)
+        assertEquals(1, proof.failedObligationCount)
+        assertTrue(proof.blockingExamples.any { it["classification"] == "execution_failed" })
+        assertTrue(proof.blockingExamples.any { it["classification"] == "write_action_preempted" })
+    }
+
+    @Test
+    fun `parallel preemption keeps sibling cancellation from becoming an external failure`() {
+        val workersStarted = CountDownLatch(2)
+        val preemptionClassified = CountDownLatch(1)
+        val cleanupCount = AtomicInteger()
+        val proof = runProof(
+            names = listOf("Preempted", "Sibling"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Preempted" to Wrapper(), "Sibling" to Wrapper()),
+                onExecution = { name ->
+                    workersStarted.countDown()
+                    assertTrue(workersStarted.await(2, TimeUnit.SECONDS))
+                    if (name == "Preempted") {
+                        throw ExactFileProofWritePreemptedException()
+                    }
+                    assertTrue(preemptionClassified.await(2, TimeUnit.SECONDS))
+                    throw ProcessCanceledException()
+                },
+                onCleanup = { name, _ ->
+                    cleanupCount.incrementAndGet()
+                    if (name == "Preempted") preemptionClassified.countDown()
+                },
+            ),
+            filePaths = mapOf("Preempted" to "/repo/A.kt", "Sibling" to "/repo/B.kt"),
+        )
+
+        assertTrue(proof.hitWritePreemption)
+        assertFalse(proof.proofEstablished)
+        assertEquals("write_action_preempted", proof.proofBlockReason)
+        assertEquals(0, proof.failedObligationCount)
+        assertEquals(2, proof.unexecutedRunnableObligationCount)
+        assertEquals(2, cleanupCount.get())
+    }
+
+    @Test
+    fun `parallel preemption during descriptor mapping keeps the mapped prefix and counts remaining descriptors`() {
+        val secondDescriptorMappingStarted = CountDownLatch(1)
+        val preemptionClassified = CountDownLatch(1)
+        val cleanupCount = AtomicInteger()
+        val proof = runProof(
+            names = listOf("Preempted", "Mapper"),
+            adapter = FakeAdapter(
+                wrappers = mapOf("Preempted" to Wrapper(), "Mapper" to Wrapper()),
+                descriptors = mapOf("Mapper" to listOf("first", "second")),
+                onExecution = { name ->
+                    if (name == "Preempted") {
+                        assertTrue(secondDescriptorMappingStarted.await(2, TimeUnit.SECONDS))
+                        throw ExactFileProofWritePreemptedException()
+                    }
+                },
+                onMapping = { descriptor ->
+                    if (descriptor == "second") {
+                        secondDescriptorMappingStarted.countDown()
+                        assertTrue(preemptionClassified.await(2, TimeUnit.SECONDS))
+                    }
+                },
+                onCleanup = { name, _ ->
+                    cleanupCount.incrementAndGet()
+                    if (name == "Preempted") preemptionClassified.countDown()
+                },
+            ),
+            filePaths = mapOf("Preempted" to "/repo/A.kt", "Mapper" to "/repo/B.kt"),
+        )
+
+        assertTrue(proof.hitWritePreemption)
+        assertEquals(1, proof.executedToolCount)
+        assertEquals(1, proof.unvisitedDescriptorCount)
+        assertEquals(listOf("Mapper"), proof.proofProblems.map { it["tool"] })
+        assertEquals(listOf("first"), proof.proofProblems.map { it["description"] })
+        assertEquals(2, cleanupCount.get())
+    }
+
+    @Test
+    fun `direct descriptor mapping preemption remains incomplete without a mapping error`() {
+        val proof = runProof(
+            names = listOf("Mapper"),
+            adapter = object : ExactFileProofAdapter<String, String, Wrapper, String> by FakeAdapter(
+                wrappers = mapOf("Mapper" to Wrapper()),
+                descriptors = mapOf("Mapper" to listOf("first", "second")),
+            ) {
+                override fun mapDescriptor(
+                    candidate: ExactFileProofCandidate<String>,
+                    batchWrapper: Wrapper,
+                    descriptor: String,
+                ): Map<String, Any>? {
+                    if (descriptor == "second") throw ExactFileProofWritePreemptedException()
+                    return mapOf(
+                        "tool" to candidate.shortName,
+                        "description" to descriptor,
+                        "file" to candidate.filePath,
+                    )
+                }
+            },
+        )
+
+        assertTrue(proof.hitWritePreemption)
+        assertEquals(1, proof.unvisitedDescriptorCount)
+        assertEquals(0, proof.errorCount)
+        assertEquals(listOf("first"), proof.proofProblems.map { it["description"] })
+    }
+
+    @Test
+    fun `caller cancellation wins after write preemption cleanup`() {
+        val cancellationRequested = java.util.concurrent.atomic.AtomicBoolean(false)
+
+        assertThrows(CancellationSignal::class.java) {
+            runProof(
+                names = listOf("Preempted"),
+                adapter = FakeAdapter(
+                    wrappers = mapOf("Preempted" to Wrapper()),
+                    onExecution = { throw ExactFileProofWritePreemptedException() },
+                    onCleanup = { _, _ -> cancellationRequested.set(true) },
+                ),
+                cancellationCheck = {
+                    if (cancellationRequested.get()) throw CancellationSignal()
+                },
+            )
+        }
     }
 
     @Test

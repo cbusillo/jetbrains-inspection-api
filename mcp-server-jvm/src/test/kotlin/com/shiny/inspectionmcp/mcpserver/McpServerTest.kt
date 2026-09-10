@@ -288,6 +288,155 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetProblemsPromotesExactProofDiagnosticsWithoutRawCaptureDump() {
+        val response = """
+            {
+              "status": "results_available",
+              "inspection_run_id": 73,
+              "total_problems": 0,
+              "problems_shown": 0,
+              "problems": [],
+              "proof_failures": ["execution_not_proven"],
+              "inspection_verdict": "UNKNOWN",
+              "inspection_verdict_reason": "inspection_proof_failed",
+              "inspection_terminal_outcome": "timed_out",
+              "capture_diagnostic": {
+                "inspection_run_id": 73,
+                "inspection_stage": "exact_proof",
+                "inspection_run_elapsed_ms": 75000,
+                "inspection_terminal_outcome": "timed_out",
+                "inspection_failure_diagnostic": {
+                  "source": "exact_proof_deadline",
+                  "outcome": "timeout",
+                  "inspection_worker_phase": "execution",
+                  "inspection_tool_short_name": "ProofTool",
+                  "inspection_file": "/Users/example/project/src/Main.kt"
+                },
+                "inspection_failure_history": [
+                  {
+                    "source": "exact_proof_deadline",
+                    "outcome": "timeout"
+                  },
+                  {
+                    "source": "exact_proof_write_preempted",
+                    "outcome": "preempted"
+                  }
+                ],
+                "scope_file_diagnostics": ["raw detail that must stay nested"]
+              }
+            }
+        """.trimIndent()
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=execution_not_proven"))
+            assertTrue(text.contains("\"inspection_run_id\": 73"))
+            assertTrue(text.contains("\"inspection_terminal_outcome\": \"timed_out\""))
+            assertTrue(text.contains("\"inspection_failure_diagnostic\""))
+            assertTrue(text.contains("\"source\": \"exact_proof_deadline\""))
+            assertTrue(text.contains("\"source\": \"exact_proof_write_preempted\""))
+            assertTrue(text.contains("\"inspection_tool_short_name\": \"ProofTool\""))
+            assertFalse(text.contains("capture_diagnostic"))
+            assertFalse(text.contains("raw detail that must stay nested"))
+            assertFalse(text.contains("Retry once"))
+            assertFalse(text.contains("increase timeout_ms"))
+            assertFalse(text.contains("VERDICT: GREEN"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsDropsWrongRunNestedDiagnostics() {
+        val response = """
+            {
+              "status": "results_available",
+              "inspection_run_id": 56,
+              "total_problems": 0,
+              "problems_shown": 0,
+              "problems": [],
+              "proof_failures": ["execution_not_proven"],
+              "inspection_verdict": "UNKNOWN",
+              "inspection_verdict_reason": "inspection_proof_failed",
+              "capture_diagnostic": {
+                "inspection_run_id": 40,
+                "inspection_terminal_outcome": "timed_out",
+                "inspection_failure_diagnostic": {
+                  "source": "exact_proof_deadline",
+                  "outcome": "timeout"
+                }
+              }
+            }
+        """.trimIndent()
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertTrue(text.contains("\"inspection_run_id\": 56"))
+            assertFalse(text.contains("\"inspection_run_id\": 40"))
+            assertFalse(text.contains("inspection_failure_diagnostic"))
+            assertFalse(text.contains("exact_proof_deadline"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsRetainsRedForExecutionProofGapWithCurrentFindings() {
+        val response = """
+            {
+              "status": "results_available",
+              "inspection_run_id": 74,
+              "total_problems": 1,
+              "problems_shown": 1,
+              "problems": [{"description": "Actionable finding"}],
+              "proof_failures": ["execution_not_proven"],
+              "inspection_verdict": "RED",
+              "inspection_verdict_reason": "actionable_findings",
+              "inspection_failure_diagnostic": {
+                "source": "exact_proof_deadline",
+                "outcome": "timeout"
+              }
+            }
+        """.trimIndent()
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
+            val text = result.firstText()
+
+            assertTrue(text.contains("VERDICT: RED reason=actionable_findings"))
+            assertTrue(text.contains("Actionable finding"))
+            assertFalse(text.contains("VERDICT: UNKNOWN"))
+        }
+    }
+
+    @Test
+    fun inspectionGetProblemsDoesNotRelaxUnrelatedProofFailures() {
+        listOf("scope_semantic_coverage_missing", "scope_semantic_coverage_truncated", "execution_not_proven").forEach { reason ->
+            val response = """
+                {
+                  "status": "results_available", "inspection_run_id": 75,
+                  "total_problems": 1, "problems": [{"description": "Unproven finding"}],
+                  "proof_failures": ["$reason"],
+                  "inspection_verdict": "RED", "inspection_verdict_reason": "actionable_findings"
+                }
+            """.trimIndent()
+            MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+                server.start()
+                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+                val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
+                assertTrue(text.contains("VERDICT: UNKNOWN reason=inspection_proof_failed"), text)
+                assertFalse(text.contains("VERDICT: RED"), text)
+            }
+        }
+    }
+
+    @Test
     fun inspectionGetProblemsKeepsExplicitStaleDiagnostics() {
         val response = """{"status":"stale_results","results_may_be_stale":true,"include_stale":true,"cached_total_problems":1,"cached_problems_shown":1,"problems":[{"description":"Cached warning"}],"pagination":{"limit":100,"offset":0,"has_more":false},"inspection_verdict":"UNKNOWN","inspection_verdict_reason":"stale_results"}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
