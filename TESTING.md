@@ -429,7 +429,7 @@ build. This replaces broad class-name substring acceptance.
 All remaining `GlobalInspectionContextImpl` source references must stay in
 `GlobalInspectionContextBoundary.kt` (including its private attested subclass),
 and the release-contract suite rejects source or Stable allowlist references
-that escape that named boundary. The boundary exists only for broad native
+that escape that named boundary. The boundary exists only for synchronous native
 execution, direct presentation access, lifecycle cleanup, and per-kind
 attestation that the supported bounded `inspectEx` path cannot provide.
 
@@ -523,6 +523,17 @@ with the harness output rooted in this checkout and
 IDEA config directory. The 2026.2 fixture is an exact EAP compatibility gate; do
 not use it for ordinary local agent-readiness checks unless the matching 2026.2
 EAP app and config directory are installed.
+
+### Normal-IDE traversal lifecycle
+
+Normal-IDE file traversal must be tested separately from headless execution.
+The platform's closed-view gate cancels native traversal in a normal IDE, but
+headless tests bypass that gate. Regression controls must exercise the real
+platform gate in normal mode and compare a factory-created context with the
+plugin's synchronous context. Closing a context and caller cancellation must
+still stop work. Live acceptance uses the same clean files-scope fixture that
+previously cancelled in `native_execute`, plus a deliberate finding control;
+an UNKNOWN result is not a clean pass.
 
 ### Exact-proof write contention
 

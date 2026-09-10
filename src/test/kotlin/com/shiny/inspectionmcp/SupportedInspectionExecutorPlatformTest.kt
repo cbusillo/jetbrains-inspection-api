@@ -4,10 +4,13 @@ import com.intellij.analysis.AnalysisScope
 import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.GlobalInspectionTool
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
@@ -24,6 +27,7 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
@@ -43,6 +47,8 @@ import org.junit.jupiter.api.extension.BeforeAllCallback
 import org.junit.jupiter.api.extension.ExtensionContext
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.nio.file.Paths
+import java.lang.reflect.InvocationTargetException
+import java.util.ArrayList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -141,6 +147,62 @@ class SupportedInspectionExecutorPlatformTest {
 
         assertThatThrownBy { execute(listOf(CleanInspection()), indicator = indicator) }
             .isInstanceOf(ProcessCanceledException::class.java)
+    }
+
+    @Test
+    fun `synchronous global boundary opens the non-headless traversal gate and close keeps it closed`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val ordinaryContext = inspectionManager.createNewGlobalContext()
+        try {
+            assertThatThrownBy { invokeNonHeadlessShouldProcess(ordinaryContext, file) }
+                .isInstanceOf(ProcessCanceledException::class.java)
+            assertThat(invokeShouldProcess(ordinaryContext, file, headless = true)).isNotNull()
+
+            val boundary = GlobalInspectionContextBoundary.create(inspectionManager)
+            try {
+                assertThat(invokeNonHeadlessShouldProcess(boundary.contextForTest(), file)).isNotNull()
+                runInEdtAndGet { boundary.close(save = true) }
+                assertThatThrownBy { invokeNonHeadlessShouldProcess(boundary.contextForTest(), file) }
+                    .isInstanceOf(ProcessCanceledException::class.java)
+            } finally {
+                boundary.cleanup()
+                boundary.removeFromRunningContextsSynchronously()
+            }
+        } finally {
+            ordinaryContext.cleanup()
+            inspectionManager.runningContexts.remove(ordinaryContext)
+        }
+    }
+
+    @Test
+    fun `synchronous global boundary preserves caller cancellation at native entry`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val boundary = GlobalInspectionContextBoundary.create(inspectionManager)
+        val indicator = runInEdtAndGet { ProgressWindow(false, true, project).apply { cancel() } }
+        val failure = AtomicReference<Throwable?>()
+        try {
+            boundary.configure(profileWith(CleanInspection()), AnalysisScope(file))
+            val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+                try {
+                    ProgressManager.getInstance().runProcess(
+                        Runnable { boundary.performInspectionsWithProgress(AnalysisScope(file)) },
+                        indicator,
+                    )
+                } catch (error: Throwable) {
+                    failure.set(error)
+                }
+            }
+
+            future.get(5, TimeUnit.SECONDS)
+            assertThat(failure.get()).isInstanceOf(ProcessCanceledException::class.java)
+        } finally {
+            boundary.cleanup()
+            boundary.removeFromRunningContextsSynchronously()
+        }
     }
 
     @Test
@@ -588,6 +650,35 @@ class SupportedInspectionExecutorPlatformTest {
                 VfsUtil.saveText(virtualFile, "supported inspection fixture")
                 requireNotNull(PsiManager.getInstance(project).findFile(virtualFile))
             }
+        }
+    }
+
+    private fun GlobalInspectionContextBoundary.contextForTest(): GlobalInspectionContextImpl {
+        return publicContext() as GlobalInspectionContextImpl
+    }
+
+    private fun invokeNonHeadlessShouldProcess(context: GlobalInspectionContextImpl, file: PsiFile): Any? {
+        return invokeShouldProcess(context, file, headless = false)
+    }
+
+    private fun invokeShouldProcess(
+        context: GlobalInspectionContextImpl,
+        file: PsiFile,
+        headless: Boolean,
+    ): Any? {
+        val method = GlobalInspectionContextImpl::class.java.getDeclaredMethod(
+            "shouldProcess",
+            PsiFile::class.java,
+            Boolean::class.javaPrimitiveType,
+            Collection::class.java,
+        )
+        method.isAccessible = true
+        return try {
+            ReadAction.compute<Any?, RuntimeException> {
+                method.invoke(context, file, headless, ArrayList<com.intellij.openapi.vfs.VirtualFile>())
+            }
+        } catch (error: InvocationTargetException) {
+            throw requireNotNull(error.cause)
         }
     }
 

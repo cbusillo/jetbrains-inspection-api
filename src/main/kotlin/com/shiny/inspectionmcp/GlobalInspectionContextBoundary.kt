@@ -53,7 +53,13 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     companion object {
         fun create(inspectionManager: InspectionManagerEx): GlobalInspectionContextBoundary {
-            val context = inspectionManager.createNewGlobalContext()
+            val context = NativeAttestedGlobalInspectionContext(
+                inspectionManager.project,
+                inspectionManager.contentManager,
+                null,
+            )
+            inspectionManager.runningContexts.add(context)
+            context.openSynchronousFileTraversalGate()
             return GlobalInspectionContextBoundary(inspectionManager, context)
         }
 
@@ -81,13 +87,13 @@ internal class GlobalInspectionContextBoundary private constructor(
 private class NativeAttestedGlobalInspectionContext(
     project: Project,
     contentManager: NotNullLazyValue<out ContentManager>,
-    collector: NativeInspectionExecutionProofCollector,
+    collector: NativeInspectionExecutionProofCollector?,
 ) : GlobalInspectionContextImpl(project, contentManager) {
     private val platformPublisher = project.messageBus.syncPublisher(GlobalInspectionContextEx.INSPECT_TOPIC)
     private val attestedPublisher = object : InspectListener {
         override fun fileAnalyzed(file: PsiFile, eventProject: Project) {
             platformPublisher.fileAnalyzed(file, eventProject)
-            collector.recordExactFileAnalyzed(file, eventProject)
+            collector?.recordExactFileAnalyzed(file, eventProject)
         }
 
         override fun inspectionFinished(
@@ -108,7 +114,7 @@ private class NativeAttestedGlobalInspectionContext(
                 file,
                 eventProject,
             )
-            collector.recordExactInspectionFinished(problemCount, toolWrapper, inspectionKind, eventProject)
+            collector?.recordExactInspectionFinished(problemCount, toolWrapper, inspectionKind, eventProject)
         }
 
         override fun activityFinished(
@@ -118,7 +124,7 @@ private class NativeAttestedGlobalInspectionContext(
             eventProject: Project,
         ) {
             platformPublisher.activityFinished(durationMillis, threadId, activityKind, eventProject)
-            collector.recordExactActivityFinished(eventProject)
+            collector?.recordExactActivityFinished(eventProject)
         }
 
         override fun inspectionFailed(
