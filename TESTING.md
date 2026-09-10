@@ -426,7 +426,7 @@ must match the exact, sorted canonical findings in
 missing expected findings, malformed report lines, or absent reports fail the
 build. This replaces broad class-name substring acceptance.
 
-All remaining `GlobalInspectionContextImpl` source references must stay in
+All production `GlobalInspectionContextImpl` source references must stay in
 `GlobalInspectionContextBoundary.kt` (including its private attested subclass),
 and the release-contract suite rejects source or Stable allowlist references
 that escape that named boundary. The boundary exists only for synchronous native
@@ -534,6 +534,15 @@ plugin's synchronous context. Closing a context and caller cancellation must
 still stop work. Live acceptance uses the same clean files-scope fixture that
 previously cancelled in `native_execute`, plus a deliberate finding control;
 an UNKNOWN result is not a clean pass.
+
+The `RedLane` targeted fallback must use its own context for each file:
+`InspectionEngine.runInspectionOnFile` cleans up the supplied context, including
+its progress indicator. Tests must keep the native context's progress and tool
+state intact through both clean and finding-bearing fallback runs, and verify
+that temporary contexts are removed even when execution is cancelled.
+An empty `RedLane` run deliberately remains `UNKNOWN/inspection_trigger_empty_model`;
+its successful execution is not a GREEN control. Use a separately named fixture
+profile with the same inspection settings for clean-result acceptance.
 
 ### Exact-proof write contention
 
