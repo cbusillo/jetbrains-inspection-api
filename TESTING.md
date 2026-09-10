@@ -426,10 +426,10 @@ must match the exact, sorted canonical findings in
 missing expected findings, malformed report lines, or absent reports fail the
 build. This replaces broad class-name substring acceptance.
 
-All remaining `GlobalInspectionContextImpl` source references must stay in
+All production `GlobalInspectionContextImpl` source references must stay in
 `GlobalInspectionContextBoundary.kt` (including its private attested subclass),
 and the release-contract suite rejects source or Stable allowlist references
-that escape that named boundary. The boundary exists only for broad native
+that escape that named boundary. The boundary exists only for synchronous native
 execution, direct presentation access, lifecycle cleanup, and per-kind
 attestation that the supported bounded `inspectEx` path cannot provide.
 
@@ -523,6 +523,33 @@ with the harness output rooted in this checkout and
 IDEA config directory. The 2026.2 fixture is an exact EAP compatibility gate; do
 not use it for ordinary local agent-readiness checks unless the matching 2026.2
 EAP app and config directory are installed.
+
+### Normal-IDE traversal lifecycle
+
+Normal-IDE file traversal must be tested separately from headless execution.
+The platform's closed-view gate cancels native traversal in a normal IDE, but
+headless tests bypass that gate. Regression controls must exercise the real
+platform gate in normal mode and compare a factory-created context with the
+plugin's synchronous context. Closing a context and caller cancellation must
+still stop work. Live acceptance uses the same clean files-scope fixture that
+previously cancelled in `native_execute`, plus a deliberate finding control;
+an UNKNOWN result is not a clean pass.
+Test-only platform references and reflection seed the normal-mode gate, parent
+indicator, and retained tool state that headless fixtures otherwise omit; the
+release-contract boundary check applies to production sources.
+
+The `RedLane` targeted fallback must isolate copied wrappers from the native run.
+Local wrappers use `inspectEx` with the current caller indicator: the platform's
+`runInspectionOnFile` substitutes an `EmptyProgressIndicator` for local tools,
+which prevents mid-file caller cancellation. Non-local wrappers retain a private
+context per file because `runInspectionOnFile` cleans the supplied context and
+its progress indicator. Tests keep the parent progress and tool state intact,
+verify cleanup on failure, and cancel a running local tool through the actual
+caller indicator. These tests do not establish mid-file cancellation for global
+tools or broad operational reliability.
+An empty `RedLane` run deliberately remains `UNKNOWN/inspection_trigger_empty_model`;
+its successful execution is not a GREEN control. Use a separately named fixture
+profile with the same inspection settings for clean-result acceptance.
 
 ### Exact-proof write contention
 

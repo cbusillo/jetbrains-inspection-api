@@ -4,10 +4,16 @@ import com.intellij.analysis.AnalysisScope
 import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.GlobalInspectionTool
+import com.intellij.codeInspection.GlobalSimpleInspectionTool
+import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
+import com.intellij.codeInspection.ex.GlobalInspectionContextBase
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
@@ -19,11 +25,13 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
+import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
@@ -43,6 +51,8 @@ import org.junit.jupiter.api.extension.BeforeAllCallback
 import org.junit.jupiter.api.extension.ExtensionContext
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.nio.file.Paths
+import java.lang.reflect.InvocationTargetException
+import java.util.ArrayList
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -144,6 +154,210 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
+    fun `synchronous global boundary opens the non-headless traversal gate and close keeps it closed`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val ordinaryContext = inspectionManager.createNewGlobalContext()
+        try {
+            assertThatThrownBy { invokeNonHeadlessShouldProcess(ordinaryContext, file) }
+                .isInstanceOf(ProcessCanceledException::class.java)
+            assertThat(invokeShouldProcess(ordinaryContext, file, headless = true)).isNotNull()
+
+            val boundary = GlobalInspectionContextBoundary.create(inspectionManager)
+            try {
+                assertThat(invokeNonHeadlessShouldProcess(boundary.contextForTest(), file)).isNotNull()
+                runInEdtAndGet { boundary.close(save = true) }
+                assertThatThrownBy { invokeNonHeadlessShouldProcess(boundary.contextForTest(), file) }
+                    .isInstanceOf(ProcessCanceledException::class.java)
+            } finally {
+                boundary.cleanup()
+                boundary.removeFromRunningContextsSynchronously()
+            }
+        } finally {
+            ordinaryContext.cleanup()
+            inspectionManager.runningContexts.remove(ordinaryContext)
+        }
+    }
+
+    @Test
+    fun `synchronous global boundary preserves caller cancellation at native entry`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val boundary = GlobalInspectionContextBoundary.create(inspectionManager)
+        val indicator = runInEdtAndGet { ProgressWindow(false, true, project).apply { cancel() } }
+        val failure = AtomicReference<Throwable?>()
+        try {
+            boundary.configure(profileWith(CleanInspection()), AnalysisScope(file))
+            val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+                try {
+                    ProgressManager.getInstance().runProcess(
+                        { boundary.performInspectionsWithProgress(AnalysisScope(file)) },
+                        indicator,
+                    )
+                } catch (error: Throwable) {
+                    failure.set(error)
+                }
+            }
+
+            future.get(5, TimeUnit.SECONDS)
+            assertThat(failure.get()).isInstanceOf(ProcessCanceledException::class.java)
+        } finally {
+            boundary.cleanup()
+            boundary.removeFromRunningContextsSynchronously()
+        }
+    }
+
+    @Test
+    fun `single-file fallback keeps its parent progress current and returns clean and finding results`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val parentTool = CleanInspection()
+        val parent = createCompletedParentInspectionContext(file, parentTool)
+        val findingTool = FindingInspection()
+        val parentTools = parent.context.toolGroups().map { it.shortName }
+        val runningContextCount = (InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts.size
+        try {
+            assertThat(parentTools).contains(parentTool.shortName)
+            assertThat(parent.currentIndicator.get()).isNull()
+
+            val cleanDescriptors = runWithCurrentParentIndicator(parent) {
+                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CleanInspection()))
+            }
+            assertThat(cleanDescriptors).isEmpty()
+            assertParentContextIntact(parent, parentTools)
+            assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
+                .hasSize(runningContextCount)
+
+            val findingDescriptors = runWithCurrentParentIndicator(parent) {
+                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(findingTool))
+            }
+
+            assertThat(findingDescriptors).singleElement().extracting { it.descriptionTemplate }
+                .isEqualTo("supported finding")
+            assertParentContextIntact(parent, parentTools)
+            assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
+                .hasSize(runningContextCount)
+        } finally {
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
+    fun `shared parent context is consumed by the raw single-file platform API`() {
+        val file = createPhysicalFile()
+        val parentTool = CleanInspection()
+        val parent = createCompletedParentInspectionContext(file, parentTool)
+        try {
+            assertThat(parent.context.toolGroups()).isNotEmpty()
+
+            assertThatThrownBy {
+                runWithCurrentParentIndicator(parent) {
+                    InspectionEngine.runInspectionOnFile(
+                        file,
+                        LocalInspectionToolWrapper(FindingInspection()),
+                        parent.context.publicContext(),
+                    )
+                }
+            }.isInstanceOf(ProcessCanceledException::class.java)
+
+            assertThat(requireNotNull(parent.currentIndicator.get()).isCanceled).isTrue()
+            assertThatThrownBy { parent.context.toolGroups() }
+                .isInstanceOf(IllegalStateException::class.java)
+                .hasMessageContaining("Tools are not initialized")
+        } finally {
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
+    fun `single-file local fallback propagates cancellation and preserves caller state`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val parent = createCompletedParentInspectionContext(file, CleanInspection())
+        val runningContextCount = inspectionManager.runningContexts.size
+
+        try {
+            assertThatThrownBy {
+                runWithCurrentParentIndicator(parent) {
+                    InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CancellingInspection()))
+                }
+            }.isInstanceOf(ProcessCanceledException::class.java)
+
+            assertThat(inspectionManager.runningContexts).hasSize(runningContextCount)
+            assertThat(requireNotNull(parent.currentIndicator.get()).isCanceled).isFalse()
+        } finally {
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
+    fun `single-file local fallback propagates mid-file caller cancellation and preserves caller state`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val parent = createCompletedParentInspectionContext(file, CleanInspection())
+        val runningContextCount = inspectionManager.runningContexts.size
+        val parentTools = parent.context.toolGroups().map { it.shortName }
+        val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger(), CountDownLatch(1))
+        val failure = AtomicReference<Throwable?>()
+        blockingInspectionControl.set(control)
+        var future: java.util.concurrent.Future<*>? = null
+
+        try {
+            future = startWithCurrentParentIndicator(parent, failure) {
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file,
+                    LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
+                )
+            }
+            assertThat(control.enteredTool.await(2, TimeUnit.SECONDS)).isTrue()
+
+            requireNotNull(parent.currentIndicator.get()).cancel()
+            future.get(5, TimeUnit.SECONDS)
+
+            assertThat(failure.get()).isInstanceOf(ProcessCanceledException::class.java)
+            assertThat(control.toolExited.get()).isEqualTo(1)
+            assertThat(inspectionManager.runningContexts).hasSize(runningContextCount)
+            assertThat(parent.context.toolGroups().map { it.shortName })
+                .containsExactlyInAnyOrderElementsOf(parentTools)
+        } finally {
+            control.release.countDown()
+            runCatching { future?.get(5, TimeUnit.SECONDS) }
+            blockingInspectionControl.compareAndSet(control, null)
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
+    fun `single-file global-simple fallback returns findings without consuming the parent context`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val parentTool = CleanInspection()
+        val parent = createCompletedParentInspectionContext(file, parentTool)
+        val parentTools = parent.context.toolGroups().map { it.shortName }
+        val runningContextCount = (InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts.size
+        try {
+            val descriptors = runWithCurrentParentIndicator(parent) {
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file,
+                    GlobalInspectionToolWrapper(FindingGlobalSimpleInspection()),
+                )
+            }
+
+            assertThat(descriptors).singleElement().extracting { it.descriptionTemplate }
+                .isEqualTo("Global simple finding")
+            assertParentContextIntact(parent, parentTools)
+            assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
+                .hasSize(runningContextCount)
+        } finally {
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
     fun `an empty caller-selected wrapper set records no submitted tools`() {
         val tool = FindingInspection()
         resetVisits(tool)
@@ -238,6 +452,7 @@ class SupportedInspectionExecutorPlatformTest {
         blockingInspectionControl.set(control)
         val tool = WritePriorityBlockingInspection()
         val psiFile = createPhysicalFile()
+        DumbService.getInstance(project).waitForSmartMode()
         val profile = profileWith(tool)
         profile.setToolEnabled(tool.shortName, true, project)
         val result = AtomicReference<BoundedExecutionProofResult>()
@@ -591,6 +806,144 @@ class SupportedInspectionExecutorPlatformTest {
         }
     }
 
+    private fun createCompletedParentInspectionContext(
+        file: PsiFile,
+        tool: LocalInspectionTool,
+    ): ParentInspectionContext {
+        val project = projectExtension.project
+        val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val context = GlobalInspectionContextBoundary.create(inspectionManager)
+        val indicator = runInEdtAndGet {
+            ProgressWindow(false, true, project).apply { setDelayInMillis(Int.MAX_VALUE) }
+        }
+        val scope = AnalysisScope(file)
+        val profile = profileWith(tool)
+        try {
+            context.configure(profile, scope)
+            ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+                ProgressManager.getInstance().runProcess(
+                    { context.performInspectionsWithProgress(scope) },
+                    indicator,
+                )
+            }.get(5, TimeUnit.SECONDS)
+            val toolsField = GlobalInspectionContextBase::class.java.getDeclaredField("myTools")
+            check(toolsField.trySetAccessible()) { "Cannot seed native tool state for fallback regression" }
+            toolsField.set(context.contextForTest(), linkedMapOf(tool.shortName to profile.getTools(tool.shortName, project)))
+            return ParentInspectionContext(context)
+        } catch (error: Throwable) {
+            runCatching { closeParentInspectionContext(ParentInspectionContext(context)) }
+            throw error
+        }
+    }
+
+    private fun closeParentInspectionContext(context: ParentInspectionContext) {
+        try {
+            runInEdtAndGet { context.context.close(save = true) }
+        } finally {
+            context.context.removeFromRunningContextsSynchronously()
+        }
+    }
+
+    private fun <T> runWithCurrentParentIndicator(
+        parent: ParentInspectionContext,
+        action: () -> T,
+    ): T {
+        val indicator = runInEdtAndGet {
+            ProgressWindow(false, true, projectExtension.project).apply { setDelayInMillis(Int.MAX_VALUE) }
+        }
+        setParentProgressIndicator(parent.context.contextForTest(), indicator)
+        parent.currentIndicator.set(indicator)
+        val result = AtomicReference<T>()
+        val failure = AtomicReference<Throwable?>()
+        ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+            try {
+                ProgressManager.getInstance().runProcess(
+                    {
+                        result.set(ReadAction.compute<T, RuntimeException> { action() })
+                        ProgressManager.checkCanceled()
+                    },
+                    indicator,
+                )
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }.get(5, TimeUnit.SECONDS)
+        failure.get()?.let { throw it }
+        return result.get()
+    }
+
+    private fun startWithCurrentParentIndicator(
+        parent: ParentInspectionContext,
+        failure: AtomicReference<Throwable?>,
+        action: () -> Unit,
+    ): java.util.concurrent.Future<*> {
+        val indicator = runInEdtAndGet {
+            ProgressWindow(false, true, projectExtension.project).apply { setDelayInMillis(Int.MAX_VALUE) }
+        }
+        setParentProgressIndicator(parent.context.contextForTest(), indicator)
+        parent.currentIndicator.set(indicator)
+        return ApplicationManager.getApplication().executeOnPooledThread<Unit> {
+            try {
+                ProgressManager.getInstance().runProcess(
+                    {
+                        ReadAction.compute<Unit, RuntimeException> { action() }
+                        ProgressManager.checkCanceled()
+                    },
+                    indicator,
+                )
+            } catch (error: Throwable) {
+                failure.set(error)
+            }
+        }
+    }
+
+    private fun assertParentContextIntact(
+        parent: ParentInspectionContext,
+        expectedToolShortNames: List<String>,
+    ) {
+        assertThat(requireNotNull(parent.currentIndicator.get()).isCanceled).isFalse()
+        assertThat(parent.context.toolGroups().map { it.shortName })
+            .containsExactlyInAnyOrderElementsOf(expectedToolShortNames)
+    }
+
+    private fun GlobalInspectionContextBoundary.contextForTest(): GlobalInspectionContextImpl {
+        return publicContext() as GlobalInspectionContextImpl
+    }
+
+    private fun setParentProgressIndicator(
+        context: GlobalInspectionContextImpl,
+        indicator: ProgressWindow,
+    ) {
+        val field = GlobalInspectionContextBase::class.java.getDeclaredField("myProgressIndicator")
+        check(field.trySetAccessible()) { "Cannot set GlobalInspectionContextBase.myProgressIndicator for fallback regression" }
+        field.set(context, indicator)
+    }
+
+    private fun invokeNonHeadlessShouldProcess(context: GlobalInspectionContextImpl, file: PsiFile): Any? {
+        return invokeShouldProcess(context, file, headless = false)
+    }
+
+    private fun invokeShouldProcess(
+        context: GlobalInspectionContextImpl,
+        file: PsiFile,
+        headless: Boolean,
+    ): Any? {
+        val method = GlobalInspectionContextImpl::class.java.getDeclaredMethod(
+            "shouldProcess",
+            PsiFile::class.java,
+            Boolean::class.javaPrimitiveType,
+            Collection::class.java,
+        )
+        method.isAccessible = true
+        return try {
+            ReadAction.compute<Any?, RuntimeException> {
+                method.invoke(context, file, headless, ArrayList<com.intellij.openapi.vfs.VirtualFile>())
+            }
+        } catch (error: InvocationTargetException) {
+            throw requireNotNull(error.cause)
+        }
+    }
+
     private fun createPhysicalDirectoryFiles(count: Int): List<PsiFile> {
         val project = projectExtension.project
         val module = projectExtension.module
@@ -665,6 +1018,12 @@ class SupportedInspectionExecutorPlatformTest {
 
     private class CleanInspection : RecordingInspection()
 
+    private class CancellingInspection : RecordingInspection() {
+        override fun inspect(holder: ProblemsHolder, file: PsiFile) {
+            throw ProcessCanceledException()
+        }
+    }
+
     private open class FindingInspection : RecordingInspection() {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {
             holder.registerProblem(file, "supported finding")
@@ -711,7 +1070,9 @@ class SupportedInspectionExecutorPlatformTest {
             control.enteredTool.countDown()
             try {
                 while (true) {
-                    CountDownLatch(1).await(25, TimeUnit.MILLISECONDS)
+                    if (control.release.await(25, TimeUnit.MILLISECONDS)) {
+                        throw ProcessCanceledException()
+                    }
                     ProgressManager.checkCanceled()
                 }
             } finally {
@@ -740,6 +1101,26 @@ class SupportedInspectionExecutorPlatformTest {
         override fun isGlobalSimpleInspectionTool(): Boolean = true
     }
 
+    private class FindingGlobalSimpleInspection : GlobalSimpleInspectionTool() {
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "Supported inspection tests"
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: com.intellij.codeInspection.GlobalInspectionContext,
+            processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
+        ) {
+            holder.registerProblem(file, "Global simple finding")
+            processor.addProblemElement(
+                requireNotNull(context.refManager.getReference(file)),
+                *holder.resultsArray,
+            )
+        }
+    }
+
     companion object {
         @JvmField
         @RegisterExtension
@@ -766,6 +1147,12 @@ class SupportedInspectionExecutorPlatformTest {
     private data class BlockingInspectionControl(
         val enteredTool: CountDownLatch,
         val toolExited: AtomicInteger,
+        val release: CountDownLatch = CountDownLatch(1),
+    )
+
+    private data class ParentInspectionContext(
+        val context: GlobalInspectionContextBoundary,
+        val currentIndicator: AtomicReference<ProgressWindow?> = AtomicReference(),
     )
 
     class PluginLibraryRootAccessExtension : BeforeAllCallback, AfterAllCallback {

@@ -9448,7 +9448,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
         return mergeInspectionEngineFallback(
             base = presentationExtraction,
-            globalContext = globalContext,
             project = project,
             selectedProfile = selectedProfile,
             targetToolShortNames = targetToolShortNames,
@@ -9611,7 +9610,6 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun mergeInspectionEngineFallback(
         base: InspectionModelExtraction,
-        globalContext: GlobalInspectionContextBoundary,
         project: Project,
         selectedProfile: InspectionProfile?,
         targetToolShortNames: Set<String>,
@@ -9633,7 +9631,6 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val fallbackDescriptors = if (state["enabled"] == true && (state["descriptor_count"] as? Int ?: 0) == 0) {
                 runTargetInspectionEngineFallback(
-                    globalContext = globalContext.publicContext(),
                     project = project,
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
@@ -9681,7 +9678,6 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun runTargetInspectionEngineFallback(
-        globalContext: com.intellij.codeInspection.GlobalInspectionContext,
         project: Project,
         toolShortName: String,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
@@ -9706,7 +9702,7 @@ class InspectionHandler : HttpRequestHandler() {
                         continue
                     }
                     targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
-                    descriptors += InspectionEngine.runInspectionOnFile(psiFile, batchWrapper, globalContext).map { it to batchWrapper }
+                    descriptors += runTargetInspectionEngineOnFile(psiFile, batchWrapper).map { it to batchWrapper }
                     cancellationCheck()
                 } catch (e: Exception) {
                     rethrowIfCanceled(e)
@@ -9718,6 +9714,85 @@ class InspectionHandler : HttpRequestHandler() {
             targetToolState["inspection_engine_errors"] = errors.take(5)
         }
         return descriptors
+    }
+
+    internal fun runTargetInspectionEngineOnFile(
+        psiFile: com.intellij.psi.PsiFile,
+        batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+    ): List<com.intellij.codeInspection.ProblemDescriptor> {
+        val project = psiFile.project
+        val executionWrapper = synchronized(batchWrapper) {
+            InspectionProfileImpl.copyToolSettings(batchWrapper)
+        }
+        val executionContext = if (canExecuteWithInspectEx(executionWrapper)) {
+            null
+        } else {
+            GlobalInspectionContextBoundary.createForExactFile(
+                InspectionManager.getInstance(project) as InspectionManagerEx,
+            )
+        }
+        var primaryFailure: Throwable? = null
+        var engineCompleted = false
+        try {
+            ProgressManager.checkCanceled()
+            val descriptors = if (executionContext == null) {
+                val localWrapper = executionWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                SupportedInspectionExecutor().executePreparedFile(
+                    psiFile,
+                    listOf(localWrapper),
+                    requireNotNull(ProgressManager.getInstance().progressIndicator) {
+                        "Targeted local inspection requires the caller progress indicator"
+                    },
+                ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
+            } else {
+                InspectionEngine.runInspectionOnFile(
+                    psiFile,
+                    executionWrapper,
+                    executionContext.publicContext(),
+                )
+            }
+            engineCompleted = true
+            ProgressManager.checkCanceled()
+            return descriptors
+        } catch (error: Throwable) {
+            primaryFailure = error
+            throw error
+        } finally {
+            var cleanupFailure: Throwable? = null
+            if (!engineCompleted || executionContext == null) {
+                try {
+                    executionWrapper.cleanup(project)
+                } catch (error: Throwable) {
+                    cleanupFailure = error
+                }
+                try {
+                    executionContext?.cleanup()
+                } catch (error: Throwable) {
+                    if (cleanupFailure == null) {
+                        cleanupFailure = error
+                    } else if (cleanupFailure !== error) {
+                        cleanupFailure.addSuppressed(error)
+                    }
+                }
+            }
+            try {
+                executionContext?.removeFromRunningContextsSynchronously()
+            } catch (error: Throwable) {
+                if (cleanupFailure == null) {
+                    cleanupFailure = error
+                } else if (cleanupFailure !== error) {
+                    cleanupFailure.addSuppressed(error)
+                }
+            }
+            if (cleanupFailure != null) {
+                if (primaryFailure == null) {
+                    throw cleanupFailure
+                }
+                if (primaryFailure !== cleanupFailure) {
+                    primaryFailure.addSuppressed(cleanupFailure)
+                }
+            }
+        }
     }
 
     private fun scopedPsiFilesForInspectionEngine(
