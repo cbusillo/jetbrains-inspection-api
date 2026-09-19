@@ -295,6 +295,7 @@ jobs:
   publish:
     needs: [test, package, verify, release]
     runs-on: ubuntu-latest
+    environment: stable-marketplace
     permissions:
       contents: read
 
