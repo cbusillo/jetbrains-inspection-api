@@ -25,6 +25,10 @@ escalation.
 # Plugin tests
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
+# Real-fixture plugin tests only (*PlatformTest); `:test` runs these first, in their own JVM,
+# because a real test Application and mockkStatic(ApplicationManager) classes must not share one
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest
+
 # Core tests
 ./gradlew :inspection-core:test
 
@@ -289,8 +293,9 @@ Automated wrapper tests prove only API reachability: local wrappers can use `ins
 Run the focused regression suite:
 
 ```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest \
+  --tests "*.SupportedInspectionExecutorPlatformTest"
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
-  --tests "*.SupportedInspectionExecutorPlatformTest" \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
@@ -477,7 +482,8 @@ verified SHA-256. Artifact validation requires the canary's narrow
 That environment job has read-only repository permission. A separate write-only
 GitHub release job creates the prerelease only after Marketplace upload succeeds
 and rechecks the verified digest without receiving the Marketplace token. The release contract tests
-cover malformed versions, Stable/canary workflow separation, branch isolation,
+run the release scripts against fakes and cover malformed versions, Stable/canary
+version and channel separation, branch isolation,
 artifact identity, absent or wrong channels, unexpected internal APIs, and an
 adversarial attempt to replace trusted verifier controls and reports.
 The canary manifest is trusted, reviewable evidence. An intended canary finding

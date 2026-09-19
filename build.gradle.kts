@@ -171,6 +171,20 @@ kotlin {
     jvmToolchain(21)
 }
 
+val platformTest by intellijPlatformTesting.testIde.registering {
+    task {
+        useJUnitPlatform()
+        filter { includeTestsMatching("*PlatformTest") }
+        systemProperty("java.awt.headless", "true")
+        systemProperty("idea.is.unit.test", "true")
+        systemProperty("idea.test.cyclic.buffer.size", "1048576")
+        testLogging {
+            events("passed", "skipped", "failed")
+            exceptionFormat = TestExceptionFormat.FULL
+        }
+    }
+}
+
 tasks {
     processResources {
         dependsOn(generateInspectionBuildInfo)
@@ -257,6 +271,8 @@ tasks {
     test {
         useJUnitPlatform()
         maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 3)
+        filter { excludeTestsMatching("*PlatformTest") }
+        dependsOn(platformTest)
         systemProperty("java.awt.headless", "true")
         testLogging {
             events("passed", "skipped", "failed")
