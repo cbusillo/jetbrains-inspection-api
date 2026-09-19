@@ -1576,26 +1576,37 @@ class McpServerTest {
     }
 
     @Test
-    fun autoRoutingIgnoresStaleRegistryIdentityAndFallsBackToPortScan() {
-        MockIdeServer().use { server ->
-            server.start()
-            Files.writeString(
-                tempDir.resolve("stale.json"),
-                registryIdentityBody(server.port, "/tmp/stale-project", heartbeatMs = 1),
-            )
-            val resolver = AutoTargetResolver(
-                httpClientFactory = { HttpClient.newHttpClient() },
-                registryDir = tempDir,
-                scanPorts = listOf(server.port),
-                nowMs = { 1_000_000 },
-            )
+    fun autoRoutingIgnoresRegistryIdentitiesWithExpiredHeartbeats() {
+        MockIdeServer().use { scanned ->
+            MockIdeServer(
+                identityProjectName = "registry-only",
+                identityBasePath = "/tmp/registry-only",
+                identitySessionId = "registry-only",
+            ).use { registryOnly ->
+                scanned.start()
+                registryOnly.start()
+                val nowMs = 1_000_000L
+                val registryFile = tempDir.resolve("registry-only.json")
+                val resolver = AutoTargetResolver(
+                    httpClientFactory = { HttpClient.newHttpClient() },
+                    registryDir = tempDir,
+                    scanPorts = listOf(scanned.port),
+                    nowMs = { nowMs },
+                )
+                val registryOnlyRequest = buildJsonObject { put("project_path", JsonPrimitive("/tmp/registry-only")) }
 
-            val target = resolver.resolve(
-                buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api")) }
-            )
+                Files.writeString(registryFile, registryIdentityBody(registryOnly.port, "/tmp/registry-only", heartbeatMs = nowMs))
+                assertEquals(registryOnly.port.toString(), resolver.resolve(registryOnlyRequest).idePort)
 
-            assertEquals(server.port.toString(), target.idePort)
-            assertEquals("jetbrains-inspection-api", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+                Files.writeString(registryFile, registryIdentityBody(registryOnly.port, "/tmp/registry-only", heartbeatMs = 1))
+                assertTrue(runCatching { resolver.resolve(registryOnlyRequest) }.isFailure)
+                assertEquals(
+                    scanned.port.toString(),
+                    resolver.resolve(
+                        buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api")) }
+                    ).idePort,
+                )
+            }
         }
     }
 
@@ -1653,6 +1664,16 @@ class McpServerTest {
 
             assertEquals(server.port.toString(), target.idePort)
             assertEquals("path:/tmp/jetbrains-inspection-api", target.project?.get("project_key")?.jsonPrimitive?.contentOrNull)
+
+            val otherIde = runCatching {
+                resolver.resolve(
+                    buildJsonObject {
+                        put("ide", JsonPrimitive("pycharm"))
+                        put("project_key", JsonPrimitive("path:/tmp/jetbrains-inspection-api"))
+                    },
+                )
+            }
+            assertTrue(otherIde.isFailure)
         }
     }
 
