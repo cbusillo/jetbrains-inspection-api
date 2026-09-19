@@ -100,7 +100,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import javax.swing.tree.TreeNode
 
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
@@ -225,7 +224,22 @@ internal data class InspectionProjectInputsFingerprint(
     val profileToolStates: List<String>,
     val namedScopeDefinitions: List<String>,
     val profileConfigurationHash: String,
-)
+) {
+    fun changedFieldNames(other: InspectionProjectInputsFingerprint): List<String> = listOfNotNull(
+        "root_paths".takeIf { rootPaths != other.rootPaths },
+        "excluded_root_paths".takeIf { excludedRootPaths != other.excludedRootPaths },
+        "project_sdk_name".takeIf { projectSdkName != other.projectSdkName },
+        "project_sdk_type_name".takeIf { projectSdkTypeName != other.projectSdkTypeName },
+        "project_sdk_version".takeIf { projectSdkVersion != other.projectSdkVersion },
+        "project_sdk_home_path".takeIf { projectSdkHomePath != other.projectSdkHomePath },
+        "module_sdk_states".takeIf { moduleSdkStates != other.moduleSdkStates },
+        "requested_profile_name".takeIf { requestedProfileName != other.requestedProfileName },
+        "resolved_profile_name".takeIf { resolvedProfileName != other.resolvedProfileName },
+        "profile_tool_states".takeIf { profileToolStates != other.profileToolStates },
+        "named_scope_definitions".takeIf { namedScopeDefinitions != other.namedScopeDefinitions },
+        "profile_configuration_hash".takeIf { profileConfigurationHash != other.profileConfigurationHash },
+    )
+}
 
 internal data class InspectionProjectAnalysisReadiness(
     val required: Boolean,
@@ -433,6 +447,7 @@ private data class InspectionAnalysisQualification(
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
     fun hasChanges(): Boolean
+    fun firstChangeDescription(): String? = null
     fun runIfUnchanged(action: () -> Unit): Boolean
 }
 
@@ -841,6 +856,7 @@ private class MessageBusInspectionProjectContentTracker(
     excludedRootPaths: List<String>,
 ) : InspectionProjectContentTracker {
     private val changed = AtomicBoolean(false)
+    private val firstChange = AtomicReference<String?>(null)
     private val closed = AtomicBoolean(false)
     private val changeLock = Any()
     private val disposable = Disposable { closed.set(true) }
@@ -870,24 +886,26 @@ private class MessageBusInspectionProjectContentTracker(
             ProfileChangeAdapter.TOPIC,
             object : ProfileChangeAdapter {
                 override fun profileChanged(profile: InspectionProfile) {
-                    markChanged()
+                    markChanged("inspection_profile_changed")
                 }
 
                 override fun profileActivated(oldProfile: InspectionProfile?, profile: InspectionProfile?) {
-                    markChanged()
+                    markChanged("inspection_profile_activated")
                 }
 
                 override fun profilesInitialized() {
-                    markChanged()
+                    markChanged("inspection_profiles_initialized")
                 }
             },
         )
-        val scopeListener = NamedScopesHolder.ScopeListener(::markChanged)
+        val scopeListener = NamedScopesHolder.ScopeListener { markChanged("named_scope_changed") }
         DependencyValidationManager.getInstance(project).addScopeListener(scopeListener, disposable)
         NamedScopeManager.getInstance(project).addScopeListener(scopeListener, disposable)
     }
 
     override fun hasChanges(): Boolean = changed.get()
+
+    override fun firstChangeDescription(): String? = firstChange.get()
 
     override fun runIfUnchanged(action: () -> Unit): Boolean {
         synchronized(changeLock) {
@@ -909,25 +927,33 @@ private class MessageBusInspectionProjectContentTracker(
         if (changed.get()) {
             return
         }
-        if (events.any { event ->
-                inspectionEventPaths(event).any { eventPath ->
-                    val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get)
-                    normalizedEventPath != null &&
-                        isTrackedInspectionInputPath(
-                            normalizedProjectBasePath,
-                            normalizedRootPaths,
-                            normalizedExcludedRootPaths,
-                            normalizedEventPath,
-                        )
+        val firstTrackedEventPath = events.firstNotNullOfOrNull { event ->
+            inspectionEventPaths(event).firstNotNullOfOrNull { eventPath ->
+                normalizeFileSystemPath(eventPath)?.let(Paths::get)?.takeIf { normalizedEventPath ->
+                    isTrackedInspectionInputPath(
+                        normalizedProjectBasePath,
+                        normalizedRootPaths,
+                        normalizedExcludedRootPaths,
+                        normalizedEventPath,
+                    )
                 }
             }
-        ) {
-            markChanged()
+        } ?: return
+        markChanged("file:" + describeTrackedEventPath(firstTrackedEventPath))
+    }
+
+    private fun describeTrackedEventPath(eventPath: Path): String {
+        val basePath = normalizedProjectBasePath
+        return if (basePath != null && eventPath.startsWith(basePath)) {
+            basePath.relativize(eventPath).joinToString("/").ifEmpty { "." }
+        } else {
+            "<outside-project>/" + eventPath.fileName
         }
     }
 
-    private fun markChanged() {
+    private fun markChanged(description: String) {
         synchronized(changeLock) {
+            firstChange.compareAndSet(null, description)
             changed.set(true)
         }
     }
@@ -939,19 +965,6 @@ private data class InspectionVerdict(
     val message: String,
     val nextAction: String,
 )
-
-internal fun readInspectionRootChildCount(root: Any?): Int? {
-    return when (root) {
-        null -> null
-        is TreeNode -> root.childCount
-        else -> try {
-            val childCountMethod = root.javaClass.getMethod("getChildCount")
-            (childCountMethod.invoke(root) as? Number)?.toInt()
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
 
 internal data class InspectionRunState(
     val runId: Long,
@@ -1407,63 +1420,6 @@ internal fun isPyCharmProductCode(ideProductCode: String?): Boolean {
     return ideProductCode.equals("PY", ignoreCase = true) || ideProductCode.equals("PC", ignoreCase = true)
 }
 
-internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        observation.rootChildCount != null &&
-        !observation.isUpdating &&
-        !observation.hasProblems
-}
-
-internal fun isReadableEmptyInspectionView(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        !observation.isUpdating &&
-        observation.rootChildCount == 0 &&
-        !observation.hasProblems
-}
-
-internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        observation.isUpdating &&
-        !observation.hasProblems &&
-        observation.rootChildCount == 0
-}
-
-internal fun isOpaqueSettledEmptyInspectionViewCandidate(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        !observation.isUpdating &&
-        !observation.hasProblems &&
-        observation.rootChildCount == null
-}
-
-internal fun shouldPromoteStableReadableEmptyInspectionView(
-    readableEmptyInspectionViewStableSince: Long?,
-    readableEmptyInspectionViewObservationCount: Int,
-    transientUpdatingEmptyObservationCount: Int = 0,
-    inspectionViewUpdating: Boolean,
-    now: Long,
-    pollingElapsedMs: Long,
-    minStableMs: Long = 5000L,
-    minPollingMs: Long = 30000L,
-    minReadableEmptyObservations: Int = 2,
-    minTransientUpdatingEmptyObservations: Int = 5,
-): Boolean {
-    val stableSince = readableEmptyInspectionViewStableSince ?: return false
-    val hasEmptyEvidence = readableEmptyInspectionViewObservationCount >= minReadableEmptyObservations ||
-        transientUpdatingEmptyObservationCount >= minTransientUpdatingEmptyObservations
-    return hasEmptyEvidence &&
-        !inspectionViewUpdating &&
-        now - stableSince >= minStableMs &&
-        pollingElapsedMs >= minPollingMs
-}
-
-internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
-    return observation.hasProblems
-}
-
 internal fun filterProblemsForScope(
     problems: List<Map<String, Any>>,
     scopeProblemMatcher: ((Map<String, Any>) -> Boolean)?,
@@ -1471,19 +1427,6 @@ internal fun filterProblemsForScope(
     return scopeProblemMatcher?.let { matcher ->
         problems.filter(matcher)
     } ?: problems
-}
-
-internal fun hasUsableInspectionViewEvidence(
-    inspectionViewObservationCount: Int,
-    nullRootChildObservationCount: Int,
-    observedSettledEmptyInspectionView: Boolean,
-    observedStableReadableEmptyInspectionView: Boolean,
-    observedNonEmptyInspectionTree: Boolean,
-): Boolean {
-    return observedSettledEmptyInspectionView ||
-        observedStableReadableEmptyInspectionView ||
-        observedNonEmptyInspectionTree ||
-        (inspectionViewObservationCount > 0 && nullRootChildObservationCount < inspectionViewObservationCount)
 }
 
 internal fun selectTrustedToolResults(
@@ -1632,6 +1575,84 @@ internal fun appendDistinctProblems(
     return bestResults + scopedProofFindings.filter { existingKeys.add(problemKey(it)) }
 }
 
+private const val MAX_SOURCE_COMPARISON_TOOL_NAMES = 10
+
+internal fun problemIdentityIgnoringSeverity(map: Map<String, Any>): String {
+    return listOf(
+        map["inspectionType"],
+        map["file"],
+        map["line"],
+        map["column"],
+        map["description"],
+    ).joinToString("|")
+}
+
+internal fun problemLocationIdentity(map: Map<String, Any>): String {
+    return listOf(map["inspectionType"], map["file"], map["line"]).joinToString("|")
+}
+
+internal fun inspectionSourceComparisonDiagnostic(
+    nativeContextFindings: List<Map<String, Any>>,
+    exactProofFindings: List<Map<String, Any>>,
+    settledFindings: List<Map<String, Any>>,
+    exactProofToolShortNames: Set<String>?,
+): Map<String, Any> {
+    fun toolNames(findings: Collection<Map<String, Any>>): List<String> =
+        findings.mapNotNull { finding -> finding["inspectionType"] as? String }
+            .distinct()
+            .sorted()
+            .take(MAX_SOURCE_COMPARISON_TOOL_NAMES)
+
+    val nativeByIdentity = nativeContextFindings.associateBy(::problemIdentityIgnoringSeverity)
+    val proofByIdentity = exactProofFindings.associateBy(::problemIdentityIgnoringSeverity)
+    val nativeLocations = nativeContextFindings.mapTo(hashSetOf(), ::problemLocationIdentity)
+    val proofLocations = exactProofFindings.mapTo(hashSetOf(), ::problemLocationIdentity)
+    val settledOnly = settledFindings
+        .distinctBy(::problemIdentityIgnoringSeverity)
+        .filter { finding ->
+            val identity = problemIdentityIgnoringSeverity(finding)
+            identity !in nativeByIdentity && identity !in proofByIdentity
+        }
+    val diagnostic = mutableMapOf<String, Any>(
+        "source_comparison_native_context_unique_finding_count" to nativeByIdentity.size,
+        "source_comparison_settle_only_unique_finding_count" to settledOnly.size,
+        "source_comparison_settle_only_unmatched_location_count" to settledOnly.count { finding ->
+            val location = problemLocationIdentity(finding)
+            location !in nativeLocations && location !in proofLocations
+        },
+        "source_comparison_settle_only_tools" to toolNames(settledOnly),
+    )
+    if (exactProofToolShortNames == null) {
+        return diagnostic
+    }
+    val nativeFromProofTools = nativeByIdentity.filterValues { finding ->
+        (finding["inspectionType"] as? String) in exactProofToolShortNames
+    }
+    val nativeOnly = nativeFromProofTools.filterKeys { identity -> identity !in proofByIdentity }.values
+    val proofOnly = proofByIdentity.filterKeys { identity -> identity !in nativeByIdentity }.values
+    val shared = nativeFromProofTools.keys.intersect(proofByIdentity.keys)
+    diagnostic += mapOf(
+        "source_comparison_exact_proof_unique_finding_count" to proofByIdentity.size,
+        "source_comparison_native_outside_proof_tools_unique_finding_count" to
+            nativeByIdentity.size - nativeFromProofTools.size,
+        "source_comparison_native_only_unique_finding_count" to nativeOnly.size,
+        "source_comparison_native_only_unmatched_location_count" to nativeOnly.count { finding ->
+            problemLocationIdentity(finding) !in proofLocations
+        },
+        "source_comparison_native_only_tools" to toolNames(nativeOnly),
+        "source_comparison_exact_proof_only_unique_finding_count" to proofOnly.size,
+        "source_comparison_exact_proof_only_unmatched_location_count" to proofOnly.count { finding ->
+            problemLocationIdentity(finding) !in nativeLocations
+        },
+        "source_comparison_exact_proof_only_tools" to toolNames(proofOnly),
+        "source_comparison_shared_unique_finding_count" to shared.size,
+        "source_comparison_severity_mismatch_count" to shared.count { identity ->
+            nativeFromProofTools.getValue(identity)["severity"] != proofByIdentity.getValue(identity)["severity"]
+        },
+    )
+    return diagnostic
+}
+
 internal fun problemKey(map: Map<String, Any>): String {
     return listOf(
         map["severity"],
@@ -1697,32 +1718,6 @@ internal fun shouldTreatScopedEmptyExtractionAsSucceeded(
 ): Boolean {
     return lastExtractionCycleSucceeded ||
         (observedTransientEmptyInspectionViewEvidence && lastToolExtractionSucceeded)
-}
-
-internal fun shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
-    observedNonEmptyInspectionTree: Boolean,
-    modelExtractionClean: Boolean,
-    modelProblemDescriptorCount: Int,
-    bestResultsEmpty: Boolean,
-    extractionFailureCount: Int,
-    lastExtractionCycleSucceeded: Boolean,
-    lastToolExtractionSucceeded: Boolean,
-    inspectionViewUpdating: Boolean,
-    stableForMs: Long,
-    pollingElapsedMs: Long,
-    minStableMs: Long = 5000L,
-    minPollingMs: Long = 30000L,
-): Boolean {
-    return observedNonEmptyInspectionTree &&
-        modelExtractionClean &&
-        modelProblemDescriptorCount == 0 &&
-        bestResultsEmpty &&
-        extractionFailureCount == 0 &&
-        lastExtractionCycleSucceeded &&
-        lastToolExtractionSucceeded &&
-        !inspectionViewUpdating &&
-        stableForMs >= minStableMs &&
-        pollingElapsedMs >= minPollingMs
 }
 
 internal fun classifyCaptureIncompleteReason(
@@ -5789,6 +5784,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val stateStableAfterVerification = captureProjectState(project) == captureEndState
                 val scopeMatchedAfterVerification = changedFilesCaptureScopeMatchesCurrent(project, snapshot.captureScope)
                 val inputsMatched = currentFingerprint == inputFingerprint
+                val changedInputFields = currentFingerprint?.let(inputFingerprint::changedFieldNames)
                 val finalValidationPassed =
                     !contentChangedAfterVerification &&
                     stateStableAfterVerification &&
@@ -5810,6 +5806,8 @@ class InspectionHandler : HttpRequestHandler() {
                         "scopeMatchedBefore=$scopeMatchedBeforeVerification, " +
                         "scopeMatchedAfter=$scopeMatchedAfterVerification, " +
                         "inputsMatched=$inputsMatched, " +
+                        "firstInputChange=${contentTracker.firstChangeDescription()}, " +
+                        "changedInputFields=$changedInputFields, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
                         "promoted=$shouldReconcile"
                 )
@@ -5825,9 +5823,9 @@ class InspectionHandler : HttpRequestHandler() {
                 } else if (shouldPublishUnchangedSnapshot) {
                     snapshot
                 } else if (projectStateChangedDuringCapture) {
-                    unverifiedChurnSnapshot(snapshot, "inputs_changed")
+                    unverifiedChurnSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 } else {
-                    inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                    inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 }
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                     val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
@@ -5853,9 +5851,9 @@ class InspectionHandler : HttpRequestHandler() {
                         isCurrentInspectionRun(key, runId)
                     ) {
                         val fallbackSnapshot = if (projectStateChangedDuringCapture) {
-                            unverifiedChurnSnapshot(snapshot, "inputs_changed")
+                            unverifiedChurnSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                         } else {
-                            inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                            inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                         }
                         resultsStore.setSnapshot(key, fallbackSnapshot)
                     }
@@ -5939,9 +5937,10 @@ class InspectionHandler : HttpRequestHandler() {
     private fun unverifiedChurnSnapshot(
         snapshot: InspectionResultsSnapshot,
         failure: String,
+        firstInputChange: String? = null,
     ): InspectionResultsSnapshot {
         return if (snapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
-            inspectionInputValidationFailureSnapshot(snapshot, failure)
+            inspectionInputValidationFailureSnapshot(snapshot, failure, firstInputChange)
         } else {
             snapshot
         }
@@ -5950,6 +5949,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun inspectionInputValidationFailureSnapshot(
         snapshot: InspectionResultsSnapshot,
         failure: String,
+        firstInputChange: String? = null,
     ): InspectionResultsSnapshot {
         val captureIncompleteReason = when (failure) {
             "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
@@ -5960,9 +5960,10 @@ class InspectionHandler : HttpRequestHandler() {
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
             source = "inspection_input_validation",
             note = "Project files or inspection inputs changed while results were being finalized.",
-            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + listOfNotNull(
                 "final_input_validation" to failure,
-            ),
+                firstInputChange?.let { "final_input_first_change" to it },
+            ).toMap(),
             captureIncompleteReason = captureIncompleteReason,
         )
     }
@@ -6624,6 +6625,7 @@ class InspectionHandler : HttpRequestHandler() {
             transitionInspectionRunStage(key, runId, InspectionRunStage.SMART_WAIT)
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
+            refreshPythonSkeletonGeneratorState(project)
             var inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
@@ -7078,6 +7080,7 @@ class InspectionHandler : HttpRequestHandler() {
                         val requiresExecutionProof = executionProofMode != InspectionExecutionProofMode.NONE
                         var boundedProof: BoundedExecutionProofResult? = null
                         var proofFindings: List<Map<String, Any>> = emptyList()
+                        var exactProofToolShortNames: Set<String>? = null
                         when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> {
                                 transitionInspectionRunStage(key, runId, InspectionRunStage.EXACT_PROOF)
@@ -7094,6 +7097,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         val enabledTools = resolveEnabledLocalToolShortNames(globalContext) {
                                             checkInspectionRunCancellation(key, runId)
                                         }
+                                        exactProofToolShortNames = enabledTools.shortNames
                                         val proofRun = runBoundedExecutionProof(
                                             enabledTools,
                                             profile,
@@ -7350,6 +7354,17 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         val scopedProofFindingCount = settlingScopedProofFindings.size
+                        val sourceComparisonDiagnostic = inspectionSourceComparisonDiagnostic(
+                            nativeContextFindings = scopedContextResults,
+                            exactProofFindings = settlingScopedProofFindings,
+                            settledFindings = bestResults,
+                            exactProofToolShortNames = exactProofToolShortNames?.takeIf { boundedProof?.proofEstablished == true },
+                        )
+                        logger.info(
+                            "Inspection source comparison for ${project.name} run $runId " +
+                                "scope=${effectiveCaptureScope.scopeParam} source=$bestSource exit=$captureExitReason: " +
+                                sourceComparisonDiagnostic,
+                        )
                         if (settlingScopedProofFindings.isNotEmpty()) {
                             val mergedResults = appendDistinctProblems(bestResults, settlingScopedProofFindings)
                             if (mergedResults.size > bestResults.size) {
@@ -7418,7 +7433,7 @@ class InspectionHandler : HttpRequestHandler() {
                             buildNativeProofDiagnostic(nativeProof) +
                             mapOf(
                                 "execution_proof_mapped_finding_count" to scopedProofFindingCount,
-                            )
+                            ) + sourceComparisonDiagnostic
                         val executionProofEstablished = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofEstablished
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofEstablished
@@ -7929,6 +7944,7 @@ class InspectionHandler : HttpRequestHandler() {
         val application = ApplicationManager.getApplication()
         val refreshTask = Runnable {
             FileDocumentManager.getInstance().saveAllDocuments()
+            flushPendingProjectSettings(project)
             PsiDocumentManager.getInstance(project).commitAllDocuments()
             val projectRootPath = project.basePath
                 ?: project.projectFilePath?.let(::projectRootFromProjectFilePath)
@@ -7942,12 +7958,66 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun refreshPythonSkeletonGeneratorState(project: Project) {
+        try {
+            val sdks = ApplicationManager.getApplication().runReadAction<List<Sdk>, Exception> {
+                if (project.isDisposed) {
+                    return@runReadAction emptyList()
+                }
+                (
+                    ModuleManager.getInstance(project).modules.mapNotNull { module ->
+                        ModuleRootManager.getInstance(module).sdk
+                    } + listOfNotNull(ProjectRootManager.getInstance(project).projectSdk)
+                    ).distinct()
+            }
+            val stateFiles = sdks
+                .flatMap { sdk -> sdk.rootProvider.getFiles(com.intellij.openapi.roots.OrderRootType.CLASSES).toList() }
+                .filter { root -> root.isInLocalFileSystem && root.parent?.name == "python_stubs" }
+                .distinct()
+                .mapNotNull { root -> LocalFileSystem.getInstance().refreshAndFindFileByPath("${root.path}/.state.json") }
+            if (stateFiles.isNotEmpty()) {
+                com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, false, false, *stateFiles.toTypedArray())
+            }
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            logger.warn("Could not refresh Python skeleton generator state before inspection for ${project.name}", e)
+        }
+    }
+
+    private fun flushPendingProjectSettings(project: Project) {
+        try {
+            project.save()
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            logger.warn("Could not flush pending project settings before inspection for ${project.name}", e)
+        }
+    }
+
     private fun waitForSmartMode(project: Project) {
         try {
             DumbService.getInstance(project).waitForSmartMode()
         } catch (e: Exception) {
             rethrowIfCanceled(e)
             logger.warn("Failed while waiting for smart mode before inspection", e)
+        }
+    }
+
+    private fun projectExcludedRootPaths(project: Project): List<Path> {
+        return try {
+            ApplicationManager.getApplication().runReadAction<List<Path>, Exception> {
+                if (project.isDisposed) {
+                    return@runReadAction emptyList()
+                }
+                ModuleManager.getInstance(project).modules
+                    .flatMap { module -> ModuleRootManager.getInstance(module).excludeRoots.toList() }
+                    .mapNotNull(::localInspectionRootPath)
+                    .mapNotNull(::normalizeFileSystemPath)
+                    .distinct()
+                    .map(Paths::get)
+            }
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            emptyList()
         }
     }
 
@@ -7989,7 +8059,7 @@ class InspectionHandler : HttpRequestHandler() {
         return false
     }
 
-    private fun captureProjectState(project: Project): InspectionProjectStateSnapshot {
+    internal fun captureProjectState(project: Project): InspectionProjectStateSnapshot {
         return InspectionProjectStateSnapshot(
             psiModificationCount = PsiModificationTracker.getInstance(project).modificationCount,
             unsavedProjectDocuments = countProjectUnsavedDocuments(project)
@@ -8562,9 +8632,15 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun countProjectUnsavedDocuments(project: Project): Int {
         val fileDocumentManager = FileDocumentManager.getInstance()
-        return fileDocumentManager.unsavedDocuments.count { document ->
-            val file = fileDocumentManager.getFile(document) ?: return@count false
-            file.belongsToProject(project)
+        val unsavedDocuments = fileDocumentManager.unsavedDocuments
+        if (unsavedDocuments.isEmpty()) {
+            return 0
+        }
+        return ApplicationManager.getApplication().runReadAction<Int, Exception> {
+            unsavedDocuments.count { document ->
+                val file = fileDocumentManager.getFile(document) ?: return@count false
+                file.belongsToProject(project)
+            }
         }
     }
 

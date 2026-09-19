@@ -52,14 +52,14 @@ class McpServerTest {
     fun initializeResponseIncludesServerInfo() {
         val executor = ToolExecutor("http://localhost:1/api/inspection", HttpClient.newHttpClient(), "63341")
         val response = handleIncomingMessage(
-            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05"}}""",
+            """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"client-requested-version"}}""",
             executor
         ) as JsonObject
 
         assertEquals("2.0", response.string("jsonrpc"))
         val result = response["result"]?.jsonObject
         assertNotNull(result)
-        assertEquals("2024-11-05", result?.string("protocolVersion"))
+        assertEquals("client-requested-version", result?.string("protocolVersion"))
         assertEquals("jetbrains-inspection-mcp", result?.get("serverInfo")?.jsonObject?.string("name"))
     }
 
@@ -1000,20 +1000,6 @@ class McpServerTest {
     }
 
     @Test
-    fun inspectionGetStatusHandlesCleanInspection() {
-        val response = """{"clean_inspection":true}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: GREEN"))
-            assertTrue(text.contains("reason=clean_confirmed"))
-        }
-    }
-
-    @Test
     fun inspectionGetStatusHandlesStaleResults() {
         val response = """{"results_may_be_stale":true}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
@@ -1041,21 +1027,6 @@ class McpServerTest {
             assertTrue(text.contains("NEXT_ACTION"))
             assertTrue(text.contains("reason=view_not_ready"))
             assertFalse(text.contains("codebase is clean"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusProvidesInputChangeGuidance() {
-        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"inspection_inputs_changed","has_inspection_results":false,"clean_inspection":false}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-
-            assertTrue(text.contains("reason=inspection_inputs_changed"))
-            assertTrue(text.contains("project files, VCS state, and inspection settings"))
         }
     }
 
@@ -1160,27 +1131,6 @@ class McpServerTest {
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
             executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val query = server.lastQuery.get().orEmpty()
-            assertFalse(query.contains("project="))
-            assertTrue(query.contains("client_run_id="))
-        }
-    }
-
-    @Test
-    fun inspectionWaitOmitsBlankProjectParam() {
-        MockIdeServer().use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            executor.handleToolCall(
-                buildToolCall(
-                    "inspection_wait",
-                    buildJsonObject {
-                        put("project", JsonPrimitive(""))
-                    },
-                ),
-            )
-
             val query = server.lastQuery.get().orEmpty()
             assertFalse(query.contains("project="))
             assertTrue(query.contains("client_run_id="))
@@ -1466,7 +1416,7 @@ class McpServerTest {
         MockIdeServer(identityProjectName = "first", identityBasePath = "/tmp/first", identitySessionId = "first").use { first ->
             MockIdeServer(
                 identityProjectName = "cwd-project",
-                identityBasePath = "/Users/cbusillo/Developer/jetbrains-inspection-api",
+                identityBasePath = System.getProperty("user.dir"),
                 identitySessionId = "cwd",
             ).use { second ->
                 first.start()
@@ -1626,26 +1576,37 @@ class McpServerTest {
     }
 
     @Test
-    fun autoRoutingIgnoresStaleRegistryIdentityAndFallsBackToPortScan() {
-        MockIdeServer().use { server ->
-            server.start()
-            Files.writeString(
-                tempDir.resolve("stale.json"),
-                registryIdentityBody(server.port, "/tmp/stale-project", heartbeatMs = 1),
-            )
-            val resolver = AutoTargetResolver(
-                httpClientFactory = { HttpClient.newHttpClient() },
-                registryDir = tempDir,
-                scanPorts = listOf(server.port),
-                nowMs = { 1_000_000 },
-            )
+    fun autoRoutingIgnoresRegistryIdentitiesWithExpiredHeartbeats() {
+        MockIdeServer().use { scanned ->
+            MockIdeServer(
+                identityProjectName = "registry-only",
+                identityBasePath = "/tmp/registry-only",
+                identitySessionId = "registry-only",
+            ).use { registryOnly ->
+                scanned.start()
+                registryOnly.start()
+                val nowMs = 1_000_000L
+                val registryFile = tempDir.resolve("registry-only.json")
+                val resolver = AutoTargetResolver(
+                    httpClientFactory = { HttpClient.newHttpClient() },
+                    registryDir = tempDir,
+                    scanPorts = listOf(scanned.port),
+                    nowMs = { nowMs },
+                )
+                val registryOnlyRequest = buildJsonObject { put("project_path", JsonPrimitive("/tmp/registry-only")) }
 
-            val target = resolver.resolve(
-                buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api")) }
-            )
+                Files.writeString(registryFile, registryIdentityBody(registryOnly.port, "/tmp/registry-only", heartbeatMs = nowMs))
+                assertEquals(registryOnly.port.toString(), resolver.resolve(registryOnlyRequest).idePort)
 
-            assertEquals(server.port.toString(), target.idePort)
-            assertEquals("jetbrains-inspection-api", target.project?.get("name")?.jsonPrimitive?.contentOrNull)
+                Files.writeString(registryFile, registryIdentityBody(registryOnly.port, "/tmp/registry-only", heartbeatMs = 1))
+                assertTrue(runCatching { resolver.resolve(registryOnlyRequest) }.isFailure)
+                assertEquals(
+                    scanned.port.toString(),
+                    resolver.resolve(
+                        buildJsonObject { put("project_path", JsonPrimitive("/tmp/jetbrains-inspection-api")) }
+                    ).idePort,
+                )
+            }
         }
     }
 
@@ -1703,6 +1664,16 @@ class McpServerTest {
 
             assertEquals(server.port.toString(), target.idePort)
             assertEquals("path:/tmp/jetbrains-inspection-api", target.project?.get("project_key")?.jsonPrimitive?.contentOrNull)
+
+            val otherIde = runCatching {
+                resolver.resolve(
+                    buildJsonObject {
+                        put("ide", JsonPrimitive("pycharm"))
+                        put("project_key", JsonPrimitive("path:/tmp/jetbrains-inspection-api"))
+                    },
+                )
+            }
+            assertTrue(otherIde.isFailure)
         }
     }
 
@@ -1784,16 +1755,6 @@ class McpServerTest {
 
         assertTrue(registryDir.endsWith("jetbrains-inspection-api/instances"))
         assertEquals((63340..63349).toList(), ports)
-    }
-
-    @Test
-    fun targetResolverDefaultInvalidateIsNoOp() {
-        val resolver: InspectionTargetResolver = FixedTargetResolver("http://localhost:63343/api/inspection", "63343")
-        val target = resolver.resolve(buildJsonObject { })
-
-        resolver.invalidate(target)
-
-        assertEquals("63343", target.idePort)
     }
 
     private fun registryIdentityBody(

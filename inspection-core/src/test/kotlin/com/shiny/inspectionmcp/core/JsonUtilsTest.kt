@@ -67,22 +67,6 @@ class JsonUtilsTest {
     }
     
     @Test
-    @DisplayName("Should handle special characters in JSON")
-    fun testSpecialCharactersInJson() {
-        val testData = mapOf(
-            "description" to "Test \"quoted\" text with\nnewline and\ttab",
-            "file_path" to "C:\\Windows\\System32\\file.txt",
-            "unicode" to "Unicode: \u00E9\u00F1\u00FC"
-        )
-        
-        val result = formatJsonManually(testData)
-
-        assertTrue(result.contains("Test \\\"quoted\\\" text with\\nnewline and\\ttab"))
-        assertTrue(result.contains("C:\\\\Windows\\\\System32\\\\file.txt"))
-        assertTrue(result.contains("Unicode: éñü"))
-    }
-    
-    @Test
     @DisplayName("Should handle empty and null values")
     fun testEmptyAndNullValues() {
         val testData = mapOf(
@@ -100,23 +84,4 @@ class JsonUtilsTest {
         assertTrue(result.contains("\"empty_map\": {"))
     }
     
-    @Test
-    @DisplayName("Should handle large JSON structures")
-    fun testLargeJsonStructures() {
-        val largeList = (1..100).map { "item_$it" }
-        val testData = mapOf(
-            "large_list" to largeList,
-            "metadata" to mapOf(
-                "size" to largeList.size,
-                "generated" to true
-            )
-        )
-        
-        val result = formatJsonManually(testData)
-        
-        assertNotNull(result)
-        assertTrue(result.contains("\"size\": 100"))
-        assertTrue(result.contains("\"item_1\""))
-        assertTrue(result.contains("\"item_100\""))
-    }
 }

@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Record job start
+        run: echo "JOB_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Set up JDK 21
@@ -31,14 +34,14 @@ jobs:
 
       - name: Lint GitHub Actions workflows for pull requests
         if: github.event_name == 'pull_request'
-        uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1
+        uses: reviewdog/action-actionlint@ab7138020abfe6cd20b742c82e5b7a9749fb5884 # v1
         with:
           fail_level: error
           reporter: github-pr-annotations
 
       - name: Lint GitHub Actions workflows for pushes
         if: github.event_name == 'push'
-        uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1
+        uses: reviewdog/action-actionlint@ab7138020abfe6cd20b742c82e5b7a9749fb5884 # v1
         with:
           fail_level: error
           reporter: github-check
@@ -46,8 +49,31 @@ jobs:
       - name: Lint shell scripts
         run: shellcheck --severity=warning scripts/*.sh
 
+      - name: List pull request changed files
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          changed_files="$RUNNER_TEMP/changed-files.txt"
+          if gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" \
+            --jq '.[] | .filename, (.previous_filename // empty)' > "$changed_files"; then
+            echo "COMMIT_GATE_CHANGED_FILES=$changed_files" >> "$GITHUB_ENV"
+          fi
+
       - name: Run commit gate
         run: ./scripts/commit-gate.sh --ci
+
+      - name: Report time budget
+        if: always()
+        env:
+          TIME_BUDGET_SECONDS: "300"
+        run: |
+          elapsed=$(( $(date +%s) - JOB_STARTED_AT ))
+          echo "commit-gate job took ${elapsed}s of a ${TIME_BUDGET_SECONDS}s budget." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$elapsed" -gt "$TIME_BUDGET_SECONDS" ]; then
+            echo "::warning title=CI time budget exceeded::commit-gate job took ${elapsed}s; the budget is ${TIME_BUDGET_SECONDS}s."
+          fi
 
       - name: Upload test results
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -56,6 +82,7 @@ jobs:
           name: test-results
           path: |
             build/reports/tests/test/
+            build/reports/tests/platformTest/
             inspection-core/build/reports/tests/test/
             mcp-server-jvm/build/reports/tests/test/
           retention-days: 7
