@@ -34,14 +34,14 @@ jobs:
 
       - name: Lint GitHub Actions workflows for pull requests
         if: github.event_name == 'pull_request'
-        uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1
+        uses: reviewdog/action-actionlint@ab7138020abfe6cd20b742c82e5b7a9749fb5884 # v1
         with:
           fail_level: error
           reporter: github-pr-annotations
 
       - name: Lint GitHub Actions workflows for pushes
         if: github.event_name == 'push'
-        uses: reviewdog/action-actionlint@8b682e1e7e512151d73a6b9449cbff173846226e # v1
+        uses: reviewdog/action-actionlint@ab7138020abfe6cd20b742c82e5b7a9749fb5884 # v1
         with:
           fail_level: error
           reporter: github-check
