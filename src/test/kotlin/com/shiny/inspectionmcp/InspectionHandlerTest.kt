@@ -197,6 +197,9 @@ class InspectionHandlerTest {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        val skippedWaitMs = java.util.concurrent.atomic.AtomicLong()
+        handler.waitPollSleep = { pollMs -> skippedWaitMs.addAndGet(pollMs) }
+        handler.currentTimeMs = { System.currentTimeMillis() + skippedWaitMs.get() }
         handler.trustProjectPath = {}
         handler.refreshProjectRoot = {}
         handler.lifecycleContentRootReadinessProvider = { project, targetKey ->

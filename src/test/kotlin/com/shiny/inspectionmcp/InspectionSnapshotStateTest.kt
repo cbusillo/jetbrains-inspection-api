@@ -52,6 +52,9 @@ class InspectionSnapshotStateTest {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        val skippedWaitMs = java.util.concurrent.atomic.AtomicLong()
+        handler.waitPollSleep = { pollMs -> skippedWaitMs.addAndGet(pollMs) }
+        handler.currentTimeMs = { System.currentTimeMillis() + skippedWaitMs.get() }
         mockProject = mockk<Project>()
         val mockProjectManager = mockk<ProjectManager>()
         val mockDumbService = mockk<DumbService>()
