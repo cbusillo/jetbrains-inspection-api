@@ -110,6 +110,9 @@ private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS = 30_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_STABLE_MS = 2_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS = 20_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_POLL_MS = 100L
 private const val MAX_INSPECTION_RUN_STAGE_HISTORY = 8
 private const val MAX_INSPECTION_RUN_FAILURE_DIAGNOSTICS = 3
 private const val MAX_INSPECTION_WORKER_STACK_FRAMES = 64
@@ -211,6 +214,108 @@ internal data class InspectionProjectStateSnapshot(
     val psiModificationCount: Long,
     val unsavedProjectDocuments: Int,
 )
+
+internal data class ProjectQuiescenceObservation(
+    val dumb: Boolean,
+    val projectState: InspectionProjectStateSnapshot,
+    val projectFileEventCount: Long,
+)
+
+internal data class ProjectQuiescenceEvidence(
+    val attempted: Boolean,
+    val waitedMs: Long,
+    val observationCount: Int,
+    val timedOut: Boolean,
+    val dumbModeObserved: Boolean,
+    val projectStateChangeCount: Int,
+    val projectFileEventsObserved: Boolean,
+) {
+    fun diagnosticMap(): Map<String, Any> = mapOf(
+        "project_quiescence_attempted" to attempted,
+        "project_quiescence_wait_ms" to waitedMs,
+        "project_quiescence_observation_count" to observationCount,
+        "project_quiescence_timed_out" to timedOut,
+        "project_quiescence_dumb_mode_observed" to dumbModeObserved,
+        "project_quiescence_state_change_count" to projectStateChangeCount,
+        "project_quiescence_file_events_observed" to projectFileEventsObserved,
+    )
+}
+
+internal fun awaitProjectQuiescence(
+    now: () -> Long,
+    sleep: (Long) -> Unit,
+    observe: () -> ProjectQuiescenceObservation,
+    checkCanceled: () -> Unit,
+    stableMs: Long = DEFAULT_PROJECT_QUIESCENCE_STABLE_MS,
+    timeoutMs: Long = DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS,
+    pollMs: Long = DEFAULT_PROJECT_QUIESCENCE_POLL_MS,
+): ProjectQuiescenceEvidence {
+    if (stableMs <= 0) {
+        return ProjectQuiescenceEvidence(
+            attempted = false,
+            waitedMs = 0,
+            observationCount = 0,
+            timedOut = false,
+            dumbModeObserved = false,
+            projectStateChangeCount = 0,
+            projectFileEventsObserved = false,
+        )
+    }
+
+    val boundedTimeoutMs = timeoutMs.coerceAtLeast(stableMs)
+    val boundedPollMs = pollMs.coerceAtLeast(1)
+    val startedAt = now()
+    var sleptMs = 0L
+    var previous = observe()
+    var quietSinceElapsedMs = 0L
+    var observationCount = 1
+    var dumbModeObserved = previous.dumb
+    var projectStateChangeCount = 0
+    var projectFileEventsObserved = false
+
+    fun elapsedMs(): Long = maxOf((now() - startedAt).coerceAtLeast(0), sleptMs)
+
+    fun evidence(elapsed: Long, timedOut: Boolean) = ProjectQuiescenceEvidence(
+        attempted = true,
+        waitedMs = elapsed,
+        observationCount = observationCount,
+        timedOut = timedOut,
+        dumbModeObserved = dumbModeObserved,
+        projectStateChangeCount = projectStateChangeCount,
+        projectFileEventsObserved = projectFileEventsObserved,
+    )
+
+    while (true) {
+        val elapsed = elapsedMs()
+        if (!previous.dumb && elapsed - quietSinceElapsedMs >= stableMs) {
+            return evidence(elapsed, timedOut = false)
+        }
+        if (elapsed >= boundedTimeoutMs) {
+            return evidence(elapsed, timedOut = true)
+        }
+        checkCanceled()
+        val sleepMs = minOf(boundedPollMs, boundedTimeoutMs - elapsed).coerceAtLeast(1)
+        sleep(sleepMs)
+        sleptMs += sleepMs
+        val current = observe()
+        observationCount += 1
+        val projectStateChanged = current.projectState != previous.projectState
+        val projectFilesChanged = current.projectFileEventCount != previous.projectFileEventCount
+        if (projectStateChanged) {
+            projectStateChangeCount += 1
+        }
+        if (projectFilesChanged) {
+            projectFileEventsObserved = true
+        }
+        if (current.dumb) {
+            dumbModeObserved = true
+        }
+        if (current.dumb || projectStateChanged || projectFilesChanged) {
+            quietSinceElapsedMs = elapsedMs()
+        }
+        previous = current
+    }
+}
 
 internal data class InspectionProjectInputsFingerprint(
     val rootPaths: List<String>,
@@ -433,6 +538,7 @@ private data class InspectionAnalysisQualification(
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
     fun hasChanges(): Boolean
+    fun firstChangeDescription(): String? = null
     fun runIfUnchanged(action: () -> Unit): Boolean
 }
 
@@ -841,6 +947,7 @@ private class MessageBusInspectionProjectContentTracker(
     excludedRootPaths: List<String>,
 ) : InspectionProjectContentTracker {
     private val changed = AtomicBoolean(false)
+    private val firstChange = AtomicReference<String?>(null)
     private val closed = AtomicBoolean(false)
     private val changeLock = Any()
     private val disposable = Disposable { closed.set(true) }
@@ -870,24 +977,26 @@ private class MessageBusInspectionProjectContentTracker(
             ProfileChangeAdapter.TOPIC,
             object : ProfileChangeAdapter {
                 override fun profileChanged(profile: InspectionProfile) {
-                    markChanged()
+                    markChanged("inspection_profile_changed")
                 }
 
                 override fun profileActivated(oldProfile: InspectionProfile?, profile: InspectionProfile?) {
-                    markChanged()
+                    markChanged("inspection_profile_activated")
                 }
 
                 override fun profilesInitialized() {
-                    markChanged()
+                    markChanged("inspection_profiles_initialized")
                 }
             },
         )
-        val scopeListener = NamedScopesHolder.ScopeListener(::markChanged)
+        val scopeListener = NamedScopesHolder.ScopeListener { markChanged("named_scope_changed") }
         DependencyValidationManager.getInstance(project).addScopeListener(scopeListener, disposable)
         NamedScopeManager.getInstance(project).addScopeListener(scopeListener, disposable)
     }
 
     override fun hasChanges(): Boolean = changed.get()
+
+    override fun firstChangeDescription(): String? = firstChange.get()
 
     override fun runIfUnchanged(action: () -> Unit): Boolean {
         synchronized(changeLock) {
@@ -909,25 +1018,33 @@ private class MessageBusInspectionProjectContentTracker(
         if (changed.get()) {
             return
         }
-        if (events.any { event ->
-                inspectionEventPaths(event).any { eventPath ->
-                    val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get)
-                    normalizedEventPath != null &&
-                        isTrackedInspectionInputPath(
-                            normalizedProjectBasePath,
-                            normalizedRootPaths,
-                            normalizedExcludedRootPaths,
-                            normalizedEventPath,
-                        )
+        val firstTrackedEventPath = events.firstNotNullOfOrNull { event ->
+            inspectionEventPaths(event).firstNotNullOfOrNull { eventPath ->
+                normalizeFileSystemPath(eventPath)?.let(Paths::get)?.takeIf { normalizedEventPath ->
+                    isTrackedInspectionInputPath(
+                        normalizedProjectBasePath,
+                        normalizedRootPaths,
+                        normalizedExcludedRootPaths,
+                        normalizedEventPath,
+                    )
                 }
             }
-        ) {
-            markChanged()
+        } ?: return
+        markChanged("file:" + describeTrackedEventPath(firstTrackedEventPath))
+    }
+
+    private fun describeTrackedEventPath(eventPath: Path): String {
+        val basePath = normalizedProjectBasePath
+        return if (basePath != null && eventPath.startsWith(basePath)) {
+            basePath.relativize(eventPath).joinToString("/").ifEmpty { "." }
+        } else {
+            "<outside-project>/" + eventPath.fileName
         }
     }
 
-    private fun markChanged() {
+    private fun markChanged(description: String) {
         synchronized(changeLock) {
+            firstChange.compareAndSet(null, description)
             changed.set(true)
         }
     }
@@ -1923,6 +2040,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal var pythonSdkSettlePollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS
     internal var pythonSdkSettleProgressGraceMs: Long = DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS
     internal var pythonSdkSettleMaxTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS
+    internal var projectQuiescenceStableMs: Long = DEFAULT_PROJECT_QUIESCENCE_STABLE_MS
+    internal var projectQuiescenceTimeoutMs: Long = DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS
+    internal var projectQuiescencePollMs: Long = DEFAULT_PROJECT_QUIESCENCE_POLL_MS
     internal var pythonSdkSettleNow: () -> Long = { System.currentTimeMillis() }
     internal var pythonSdkSettleSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunNowNanos: () -> Long = System::nanoTime
@@ -5810,6 +5930,7 @@ class InspectionHandler : HttpRequestHandler() {
                         "scopeMatchedBefore=$scopeMatchedBeforeVerification, " +
                         "scopeMatchedAfter=$scopeMatchedAfterVerification, " +
                         "inputsMatched=$inputsMatched, " +
+                        "firstInputChange=${contentTracker.firstChangeDescription()}, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
                         "promoted=$shouldReconcile"
                 )
@@ -5825,9 +5946,9 @@ class InspectionHandler : HttpRequestHandler() {
                 } else if (shouldPublishUnchangedSnapshot) {
                     snapshot
                 } else if (projectStateChangedDuringCapture) {
-                    unverifiedChurnSnapshot(snapshot, "inputs_changed")
+                    unverifiedChurnSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 } else {
-                    inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                    inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 }
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                     val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
@@ -5853,9 +5974,9 @@ class InspectionHandler : HttpRequestHandler() {
                         isCurrentInspectionRun(key, runId)
                     ) {
                         val fallbackSnapshot = if (projectStateChangedDuringCapture) {
-                            unverifiedChurnSnapshot(snapshot, "inputs_changed")
+                            unverifiedChurnSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                         } else {
-                            inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed")
+                            inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                         }
                         resultsStore.setSnapshot(key, fallbackSnapshot)
                     }
@@ -5939,9 +6060,10 @@ class InspectionHandler : HttpRequestHandler() {
     private fun unverifiedChurnSnapshot(
         snapshot: InspectionResultsSnapshot,
         failure: String,
+        firstInputChange: String? = null,
     ): InspectionResultsSnapshot {
         return if (snapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
-            inspectionInputValidationFailureSnapshot(snapshot, failure)
+            inspectionInputValidationFailureSnapshot(snapshot, failure, firstInputChange)
         } else {
             snapshot
         }
@@ -5950,6 +6072,7 @@ class InspectionHandler : HttpRequestHandler() {
     private fun inspectionInputValidationFailureSnapshot(
         snapshot: InspectionResultsSnapshot,
         failure: String,
+        firstInputChange: String? = null,
     ): InspectionResultsSnapshot {
         val captureIncompleteReason = when (failure) {
             "inputs_changed" -> CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED
@@ -5960,9 +6083,10 @@ class InspectionHandler : HttpRequestHandler() {
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
             source = "inspection_input_validation",
             note = "Project files or inspection inputs changed while results were being finalized.",
-            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + listOfNotNull(
                 "final_input_validation" to failure,
-            ),
+                firstInputChange?.let { "final_input_first_change" to it },
+            ).toMap(),
             captureIncompleteReason = captureIncompleteReason,
         )
     }
@@ -6624,6 +6748,7 @@ class InspectionHandler : HttpRequestHandler() {
             transitionInspectionRunStage(key, runId, InspectionRunStage.SMART_WAIT)
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
+            val projectQuiescence = waitForProjectQuiescence(project, key, runId)
             var inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
@@ -7412,7 +7537,7 @@ class InspectionHandler : HttpRequestHandler() {
                             "capture_start_psi_modification_count" to inspectionInputState.psiModificationCount,
                             "capture_end_psi_modification_count" to captureEndState.psiModificationCount,
                             "capture_end_unsaved_project_documents" to captureEndState.unsavedProjectDocuments,
-                        )
+                        ) + projectQuiescence.diagnosticMap()
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
                         val proofDiagnostic = buildProofDiagnostic(boundedProof) +
                             buildNativeProofDiagnostic(nativeProof) +
@@ -7948,6 +8073,89 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (e: Exception) {
             rethrowIfCanceled(e)
             logger.warn("Failed while waiting for smart mode before inspection", e)
+        }
+    }
+
+    private fun waitForProjectQuiescence(project: Project, key: String, runId: Long): ProjectQuiescenceEvidence {
+        val projectFileEventCount = AtomicLong(0)
+        val projectBasePath = normalizeFileSystemPath(project.basePath)?.let(Paths::get)
+        val listenerDisposable = Disposer.newDisposable("inspection-project-quiescence")
+        try {
+            if (projectQuiescenceStableMs > 0 && projectBasePath != null) {
+                try {
+                    val projectRootPaths = listOf(projectBasePath)
+                    val excludedRootPaths = projectExcludedRootPaths(project)
+                    ApplicationManager.getApplication().messageBus.connect(listenerDisposable).subscribe(
+                        VirtualFileManager.VFS_CHANGES,
+                        object : BulkFileListener {
+                            override fun after(events: List<VFileEvent>) {
+                                val touchesProject = events.any { event ->
+                                    inspectionEventPaths(event).any { eventPath ->
+                                        val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get)
+                                        normalizedEventPath != null &&
+                                            isTrackedInspectionInputPath(
+                                                projectBasePath,
+                                                projectRootPaths,
+                                                excludedRootPaths,
+                                                normalizedEventPath,
+                                            )
+                                    }
+                                }
+                                if (touchesProject) {
+                                    projectFileEventCount.incrementAndGet()
+                                }
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
+                    logger.warn("Could not observe project file events while waiting for project quiescence", e)
+                }
+            }
+            val evidence = awaitProjectQuiescence(
+                now = { TimeUnit.NANOSECONDS.toMillis(System.nanoTime()) },
+                sleep = { millis -> Thread.sleep(millis) },
+                observe = {
+                    ProjectQuiescenceObservation(
+                        dumb = DumbService.getInstance(project).isDumb,
+                        projectState = captureProjectState(project),
+                        projectFileEventCount = projectFileEventCount.get(),
+                    )
+                },
+                checkCanceled = { checkInspectionRunCancellation(key, runId) },
+                stableMs = projectQuiescenceStableMs,
+                timeoutMs = projectQuiescenceTimeoutMs,
+                pollMs = projectQuiescencePollMs,
+            )
+            if (evidence.attempted) {
+                logger.info("Project quiescence before inspection for ${project.name}: $evidence")
+            }
+            if (evidence.dumbModeObserved) {
+                waitForSmartMode(project)
+                checkInspectionRunCancellation(key, runId)
+            }
+            return evidence
+        } finally {
+            Disposer.dispose(listenerDisposable)
+        }
+    }
+
+    private fun projectExcludedRootPaths(project: Project): List<Path> {
+        return try {
+            ApplicationManager.getApplication().runReadAction<List<Path>, Exception> {
+                if (project.isDisposed) {
+                    return@runReadAction emptyList()
+                }
+                ModuleManager.getInstance(project).modules
+                    .flatMap { module -> ModuleRootManager.getInstance(module).excludeRoots.toList() }
+                    .mapNotNull(::localInspectionRootPath)
+                    .mapNotNull(::normalizeFileSystemPath)
+                    .distinct()
+                    .map(Paths::get)
+            }
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            emptyList()
         }
     }
 

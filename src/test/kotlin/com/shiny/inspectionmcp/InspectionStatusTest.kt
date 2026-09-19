@@ -28,6 +28,7 @@ class InspectionStatusTest {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        handler.projectQuiescenceStableMs = 0
         
         mockProject = mockk<Project>()
         mockProjectManager = mockk<ProjectManager>()

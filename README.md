@@ -629,7 +629,7 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 - `is_scanning`: `true` if inspection is currently running
 - `has_inspection_results`: `true` when problems were found and are available
 - `time_since_last_trigger_ms`: Time since last inspection was triggered
-- `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`
+- `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`. `smart_wait` covers both the IDE smart-mode wait and a bounded project quiescence wait (no indexing, PSI changes, or project file events for a short stable window) so inspections of freshly opened projects start from settled inputs; when the bound expires the run proceeds and the existing staleness checks still apply
 - `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
 - `inspection_stage_history`: Bounded completed-stage timings for diagnosing a slow run
 - `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `timed_out`, `preempted`, `cancelled`, or `failed`. An execution proof deadline or actual capture deadline marks `timed_out`; yielding to an IDE write marks `preempted`. A caller wait timeout alone does not determine the execution outcome. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.

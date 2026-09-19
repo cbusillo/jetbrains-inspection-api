@@ -29,6 +29,7 @@ class InspectionHandlerIntegrationTest {
     fun setUp() {
         MockitoAnnotations.openMocks(this)
         handler = InspectionHandler()
+        handler.projectQuiescenceStableMs = 0
     }
     
     @Test
