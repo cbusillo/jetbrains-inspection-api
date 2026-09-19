@@ -71,14 +71,20 @@ class GitPorcelainParserTest {
     }
 
     private fun runGit(directory: Path, vararg arguments: String) {
-        val process = ProcessBuilder(listOf("git") + arguments)
-            .directory(directory.toFile())
-            .redirectErrorStream(true)
-            .start()
-        val finished = process.waitFor(30, TimeUnit.SECONDS)
-        if (!finished) process.destroyForcibly()
-        val output = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
-        assertTrue(finished, "git ${arguments.joinToString(" ")} did not finish: $output")
-        assertEquals(0, process.exitValue(), output)
+        val outputFile = Files.createTempFile("inspection-git-output", ".log")
+        try {
+            val process = ProcessBuilder(listOf("git") + arguments)
+                .directory(directory.toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(outputFile.toFile())
+                .start()
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            if (!finished) process.destroyForcibly().waitFor()
+            val output = Files.readString(outputFile)
+            assertTrue(finished, "git ${arguments.joinToString(" ")} did not finish: $output")
+            assertEquals(0, process.exitValue(), output)
+        } finally {
+            Files.deleteIfExists(outputFile)
+        }
     }
 }
