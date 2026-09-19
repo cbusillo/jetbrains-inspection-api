@@ -18,6 +18,11 @@ concurrency:
 permissions:
   contents: read
 
+# The build and package jobs run the canary revision's own build scripts while this
+# workflow runs in the default-branch context. Deny every job Actions cache access so
+# that code cannot save a cache a later trusted workflow would restore.
+cache-mode: none
+
 jobs:
   build:
     runs-on: ubuntu-latest
