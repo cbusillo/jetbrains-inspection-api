@@ -7579,6 +7579,11 @@ class InspectionHandler : HttpRequestHandler() {
                             settledFindings = bestResults,
                             exactProofToolShortNames = exactProofToolShortNames?.takeIf { boundedProof?.proofEstablished == true },
                         )
+                        logger.info(
+                            "Inspection source comparison for ${project.name} run $runId " +
+                                "scope=${effectiveCaptureScope.scopeParam} source=$bestSource exit=$captureExitReason: " +
+                                sourceComparisonDiagnostic,
+                        )
                         if (settlingScopedProofFindings.isNotEmpty()) {
                             val mergedResults = appendDistinctProblems(bestResults, settlingScopedProofFindings)
                             if (mergedResults.size > bestResults.size) {
