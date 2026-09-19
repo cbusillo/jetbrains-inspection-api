@@ -1764,6 +1764,84 @@ internal fun appendDistinctProblems(
     return bestResults + scopedProofFindings.filter { existingKeys.add(problemKey(it)) }
 }
 
+private const val MAX_SOURCE_COMPARISON_TOOL_NAMES = 10
+
+internal fun problemIdentityIgnoringSeverity(map: Map<String, Any>): String {
+    return listOf(
+        map["inspectionType"],
+        map["file"],
+        map["line"],
+        map["column"],
+        map["description"],
+    ).joinToString("|")
+}
+
+internal fun problemLocationIdentity(map: Map<String, Any>): String {
+    return listOf(map["inspectionType"], map["file"], map["line"]).joinToString("|")
+}
+
+internal fun inspectionSourceComparisonDiagnostic(
+    nativeContextFindings: List<Map<String, Any>>,
+    exactProofFindings: List<Map<String, Any>>,
+    settledFindings: List<Map<String, Any>>,
+    exactProofToolShortNames: Set<String>?,
+): Map<String, Any> {
+    fun toolNames(findings: Collection<Map<String, Any>>): List<String> =
+        findings.mapNotNull { finding -> finding["inspectionType"] as? String }
+            .distinct()
+            .sorted()
+            .take(MAX_SOURCE_COMPARISON_TOOL_NAMES)
+
+    val nativeByIdentity = nativeContextFindings.associateBy(::problemIdentityIgnoringSeverity)
+    val proofByIdentity = exactProofFindings.associateBy(::problemIdentityIgnoringSeverity)
+    val nativeLocations = nativeContextFindings.mapTo(hashSetOf(), ::problemLocationIdentity)
+    val proofLocations = exactProofFindings.mapTo(hashSetOf(), ::problemLocationIdentity)
+    val settledOnly = settledFindings
+        .distinctBy(::problemIdentityIgnoringSeverity)
+        .filter { finding ->
+            val identity = problemIdentityIgnoringSeverity(finding)
+            identity !in nativeByIdentity && identity !in proofByIdentity
+        }
+    val diagnostic = mutableMapOf<String, Any>(
+        "source_comparison_native_context_unique_finding_count" to nativeByIdentity.size,
+        "source_comparison_settle_only_unique_finding_count" to settledOnly.size,
+        "source_comparison_settle_only_unmatched_location_count" to settledOnly.count { finding ->
+            val location = problemLocationIdentity(finding)
+            location !in nativeLocations && location !in proofLocations
+        },
+        "source_comparison_settle_only_tools" to toolNames(settledOnly),
+    )
+    if (exactProofToolShortNames == null) {
+        return diagnostic
+    }
+    val nativeFromProofTools = nativeByIdentity.filterValues { finding ->
+        (finding["inspectionType"] as? String) in exactProofToolShortNames
+    }
+    val nativeOnly = nativeFromProofTools.filterKeys { identity -> identity !in proofByIdentity }.values
+    val proofOnly = proofByIdentity.filterKeys { identity -> identity !in nativeByIdentity }.values
+    val shared = nativeFromProofTools.keys.intersect(proofByIdentity.keys)
+    diagnostic += mapOf(
+        "source_comparison_exact_proof_unique_finding_count" to proofByIdentity.size,
+        "source_comparison_native_outside_proof_tools_unique_finding_count" to
+            nativeByIdentity.size - nativeFromProofTools.size,
+        "source_comparison_native_only_unique_finding_count" to nativeOnly.size,
+        "source_comparison_native_only_unmatched_location_count" to nativeOnly.count { finding ->
+            problemLocationIdentity(finding) !in proofLocations
+        },
+        "source_comparison_native_only_tools" to toolNames(nativeOnly),
+        "source_comparison_exact_proof_only_unique_finding_count" to proofOnly.size,
+        "source_comparison_exact_proof_only_unmatched_location_count" to proofOnly.count { finding ->
+            problemLocationIdentity(finding) !in nativeLocations
+        },
+        "source_comparison_exact_proof_only_tools" to toolNames(proofOnly),
+        "source_comparison_shared_unique_finding_count" to shared.size,
+        "source_comparison_severity_mismatch_count" to shared.count { identity ->
+            nativeFromProofTools.getValue(identity)["severity"] != proofByIdentity.getValue(identity)["severity"]
+        },
+    )
+    return diagnostic
+}
+
 internal fun problemKey(map: Map<String, Any>): String {
     return listOf(
         map["severity"],
@@ -7221,6 +7299,7 @@ class InspectionHandler : HttpRequestHandler() {
                         val requiresExecutionProof = executionProofMode != InspectionExecutionProofMode.NONE
                         var boundedProof: BoundedExecutionProofResult? = null
                         var proofFindings: List<Map<String, Any>> = emptyList()
+                        var exactProofToolShortNames: Set<String>? = null
                         when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> {
                                 transitionInspectionRunStage(key, runId, InspectionRunStage.EXACT_PROOF)
@@ -7237,6 +7316,7 @@ class InspectionHandler : HttpRequestHandler() {
                                         val enabledTools = resolveEnabledLocalToolShortNames(globalContext) {
                                             checkInspectionRunCancellation(key, runId)
                                         }
+                                        exactProofToolShortNames = enabledTools.shortNames
                                         val proofRun = runBoundedExecutionProof(
                                             enabledTools,
                                             profile,
@@ -7493,6 +7573,12 @@ class InspectionHandler : HttpRequestHandler() {
                         }
 
                         val scopedProofFindingCount = settlingScopedProofFindings.size
+                        val sourceComparisonDiagnostic = inspectionSourceComparisonDiagnostic(
+                            nativeContextFindings = scopedContextResults,
+                            exactProofFindings = settlingScopedProofFindings,
+                            settledFindings = bestResults,
+                            exactProofToolShortNames = exactProofToolShortNames?.takeIf { boundedProof?.proofEstablished == true },
+                        )
                         if (settlingScopedProofFindings.isNotEmpty()) {
                             val mergedResults = appendDistinctProblems(bestResults, settlingScopedProofFindings)
                             if (mergedResults.size > bestResults.size) {
@@ -7561,7 +7647,7 @@ class InspectionHandler : HttpRequestHandler() {
                             buildNativeProofDiagnostic(nativeProof) +
                             mapOf(
                                 "execution_proof_mapped_finding_count" to scopedProofFindingCount,
-                            )
+                            ) + sourceComparisonDiagnostic
                         val executionProofEstablished = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofEstablished
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProof?.proofEstablished

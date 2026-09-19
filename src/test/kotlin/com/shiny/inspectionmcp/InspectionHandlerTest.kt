@@ -786,6 +786,90 @@ class InspectionHandlerTest {
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
     }
 
+    private fun comparisonFinding(
+        tool: String,
+        line: Int,
+        severity: String = "warning",
+    ): Map<String, Any> = mapOf(
+        "inspectionType" to tool,
+        "file" to "/tmp/TestProject/src/app.py",
+        "line" to line,
+        "column" to 1,
+        "description" to "$tool at $line",
+        "severity" to severity,
+    )
+
+    @Test
+    fun `test source comparison separates native only, proof only, settle only and severity differences`() {
+        val diagnostic = inspectionSourceComparisonDiagnostic(
+            nativeContextFindings = listOf(
+                comparisonFinding("PyUnusedLocal", 3),
+                comparisonFinding("PyTypeChecker", 5, severity = "warning"),
+                comparisonFinding("PyInjectedSql", 7),
+                comparisonFinding("GlobalDuplicates", 9),
+            ),
+            exactProofFindings = listOf(
+                comparisonFinding("PyUnusedLocal", 3),
+                comparisonFinding("PyTypeChecker", 5, severity = "error"),
+                comparisonFinding("PyShadowingNames", 11),
+            ),
+            settledFindings = listOf(
+                comparisonFinding("PyUnusedLocal", 3),
+                comparisonFinding("ToolWindowOnly", 13),
+            ),
+            exactProofToolShortNames = setOf("PyUnusedLocal", "PyTypeChecker", "PyInjectedSql", "PyShadowingNames"),
+        )
+
+        assertEquals(4, diagnostic["source_comparison_native_context_unique_finding_count"])
+        assertEquals(3, diagnostic["source_comparison_exact_proof_unique_finding_count"])
+        assertEquals(1, diagnostic["source_comparison_native_outside_proof_tools_unique_finding_count"])
+        assertEquals(1, diagnostic["source_comparison_native_only_unique_finding_count"])
+        assertEquals(listOf("PyInjectedSql"), diagnostic["source_comparison_native_only_tools"])
+        assertEquals(1, diagnostic["source_comparison_exact_proof_only_unique_finding_count"])
+        assertEquals(listOf("PyShadowingNames"), diagnostic["source_comparison_exact_proof_only_tools"])
+        assertEquals(2, diagnostic["source_comparison_shared_unique_finding_count"])
+        assertEquals(1, diagnostic["source_comparison_severity_mismatch_count"])
+        assertEquals(1, diagnostic["source_comparison_settle_only_unique_finding_count"])
+        assertEquals(listOf("ToolWindowOnly"), diagnostic["source_comparison_settle_only_tools"])
+    }
+
+    @Test
+    fun `test source comparison reports wording differences separately from unmatched locations`() {
+        val reworded = comparisonFinding("PyUnusedLocal", 3) + ("description" to "reworded by the other engine") + ("column" to 9)
+
+        val diagnostic = inspectionSourceComparisonDiagnostic(
+            nativeContextFindings = listOf(comparisonFinding("PyUnusedLocal", 3)),
+            exactProofFindings = listOf(reworded),
+            settledFindings = emptyList(),
+            exactProofToolShortNames = setOf("PyUnusedLocal"),
+        )
+
+        assertEquals(1, diagnostic["source_comparison_native_only_unique_finding_count"])
+        assertEquals(0, diagnostic["source_comparison_native_only_unmatched_location_count"])
+        assertEquals(1, diagnostic["source_comparison_exact_proof_only_unique_finding_count"])
+        assertEquals(0, diagnostic["source_comparison_exact_proof_only_unmatched_location_count"])
+    }
+
+    @Test
+    fun `test source comparison omits proof parity when exact proof is not established`() {
+        val diagnostic = inspectionSourceComparisonDiagnostic(
+            nativeContextFindings = listOf(comparisonFinding("PyUnusedLocal", 3)),
+            exactProofFindings = emptyList(),
+            settledFindings = listOf(comparisonFinding("PyUnusedLocal", 3)),
+            exactProofToolShortNames = null,
+        )
+
+        assertEquals(
+            mapOf(
+                "source_comparison_native_context_unique_finding_count" to 1,
+                "source_comparison_settle_only_unique_finding_count" to 0,
+                "source_comparison_settle_only_unmatched_location_count" to 0,
+                "source_comparison_settle_only_tools" to emptyList<String>(),
+            ),
+            diagnostic,
+        )
+    }
+
     private fun quiescenceObservation(
         dumb: Boolean = false,
         psiModificationCount: Long = 10L,
