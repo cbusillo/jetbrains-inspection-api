@@ -17,6 +17,12 @@ def read_manifest(path: Path) -> list[str]:
     ]
     if not entries:
         raise ValueError(f"Internal API allowlist is empty: {path}")
+    unrecognized = [entry for entry in entries if not entry.startswith("Internal ")]
+    if unrecognized:
+        raise ValueError(
+            "Internal API allowlist contains unrecognized entries:\n"
+            + "\n".join(f"  {entry}" for entry in unrecognized)
+        )
     if entries != sorted(entries):
         raise ValueError(f"Internal API allowlist must remain sorted: {path}")
     duplicates = [entry for entry, count in Counter(entries).items() if count > 1]

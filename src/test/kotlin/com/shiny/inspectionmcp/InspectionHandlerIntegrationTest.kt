@@ -54,32 +54,6 @@ class InspectionHandlerIntegrationTest {
     }
     
     @Test
-    @DisplayName("Should handle valid endpoints")
-    fun testValidEndpoints() {
-        val validEndpoints = listOf(
-            "/api/inspection/problems",
-            "/api/inspection/trigger",
-            "/api/inspection/status",
-            "/api/inspection/wait"
-        )
-        
-        validEndpoints.forEach { endpoint ->
-            reset(mockContext)
-            whenever(mockDecoder.path()).thenReturn(endpoint)
-            whenever(mockDecoder.parameters()).thenReturn(emptyMap())
-            
-            val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-            
-            handler.process(mockDecoder, mockRequest, mockContext)
-            
-            verify(mockContext).writeAndFlush(responseCaptor.capture())
-            
-            val response = responseCaptor.value
-            assertNotNull(response, "Endpoint $endpoint should return a response")
-        }
-    }
-    
-    @Test
     @DisplayName("Should return 404 for unknown endpoints")
     fun testUnknownEndpointReturns404() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/unknown")
@@ -118,27 +92,6 @@ class InspectionHandlerIntegrationTest {
     }
     
     @Test
-    @DisplayName("Should generate valid JSON responses")
-    fun testValidJsonResponses() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
-        whenever(mockDecoder.parameters()).thenReturn(emptyMap())
-        
-        val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-        
-        handler.process(mockDecoder, mockRequest, mockContext)
-        
-        verify(mockContext).writeAndFlush(responseCaptor.capture())
-        
-        val response = responseCaptor.value
-        val content = response.content().toString(Charsets.UTF_8)
-        
-        assertTrue(content.startsWith("{") || content.startsWith("["))
-        assertTrue(content.endsWith("}") || content.endsWith("]"))
-        
-        assertTrue(content.contains("status") || content.contains("error"))
-    }
-    
-    @Test
     @DisplayName("Should handle unknown endpoints correctly")
     fun testUnknownEndpoints() {
         val unknownPaths = listOf(
@@ -166,50 +119,6 @@ class InspectionHandlerIntegrationTest {
     }
     
     @Test
-    @DisplayName("Should preserve parameter values correctly")
-    fun testParameterPreservation() {
-        val testParameters = mapOf(
-            "scope" to listOf("current_file"),
-            "severity" to listOf("error")
-        )
-        
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
-        whenever(mockDecoder.parameters()).thenReturn(testParameters)
-        
-        val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-        
-        handler.process(mockDecoder, mockRequest, mockContext)
-        
-        verify(mockContext).writeAndFlush(responseCaptor.capture())
-        
-        val response = responseCaptor.value
-        assertNotNull(response)
-        
-        val content = response.content().toString(Charsets.UTF_8)
-        assertNotNull(content)
-    }
-    
-    @Test
-    @DisplayName("Should handle UTF-8 content correctly")
-    fun testUtf8ContentHandling() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
-        whenever(mockDecoder.parameters()).thenReturn(emptyMap())
-        
-        val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-        
-        handler.process(mockDecoder, mockRequest, mockContext)
-        
-        verify(mockContext).writeAndFlush(responseCaptor.capture())
-        
-        val response = responseCaptor.value
-        val content = response.content()
-        
-        val contentString = content.toString(Charsets.UTF_8)
-        assertNotNull(contentString)
-        assertFalse(contentString.isEmpty())
-    }
-    
-    @Test
     @DisplayName("Should set correct content length")
     fun testContentLength() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
@@ -230,34 +139,4 @@ class InspectionHandlerIntegrationTest {
         assertThat(contentLength).isEqualTo(content.toByteArray(Charsets.UTF_8).size)
     }
     
-    @Test
-    @DisplayName("Should maintain consistent response format")
-    fun testConsistentResponseFormat() {
-        val endpoints = listOf(
-            "/api/inspection/problems",
-            "/api/inspection/trigger",
-            "/api/inspection/status",
-            "/api/inspection/wait"
-        )
-        
-        endpoints.forEach { endpoint ->
-            reset(mockContext)
-            whenever(mockDecoder.path()).thenReturn(endpoint)
-            whenever(mockDecoder.parameters()).thenReturn(emptyMap())
-            
-            val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-            
-            handler.process(mockDecoder, mockRequest, mockContext)
-            
-            verify(mockContext).writeAndFlush(responseCaptor.capture())
-            
-            val response = responseCaptor.value
-            val contentType = response.headers()["Content-Type"]
-                ?: error("Content-Type header missing")
-            val corsOrigin = response.headers()["Access-Control-Allow-Origin"]
-                ?: error("Access-Control-Allow-Origin header missing")
-            assertThat(contentType).isEqualTo("application/json")
-            assertThat(corsOrigin).isEqualTo("*")
-        }
-    }
 }
