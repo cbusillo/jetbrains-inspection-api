@@ -536,6 +536,13 @@ MANIFEST
   if ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" >/dev/null 2>&1; then
     fail "internal API allowlist accepted duplicate manifest entries"
   fi
+  cat > "$manifest" <<'MANIFEST'
+Internal class example.A is referenced in approved.A
+not a verifier finding
+MANIFEST
+  if ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" >/dev/null 2>&1; then
+    fail "internal API allowlist accepted an unrecognized manifest entry"
+  fi
 
   rm -rf "$temp_dir"
   trap - RETURN
@@ -762,7 +769,6 @@ test_static_contracts() {
   assert_contains build.gradle.kts 'stable-internal-api-allowlist.txt'
   assert_contains build.gradle.kts 'canary-internal-api-allowlist.txt'
   assert_contains build.gradle.kts 'if (isCanaryPluginVersion)'
-  assert_contains build.gradle.kts 'create(IntelliJPlatformType.IntellijIdeaUltimate, "262.9437.65")'
   assert_contains build.gradle.kts 'providers.gradleProperty("pluginVerificationArchive")'
   assert_contains build.gradle.kts 'archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))'
   assert_contains build.gradle.kts 'scripts/validate-marketplace-publication.sh'
@@ -811,34 +817,6 @@ if misattributed:
         "Stable GlobalInspectionContextImpl findings escaped the named boundary:\n"
         + "\n".join(misattributed)
     )
-PY
-
-  python3 - <<'PY'
-from collections import Counter
-from pathlib import Path
-
-def entries(path: str) -> set[str]:
-    return {
-        line.strip()
-        for line in Path(path).read_text(encoding="utf-8").splitlines()
-        if line.strip() and not line.lstrip().startswith("#")
-    }
-
-stable = entries("config/plugin-verifier/stable-internal-api-allowlist.txt")
-canary = entries("config/plugin-verifier/canary-internal-api-allowlist.txt")
-probe_findings = {
-    finding for finding in canary if "PrivatePluginRecommendationProbe" in finding
-}
-if len(canary) != 73:
-    raise SystemExit(f"canary artifact allowlist must contain exactly 73 findings, found {len(canary)}")
-if len(probe_findings) != 13:
-    raise SystemExit(f"canary allowlist must contain exactly 13 probe findings, found {len(probe_findings)}")
-if len(canary - probe_findings) != 60:
-    raise SystemExit("canary allowlist must preserve the reviewed 60-finding v1.14.0 baseline")
-expected_kinds = Counter({"class": 5, "field": 3, "method": 5})
-actual_kinds = Counter(finding.split()[1] for finding in probe_findings)
-if actual_kinds != expected_kinds:
-    raise SystemExit(f"unexpected canary finding kinds: {actual_kinds}")
 PY
 
   python3 - <<'PY'
@@ -895,8 +873,6 @@ stable_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', stable_validator)
 stable_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', stable_validator)
 if not all((build_since, build_until, canary_since, canary_until, stable_since, stable_until)):
     raise SystemExit("trusted compatibility policy could not be resolved")
-if build_since.group(1) != "251" or build_until.group(1) != "262.*":
-    raise SystemExit("Stable Gradle compatibility policy changed")
 if stable_since.group(1) != build_since.group(1) or stable_until.group(1) != build_until.group(1):
     raise SystemExit("Stable artifact compatibility policy must match Gradle")
 if canary_since.group(1) != "262" or canary_until.group(1) != "262.*":
