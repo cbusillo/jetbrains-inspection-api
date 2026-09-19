@@ -6774,6 +6774,7 @@ class InspectionHandler : HttpRequestHandler() {
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
             val projectQuiescence = waitForProjectQuiescence(project, key, runId)
+            refreshPythonSkeletonGeneratorState(project)
             var inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
 
@@ -8079,6 +8080,7 @@ class InspectionHandler : HttpRequestHandler() {
         val application = ApplicationManager.getApplication()
         val refreshTask = Runnable {
             FileDocumentManager.getInstance().saveAllDocuments()
+            flushPendingProjectSettings(project)
             PsiDocumentManager.getInstance(project).commitAllDocuments()
             val projectRootPath = project.basePath
                 ?: project.projectFilePath?.let(::projectRootFromProjectFilePath)
@@ -8089,6 +8091,41 @@ class InspectionHandler : HttpRequestHandler() {
             refreshTask.run()
         } else {
             application.invokeAndWait(refreshTask)
+        }
+    }
+
+    private fun refreshPythonSkeletonGeneratorState(project: Project) {
+        try {
+            val sdks = ApplicationManager.getApplication().runReadAction<List<Sdk>, Exception> {
+                if (project.isDisposed) {
+                    return@runReadAction emptyList()
+                }
+                (
+                    ModuleManager.getInstance(project).modules.mapNotNull { module ->
+                        ModuleRootManager.getInstance(module).sdk
+                    } + listOfNotNull(ProjectRootManager.getInstance(project).projectSdk)
+                    ).distinct()
+            }
+            val stateFiles = sdks
+                .flatMap { sdk -> sdk.rootProvider.getFiles(com.intellij.openapi.roots.OrderRootType.CLASSES).toList() }
+                .filter { root -> root.isInLocalFileSystem && root.parent?.name == "python_stubs" }
+                .distinct()
+                .mapNotNull { root -> LocalFileSystem.getInstance().refreshAndFindFileByPath("${root.path}/.state.json") }
+            if (stateFiles.isNotEmpty()) {
+                com.intellij.openapi.vfs.VfsUtil.markDirtyAndRefresh(false, false, false, *stateFiles.toTypedArray())
+            }
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            logger.warn("Could not refresh Python skeleton generator state before inspection for ${project.name}", e)
+        }
+    }
+
+    private fun flushPendingProjectSettings(project: Project) {
+        try {
+            project.save()
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
+            logger.warn("Could not flush pending project settings before inspection for ${project.name}", e)
         }
     }
 
