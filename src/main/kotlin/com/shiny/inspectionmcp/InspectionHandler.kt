@@ -330,7 +330,22 @@ internal data class InspectionProjectInputsFingerprint(
     val profileToolStates: List<String>,
     val namedScopeDefinitions: List<String>,
     val profileConfigurationHash: String,
-)
+) {
+    fun changedFieldNames(other: InspectionProjectInputsFingerprint): List<String> = listOfNotNull(
+        "root_paths".takeIf { rootPaths != other.rootPaths },
+        "excluded_root_paths".takeIf { excludedRootPaths != other.excludedRootPaths },
+        "project_sdk_name".takeIf { projectSdkName != other.projectSdkName },
+        "project_sdk_type_name".takeIf { projectSdkTypeName != other.projectSdkTypeName },
+        "project_sdk_version".takeIf { projectSdkVersion != other.projectSdkVersion },
+        "project_sdk_home_path".takeIf { projectSdkHomePath != other.projectSdkHomePath },
+        "module_sdk_states".takeIf { moduleSdkStates != other.moduleSdkStates },
+        "requested_profile_name".takeIf { requestedProfileName != other.requestedProfileName },
+        "resolved_profile_name".takeIf { resolvedProfileName != other.resolvedProfileName },
+        "profile_tool_states".takeIf { profileToolStates != other.profileToolStates },
+        "named_scope_definitions".takeIf { namedScopeDefinitions != other.namedScopeDefinitions },
+        "profile_configuration_hash".takeIf { profileConfigurationHash != other.profileConfigurationHash },
+    )
+}
 
 internal data class InspectionProjectAnalysisReadiness(
     val required: Boolean,
@@ -5917,6 +5932,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val stateStableAfterVerification = captureProjectState(project) == captureEndState
                 val scopeMatchedAfterVerification = changedFilesCaptureScopeMatchesCurrent(project, snapshot.captureScope)
                 val inputsMatched = currentFingerprint == inputFingerprint
+                val changedInputFields = currentFingerprint?.let(inputFingerprint::changedFieldNames)
                 val finalValidationPassed =
                     !contentChangedAfterVerification &&
                     stateStableAfterVerification &&
@@ -5939,6 +5955,7 @@ class InspectionHandler : HttpRequestHandler() {
                         "scopeMatchedAfter=$scopeMatchedAfterVerification, " +
                         "inputsMatched=$inputsMatched, " +
                         "firstInputChange=${contentTracker.firstChangeDescription()}, " +
+                        "changedInputFields=$changedInputFields, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
                         "promoted=$shouldReconcile"
                 )
@@ -8778,9 +8795,15 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun countProjectUnsavedDocuments(project: Project): Int {
         val fileDocumentManager = FileDocumentManager.getInstance()
-        return fileDocumentManager.unsavedDocuments.count { document ->
-            val file = fileDocumentManager.getFile(document) ?: return@count false
-            file.belongsToProject(project)
+        val unsavedDocuments = fileDocumentManager.unsavedDocuments
+        if (unsavedDocuments.isEmpty()) {
+            return 0
+        }
+        return ApplicationManager.getApplication().runReadAction<Int, Exception> {
+            unsavedDocuments.count { document ->
+                val file = fileDocumentManager.getFile(document) ?: return@count false
+                file.belongsToProject(project)
+            }
         }
     }
 
