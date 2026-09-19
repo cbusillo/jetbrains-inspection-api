@@ -100,7 +100,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
-import javax.swing.tree.TreeNode
 
 private const val EXACT_PROJECT_PATH_SELECTOR_PREFIX = "exact-project-path:"
 private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
@@ -940,19 +939,6 @@ private data class InspectionVerdict(
     val nextAction: String,
 )
 
-internal fun readInspectionRootChildCount(root: Any?): Int? {
-    return when (root) {
-        null -> null
-        is TreeNode -> root.childCount
-        else -> try {
-            val childCountMethod = root.javaClass.getMethod("getChildCount")
-            (childCountMethod.invoke(root) as? Number)?.toInt()
-        } catch (_: Exception) {
-            null
-        }
-    }
-}
-
 internal data class InspectionRunState(
     val runId: Long,
     val triggerTimeMs: Long,
@@ -1407,63 +1393,6 @@ internal fun isPyCharmProductCode(ideProductCode: String?): Boolean {
     return ideProductCode.equals("PY", ignoreCase = true) || ideProductCode.equals("PC", ignoreCase = true)
 }
 
-internal fun isSettledCleanInspectionView(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        observation.rootChildCount != null &&
-        !observation.isUpdating &&
-        !observation.hasProblems
-}
-
-internal fun isReadableEmptyInspectionView(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        !observation.isUpdating &&
-        observation.rootChildCount == 0 &&
-        !observation.hasProblems
-}
-
-internal fun isTransientUpdatingUnreadableEmptyCandidate(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        observation.isUpdating &&
-        !observation.hasProblems &&
-        observation.rootChildCount == 0
-}
-
-internal fun isOpaqueSettledEmptyInspectionViewCandidate(observation: InspectionViewObservation): Boolean {
-    return observation.updateStateReadable &&
-        observation.problemStateReadable &&
-        !observation.isUpdating &&
-        !observation.hasProblems &&
-        observation.rootChildCount == null
-}
-
-internal fun shouldPromoteStableReadableEmptyInspectionView(
-    readableEmptyInspectionViewStableSince: Long?,
-    readableEmptyInspectionViewObservationCount: Int,
-    transientUpdatingEmptyObservationCount: Int = 0,
-    inspectionViewUpdating: Boolean,
-    now: Long,
-    pollingElapsedMs: Long,
-    minStableMs: Long = 5000L,
-    minPollingMs: Long = 30000L,
-    minReadableEmptyObservations: Int = 2,
-    minTransientUpdatingEmptyObservations: Int = 5,
-): Boolean {
-    val stableSince = readableEmptyInspectionViewStableSince ?: return false
-    val hasEmptyEvidence = readableEmptyInspectionViewObservationCount >= minReadableEmptyObservations ||
-        transientUpdatingEmptyObservationCount >= minTransientUpdatingEmptyObservations
-    return hasEmptyEvidence &&
-        !inspectionViewUpdating &&
-        now - stableSince >= minStableMs &&
-        pollingElapsedMs >= minPollingMs
-}
-
-internal fun hasInspectionViewProblems(observation: InspectionViewObservation): Boolean {
-    return observation.hasProblems
-}
-
 internal fun filterProblemsForScope(
     problems: List<Map<String, Any>>,
     scopeProblemMatcher: ((Map<String, Any>) -> Boolean)?,
@@ -1471,19 +1400,6 @@ internal fun filterProblemsForScope(
     return scopeProblemMatcher?.let { matcher ->
         problems.filter(matcher)
     } ?: problems
-}
-
-internal fun hasUsableInspectionViewEvidence(
-    inspectionViewObservationCount: Int,
-    nullRootChildObservationCount: Int,
-    observedSettledEmptyInspectionView: Boolean,
-    observedStableReadableEmptyInspectionView: Boolean,
-    observedNonEmptyInspectionTree: Boolean,
-): Boolean {
-    return observedSettledEmptyInspectionView ||
-        observedStableReadableEmptyInspectionView ||
-        observedNonEmptyInspectionTree ||
-        (inspectionViewObservationCount > 0 && nullRootChildObservationCount < inspectionViewObservationCount)
 }
 
 internal fun selectTrustedToolResults(
@@ -1697,32 +1613,6 @@ internal fun shouldTreatScopedEmptyExtractionAsSucceeded(
 ): Boolean {
     return lastExtractionCycleSucceeded ||
         (observedTransientEmptyInspectionViewEvidence && lastToolExtractionSucceeded)
-}
-
-internal fun shouldTreatNonEmptyInspectionTreeAsStaleCleanEvidence(
-    observedNonEmptyInspectionTree: Boolean,
-    modelExtractionClean: Boolean,
-    modelProblemDescriptorCount: Int,
-    bestResultsEmpty: Boolean,
-    extractionFailureCount: Int,
-    lastExtractionCycleSucceeded: Boolean,
-    lastToolExtractionSucceeded: Boolean,
-    inspectionViewUpdating: Boolean,
-    stableForMs: Long,
-    pollingElapsedMs: Long,
-    minStableMs: Long = 5000L,
-    minPollingMs: Long = 30000L,
-): Boolean {
-    return observedNonEmptyInspectionTree &&
-        modelExtractionClean &&
-        modelProblemDescriptorCount == 0 &&
-        bestResultsEmpty &&
-        extractionFailureCount == 0 &&
-        lastExtractionCycleSucceeded &&
-        lastToolExtractionSucceeded &&
-        !inspectionViewUpdating &&
-        stableForMs >= minStableMs &&
-        pollingElapsedMs >= minPollingMs
 }
 
 internal fun classifyCaptureIncompleteReason(
