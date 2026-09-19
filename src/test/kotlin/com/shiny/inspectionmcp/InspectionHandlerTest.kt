@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
 import io.mockk.*
 import com.intellij.lang.Language
@@ -188,6 +189,11 @@ class InspectionHandlerTest {
         assertFalse(inspectionPathWithinDirectory(sibling.toString(), directory.toString()))
     }
     
+    @AfterEach
+    fun releaseStaticMocks() {
+        unmockkAll()
+    }
+
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
