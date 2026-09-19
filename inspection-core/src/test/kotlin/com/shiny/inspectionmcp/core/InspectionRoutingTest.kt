@@ -132,7 +132,7 @@ class InspectionRoutingTest {
 
         val candidates = scoreInspectionRouteCandidates(
             identities = listOf(identity),
-            selector = InspectionRouteSelector(worktreePath = "/tmp/repo/application/src"),
+            selector = InspectionRouteSelector(cwd = "/tmp/repo/application/src"),
             defaultCwd = null,
         )
 
