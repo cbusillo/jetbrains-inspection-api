@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.DisplayName
@@ -11,6 +12,10 @@ import com.intellij.openapi.vcs.changes.ChangeListManager
 import java.lang.reflect.InvocationTargetException
 
 class InspectionScopeFallbackTest {
+    @AfterEach
+    fun releaseStaticMocks() {
+        unmockkAll()
+    }
 
     private fun handler() = InspectionHandler()
     private fun mockProject(): Project = mockk(relaxed = true) {
