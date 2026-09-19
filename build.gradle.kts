@@ -256,6 +256,7 @@ tasks {
     
     test {
         useJUnitPlatform()
+        maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 3)
         systemProperty("java.awt.headless", "true")
         testLogging {
             events("passed", "skipped", "failed")

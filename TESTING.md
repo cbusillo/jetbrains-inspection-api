@@ -387,6 +387,16 @@ the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
 verification task depends on its module's tests and report, so tests are not run
 twice. The plugin's own 0% JaCoCo minimum remains report-only and is not required
 by CI.
+
+The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
+maps changed paths to lanes: documentation-only changes run nothing beyond the
+version sync check, workflow and script changes run the contract tests without
+Gradle, and anything else (including an unknown change set) runs everything.
+The local hook classifies staged files; CI passes the pull request's file list
+through `COMMIT_GATE_CHANGED_FILES`. Pushes to `main` and both release workflows
+always run the full gate. The CI job reports its duration against a 300-second
+budget in the job summary and raises a warning annotation when it is exceeded.
+
 Code scanning is tracked through the required `Analyze (actions)` and
 `Analyze (python)` checks alongside `commit-gate`. `Analyze (java-kotlin)` also
 runs as a non-required signal so Kotlin and plugin upgrades can be validated
