@@ -962,7 +962,7 @@ class ExactFileExecutionProofTest {
         assertEquals(20, proof.nonBatchExcludedObligationCount)
         assertEquals(MAX_EXACT_FILE_PROOF_EXAMPLES, proof.nonBatchExamples.size)
         assertEquals("ApplicableUnfair1", proof.nonBatchExamples.first()["short_name"])
-        assertEquals("ApplicableUnfair12", proof.nonBatchExamples.last()["short_name"])
+        assertEquals("ApplicableUnfair$MAX_EXACT_FILE_PROOF_EXAMPLES", proof.nonBatchExamples.last()["short_name"])
     }
 
     @Test

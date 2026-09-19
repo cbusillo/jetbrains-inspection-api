@@ -58,11 +58,40 @@ if [ "$CI_MODE" -eq 0 ]; then
     git add src/main/resources/META-INF/plugin.xml
 fi
 
+selected_lanes() {
+    if [ -n "${COMMIT_GATE_CHANGED_FILES:-}" ]; then
+        if [ -r "$COMMIT_GATE_CHANGED_FILES" ]; then
+            ./scripts/changed-file-lanes.sh < "$COMMIT_GATE_CHANGED_FILES"
+            return
+        fi
+    elif [ "$CI_MODE" -eq 0 ]; then
+        git diff --cached --name-only --no-renames | ./scripts/changed-file-lanes.sh
+        return
+    fi
+    printf 'contracts\ngradle\n'
+}
+
+LANES=$(selected_lanes)
+
+lane_selected() {
+    grep -qx "$1" <<<"$LANES"
+}
+
 for variable in $(git rev-parse --local-env-vars); do
     unset "$variable"
 done
 
-./scripts/test-release-contracts.sh
+if lane_selected contracts; then
+    ./scripts/test-changed-file-lanes.sh
+    ./scripts/test-release-contracts.sh
+else
+    echo "Commit gate: only documentation changed; skipping contract tests."
+fi
+
+if ! lane_selected gradle; then
+    echo "Commit gate: no changed file needs the Gradle lanes; skipping tests, coverage, and buildPlugin."
+    exit 0
+fi
 
 java_major() {
     local java_bin="$1/bin/java"
