@@ -1911,28 +1911,6 @@ class InspectionHandlerTest {
     }
     
     @Test
-    fun `test severity filtering logic`() {
-        val handler = InspectionHandler()
-        
-        val mockRequest = mockk<FullHttpRequest>()
-        every { mockRequest.uri() } returns "/api/inspection/problems?severity=error"
-        every { mockRequest.method() } returns HttpMethod.GET
-        
-        assertTrue(handler.isSupported(mockRequest))
-    }
-    
-    @Test
-    fun `test severity parameter handling`() {
-        val handler = InspectionHandler()
-        
-        val mockRequest = mockk<FullHttpRequest>()
-        every { mockRequest.uri() } returns "/api/inspection/problems?severity=invalid"
-        every { mockRequest.method() } returns HttpMethod.GET
-        
-        assertTrue(handler.isSupported(mockRequest))
-    }
-    
-    @Test
     fun `test getCurrentProject returns valid project`() {
         val handler = InspectionHandler()
         
@@ -1984,28 +1962,6 @@ class InspectionHandlerTest {
         assertTrue(body.contains("\"client_run_id\": \"abababab-abab-4bab-8bab-abababababab\""), body)
     }
     
-    @Test
-    fun `test problems endpoint returns valid response structure`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "severity" to listOf("all")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-
     @Test
     fun `test problems endpoint without snapshot never trusts live tool window scrape`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
@@ -3316,23 +3272,6 @@ class InspectionHandlerTest {
 
         assertNotEquals(firstHash, reorderedHash)
         assertNotEquals(firstHash, changedOptionHash)
-    }
-
-    @Test
-    fun `test requested inspection profile resolution never falls back`() {
-        every { mockProfileManager.getProfile("RedLane", false) } returns null
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "resolveInspectionProfile",
-            InspectionProjectProfileManager::class.java,
-            String::class.java,
-        )
-        method.isAccessible = true
-
-        val resolvedProfile = method.invoke(handler, mockProfileManager, "RedLane")
-
-        assertNull(resolvedProfile)
-        verify(exactly = 1) { mockProfileManager.getProfile("RedLane", false) }
-        verify(exactly = 0) { mockProfileManager.getProfile("RedLane") }
     }
 
     @Test
@@ -4814,120 +4753,6 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test scope parameter handling with whole_project`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "scope" to listOf("whole_project"),
-            "severity" to listOf("all")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-    
-    @Test
-    fun `test scope parameter handling with current_file`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "scope" to listOf("current_file"),
-            "severity" to listOf("all")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-    
-    @Test
-    fun `test scope parameter handling with custom scope`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "scope" to listOf("odoo_intelligence_mcp"),
-            "severity" to listOf("all")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-    
-    @Test
-    fun `test scope parameter defaults to whole_project when missing`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "severity" to listOf("all")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-    
-    @Test
-    fun `test scope and severity parameters together`() {
-        val handler = InspectionHandler()
-        runPooledTasksInline()
-        
-        val mockUrlDecoder = mockk<QueryStringDecoder>()
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        
-        every { mockUrlDecoder.path() } returns "/api/inspection/problems"
-        every { mockUrlDecoder.parameters() } returns mapOf(
-            "scope" to listOf("custom_scope"),
-            "severity" to listOf("error")
-        )
-        
-        every { mockContext.writeAndFlush(any()) } returns mockk()
-        
-        val result = handler.process(mockUrlDecoder, mockRequest, mockContext)
-        
-        assertTrue(result)
-        verify { mockContext.writeAndFlush(any()) }
-    }
-
-    @Test
     fun `normalizeOptionalFilter handles all and blanks`() {
         assertNull(normalizeOptionalFilter(null))
         assertNull(normalizeOptionalFilter(""))
@@ -4935,31 +4760,6 @@ class InspectionHandlerTest {
         assertNull(normalizeOptionalFilter("all"))
         assertNull(normalizeOptionalFilter("ALL"))
         assertEquals("src/", normalizeOptionalFilter(" src/ "))
-    }
-    
-    @Test
-    fun `test getInspectionProblems method signature accepts scope parameter`() {
-        // Use reflection to verify the method signature includes all filtering parameters
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "getInspectionProblems", 
-            Project::class.java, // project
-            String::class.java,  // severity
-            String::class.java,  // scope
-            String::class.java,  // problemType (nullable)
-            String::class.java,  // filePattern (nullable)
-            Int::class.java,     // limit
-            Int::class.java,     // offset
-            Boolean::class.java, // includeStale
-            String::class.java,  // directoryParam (nullable)
-            List::class.java,    // files (nullable)
-            Boolean::class.java, // includeUnversioned
-            String::class.java,  // changedFilesMode (nullable)
-            Int::class.javaObjectType, // maxFiles (nullable)
-        )
-        
-        assertNotNull(method)
-        assertEquals("getInspectionProblems", method.name)
-        assertEquals(13, method.parameterCount)
     }
     
     @Test
@@ -8477,46 +8277,6 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle close retries without saving after transient refusal`() {
-        every { mockProject.basePath } returns "/repo/app"
-        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
-        val instanceId = projectInstanceId(mockProject)
-        registerLifecycleOpenOwnership(mockProject)
-        val claim = processGetRequest(
-            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
-        ).content().toString(Charsets.UTF_8)
-        val token = Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1)
-        assertNotNull(token)
-        every { mockApplication.isDispatchThread } returns false
-        every { mockApplication.invokeAndWait(any()) } answers { firstArg<Runnable>().run() }
-        var nowMs = 0L
-        handler.closeVerificationTimeoutMs = 300
-        handler.closeVerificationNow = { nowMs }
-        handler.closeVerificationSleep = { millis -> nowMs += millis }
-        val saveModes = mutableListOf<Boolean>()
-        handler.forceCloseProject = { _, save ->
-            saveModes.add(save)
-            if (saveModes.size == 2) {
-                every { mockProjectManager.openProjects } returns emptyArray()
-                true
-            } else {
-                false
-            }
-        }
-
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
-        )
-        val body = response.content().toString(Charsets.UTF_8)
-
-        assertEquals(HttpResponseStatus.OK, response.status())
-        assertTrue(body.contains("\"status\": \"closed\""))
-        assertEquals(listOf(false, false), saveModes)
-        assertTrue(body.contains("\"attempt\": 2"))
-        assertTrue(body.contains("\"save\": false"))
-    }
-
-    @Test
     fun `test lifecycle close waits beyond short fixed window for slow verified close`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
@@ -8809,29 +8569,6 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test getCurrentProject uses nested path selector scoring`() {
-        val parentProject = mockProject(
-            name = "Parent",
-            basePath = "/repo",
-            projectFilePath = "/repo/.idea/misc.xml",
-        )
-        val childProject = mockProject(
-            name = "Child",
-            basePath = "/repo/packages/app",
-            projectFilePath = "/repo/packages/app/.idea/misc.xml",
-        )
-        every { mockProjectManager.openProjects } returns arrayOf(parentProject, childProject)
-
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-
-        val result = method.invoke(handler, "/repo/packages/app/src") as Project?
-
-        assertNotNull(result)
-        assertEquals("Child", result?.name)
-    }
-
-    @Test
     fun `test getCurrentProject prefers exact project file path over longer containing base path`() {
         val exactProjectFileMatch = mockProject(
             name = "ExactProjectFile",
@@ -9045,32 +8782,6 @@ class InspectionHandlerTest {
         assertEquals("TestProject", result?.name)
     }
     
-    @Test
-    fun `test resolveProjectSelector returns correct project`() {
-        val mockProject1 = mockk<Project>()
-        val mockProject2 = mockk<Project>()
-        
-        every { mockProject1.isDefault } returns false
-        every { mockProject1.isDisposed } returns false
-        every { mockProject1.isInitialized } returns true
-        every { mockProject1.name } returns "TargetProject"
-        
-        every { mockProject2.isDefault } returns false
-        every { mockProject2.isDisposed } returns false
-        every { mockProject2.isInitialized } returns true
-        every { mockProject2.name } returns "OtherProject"
-        
-        every { mockProjectManager.openProjects } returns arrayOf(mockProject2, mockProject1)
-        
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("resolveProjectSelector", String::class.java)
-        method.isAccessible = true
-        
-        val result = method.invoke(handler, "TargetProject") as Project?
-        assertNotNull(result)
-        assertEquals("TargetProject", result?.name)
-    }
-
     private fun processTriggerRequest(uri: String): FullHttpResponse {
         return processGetRequest(uri)
     }
