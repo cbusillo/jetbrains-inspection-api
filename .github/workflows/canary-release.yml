@@ -94,6 +94,7 @@ jobs:
           name: canary-test-results
           path: |
             source/build/reports/tests/test/
+            source/build/reports/tests/platformTest/
             source/inspection-core/build/reports/tests/test/
             source/mcp-server-jvm/build/reports/tests/test/
           retention-days: 7

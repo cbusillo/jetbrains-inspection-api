@@ -82,6 +82,7 @@ jobs:
           name: test-results
           path: |
             build/reports/tests/test/
+            build/reports/tests/platformTest/
             inspection-core/build/reports/tests/test/
             mcp-server-jvm/build/reports/tests/test/
           retention-days: 7
