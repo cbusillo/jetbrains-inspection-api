@@ -25,6 +25,10 @@ escalation.
 # Plugin tests
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
 
+# Real-fixture plugin tests only (*PlatformTest); `:test` runs these first, in their own JVM,
+# because a real test Application and mockkStatic(ApplicationManager) classes must not share one
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest
+
 # Core tests
 ./gradlew :inspection-core:test
 
@@ -289,8 +293,9 @@ Automated wrapper tests prove only API reachability: local wrappers can use `ins
 Run the focused regression suite:
 
 ```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest \
+  --tests "*.SupportedInspectionExecutorPlatformTest"
 JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
-  --tests "*.SupportedInspectionExecutorPlatformTest" \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
