@@ -814,6 +814,7 @@ ln -s "$(git rev-parse --show-toplevel)/scripts/commit-gate.sh" "$(git rev-parse
 Notes:
 - Set `JAVA_HOME_21` if `/usr/libexec/java_home -v 21` is unavailable.
 - CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
+- Documentation-only commits skip the Gradle lanes; see `TESTING.md` for how lanes are chosen.
 
 ## Local cleanup
 

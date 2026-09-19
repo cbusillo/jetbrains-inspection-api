@@ -30,6 +30,26 @@ workflows, and cleanup policy.
   MCP tool contracts change, check whether the installed or checked-out
   `jetbrains-inspection` skill docs/tests/scripts need a matching update.
 
+## Test rules
+
+- A test stays only if it fails when the product is broken and passes when
+  someone makes an intended change. Before adding or keeping a doubtful test,
+  plant the fault it claims to guard against and confirm it fails.
+- No test may assert a literal defined elsewhere (versions, build numbers,
+  toolchain, counts, hashes); assert agreement with the single source of truth
+  or nothing.
+- No test may assert workflow, config, script, or documentation text. Enforce
+  the rule where it executes: the workflow itself, a helper script with its own
+  behavioural test, or `actionlint`.
+- Verification and loading code must not depend on working-tree or machine
+  state (git config, environment variables, absolute paths, installed tools);
+  check live state only on the path that acts on it.
+- A test must reach the behaviour it names and assert the response. "Something
+  was written" and `verify(exactly = 0)` on a method production never calls
+  are not assertions.
+- Do not add production code, overloads, or wait-skipping seams that exist only
+  for tests.
+
 ## Local-only overrides
 
 If you need machine-specific paths/ports/log locations, copy
