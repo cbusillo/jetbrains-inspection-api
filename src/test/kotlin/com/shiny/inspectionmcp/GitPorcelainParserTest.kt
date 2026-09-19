@@ -10,6 +10,7 @@ import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
 
 class GitPorcelainParserTest {
 
@@ -49,15 +50,10 @@ class GitPorcelainParserTest {
         val gitRoot = Files.createTempDirectory("inspection-git-root")
         try {
             runGit(gitRoot, "init", "--quiet")
-            runGit(gitRoot, "config", "user.email", "inspection@example.com")
-            runGit(gitRoot, "config", "user.name", "Inspection Test")
             val nestedProject = gitRoot.resolve("services/app")
             val sourceFile = nestedProject.resolve("src/App.kt")
             Files.createDirectories(sourceFile.parent)
-            Files.writeString(sourceFile, "val initial = true\n")
-            runGit(gitRoot, "add", ".")
-            runGit(gitRoot, "commit", "--quiet", "-m", "initial")
-            Files.writeString(sourceFile, "val changed = true\n")
+            Files.writeString(sourceFile, "val staged = true\n")
             runGit(gitRoot, "add", "services/app/src/App.kt")
 
             val project = mockk<Project>()
@@ -75,11 +71,20 @@ class GitPorcelainParserTest {
     }
 
     private fun runGit(directory: Path, vararg arguments: String) {
-        val process = ProcessBuilder(listOf("git") + arguments)
-            .directory(directory.toFile())
-            .redirectErrorStream(true)
-            .start()
-        val output = process.inputStream.readAllBytes().toString(Charsets.UTF_8)
-        assertEquals(0, process.waitFor(), output)
+        val outputFile = Files.createTempFile("inspection-git-output", ".log")
+        try {
+            val process = ProcessBuilder(listOf("git") + arguments)
+                .directory(directory.toFile())
+                .redirectErrorStream(true)
+                .redirectOutput(outputFile.toFile())
+                .start()
+            val finished = process.waitFor(30, TimeUnit.SECONDS)
+            if (!finished) process.destroyForcibly().waitFor()
+            val output = Files.readString(outputFile)
+            assertTrue(finished, "git ${arguments.joinToString(" ")} did not finish: $output")
+            assertEquals(0, process.exitValue(), output)
+        } finally {
+            Files.deleteIfExists(outputFile)
+        }
     }
 }
