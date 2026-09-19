@@ -887,8 +887,9 @@ closed for explicit operator recovery.
 
 The GitHub Release is created before Marketplace publication, preserving the
 existing Stable failure semantics. Its job has GitHub contents write permission
-but never receives `PUBLISH_TOKEN`. The final Marketplace job has read-only
-repository permission, runs no Gradle tasks, and uploads through the bounded
+but never receives `PUBLISH_TOKEN`. The final Marketplace job uses the
+`stable-marketplace` GitHub environment (restricted to `v*` tags, with a required
+reviewer), has read-only repository permission, runs no Gradle tasks, and uploads through the bounded
 `scripts/publish-stable-artifact.sh` after revalidating the tag, archive,
 embedded clean source commit, and independently recorded digest. Existing
 Marketplace updates are never replaced or resubmitted by this workflow change.
