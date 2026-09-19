@@ -928,6 +928,9 @@ private fun isTrackedInspectionInputPath(
     if (eventPath.any { pathSegment -> pathSegment.toString() == ".git" }) {
         return false
     }
+    if (isPythonSkeletonGeneratorStatePath(eventPath)) {
+        return false
+    }
     if (projectBasePath == null || (eventPath != projectBasePath && !eventPath.startsWith(projectBasePath))) {
         return true
     }
@@ -938,6 +941,11 @@ private fun isTrackedInspectionInputPath(
     }
     val relativePathText = relativePath.joinToString("/")
     return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
+}
+
+private fun isPythonSkeletonGeneratorStatePath(eventPath: Path): Boolean {
+    return eventPath.fileName?.toString() == ".state.json" &&
+        eventPath.parent?.parent?.fileName?.toString() == "python_stubs"
 }
 
 private class MessageBusInspectionProjectContentTracker(

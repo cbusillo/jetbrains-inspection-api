@@ -3270,6 +3270,14 @@ class InspectionHandlerTest {
             )
         )
         assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/.git/index"))
+        val stubRoots = roots + "/tmp/caches/python_stubs/1456468623"
+        assertFalse(
+            isTrackedInspectionInputPath("/tmp/TestProject", stubRoots, "/tmp/caches/python_stubs/1456468623/.state.json"),
+        )
+        assertTrue(
+            isTrackedInspectionInputPath("/tmp/TestProject", stubRoots, "/tmp/caches/python_stubs/1456468623/_socket.py"),
+        )
+        assertTrue(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/src/.state.json"))
         assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject/modules/sub/.git/index"))
         assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/shared-content/.git/index"))
         assertFalse(isTrackedInspectionInputPath("/tmp/TestProject", roots, "/tmp/TestProject-copy/src/App.kt"))
