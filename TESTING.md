@@ -482,7 +482,8 @@ verified SHA-256. Artifact validation requires the canary's narrow
 That environment job has read-only repository permission. A separate write-only
 GitHub release job creates the prerelease only after Marketplace upload succeeds
 and rechecks the verified digest without receiving the Marketplace token. The release contract tests
-cover malformed versions, Stable/canary workflow separation, branch isolation,
+run the release scripts against fakes and cover malformed versions, Stable/canary
+version and channel separation, branch isolation,
 artifact identity, absent or wrong channels, unexpected internal APIs, and an
 adversarial attempt to replace trusted verifier controls and reports.
 The canary manifest is trusted, reviewable evidence. An intended canary finding
