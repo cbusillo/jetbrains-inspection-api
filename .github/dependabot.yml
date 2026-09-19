@@ -18,17 +18,19 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
-    # CodeQL Java/Kotlin extraction rejects Kotlin 2.4.10 as too recent.
+    # CodeQL Java/Kotlin extraction rejects Kotlin 2.4.20 and later as too recent
+    # (CodeQL 2.27.0: "supports versions below 2.4.20"), which disables Java/Kotlin
+    # code scanning entirely. Raise this bound when CodeQL supports a newer Kotlin.
     ignore:
       - dependency-name: "org.jetbrains.kotlin.jvm"
         versions:
-          - "2.4.10"
+          - ">= 2.4.20"
       - dependency-name: "plugin.serialization"
         versions:
-          - "2.4.10"
+          - ">= 2.4.20"
       - dependency-name: "jvm"
         versions:
-          - "2.4.10"
+          - ">= 2.4.20"
 
   - package-ecosystem: github-actions
     directory: "/"
