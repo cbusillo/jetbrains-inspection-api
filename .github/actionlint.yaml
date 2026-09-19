@@ -1,0 +1,7 @@
+# actionlint 1.7.12 predates the `cache-mode` workflow key
+# (https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#cache-mode).
+# Remove this ignore once actionlint recognizes the key.
+paths:
+  .github/workflows/canary-release.yml:
+    ignore:
+      - 'unexpected key "cache-mode" for "workflow" section\..*'
