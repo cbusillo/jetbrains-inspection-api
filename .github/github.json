@@ -16,6 +16,7 @@
         "./gradlew :test",
         "./gradlew :inspection-core:jacocoTestCoverageVerification",
         "./gradlew :mcp-server-jvm:jacocoTestCoverageVerification",
+        "./scripts/test-changed-file-lanes.sh",
         "./scripts/test-release-contracts.sh",
         "./gradlew buildPlugin"
       ],
