@@ -48,7 +48,8 @@ workflows, and cleanup policy.
   was written" and `verify(exactly = 0)` on a method production never calls
   are not assertions.
 - Do not add production code, overloads, or wait-skipping seams that exist only
-  for tests.
+  for tests. Injecting a time source is fine when the waiting logic still
+  runs against it; setting a wait to zero is not.
 
 ## Local-only overrides
 
