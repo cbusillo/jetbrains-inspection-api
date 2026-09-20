@@ -270,7 +270,7 @@ tasks {
     
     test {
         useJUnitPlatform()
-        maxParallelForks = (Runtime.getRuntime().availableProcessors() / 2).coerceIn(1, 3)
+        maxParallelForks = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
         filter { excludeTestsMatching("*PlatformTest") }
         dependsOn(platformTest)
         systemProperty("java.awt.headless", "true")
