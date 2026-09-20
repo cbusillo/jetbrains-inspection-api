@@ -46,7 +46,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -102,7 +101,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -157,7 +155,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -770,8 +767,8 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_instance_id\""))
-        assertTrue(body.contains("\"inspection_execution_proof_version\": 4"))
-        assertTrue(body.contains("\"python_sdk_preparation_version\": 1"))
+        assertTrue(body.contains("\"inspection_execution_proof_version\": $INSPECTION_EXECUTION_PROOF_VERSION"))
+        assertTrue(body.contains("\"python_sdk_preparation_version\": $PYTHON_SDK_PREPARATION_VERSION"))
     }
 
     @Test
@@ -833,7 +830,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         val body = response.content().toString(Charsets.UTF_8)
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"prepared\""))
-        assertTrue(body.contains("\"sdk_preparation_version\": 1"))
+        assertTrue(body.contains("\"sdk_preparation_version\": $PYTHON_SDK_PREPARATION_VERSION"))
         assertTrue(body.contains("\"project_instance_id\": \"$instanceId\""))
         assertTrue(body.contains("\"project_key\": \"path:/repo/app\""))
         assertTrue(body.contains("\"session_id\": \"${InspectionIdeSession.sessionId}\""))

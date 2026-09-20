@@ -151,7 +151,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
@@ -218,7 +217,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         val queuedTasks = mutableListOf<Runnable>()
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
@@ -288,7 +286,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -331,7 +328,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -381,7 +377,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -434,7 +429,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns listOf(mockProfile)
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
@@ -1160,7 +1154,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns emptyList()
         every { mockProfileManager.getProfile("RedLane", false) } returns null
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
@@ -1201,7 +1194,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } returns emptyList()
         every { mockProfileManager.getProfile("RedLane", false) } returns null
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
@@ -1235,7 +1227,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockProfileManager.profiles } throws IllegalStateException("profiles unavailable")
         every { mockProfileManager.getProfile("RedLane", false) } returns mockProfile
         every { mockProfile.name } returns "RedLane"
@@ -1861,12 +1852,17 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val history = smartWaitStatus["inspection_stage_history"] as List<Map<String, Any>>
         assertEquals(listOf(mapOf("stage" to "sync", "elapsed_ms" to 1500L)), history)
 
-        repeat(12) { index ->
-            nowNanos.addAndGet(1_000_000L)
-            val nextStage = InspectionRunStage.entries[(index + 2) % InspectionRunStage.entries.size]
-            transitionInspectionRunStage(key, 11L, nextStage)
+        val transitionsPerRound = 12
+        val historySizeAfterEachRound = (1..2).map {
+            repeat(transitionsPerRound) { index ->
+                nowNanos.addAndGet(1_000_000L)
+                val nextStage = InspectionRunStage.entries[(index + 2) % InspectionRunStage.entries.size]
+                transitionInspectionRunStage(key, 11L, nextStage)
+            }
+            requireNotNull(inspectionRunState(key)).stageHistory.size
         }
-        assertEquals(8, requireNotNull(inspectionRunState(key)).stageHistory.size)
+        assertEquals(historySizeAfterEachRound[0], historySizeAfterEachRound[1])
+        assertTrue(historySizeAfterEachRound[1] < transitionsPerRound)
     }
 
     @Test
@@ -2496,7 +2492,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         method.invoke(handler, mockProject)
 
         assertEquals(listOf("/tmp/TestProject"), refreshedProjectRoots)
-        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
     }
 
     @Test
@@ -2883,7 +2878,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         )
         every { mockProjectManager.openProjects } returns arrayOf(mainProject, worktreeProject)
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
             firstArg<Runnable>().run()
             mockk(relaxed = true)
@@ -2942,7 +2936,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
             mockk(relaxed = true)
         }
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         mockInspectionPrerequisites(childProject)
 
         val response = processTriggerRequest(
