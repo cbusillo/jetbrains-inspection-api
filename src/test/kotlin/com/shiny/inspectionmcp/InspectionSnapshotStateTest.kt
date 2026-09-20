@@ -1433,6 +1433,41 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("In-run PSI churn that live findings cannot confirm is never served as fresh")
+    fun testUnreconciledInRunPsiChurnIsNeverServedAsFresh() {
+        val extractor = mockk<EnhancedTreeExtractor>()
+        val currentRun = beginInspectionRun()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = listOf(staleProblem(description = "Finding captured before the edit")),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+                runId = currentRun.runId,
+                triggerTimeMs = currentRun.triggerTimeMs,
+            ),
+        )
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val problems = getInspectionProblems()
+        val status = buildInspectionStatus()
+
+        assertTrue(problems.contains("\"results_may_be_stale\": true"), problems)
+        assertTrue(problems.contains("\"inspection_verdict\": \"UNKNOWN\""), problems)
+        assertFalse(problems.contains("Finding captured before the edit"), problems)
+        assertEquals(true, status["results_may_be_stale"], status.toString())
+        assertEquals("UNKNOWN", status["inspection_verdict"], status.toString())
+    }
+
+    @Test
     @DisplayName("Problems endpoint withholds unreconciled current-run PSI churn")
     fun testProblemsEndpointWithholdsUnreconciledCurrentRunPsiChurn() {
         val extractor = mockk<EnhancedTreeExtractor>()
