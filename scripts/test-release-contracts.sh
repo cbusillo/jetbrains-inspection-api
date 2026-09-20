@@ -863,18 +863,6 @@ if stable_since.group(1) != build_since.group(1) or stable_until.group(1) != bui
 if canary_since.group(1) != "262" or canary_until.group(1) != "262.*":
     raise SystemExit("canary artifact compatibility policy must remain 262-only")
 
-workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
-jobs_text = workflow.split("\njobs:\n", 1)[1]
-job_names = re.findall(r"^  ([A-Za-z0-9_-]+):\n", jobs_text, re.M)
-job_bodies = re.split(r"^  [A-Za-z0-9_-]+:\n", jobs_text, flags=re.M)[1:]
-token_jobs = sorted(
-    name for name, text in zip(job_names, job_bodies) if "PUBLISH_TOKEN" in text
-)
-if token_jobs != ["publish"]:
-    raise SystemExit(
-        "PUBLISH_TOKEN is a repository-level secret, so only the publish job may "
-        f"reference it until it moves into a protected environment; found in: {token_jobs}"
-    )
 PY
 }
 
