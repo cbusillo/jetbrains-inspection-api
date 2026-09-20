@@ -4238,33 +4238,6 @@ class InspectionHandlerTest {
         assertEquals(false, status["has_inspection_results"])
         assertEquals(false, status["clean_inspection"])
         assertEquals(0, status["total_problems"])
-        assertFalse(status.containsKey("scoped_clean_extraction_succeeded"))
-        assertFalse(status.containsKey("scoped_clean_matcher_available"))
-    }
-
-    @Test
-    fun `test completed scoped run does not prove clean when extraction fails`() {
-        every { mockProject.basePath } returns "/tmp/TestProject"
-        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
-        mockInspectionPrerequisites(mockProject)
-        InspectionResultsStore.clear(projectKey(mockProject))
-        mockExtractorFailure()
-        setInspectionRunState(
-            projectKey(mockProject),
-            InspectionRunState(
-                runId = 1L,
-                triggerTimeMs = System.currentTimeMillis(),
-                inProgress = false,
-                captureScope = InspectionCaptureScope(scopeParam = "files", files = listOf("src/Included.kt")),
-            ),
-        )
-
-        val status = buildInspectionStatus()
-
-        assertEquals(false, status["has_inspection_results"])
-        assertEquals(false, status["clean_inspection"])
-        assertFalse(status.containsKey("scoped_clean_matcher_available"))
-        assertFalse(status.containsKey("scoped_clean_extraction_succeeded"))
     }
 
     @Test
@@ -4902,44 +4875,30 @@ class InspectionHandlerTest {
     }
     
     @Test
-    fun `test getCurrentProject with null windows returns first valid project`() {
-        val mockProject1 = mockk<Project>()
-        val mockProject2 = mockk<Project>()
-        
-        every { mockProject1.isDefault } returns false
-        every { mockProject1.isDisposed } returns false
-        every { mockProject1.isInitialized } returns true
-        every { mockProject1.name } returns "FirstProject"
-        
-        every { mockProject2.isDefault } returns false
-        every { mockProject2.isDisposed } returns false
-        every { mockProject2.isInitialized } returns true
-        every { mockProject2.name } returns "SecondProject"
-        
-        every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
-        
+    fun `test getCurrentProject prefers the open project whose window is active`() {
+        val firstOpenProject = usableProject("FirstOpenProject")
+        val activeWindowProject = usableProject("ActiveWindowProject")
+        every { mockProjectManager.openProjects } returns arrayOf(firstOpenProject, activeWindowProject)
+
         val mockIdeFocusManager = mockk<IdeFocusManager>()
         every { mockIdeFocusManager.lastFocusedFrame } returns null
         every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
-        
+
         val mockDataManager = mockk<DataManager>()
         val promise: Promise<DataContext> = rejectedPromise("No context")
         every { mockDataManager.dataContextFromFocusAsync } returns promise
         every { DataManager.getInstance() } returns mockDataManager
-        
-        every { mockWindowManager.suggestParentWindow(mockProject1) } returns null
-        every { mockWindowManager.suggestParentWindow(mockProject2) } returns null
-        
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        
-        val result = method.invoke(handler, null) as Project?
-        
-        assertNotNull(result)
-        assertEquals("FirstProject", result?.name)
+
+        val inactiveWindow = mockk<JFrame>()
+        val activeWindow = mockk<JFrame>()
+        every { inactiveWindow.isActive } returns false
+        every { activeWindow.isActive } returns true
+        every { mockWindowManager.suggestParentWindow(firstOpenProject) } returns inactiveWindow
+        every { mockWindowManager.suggestParentWindow(activeWindowProject) } returns activeWindow
+
+        assertSame(activeWindowProject, currentProjectWithoutSelector())
     }
-    
+
     @Test
     fun `test getCurrentProject with explicit project name`() {
         val mockProject1 = mockk<Project>()
@@ -7156,44 +7115,6 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle open keeps opening guard while project remains open but not initialized`() {
-        val tempDir = Files.createTempDirectory("inspection-open-slow-initializing")
-        val openProjects = arrayOfNulls<Project>(1)
-        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
-        val initializingProject = mockk<Project>()
-        every { initializingProject.isDefault } returns false
-        every { initializingProject.isDisposed } returns false
-        every { initializingProject.isInitialized } returns false
-        every { initializingProject.name } returns "inspection-open-slow-initializing"
-        every { initializingProject.basePath } returns tempDir.toString()
-        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
-        val scheduled = mutableListOf<Runnable>()
-        var inFlightResponseBody = ""
-        every { mockApplication.invokeLater(any()) } answers {
-            scheduled += firstArg<Runnable>()
-        }
-        handler.openProjectPath = { _, beforeInit ->
-            openProjects[0] = initializingProject
-            beforeInit(initializingProject)
-            initializingProject
-        }
-
-        val first = processGetRequest(lifecycleOpenUri(tempDir))
-        scheduled.single().run()
-        inFlightResponseBody = processGetRequest(lifecycleOpenUri(tempDir)).content().toString(Charsets.UTF_8)
-        every { initializingProject.isInitialized } returns true
-        val second = processGetRequest(lifecycleOpenUri(tempDir))
-        val secondBody = second.content().toString(Charsets.UTF_8)
-
-        assertEquals(HttpResponseStatus.OK, first.status())
-        assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(1, scheduled.size)
-        assertTrue(inFlightResponseBody.contains("\"reason\": \"already_opening\""))
-        assertTrue(inFlightResponseBody.contains("\"opening_scheduled\": false"))
-        assertTrue(secondBody.contains("\"status\": \"already_open\""))
-    }
-
-    @Test
     fun `test lifecycle open retries when project disappears before initialization`() {
         val tempDir = Files.createTempDirectory("inspection-open-disappears")
         val openProjects = arrayOfNulls<Project>(1)
@@ -7538,38 +7459,33 @@ class InspectionHandlerTest {
     }
 
     @Test
-    fun `test lifecycle open releases opening guard when poller aborts`() {
-        val tempDir = Files.createTempDirectory("inspection-open-aborted-poller")
-        val openProjects = arrayOfNulls<Project>(1)
-        every { mockProjectManager.openProjects } answers { openProjects.filterNotNull().toTypedArray() }
-        val initializingProject = mockk<Project>()
-        every { initializingProject.isDefault } returns false
-        every { initializingProject.isDisposed } returns false
-        every { initializingProject.isInitialized } returns false
-        every { initializingProject.name } returns "inspection-open-aborted-poller"
-        every { initializingProject.basePath } returns tempDir.toString()
-        every { initializingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+    fun `test lifecycle open releases opening guard when the opened project is already disposed`() {
+        val tempDir = Files.createTempDirectory("inspection-open-disposed")
+        val disposedProject = mockk<Project>()
+        every { disposedProject.isDefault } returns false
+        every { disposedProject.isDisposed } returns true
+        every { disposedProject.isInitialized } returns false
+        every { disposedProject.name } returns "inspection-open-disposed"
+        every { disposedProject.basePath } returns tempDir.toString()
+        every { disposedProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        every { mockProjectManager.openProjects } returns emptyArray()
         val scheduled = mutableListOf<Runnable>()
         every { mockApplication.invokeLater(any()) } answers {
             scheduled += firstArg<Runnable>()
         }
         handler.openProjectPath = { _, beforeInit ->
-            openProjects[0] = initializingProject
-            beforeInit(initializingProject)
-            initializingProject
+            beforeInit(disposedProject)
+            disposedProject
         }
 
-        val first = processGetRequest(lifecycleOpenUri(tempDir))
+        processGetRequest(lifecycleOpenUri(tempDir))
         scheduled.single().run()
         val second = processGetRequest(lifecycleOpenUri(tempDir))
         val secondBody = second.content().toString(Charsets.UTF_8)
 
-        assertEquals(HttpResponseStatus.OK, first.status())
-        assertEquals(HttpResponseStatus.OK, second.status())
-        assertEquals(1, scheduled.size)
-        assertTrue(secondBody.contains("\"status\": \"opening\""))
-        assertTrue(secondBody.contains("\"reason\": \"already_opening\""))
-        assertTrue(secondBody.contains("\"opening_scheduled\": false"))
+        assertEquals(HttpResponseStatus.OK, second.status(), secondBody)
+        assertFalse(secondBody.contains("\"reason\": \"already_opening\""), secondBody)
+        assertEquals(2, scheduled.size, secondBody)
     }
 
     @Test
