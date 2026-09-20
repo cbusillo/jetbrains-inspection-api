@@ -1753,12 +1753,14 @@ class McpServerTest {
     }
 
     @Test
-    fun defaultAutoRoutingSettingsUseRegistryDirAndInspectionPortRange() {
-        val registryDir = defaultRegistryDir().toString()
-        val ports = defaultScanPorts()
-
-        assertTrue(registryDir.endsWith("jetbrains-inspection-api/instances"))
-        assertEquals((63340..63349).toList(), ports)
+    fun scanPortsComeFromTheConfiguredListAndRanges() {
+        assertEquals(DEFAULT_SCAN_PORTS.toList(), parseScanPorts(null))
+        assertEquals(DEFAULT_SCAN_PORTS.toList(), parseScanPorts("   "))
+        assertEquals(listOf(7001, 7005), parseScanPorts("7001,7005"))
+        assertEquals(listOf(7001, 7002, 7003), parseScanPorts("7001-7003"))
+        assertEquals(listOf(7001, 7010, 7011, 7020), parseScanPorts(" 7001 , 7010-7011,7020 "))
+        assertEquals(listOf(7001, 7002), parseScanPorts("7001,7001-7002,7002"))
+        assertEquals(listOf(7005), parseScanPorts("7009-7001,not-a-port,,7005"))
     }
 
     private fun registryIdentityBody(

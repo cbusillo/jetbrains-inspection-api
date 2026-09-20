@@ -4,7 +4,6 @@ import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
-import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.wm.IdeFocusManager
 import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
@@ -22,7 +21,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 private const val BUILD_INFO_RESOURCE = "/com/shiny/inspectionmcp/inspection-build.properties"
-private const val REGISTRY_DIR_ENV = "JETBRAINS_INSPECTION_REGISTRY_DIR"
 private const val REGISTRY_HEARTBEAT_SECONDS = 10L
 
 internal object InspectionIdeSession {
@@ -111,18 +109,7 @@ internal fun resolveIdePort(): Int? {
     return optionsPort?.takeIf { it > 0 }
 }
 
-internal fun inspectionRegistryInstancesDir(): Path {
-    System.getenv(REGISTRY_DIR_ENV)?.trim()?.takeIf { it.isNotEmpty() }?.let { return Paths.get(it) }
-
-    val base = when {
-        SystemInfo.isWindows -> System.getenv("LOCALAPPDATA")?.let { Paths.get(it) }
-            ?: Paths.get(System.getProperty("user.home"), "AppData", "Local")
-        SystemInfo.isMac -> Paths.get(System.getProperty("user.home"), "Library", "Caches")
-        else -> System.getenv("XDG_CACHE_HOME")?.let { Paths.get(it) }
-            ?: Paths.get(System.getProperty("user.home"), ".cache")
-    }
-    return base.resolve("jetbrains-inspection-api").resolve("instances")
-}
+internal fun inspectionRegistryInstancesDir(): Path = com.shiny.inspectionmcp.core.inspectionRegistryInstancesDir()
 
 internal object InspectionIdeRegistry {
     private val started = AtomicBoolean(false)

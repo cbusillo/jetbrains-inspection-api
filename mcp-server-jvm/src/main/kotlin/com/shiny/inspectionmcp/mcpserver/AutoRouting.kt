@@ -13,6 +13,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import com.shiny.inspectionmcp.core.InspectionRouteIdentity
 import com.shiny.inspectionmcp.core.InspectionRouteProject
 import com.shiny.inspectionmcp.core.InspectionRouteSelector
+import com.shiny.inspectionmcp.core.inspectionRegistryInstancesDir
 import com.shiny.inspectionmcp.core.effectiveProjectRoot
 import com.shiny.inspectionmcp.core.normalizeRoutePath
 import com.shiny.inspectionmcp.core.scoreInspectionRouteCandidates
@@ -27,8 +28,8 @@ import java.nio.file.Paths
 import java.time.Duration
 import kotlin.io.path.name
 
-private const val REGISTRY_DIR_ENV = "JETBRAINS_INSPECTION_REGISTRY_DIR"
 private const val PORTS_ENV = "JETBRAINS_INSPECTION_PORTS"
+internal val DEFAULT_SCAN_PORTS = 63340..63349
 private const val REGISTRY_TTL_MS = 60_000L
 
 private val routeJson = Json {
@@ -338,36 +339,23 @@ private data class RouteCandidate(
     val rootDepth: Int,
 )
 
-internal fun defaultRegistryDir(): Path {
-    System.getenv(REGISTRY_DIR_ENV)?.trim()?.takeIf { it.isNotEmpty() }?.let { return Paths.get(it) }
-    val userHome = System.getProperty("user.home")
-    val os = System.getProperty("os.name").lowercase()
-    val base = when {
-        os.contains("win") -> System.getenv("LOCALAPPDATA")?.let { Paths.get(it) }
-            ?: Paths.get(userHome, "AppData", "Local")
-        os.contains("mac") -> Paths.get(userHome, "Library", "Caches")
-        else -> System.getenv("XDG_CACHE_HOME")?.let { Paths.get(it) }
-            ?: Paths.get(userHome, ".cache")
-    }
-    return base.resolve("jetbrains-inspection-api").resolve("instances")
-}
+internal fun defaultRegistryDir(): Path = inspectionRegistryInstancesDir()
 
-internal fun defaultScanPorts(): List<Int> {
-    val configured = System.getenv(PORTS_ENV)?.trim()?.takeIf { it.isNotEmpty() }
-    if (configured != null) {
-        return configured.split(',').flatMap { token ->
-            val trimmed = token.trim()
-            val rangeParts = trimmed.split('-', limit = 2)
-            if (rangeParts.size == 2) {
-                val start = rangeParts[0].toIntOrNull()
-                val end = rangeParts[1].toIntOrNull()
-                if (start != null && end != null && start <= end) (start..end).toList() else emptyList()
-            } else {
-                trimmed.toIntOrNull()?.let(::listOf) ?: emptyList()
-            }
-        }.distinct()
-    }
-    return (63340..63349).toList()
+internal fun defaultScanPorts(): List<Int> = parseScanPorts(System.getenv(PORTS_ENV))
+
+internal fun parseScanPorts(configured: String?): List<Int> {
+    val trimmedConfiguration = configured?.trim()?.takeIf { it.isNotEmpty() } ?: return DEFAULT_SCAN_PORTS.toList()
+    return trimmedConfiguration.split(',').flatMap { token ->
+        val trimmed = token.trim()
+        val rangeParts = trimmed.split('-', limit = 2)
+        if (rangeParts.size == 2) {
+            val start = rangeParts[0].toIntOrNull()
+            val end = rangeParts[1].toIntOrNull()
+            if (start != null && end != null && start <= end) (start..end).toList() else emptyList()
+        } else {
+            trimmed.toIntOrNull()?.let(::listOf) ?: emptyList()
+        }
+    }.distinct()
 }
 
 private fun JsonObject.string(name: String): String? {
