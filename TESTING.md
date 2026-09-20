@@ -299,7 +299,9 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
-  --tests "*.InspectionHandlerTest" \
+  --tests "*.InspectionHandlerRunTest" \
+  --tests "*.InspectionHandlerResultsTest" \
+  --tests "*.InspectionHandlerLifecycleTest" \
   --tests "*.NativeInspectionExecutionProofTest"
 ```
 
@@ -577,7 +579,7 @@ ensure a diagnostic callback failure cannot prevent cancellation.
 `ExactFileExecutionProofTest` checks retained findings, incomplete obligations,
 worker shutdown, and wrapper cleanup. `InspectionCaptureTimingTest` verifies that
 proof time cannot substitute for the clean-result observation window or extend
-the total capture budget. Run these with `InspectionHandlerTest` for terminal
+the total capture budget. Run these with `InspectionHandlerRunTest` for terminal
 outcome and frozen diagnostic coverage.
 
 These controls prove cooperative cancellation, not a forced stop of an arbitrary
