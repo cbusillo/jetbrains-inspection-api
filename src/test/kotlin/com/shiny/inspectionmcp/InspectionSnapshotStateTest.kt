@@ -2691,15 +2691,31 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Capture polling stops once empty results are stable without an inspection view")
+    fun testShouldStopCapturePollingForStableEmptyResultsWithoutView() {
+        assertTrue(
+            shouldStopCapturePolling(
+                observedStableEmptyResultsWithoutInspectionView = true,
+                bestResultsCount = 0,
+                stableForMs = 0L,
+                pollingElapsedMs = 0L,
+            ),
+        )
+        assertFalse(
+            shouldStopCapturePolling(
+                observedStableEmptyResultsWithoutInspectionView = false,
+                bestResultsCount = 0,
+                stableForMs = 0L,
+                pollingElapsedMs = 0L,
+            ),
+        )
+    }
+
+    @Test
     @DisplayName("Capture polling settles on stable tool-window findings without inspection view")
     fun testShouldStopCapturePollingForStableToolResultsWithoutView() {
         assertFalse(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 7000,
@@ -2708,11 +2724,6 @@ class InspectionSnapshotStateTest {
 
         assertTrue(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 3,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
@@ -2721,11 +2732,6 @@ class InspectionSnapshotStateTest {
 
         assertFalse(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 4000,
                 pollingElapsedMs = 16000,
@@ -2734,11 +2740,6 @@ class InspectionSnapshotStateTest {
 
         assertFalse(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 16000,
@@ -2747,11 +2748,6 @@ class InspectionSnapshotStateTest {
 
         assertTrue(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = 0,
                 stableForMs = 6000,
                 pollingElapsedMs = 60000,
@@ -2783,11 +2779,6 @@ class InspectionSnapshotStateTest {
         assertFalse(observedResultEvidence.isEmpty)
         assertFalse(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = observedResultEvidence.count,
                 stableForMs = 5000,
                 pollingElapsedMs = 14999,
@@ -2795,11 +2786,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = observedResultEvidence.count,
                 stableForMs = 4999,
                 pollingElapsedMs = 15000,
@@ -2807,11 +2793,6 @@ class InspectionSnapshotStateTest {
         )
         assertTrue(
             shouldStopCapturePolling(
-                viewReadyOk = false,
-                observedInspectionView = false,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
                 bestResultsCount = observedResultEvidence.count,
                 stableForMs = 5000,
                 pollingElapsedMs = 15000,
@@ -2918,102 +2899,6 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Capture polling does not stop on an empty inspection view until the view finishes updating")
-    fun testShouldNotStopCapturePollingForUpdatingEmptyInspectionView() {
-        assertFalse(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 16000,
-            )
-        )
-
-        assertFalse(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = true,
-                observedStableReadableEmptyInspectionView = false,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 7000,
-            )
-        )
-
-        assertTrue(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = true,
-                observedStableReadableEmptyInspectionView = false,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 16000,
-            )
-        )
-
-        assertFalse(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = true,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 20000,
-            )
-        )
-
-        assertFalse(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = true,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 30000,
-            )
-        )
-
-        assertTrue(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = true,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 30000,
-            )
-        )
-
-        assertTrue(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
-                observedModelCleanInspection = true,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 30000,
-            )
-        )
-    }
-
-    @Test
     @DisplayName("Model extraction verdict distinguishes clean from unreadable empty results")
     fun testInspectionModelExtractionVerdict() {
         assertEquals(
@@ -3074,24 +2959,6 @@ class InspectionSnapshotStateTest {
                 unreadableToolCount = 0,
                 unreadableReasons = emptyList(),
             ).verdict,
-        )
-    }
-
-    @Test
-    @DisplayName("Capture polling stops once scoped empty results are trusted")
-    fun testShouldStopCapturePollingForTrustedScopedEmptyResults() {
-        assertTrue(
-            shouldStopCapturePolling(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                observedSettledEmptyInspectionView = false,
-                observedStableReadableEmptyInspectionView = false,
-                observedStableEmptyResultsWithoutInspectionView = true,
-                bestResultsCount = 0,
-                stableForMs = 6000,
-                pollingElapsedMs = 30000,
-            )
         )
     }
 
