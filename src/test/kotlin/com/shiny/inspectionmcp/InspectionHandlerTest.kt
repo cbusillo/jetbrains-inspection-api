@@ -3829,6 +3829,62 @@ class InspectionHandlerTest {
     }
 
     @Test
+    fun `test a failed run withdraws the clean verdict of the earlier run`() {
+        seedCleanSnapshotFromEarlierRun()
+        val verdictBeforeTheFailedRun = inspectionVerdict("/api/inspection/status")
+        handler.inspectionIndicatorFactory = { throw IllegalStateException("indicator failed") }
+
+        val trigger = processTriggerRequest("/api/inspection/trigger")
+
+        assertEquals("GREEN", verdictBeforeTheFailedRun)
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, trigger.status())
+        assertEquals("UNKNOWN", inspectionVerdict("/api/inspection/status"))
+        assertEquals("UNKNOWN", inspectionVerdict("/api/inspection/problems"))
+    }
+
+    @Test
+    fun `test a run cancelled before it starts withdraws the clean verdict of the earlier run`() {
+        seedCleanSnapshotFromEarlierRun()
+        val queuedTasks = mutableListOf<Runnable>()
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            queuedTasks += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        processTriggerRequest("/api/inspection/trigger")
+        processGetRequest("/api/inspection/cancel?worktree_path=/tmp/TestProject&inspection_run_id=1")
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            queuedTasks.first().run()
+        }
+        runPooledTasksInline()
+
+        assertEquals("UNKNOWN", inspectionVerdict("/api/inspection/status"))
+        assertEquals("UNKNOWN", inspectionVerdict("/api/inspection/problems"))
+    }
+
+    private fun seedCleanSnapshotFromEarlierRun() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "test",
+                runId = 0L,
+            ),
+        )
+    }
+
+    private fun inspectionVerdict(uri: String): String? {
+        val body = processGetRequest(uri).content().toString(Charsets.UTF_8)
+        return Regex("\"inspection_verdict\": \"([^\"]*)\"").find(body)?.groupValues?.get(1)
+    }
+
+    @Test
     fun `test failure after cancellation request retains failed terminal outcome`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
