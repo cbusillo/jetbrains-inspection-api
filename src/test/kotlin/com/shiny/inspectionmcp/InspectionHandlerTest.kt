@@ -1914,40 +1914,59 @@ class InspectionHandlerTest {
     }
     
     @Test
-    fun `test getCurrentProject returns valid project`() {
-        val handler = InspectionHandler()
-        
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        
-        val result = method.invoke(handler, null) as Project?
-        
-        assertNotNull(result)
-        assertEquals("TestProject", result?.name)
-    }
-    
-    @Test
-    fun `test getCurrentProject returns null when no valid project`() {
-        every { mockProjectManager.openProjects } returns emptyArray()
-        
+    fun `test getCurrentProject prefers the focused data context project over open project order`() {
+        val firstOpenProject = usableProject("FirstOpenProject")
+        val dataContextProject = usableProject("DataContextProject")
+        every { mockProjectManager.openProjects } returns arrayOf(firstOpenProject, dataContextProject)
+
         val mockIdeFocusManager = mockk<IdeFocusManager>()
         every { mockIdeFocusManager.lastFocusedFrame } returns null
         every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
-        
+
+        val dataContext = mockk<DataContext>()
+        val mockDataManager = mockk<DataManager>()
+        every { mockDataManager.dataContextFromFocusAsync } returns resolvedPromise(dataContext)
+        every { DataManager.getInstance() } returns mockDataManager
+        every { CommonDataKeys.PROJECT.getData(dataContext) } returns dataContextProject
+
+        assertSame(dataContextProject, currentProjectWithoutSelector())
+    }
+
+    @Test
+    fun `test getCurrentProject never falls back to a disposed open project`() {
+        val disposedProject = usableProject("DisposedProject")
+        every { disposedProject.isDisposed } returns true
+        every { mockProjectManager.openProjects } returns arrayOf(disposedProject)
+
+        val mockIdeFocusManager = mockk<IdeFocusManager>()
+        every { mockIdeFocusManager.lastFocusedFrame } returns null
+        every { IdeFocusManager.getGlobalInstance() } returns mockIdeFocusManager
+
         val mockDataManager = mockk<DataManager>()
         val promise: Promise<DataContext> = rejectedPromise("No context")
         every { mockDataManager.dataContextFromFocusAsync } returns promise
         every { DataManager.getInstance() } returns mockDataManager
-        
-        val handler = InspectionHandler()
+
+        assertNull(currentProjectWithoutSelector())
+    }
+
+    private fun usableProject(name: String): Project {
+        val project = mockk<Project>()
+        every { project.isDefault } returns false
+        every { project.isDisposed } returns false
+        every { project.isInitialized } returns true
+        every { project.name } returns name
+        every { project.basePath } returns "/tmp/$name"
+        every { project.projectFilePath } returns "/tmp/$name/.idea/misc.xml"
+        return project
+    }
+
+    private fun currentProjectWithoutSelector(): Project? {
         val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
         method.isAccessible = true
-        
-        val result = method.invoke(handler, null) as Project?
-        
-        assertNull(result)
+        return method.invoke(handler, null) as Project?
     }
-    
+
     @Test
     fun `test process handles missing project gracefully`() {
         every { mockProjectManager.openProjects } returns emptyArray()
