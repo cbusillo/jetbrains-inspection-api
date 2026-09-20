@@ -532,7 +532,6 @@ internal data class InspectionCaptureSnapshotInput(
     val captureDiagnostic: Map<String, Any?>?,
     val runId: Long,
     val triggerTimeMs: Long?,
-    val viewReadyOk: Boolean,
     // Defense-in-depth: bounded proof tracking to prevent false CLEAN_CONFIRMED
     val executionProofRequired: Boolean = false,
     val executionProofEstablished: Boolean? = null,
@@ -690,7 +689,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-            source = if (input.viewReadyOk) "inspection_view" else "tool_window",
+            source = "tool_window",
             note = "Inspection execution proof did not establish a clean result, so a clean result could not be confirmed.",
             captureScope = input.captureScope,
             captureDiagnostic = input.captureDiagnostic,
@@ -728,7 +727,7 @@ internal fun buildInspectionCaptureSnapshot(input: InspectionCaptureSnapshotInpu
             timestamp = input.snapshotTimeMs,
             projectState = input.projectState,
             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-            source = if (input.viewReadyOk) "inspection_view" else "tool_window",
+            source = "tool_window",
             note = when {
                 !scopeFileDiagnosticsComplete ->
                     "Inspection scope diagnostics did not cover every resolved file, so a clean result could not be proven."
@@ -1637,15 +1636,6 @@ internal fun shouldTrustStableScopedEmptyResults(
         !observedNonEmptyInspectionTree &&
         stableForMs >= minStableMs &&
         pollingElapsedMs >= minPollingMs
-}
-
-internal fun shouldTreatScopedEmptyExtractionAsSucceeded(
-    lastExtractionCycleSucceeded: Boolean,
-    observedTransientEmptyInspectionViewEvidence: Boolean,
-    lastToolExtractionSucceeded: Boolean,
-): Boolean {
-    return lastExtractionCycleSucceeded ||
-        (observedTransientEmptyInspectionViewEvidence && lastToolExtractionSucceeded)
 }
 
 internal fun classifyCaptureIncompleteReason(
@@ -7179,11 +7169,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     modelVerdict = modelVerdict,
                                     hasScopedMatcher = scopeProblemMatcher != null,
                                     hasModelCleanEvidence = modelExtractionClean,
-                                    extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
-                                        lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
-                                        observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
-                                        lastToolExtractionSucceeded = lastToolExtractionSucceeded,
-                                    ),
+                                    extractionSucceeded = lastExtractionCycleSucceeded,
                                     scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                     bestResultsEmpty = observedResultEvidence.isEmpty,
                                     observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
@@ -7235,11 +7221,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 modelVerdict = modelVerdict,
                                 hasScopedMatcher = scopeProblemMatcher != null,
                                 hasModelCleanEvidence = modelExtractionClean,
-                                extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
-                                    lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
-                                    observedTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
-                                    lastToolExtractionSucceeded = lastToolExtractionSucceeded,
-                                ),
+                                extractionSucceeded = lastExtractionCycleSucceeded,
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                 bestResultsEmpty = finalObservedResultEvidence.isEmpty,
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
@@ -7428,7 +7410,6 @@ class InspectionHandler : HttpRequestHandler() {
                                 captureDiagnostic = captureDiagnostic,
                                 runId = runId,
                                 triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                                viewReadyOk = viewReadyOk,
                                 executionProofRequired = requiresExecutionProof,
                                 executionProofEstablished = executionProofEstablished,
                             )

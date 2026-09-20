@@ -289,7 +289,6 @@ class InspectionSnapshotStateTest {
                 captureDiagnostic = mapOf("exit_reason" to "timeout"),
                 runId = 42L,
                 triggerTimeMs = 1000L,
-                viewReadyOk = true,
             )
         )
 
@@ -331,7 +330,6 @@ class InspectionSnapshotStateTest {
                 captureDiagnostic = diagnostic,
                 runId = runState.runId,
                 triggerTimeMs = runState.triggerTimeMs,
-                viewReadyOk = true,
             )
         )
 
@@ -384,7 +382,6 @@ class InspectionSnapshotStateTest {
                 captureDiagnostic = diagnostic,
                 runId = runState.runId,
                 triggerTimeMs = runState.triggerTimeMs,
-                viewReadyOk = false,
             )
         )
 
@@ -406,39 +403,6 @@ class InspectionSnapshotStateTest {
         assertEquals(diagnostic, status["capture_diagnostic"])
         assertEquals(false, status["clean_inspection"])
         assertEquals(false, status["has_inspection_results"])
-    }
-
-    @Test
-    @DisplayName("Capture snapshot builder marks incomplete ready views as inspection view source")
-    fun testCaptureSnapshotBuilderKeepsReadyIncompleteSource() {
-        val diagnostic = mapOf(
-            "exit_reason" to "deadline",
-            "view_ready_ok" to true,
-            "observed_inspection_view" to true,
-            "inspection_view_updating" to true,
-            "unreadable_problem_state_observation_count" to 1,
-        )
-
-        val snapshot = buildInspectionCaptureSnapshot(
-            InspectionCaptureSnapshotInput(
-                bestResults = emptyList(),
-                bestSource = "tool_window",
-                snapshotTimeMs = 1234L,
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
-                emptyOutcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                emptyNote = "Inspection view was still updating.",
-                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
-                captureDiagnostic = diagnostic,
-                runId = 45L,
-                triggerTimeMs = 1000L,
-                viewReadyOk = true,
-            )
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
-        assertEquals("inspection_view", snapshot.source)
-        assertEquals(CaptureIncompleteReason.VIEW_UPDATING_UNREADABLE, snapshot.captureIncompleteReason)
-        assertEquals(diagnostic, snapshot.captureDiagnostic)
     }
 
     @Test
@@ -2238,42 +2202,6 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Safe transient empty view evidence latches for scoped empty extraction")
-    fun testTransientEmptyEvidenceCanUseSuccessfulToolExtraction() {
-        assertFalse(
-            shouldTreatScopedEmptyExtractionAsSucceeded(
-                lastExtractionCycleSucceeded = false,
-                observedTransientEmptyInspectionViewEvidence = false,
-                lastToolExtractionSucceeded = true,
-            )
-        )
-
-        assertFalse(
-            shouldTreatScopedEmptyExtractionAsSucceeded(
-                lastExtractionCycleSucceeded = false,
-                observedTransientEmptyInspectionViewEvidence = true,
-                lastToolExtractionSucceeded = false,
-            )
-        )
-
-        assertTrue(
-            shouldTreatScopedEmptyExtractionAsSucceeded(
-                lastExtractionCycleSucceeded = false,
-                observedTransientEmptyInspectionViewEvidence = true,
-                lastToolExtractionSucceeded = true,
-            )
-        )
-
-        assertTrue(
-            shouldTreatScopedEmptyExtractionAsSucceeded(
-                lastExtractionCycleSucceeded = true,
-                observedTransientEmptyInspectionViewEvidence = false,
-                lastToolExtractionSucceeded = false,
-            )
-        )
-    }
-
-    @Test
     @DisplayName("Clean wait requires a post-trigger settle window")
     fun testCleanWaitHasSettledRequiresTriggerAge() {
         val now = System.currentTimeMillis()
@@ -2839,7 +2767,6 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = false,
                 executionProofRequired = true,
                 executionProofEstablished = true,
             ),
@@ -2920,7 +2847,6 @@ class InspectionSnapshotStateTest {
                 captureDiagnostic = diagnostic,
                 runId = 3L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
                 executionProofRequired = true,
                 executionProofEstablished = false,
             ),
@@ -2928,6 +2854,7 @@ class InspectionSnapshotStateTest {
 
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
         assertEquals(CaptureIncompleteReason.EXECUTION_NOT_PROVEN, snapshot.captureIncompleteReason)
+        assertEquals("tool_window", snapshot.source)
     }
 
     @Test
@@ -2956,7 +2883,6 @@ class InspectionSnapshotStateTest {
                 captureDiagnostic = diagnostic,
                 runId = 5L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
                 executionProofRequired = true,
                 executionProofEstablished = true,
             ),
@@ -3028,7 +2954,6 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
             ),
         )
         assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, snapshot.outcome)
@@ -3102,7 +3027,6 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
                 executionProofRequired = true,
                 executionProofEstablished = false,
             ),
@@ -3246,7 +3170,6 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
                 executionProofRequired = true,
                 executionProofEstablished = false,
             ),
@@ -3377,7 +3300,6 @@ class InspectionSnapshotStateTest {
                 ),
                 runId = 1L,
                 triggerTimeMs = null,
-                viewReadyOk = true,
                 executionProofRequired = true,
                 executionProofEstablished = true,
             ),
