@@ -24,6 +24,7 @@ import java.io.IOException
 import java.net.Authenticator
 import java.net.ConnectException
 import java.net.CookieHandler
+import java.net.HttpURLConnection
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import java.net.URI
@@ -38,6 +39,7 @@ import java.nio.file.Path
 import java.util.Optional
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 import javax.net.ssl.SSLContext
@@ -1452,6 +1454,7 @@ class McpServerTest {
         MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/shared", identitySessionId = "first").use { first ->
             MockIdeServer(identityProjectName = "shared", identityBasePath = "/tmp/shared", identitySessionId = "second").use { second ->
                 first.start()
+                second.startWithoutAnswering()
                 val executor = autoExecutor(first, second)
 
                 val trigger = executor.handleToolCall(
@@ -1497,6 +1500,7 @@ class McpServerTest {
         MockIdeServer(identityProjectName = "project", identityBasePath = "/tmp/project", identitySessionId = "old").use { oldSession ->
             MockIdeServer(identityProjectName = "project", identityBasePath = "/tmp/project", identitySessionId = "new").use { newSession ->
                 oldSession.start()
+                newSession.startWithoutAnswering()
                 val executor = autoExecutor(oldSession, newSession)
 
                 val trigger = executor.handleToolCall(
@@ -1873,6 +1877,8 @@ private class MockIdeServer(
     val port: Int = server.address.port
     val baseUrl: String = "http://localhost:$port/api/inspection"
     val lastQuery = AtomicReference<String?>()
+    private val answering = AtomicBoolean(false)
+    private val listening = AtomicBoolean(false)
 
     init {
         val defaults = mapOf(
@@ -1895,7 +1901,18 @@ private class MockIdeServer(
     }
 
     fun start() {
-        server.start()
+        answering.set(true)
+        listen()
+    }
+
+    fun startWithoutAnswering() {
+        listen()
+    }
+
+    private fun listen() {
+        if (listening.compareAndSet(false, true)) {
+            server.start()
+        }
     }
 
     override fun close() {
@@ -1905,6 +1922,11 @@ private class MockIdeServer(
     private fun register(path: String, responses: List<MockResponse>) {
         val responseIndex = AtomicInteger(0)
         server.createContext(path) { exchange ->
+            if (!answering.get()) {
+                exchange.sendResponseHeaders(HttpURLConnection.HTTP_UNAVAILABLE, -1)
+                exchange.close()
+                return@createContext
+            }
             lastQuery.set(exchange.requestURI.rawQuery)
             val response = responses[responseIndex.getAndIncrement().coerceAtMost(responses.lastIndex)]
             val bytes = response.body.toByteArray(StandardCharsets.UTF_8)
