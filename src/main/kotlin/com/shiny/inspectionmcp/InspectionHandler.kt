@@ -1355,10 +1355,6 @@ internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
 }
 
 internal fun classifyEmptyInspectionCapture(
-    viewReadyOk: Boolean,
-    observedInspectionView: Boolean,
-    observedSettledEmptyInspectionView: Boolean,
-    observedStableReadableEmptyInspectionView: Boolean,
     observedStableEmptyResultsWithoutInspectionView: Boolean,
     observedModelCleanInspection: Boolean = false,
     observedNonEmptyInspectionTree: Boolean,
@@ -1371,15 +1367,7 @@ internal fun classifyEmptyInspectionCapture(
 
     if (
         !observedNonEmptyInspectionTree &&
-            (
-                (viewReadyOk &&
-                    (
-                        observedInspectionView &&
-                            (observedSettledEmptyInspectionView || observedStableReadableEmptyInspectionView)
-                        )) ||
-                    observedStableEmptyResultsWithoutInspectionView ||
-                    observedModelCleanInspection
-                )
+            (observedStableEmptyResultsWithoutInspectionView || observedModelCleanInspection)
     ) {
         return InspectionSnapshotOutcome.CLEAN_CONFIRMED to null
     }
@@ -7334,10 +7322,6 @@ class InspectionHandler : HttpRequestHandler() {
                             observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                         ) ?: proofNotEstablishedReason
                         val (emptyOutcome, emptyNote) = classifyEmptyInspectionCapture(
-                            viewReadyOk = viewReadyOk,
-                            observedInspectionView = observedInspectionView,
-                            observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                            observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                             observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
                             observedModelCleanInspection = observedModelCleanInspection,
                             observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,

@@ -1994,141 +1994,30 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Empty inspection capture is clean when a ready view has no problem tree")
+    @DisplayName("An empty capture is clean only with stable-empty or model-clean evidence and nothing contradicting it")
     fun testClassifyEmptyInspectionCapture() {
-        val ambiguous = classifyEmptyInspectionCapture(
-            viewReadyOk = false,
-            observedInspectionView = false,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
+        fun outcome(
+            stableEmptyWithoutView: Boolean = false,
+            modelClean: Boolean = false,
+            nonEmptyTree: Boolean = false,
+            suspiciousReason: String? = null,
+        ) = classifyEmptyInspectionCapture(
+            observedStableEmptyResultsWithoutInspectionView = stableEmptyWithoutView,
+            observedModelCleanInspection = modelClean,
+            observedNonEmptyInspectionTree = nonEmptyTree,
+            suspiciousEmptyModelReason = suspiciousReason,
+        ).first
+
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome())
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome(stableEmptyWithoutView = true))
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome(modelClean = true))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome(stableEmptyWithoutView = true, nonEmptyTree = true))
+        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome(modelClean = true, nonEmptyTree = true))
+        assertEquals(
+            InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            outcome(stableEmptyWithoutView = true, modelClean = true, suspiciousReason = "empty_model_in_proof_lane"),
         )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, ambiguous.first)
-        assertTrue(ambiguous.second?.contains("could not conclusively confirm") == true)
-
-        val confirmedClean = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, confirmedClean.first)
-        assertEquals(null, confirmedClean.second)
-
-        val nonEmptyTree = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedModelCleanInspection = true,
-            observedNonEmptyInspectionTree = true,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, nonEmptyTree.first)
-
-        val suspiciousEmptyModel = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedModelCleanInspection = true,
-            observedNonEmptyInspectionTree = false,
-            suspiciousEmptyModelReason = CaptureIncompleteReason.INSPECTION_TRIGGER_EMPTY_MODEL.apiValue,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, suspiciousEmptyModel.first)
-        assertTrue(suspiciousEmptyModel.second?.contains("empty model") == true)
-
-        val stableReadableEmptyView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = true,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableReadableEmptyView.first)
-        assertEquals(null, stableReadableEmptyView.second)
-
-        val stableEmptyWithoutInspectionView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = false,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = true,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableEmptyWithoutInspectionView.first)
-        assertEquals(null, stableEmptyWithoutInspectionView.second)
-
-        val stableEmptyWithOpaqueInspectionView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = true,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, stableEmptyWithOpaqueInspectionView.first)
-        assertEquals(null, stableEmptyWithOpaqueInspectionView.second)
-
-        val modelCleanWithUpdatingView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedModelCleanInspection = true,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, modelCleanWithUpdatingView.first)
-        assertEquals(null, modelCleanWithUpdatingView.second)
-
-        val modelCleanWithoutInspectionView = classifyEmptyInspectionCapture(
-            viewReadyOk = false,
-            observedInspectionView = false,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedModelCleanInspection = true,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, modelCleanWithoutInspectionView.first)
-        assertEquals(null, modelCleanWithoutInspectionView.second)
-
-        val unreadableView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, unreadableView.first)
-
-        val stillUnreadableView = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, stillUnreadableView.first)
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome(stableEmptyWithoutView = true, suspiciousReason = "  "))
     }
 
     @Test
@@ -2773,10 +2662,6 @@ class InspectionSnapshotStateTest {
         )
 
         val (outcome, _) = classifyEmptyInspectionCapture(
-            viewReadyOk = false,
-            observedInspectionView = false,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
             observedStableEmptyResultsWithoutInspectionView = true,
             observedNonEmptyInspectionTree = false,
         )
@@ -2915,10 +2800,6 @@ class InspectionSnapshotStateTest {
         )
 
         val (outcome, _) = classifyEmptyInspectionCapture(
-            viewReadyOk = false,
-            observedInspectionView = false,
-            observedSettledEmptyInspectionView = false,
-            observedStableReadableEmptyInspectionView = false,
             observedStableEmptyResultsWithoutInspectionView = false,
             observedNonEmptyInspectionTree = false,
         )
