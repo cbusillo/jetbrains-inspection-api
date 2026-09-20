@@ -16,6 +16,7 @@ import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.psi.util.PsiModificationTracker
+import com.intellij.openapi.fileEditor.FileDocumentManager
 import io.netty.handler.codec.http.HttpResponseStatus
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -217,7 +218,8 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"status\": \"results_available\""))
         assertFalse(body.contains("\"status\": \"stale_results\""))
-        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+        val fileDocumentManager = FileDocumentManager.getInstance()
+        verify(exactly = 0) { fileDocumentManager.saveAllDocuments() }
     }
 
     @Test
@@ -1133,14 +1135,14 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
 
         val response = processGetRequest("/api/inspection/status")
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"TestProject\""))
-        verify(exactly = 0) { mockVirtualFileManager.syncRefresh() }
+        val fileDocumentManager = FileDocumentManager.getInstance()
+        verify(exactly = 0) { fileDocumentManager.saveAllDocuments() }
     }
 
     @Test
@@ -1629,7 +1631,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         runPooledTasksInline()
         every { mockApplication.isDispatchThread } returns true
-        every { mockVirtualFileManager.syncRefresh() } returns 0L
         mockInspectionPrerequisites(mockProject)
 
         val response = processGetRequest("/api/inspection/problems?severity=all")
