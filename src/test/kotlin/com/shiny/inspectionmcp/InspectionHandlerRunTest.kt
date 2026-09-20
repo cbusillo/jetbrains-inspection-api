@@ -3008,4 +3008,137 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
         assertTrue(response.content().toString(Charsets.UTF_8).contains("Requested project 'does-not-exist' is not open in the IDE."))
     }
+
+    private fun quiescenceObservation(
+        dumb: Boolean = false,
+        psiModificationCount: Long = 10L,
+        projectFileEventCount: Long = 0L,
+    ) = ProjectQuiescenceObservation(
+        dumb = dumb,
+        projectState = InspectionProjectStateSnapshot(psiModificationCount, unsavedProjectDocuments = 0),
+        projectFileEventCount = projectFileEventCount,
+    )
+
+    @Test
+    fun `test project quiescence returns after one stable window when project is already quiet`() {
+        var clock = 0L
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation() },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.attempted)
+        assertFalse(evidence.timedOut)
+        assertEquals(300, evidence.waitedMs)
+        assertEquals(0, evidence.projectStateChangeCount)
+        assertFalse(evidence.dumbModeObserved)
+        assertFalse(evidence.projectFileEventsObserved)
+    }
+
+    @Test
+    fun `test project quiescence restarts stable window after post open churn`() {
+        var clock = 0L
+        val observations = ArrayDeque(
+            listOf(
+                quiescenceObservation(),
+                quiescenceObservation(dumb = true),
+                quiescenceObservation(psiModificationCount = 11L),
+                quiescenceObservation(psiModificationCount = 11L, projectFileEventCount = 1L),
+            ),
+        )
+        val settled = quiescenceObservation(psiModificationCount = 11L, projectFileEventCount = 1L)
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { observations.removeFirstOrNull() ?: settled },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertFalse(evidence.timedOut)
+        assertEquals(600, evidence.waitedMs)
+        assertTrue(evidence.dumbModeObserved)
+        assertTrue(evidence.projectFileEventsObserved)
+        assertEquals(1, evidence.projectStateChangeCount)
+    }
+
+    @Test
+    fun `test project quiescence is bounded when project never settles`() {
+        var clock = 0L
+        var psiModificationCount = 0L
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation(psiModificationCount = psiModificationCount++) },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 1_000,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.timedOut)
+        assertEquals(1_000, evidence.waitedMs)
+        assertEquals(true, evidence.diagnosticMap()["project_quiescence_timed_out"])
+    }
+
+    @Test
+    fun `test project quiescence reports dumb mode that outlasts the bound`() {
+        var clock = 0L
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation(dumb = true) },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 100,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.timedOut)
+        assertTrue(evidence.dumbModeObserved)
+        assertEquals(300, evidence.waitedMs)
+    }
+
+    @Test
+    fun `test project quiescence propagates cancellation and is skipped when disabled`() {
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            awaitProjectQuiescence(
+                now = { 0L },
+                sleep = {},
+                observe = { quiescenceObservation() },
+                checkCanceled = { throw com.intellij.openapi.progress.ProcessCanceledException() },
+                stableMs = 300,
+            )
+        }
+
+        val disabled = awaitProjectQuiescence(
+            now = { 0L },
+            sleep = { error("Disabled quiescence must not sleep.") },
+            observe = { error("Disabled quiescence must not observe.") },
+            checkCanceled = {},
+            stableMs = 0,
+        )
+        assertFalse(disabled.attempted)
+    }
+
+    @Test
+    fun `test quiescence gate experiment arm is off unless enabled and is stable per project path`() {
+        val paths = (1..64).map { "/tmp/inspection-red-lane-$it" }
+
+        assertTrue(paths.none { quiescenceGateExperimentArm(it, experimentEnabled = false) })
+        val armsWhenEnabled = paths.map { quiescenceGateExperimentArm(it, experimentEnabled = true) }
+        assertEquals(armsWhenEnabled, paths.map { quiescenceGateExperimentArm(it, experimentEnabled = true) })
+        assertTrue(armsWhenEnabled.any { it } && armsWhenEnabled.any { !it })
+    }
 }

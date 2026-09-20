@@ -106,6 +106,9 @@ private const val EXACT_WORKTREE_PATH_SELECTOR_PREFIX = "exact-worktree-path:"
 private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_STABLE_MS = 2_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS = 20_000L
+private const val DEFAULT_PROJECT_QUIESCENCE_POLL_MS = 100L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS = 10_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS = 30_000L
@@ -210,6 +213,117 @@ internal data class InspectionProjectStateSnapshot(
     val psiModificationCount: Long,
     val unsavedProjectDocuments: Int,
 )
+
+internal data class ProjectQuiescenceObservation(
+    val dumb: Boolean,
+    val projectState: InspectionProjectStateSnapshot,
+    val projectFileEventCount: Long,
+)
+
+internal data class ProjectQuiescenceEvidence(
+    val attempted: Boolean,
+    val waitedMs: Long,
+    val observationCount: Int,
+    val timedOut: Boolean,
+    val dumbModeObserved: Boolean,
+    val projectStateChangeCount: Int,
+    val projectFileEventsObserved: Boolean,
+) {
+    fun diagnosticMap(): Map<String, Any> = mapOf(
+        "project_quiescence_attempted" to attempted,
+        "project_quiescence_wait_ms" to waitedMs,
+        "project_quiescence_observation_count" to observationCount,
+        "project_quiescence_timed_out" to timedOut,
+        "project_quiescence_dumb_mode_observed" to dumbModeObserved,
+        "project_quiescence_state_change_count" to projectStateChangeCount,
+        "project_quiescence_file_events_observed" to projectFileEventsObserved,
+    )
+}
+
+internal fun awaitProjectQuiescence(
+    now: () -> Long,
+    sleep: (Long) -> Unit,
+    observe: () -> ProjectQuiescenceObservation,
+    checkCanceled: () -> Unit,
+    stableMs: Long = DEFAULT_PROJECT_QUIESCENCE_STABLE_MS,
+    timeoutMs: Long = DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS,
+    pollMs: Long = DEFAULT_PROJECT_QUIESCENCE_POLL_MS,
+): ProjectQuiescenceEvidence {
+    if (stableMs <= 0) {
+        return ProjectQuiescenceEvidence(
+            attempted = false,
+            waitedMs = 0,
+            observationCount = 0,
+            timedOut = false,
+            dumbModeObserved = false,
+            projectStateChangeCount = 0,
+            projectFileEventsObserved = false,
+        )
+    }
+
+    val boundedTimeoutMs = timeoutMs.coerceAtLeast(stableMs)
+    val boundedPollMs = pollMs.coerceAtLeast(1)
+    val startedAt = now()
+    var sleptMs = 0L
+    var previous = observe()
+    var quietSinceElapsedMs = 0L
+    var observationCount = 1
+    var dumbModeObserved = previous.dumb
+    var projectStateChangeCount = 0
+    var projectFileEventsObserved = false
+
+    fun elapsedMs(): Long = maxOf((now() - startedAt).coerceAtLeast(0), sleptMs)
+
+    fun evidence(elapsed: Long, timedOut: Boolean) = ProjectQuiescenceEvidence(
+        attempted = true,
+        waitedMs = elapsed,
+        observationCount = observationCount,
+        timedOut = timedOut,
+        dumbModeObserved = dumbModeObserved,
+        projectStateChangeCount = projectStateChangeCount,
+        projectFileEventsObserved = projectFileEventsObserved,
+    )
+
+    while (true) {
+        val elapsed = elapsedMs()
+        if (!previous.dumb && elapsed - quietSinceElapsedMs >= stableMs) {
+            return evidence(elapsed, timedOut = false)
+        }
+        if (elapsed >= boundedTimeoutMs) {
+            return evidence(elapsed, timedOut = true)
+        }
+        checkCanceled()
+        val sleepMs = minOf(boundedPollMs, boundedTimeoutMs - elapsed).coerceAtLeast(1)
+        sleep(sleepMs)
+        sleptMs += sleepMs
+        val current = observe()
+        observationCount += 1
+        val projectStateChanged = current.projectState != previous.projectState
+        val projectFilesChanged = current.projectFileEventCount != previous.projectFileEventCount
+        if (projectStateChanged) {
+            projectStateChangeCount += 1
+        }
+        if (projectFilesChanged) {
+            projectFileEventsObserved = true
+        }
+        if (current.dumb) {
+            dumbModeObserved = true
+        }
+        if (current.dumb || projectStateChanged || projectFilesChanged) {
+            quietSinceElapsedMs = elapsedMs()
+        }
+        previous = current
+    }
+}
+
+internal fun quiescenceGateExperimentEnabled(): Boolean =
+    Files.exists(inspectionRegistryInstancesDir().resolveSibling("experiments").resolve("quiescence-gate"))
+
+internal fun quiescenceGateExperimentArm(projectBasePath: String?, experimentEnabled: Boolean): Boolean {
+    if (!experimentEnabled) return false
+    val digest = MessageDigest.getInstance("SHA-256").digest(projectBasePath.orEmpty().toByteArray(Charsets.UTF_8))
+    return digest[0].toInt() and 1 == 0
+}
 
 internal data class InspectionProjectInputsFingerprint(
     val rootPaths: List<String>,
@@ -1854,6 +1968,12 @@ class InspectionHandler : HttpRequestHandler() {
     internal var maxLifecycleOpenDiagnostics: Int = DEFAULT_MAX_LIFECYCLE_OPEN_DIAGNOSTICS
     internal var currentTimeMs: () -> Long = System::currentTimeMillis
     internal var waitPollSleep: (Long) -> Unit = TimeUnit.MILLISECONDS::sleep
+    internal var projectQuiescenceStableMs: Long = DEFAULT_PROJECT_QUIESCENCE_STABLE_MS
+    internal var projectQuiescenceTimeoutMs: Long = DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS
+    internal var projectQuiescencePollMs: Long = DEFAULT_PROJECT_QUIESCENCE_POLL_MS
+    internal var quiescenceGateArm: (Project) -> Boolean = { project ->
+        quiescenceGateExperimentArm(project.basePath, quiescenceGateExperimentEnabled())
+    }
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
         ProgressManager.getInstance().runProcess(task, indicator)
@@ -5717,7 +5837,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val shouldPublishUnchangedSnapshot =
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(
-                    "Inspection snapshot validation for ${project.name}: " +
+                    "Inspection snapshot validation for ${project.name}: run=$runId, " +
                         "liveFindingsMatched=${reconciliation.reconciled}, " +
                         "contentChangedBefore=$contentChangedBeforeVerification, " +
                         "contentChangedAfter=$contentChangedAfterVerification, " +
@@ -6545,6 +6665,7 @@ class InspectionHandler : HttpRequestHandler() {
             transitionInspectionRunStage(key, runId, InspectionRunStage.SMART_WAIT)
             waitForSmartMode(project)
             checkInspectionRunCancellation(key, runId)
+            val projectQuiescence = waitForProjectQuiescence(project, key, runId)
             refreshPythonSkeletonGeneratorState(project)
             var inspectionInputState = captureStableProjectState(project)
             val dumbAfterSync = DumbService.getInstance(project).isDumb
@@ -7315,7 +7436,7 @@ class InspectionHandler : HttpRequestHandler() {
                             "capture_start_psi_modification_count" to inspectionInputState.psiModificationCount,
                             "capture_end_psi_modification_count" to captureEndState.psiModificationCount,
                             "capture_end_unsaved_project_documents" to captureEndState.unsavedProjectDocuments,
-                        )
+                        ) + projectQuiescence.diagnosticMap()
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
                         val proofDiagnostic = buildProofDiagnostic(boundedProof) +
                             buildNativeProofDiagnostic(nativeProof) +
@@ -7842,6 +7963,72 @@ class InspectionHandler : HttpRequestHandler() {
             refreshTask.run()
         } else {
             application.invokeAndWait(refreshTask)
+        }
+    }
+
+    private fun waitForProjectQuiescence(project: Project, key: String, runId: Long): ProjectQuiescenceEvidence {
+        val gateOn = quiescenceGateArm(project)
+        logger.info("Quiescence gate experiment for ${project.name}: run=$runId arm=${if (gateOn) "on" else "off"}")
+        val projectFileEventCount = AtomicLong(0)
+        val projectBasePath = normalizeFileSystemPath(project.basePath)?.let(Paths::get)
+        val listenerDisposable = Disposer.newDisposable("inspection-project-quiescence")
+        try {
+            if (gateOn && projectQuiescenceStableMs > 0 && projectBasePath != null) {
+                try {
+                    val projectRootPaths = listOf(projectBasePath)
+                    val excludedRootPaths = projectExcludedRootPaths(project)
+                    ApplicationManager.getApplication().messageBus.connect(listenerDisposable).subscribe(
+                        VirtualFileManager.VFS_CHANGES,
+                        object : BulkFileListener {
+                            override fun after(events: List<VFileEvent>) {
+                                val touchesProject = events.any { event ->
+                                    inspectionEventPaths(event).any { eventPath ->
+                                        val normalizedEventPath = normalizeFileSystemPath(eventPath)?.let(Paths::get)
+                                        normalizedEventPath != null &&
+                                            isTrackedInspectionInputPath(
+                                                projectBasePath,
+                                                projectRootPaths,
+                                                excludedRootPaths,
+                                                normalizedEventPath,
+                                            )
+                                    }
+                                }
+                                if (touchesProject) {
+                                    projectFileEventCount.incrementAndGet()
+                                }
+                            }
+                        },
+                    )
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
+                    logger.warn("Could not observe project file events while waiting for project quiescence", e)
+                }
+            }
+            val evidence = awaitProjectQuiescence(
+                now = { TimeUnit.NANOSECONDS.toMillis(System.nanoTime()) },
+                sleep = { millis -> Thread.sleep(millis) },
+                observe = {
+                    ProjectQuiescenceObservation(
+                        dumb = DumbService.getInstance(project).isDumb,
+                        projectState = captureProjectState(project),
+                        projectFileEventCount = projectFileEventCount.get(),
+                    )
+                },
+                checkCanceled = { checkInspectionRunCancellation(key, runId) },
+                stableMs = if (gateOn) projectQuiescenceStableMs else 0L,
+                timeoutMs = projectQuiescenceTimeoutMs,
+                pollMs = projectQuiescencePollMs,
+            )
+            if (evidence.attempted) {
+                logger.info("Project quiescence before inspection for ${project.name}: $evidence")
+            }
+            if (evidence.dumbModeObserved) {
+                waitForSmartMode(project)
+                checkInspectionRunCancellation(key, runId)
+            }
+            return evidence
+        } finally {
+            Disposer.dispose(listenerDisposable)
         }
     }
 

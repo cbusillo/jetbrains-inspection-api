@@ -74,6 +74,7 @@ internal abstract class InspectionHandlerTestSupport {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        handler.quiescenceGateArm = { false }
         val skippedWaitMs = java.util.concurrent.atomic.AtomicLong()
         handler.waitPollSleep = { pollMs -> skippedWaitMs.addAndGet(pollMs) }
         handler.currentTimeMs = { System.currentTimeMillis() + skippedWaitMs.get() }
