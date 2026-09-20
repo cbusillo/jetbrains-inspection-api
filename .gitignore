@@ -89,6 +89,7 @@ node_modules/
 *.local.md
 .env*
 *.env
+!.env.example
 
 out/
 mcp-server/coverage/
