@@ -991,7 +991,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
                 captureDiagnostic = diagnostic,
                 runId = 1L,
                 triggerTimeMs = System.currentTimeMillis(),
-                viewReadyOk = true,
             ),
         )
 
@@ -1067,7 +1066,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
                 captureDiagnostic = diagnostic,
                 runId = 1L,
                 triggerTimeMs = System.currentTimeMillis(),
-                viewReadyOk = true,
             ),
         )
 
@@ -1097,7 +1095,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
                 captureDiagnostic = diagnostic,
                 runId = 1L,
                 triggerTimeMs = System.currentTimeMillis(),
-                viewReadyOk = true,
             ),
         )
 
