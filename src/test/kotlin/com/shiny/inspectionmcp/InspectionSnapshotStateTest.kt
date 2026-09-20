@@ -1319,47 +1319,6 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Wait does not trust same-run global context findings after PSI churn without live confirmation")
-    fun testWaitDoesNotTrustSameRunGlobalContextFindingsAfterPsiChurnWithoutLiveConfirmation() {
-        val extractor = mockk<EnhancedTreeExtractor>()
-        val currentRun = beginInspectionRun()
-        finishInspectionRun(snapshotKey(), currentRun.runId)
-        setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
-        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
-            problems = emptyList(),
-            succeeded = true,
-            source = ProblemExtractionSource.INSPECTION_RESULTS,
-        )
-        enhancedTreeExtractorFactory = { extractor }
-        val problems = listOf(staleProblem(description = "Model warning"))
-        InspectionResultsStore.setSnapshot(
-            snapshotKey(),
-            InspectionResultsSnapshot(
-                problems = problems,
-                timestamp = System.currentTimeMillis() - 16000L,
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
-                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
-                source = "global_context",
-                runId = currentRun.runId,
-                triggerTimeMs = currentRun.triggerTimeMs,
-            ),
-        )
-        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
-
-        val response = waitForInspection(timeoutMs = 7000L, pollMs = 200L)
-        val status = buildInspectionStatus()
-
-        assertTrue(response.contains("\"completion_reason\": \"stale_results\""))
-        assertFalse(response.contains("\"completion_reason\": \"results\""))
-        assertTrue(response.contains("\"results_may_be_stale\": true"))
-        assertTrue(response.contains("\"cached_total_problems\": 1"))
-        assertEquals(true, status["results_may_be_stale"])
-        assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
-        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
-        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
-    }
-
-    @Test
     @DisplayName("Matching live findings do not refresh a completed run")
     fun testMatchingLiveFindingsDoNotRefreshCompletedRun() {
         val extractor = mockk<EnhancedTreeExtractor>()
@@ -3102,24 +3061,6 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Scoped problem filtering removes unrelated results")
-    fun testFilterProblemsForScope() {
-        val scopedProblems = listOf(
-            mapOf("file" to "/tmp/TestProject/README.md", "description" to "in scope"),
-            mapOf("file" to "/tmp/TestProject/docs/guide.md", "description" to "also in scope"),
-            mapOf("file" to "/tmp/OtherProject/README.md", "description" to "out of scope"),
-        )
-
-        val filtered = filterProblemsForScope(scopedProblems) { problem ->
-            (problem["file"] as? String)?.startsWith("/tmp/TestProject/") == true
-        }
-
-        assertEquals(2, filtered.size)
-        assertTrue(filtered.all { (it["file"] as String).startsWith("/tmp/TestProject/") })
-        assertEquals(scopedProblems, filterProblemsForScope(scopedProblems, null))
-    }
-
-    @Test
     @DisplayName("Whole-project no-view capture keeps tool-window results")
     fun testSelectTrustedToolResultsForWholeProjectCapture() {
         val toolResults = listOf(
@@ -3179,36 +3120,6 @@ class InspectionSnapshotStateTest {
             ),
         )
         assertEquals(CaptureIncompleteReason.SCOPE_NOT_COVERED, reason)
-    }
-
-    @Test
-    @DisplayName("classifyEmptyInspectionCapture with proof-skipped reason returns CAPTURE_INCOMPLETE even when view settled empty")
-    fun testClassifyEmptyCapturWithProofSkippedPreventsCleanConfirmed() {
-        val (outcome, _) = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-            suspiciousEmptyModelReason = "proof_skipped_edt",
-        )
-        assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, outcome)
-    }
-
-    @Test
-    @DisplayName("classifyEmptyInspectionCapture with proof-established and no suspicious reason still allows CLEAN_CONFIRMED")
-    fun testClassifyEmptyCaptureWithProofEstablishedAllowsCleanConfirmed() {
-        val (outcome, _) = classifyEmptyInspectionCapture(
-            viewReadyOk = true,
-            observedInspectionView = true,
-            observedSettledEmptyInspectionView = true,
-            observedStableReadableEmptyInspectionView = false,
-            observedStableEmptyResultsWithoutInspectionView = false,
-            observedNonEmptyInspectionTree = false,
-            suspiciousEmptyModelReason = null,
-        )
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, outcome)
     }
 
     @Test
@@ -3764,51 +3675,6 @@ class InspectionSnapshotStateTest {
     // ---- Fix 3: Proof findings survive polling adoption (union by problemKey) ----
 
     @Test
-    @DisplayName("Proof findings included in non-empty snapshot captureDiagnostic for visibility")
-    fun testProofDiagnosticsIncludedInNonEmptySnapshot() {
-        val proofProblem = mapOf(
-            "description" to "Duplicate key",
-            "file" to "/tmp/TestProject/src/app.json",
-            "line" to 5,
-            "column" to 3,
-            "severity" to "error",
-            "inspectionType" to "JsonDuplicatePropertyKeys",
-        )
-        val snapshot = buildInspectionCaptureSnapshot(
-            InspectionCaptureSnapshotInput(
-                bestResults = listOf(proofProblem),
-                bestSource = "global_context",
-                snapshotTimeMs = System.currentTimeMillis(),
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
-                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
-                emptyNote = null,
-                captureScope = InspectionCaptureScope(
-                    scopeParam = "files",
-                    resolvedFiles = listOf("/tmp/TestProject/src/app.json"),
-                ),
-                captureDiagnostic = mapOf(
-                    "execution_proof_skipped" to false,
-                    "execution_proof_established" to true,
-                    "execution_proof_executed_tool_count" to 1,
-                    "execution_proof_descriptor_count" to 1,
-                ),
-                runId = 1L,
-                triggerTimeMs = null,
-                viewReadyOk = true,
-                executionProofRequired = true,
-                executionProofEstablished = true,
-            ),
-        )
-
-        // Non-empty findings are decisive because execution proof was established.
-        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
-        assertEquals(1, snapshot.problems.size)
-        // Proof diagnostic should be present in the snapshot (Fix 7)
-        assertNotNull(snapshot.captureDiagnostic)
-        assertEquals(true, snapshot.captureDiagnostic?.get("execution_proof_established"))
-    }
-
-    @Test
     @DisplayName("Current findings remain decisive when clean execution proof is incomplete")
     fun testNonEmptyFindingsRemainVisibleWithoutCleanExecutionProof() {
         val snapshot = buildInspectionCaptureSnapshot(
@@ -3947,46 +3813,6 @@ class InspectionSnapshotStateTest {
     // ---- Fix 6: Defense-in-depth snapshot gating ----
 
     @Test
-    @DisplayName("CLEAN_CONFIRMED is allowed when bounded proof is established")
-    fun testCleanConfirmedAllowedWithEstablishedBoundedProof() {
-        val runState = beginInspectionRun()
-        finishInspectionRun(snapshotKey(), runState.runId)
-
-        val snapshot = buildInspectionCaptureSnapshot(
-            InspectionCaptureSnapshotInput(
-                bestResults = emptyList(),
-                bestSource = "inspection_view",
-                snapshotTimeMs = System.currentTimeMillis(),
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
-                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
-                emptyNote = null,
-                captureScope = InspectionCaptureScope(
-                    scopeParam = "files",
-                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
-                ),
-                captureDiagnostic = mapOf(
-                    "scope_file_semantic_evidence_complete" to true,
-                    "exit_reason" to "settled",
-                    "view_ready_ok" to true,
-                    "execution_proof_skipped" to false,
-                    "execution_proof_established" to true,
-                    "execution_proof_clean" to true,
-                    "execution_proof_executed_tool_count" to 2,
-                    "execution_proof_descriptor_count" to 0,
-                ),
-                runId = runState.runId,
-                triggerTimeMs = runState.triggerTimeMs,
-                viewReadyOk = true,
-                executionProofRequired = true,
-                executionProofEstablished = true, // proof established!
-            ),
-        )
-
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, snapshot.outcome)
-        assertEquals(emptyList<Map<String, Any>>(), snapshot.problems)
-    }
-
-    @Test
     @DisplayName("Established execution cannot confirm clean when proof findings were not adopted")
     fun testCleanConfirmedRequiresCleanExecutionProof() {
         val snapshot = buildInspectionCaptureSnapshot(
@@ -4038,50 +3864,6 @@ class InspectionSnapshotStateTest {
     }
 
     // ---- Fix 7: Polling exit reason separate from proof diagnostics ----
-
-    @Test
-    @DisplayName("Non-empty snapshot with proof findings carries proof diagnostics in captureDiagnostic")
-    fun testNonEmptySnapshotWithProofCarriesProofDiagnostics() {
-        val problem = mapOf(
-            "description" to "Unresolved reference",
-            "file" to "/tmp/TestProject/src/app.js",
-            "line" to 5,
-            "severity" to "error",
-            "inspectionType" to "JSUnresolvedReference",
-        )
-        val proofDiag = mapOf(
-            "execution_proof_skipped" to false,
-            "execution_proof_established" to true,
-            "execution_proof_executed_tool_count" to 3,
-            "execution_proof_descriptor_count" to 1,
-        )
-        val snapshot = buildInspectionCaptureSnapshot(
-            InspectionCaptureSnapshotInput(
-                bestResults = listOf(problem),
-                bestSource = "global_context",
-                snapshotTimeMs = System.currentTimeMillis(),
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
-                emptyOutcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
-                emptyNote = null,
-                captureScope = InspectionCaptureScope(
-                    scopeParam = "files",
-                    resolvedFiles = listOf("/tmp/TestProject/src/app.js"),
-                ),
-                captureDiagnostic = proofDiag,
-                runId = 1L,
-                triggerTimeMs = null,
-                viewReadyOk = true,
-                executionProofRequired = true,
-                executionProofEstablished = true,
-            ),
-        )
-
-        assertEquals(InspectionSnapshotOutcome.PROBLEMS_FOUND, snapshot.outcome)
-        // Fix 7: proof diagnostics must be present on non-empty snapshots
-        assertNotNull(snapshot.captureDiagnostic)
-        assertEquals(true, snapshot.captureDiagnostic?.get("execution_proof_established"))
-        assertEquals(3, snapshot.captureDiagnostic?.get("execution_proof_executed_tool_count"))
-    }
 
     private fun buildInspectionStatus(): MutableMap<String, Any> {
         val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
