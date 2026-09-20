@@ -1489,45 +1489,15 @@ internal fun noResultsWaitHasSettled(
 }
 
 internal fun shouldStopCapturePolling(
-    viewReadyOk: Boolean,
-    observedInspectionView: Boolean,
-    inspectionViewUpdating: Boolean,
-    observedSettledEmptyInspectionView: Boolean,
-    observedStableReadableEmptyInspectionView: Boolean,
     observedStableEmptyResultsWithoutInspectionView: Boolean = false,
-    observedModelCleanInspection: Boolean = false,
     bestResultsCount: Int,
     stableForMs: Long,
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
     minResultsWaitMs: Long = 15000L,
-    minEmptyResultsWaitMs: Long = 15000L,
-    minReadableEmptyResultsWaitMs: Long = 30000L,
     maxFallbackWaitMs: Long = 60000L,
 ): Boolean {
     if (bestResultsCount > 0 && stableForMs >= minStableMs && pollingElapsedMs >= minResultsWaitMs) {
-        return true
-    }
-
-    if (
-        viewReadyOk &&
-            observedInspectionView &&
-            !inspectionViewUpdating &&
-            observedSettledEmptyInspectionView &&
-            stableForMs >= minStableMs &&
-            pollingElapsedMs >= minEmptyResultsWaitMs
-    ) {
-        return true
-    }
-
-    if (
-        viewReadyOk &&
-            observedInspectionView &&
-            !inspectionViewUpdating &&
-            observedStableReadableEmptyInspectionView &&
-            stableForMs >= minStableMs &&
-            pollingElapsedMs >= minReadableEmptyResultsWaitMs
-    ) {
         return true
     }
 
@@ -1535,20 +1505,7 @@ internal fun shouldStopCapturePolling(
         return true
     }
 
-    if (
-        viewReadyOk &&
-            observedModelCleanInspection &&
-            stableForMs >= minStableMs &&
-            pollingElapsedMs >= minReadableEmptyResultsWaitMs
-    ) {
-        return true
-    }
-
-    if ((!viewReadyOk || !observedInspectionView) && stableForMs >= minStableMs && pollingElapsedMs >= maxFallbackWaitMs) {
-        return true
-    }
-
-    return false
+    return stableForMs >= minStableMs && pollingElapsedMs >= maxFallbackWaitMs
 }
 
 internal data class ResultSettlingEvidence(
@@ -7285,13 +7242,7 @@ class InspectionHandler : HttpRequestHandler() {
                             }
                             if (
                                 shouldStopCapturePolling(
-                                    viewReadyOk = viewReadyOk,
-                                    observedInspectionView = observedInspectionView,
-                                    inspectionViewUpdating = inspectionViewUpdating,
-                                    observedSettledEmptyInspectionView = observedSettledEmptyInspectionView,
-                                    observedStableReadableEmptyInspectionView = observedStableReadableEmptyInspectionView,
                                     observedStableEmptyResultsWithoutInspectionView = observedStableEmptyResultsWithoutInspectionView,
-                                    observedModelCleanInspection = observedModelCleanInspection,
                                     bestResultsCount = observedResultEvidence.count,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
