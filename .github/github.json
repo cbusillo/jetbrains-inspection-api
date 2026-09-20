@@ -9,6 +9,14 @@
     "settings": "settings.gradle.kts",
     "version": "gradle.properties"
   },
+  "env": {
+    "example": ".env.example",
+    "local": ".env",
+    "ciSecrets": {
+      "PUBLISH_TOKEN": "environment:stable-marketplace",
+      "CANARY_PUBLISH_TOKEN": "environment:canary-marketplace"
+    }
+  },
   "qualityGate": {
     "test": {
       "commitGate": "./scripts/commit-gate.sh --ci",
