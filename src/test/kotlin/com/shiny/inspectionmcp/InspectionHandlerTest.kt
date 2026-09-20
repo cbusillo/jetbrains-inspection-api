@@ -1985,6 +1985,23 @@ class InspectionHandlerTest {
     }
     
     @Test
+    fun `test problems endpoint accepts grammar and typo severity filters`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        runPooledTasksInline()
+        mockInspectionPrerequisites(mockProject)
+        InspectionResultsStore.clear(projectKey(mockProject))
+
+        listOf("grammar", "typo").forEach { severity ->
+            val response = processGetRequest("/api/inspection/problems?severity=$severity")
+            val body = response.content().toString(Charsets.UTF_8)
+
+            assertEquals(HttpResponseStatus.OK, response.status(), body)
+            assertTrue(body.contains("\"severity\": \"$severity\""), body)
+        }
+    }
+
+    @Test
     fun `test problems endpoint without snapshot never trusts live tool window scrape`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
