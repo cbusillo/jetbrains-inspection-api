@@ -845,15 +845,19 @@ class InspectionSnapshotStateTest {
     @DisplayName("Current-file snapshots without a pinned file cannot prove a result")
     fun testCurrentFileSnapshotWithoutPinnedFileDoesNotUseLaterActiveTab() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
-            mapOf(
-                "description" to "Whole-project warning",
-                "file" to "/tmp/TestProject/src/other.kt",
-                "line" to 8,
-                "column" to 2,
-                "severity" to "warning",
-                "inspectionType" to "DifferentFileInspection",
-            )
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = listOf(
+                mapOf(
+                    "description" to "Whole-project warning",
+                    "file" to "/tmp/TestProject/src/other.kt",
+                    "line" to 8,
+                    "column" to 2,
+                    "severity" to "warning",
+                    "inspectionType" to "DifferentFileInspection",
+                )
+            ),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -1283,7 +1287,11 @@ class InspectionSnapshotStateTest {
         finishInspectionRun(snapshotKey(), currentRun.runId)
         setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
         val problems = listOf(staleProblem(description = "Fresh warning"))
-        every { extractor.extractAllProblems(mockProject) } returns problems
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = problems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1317,7 +1325,11 @@ class InspectionSnapshotStateTest {
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
         setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
-        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         val problems = listOf(staleProblem(description = "Model warning"))
         InspectionResultsStore.setSnapshot(
@@ -1355,7 +1367,11 @@ class InspectionSnapshotStateTest {
         finishInspectionRun(snapshotKey(), currentRun.runId)
         setLastInspectionTriggerTime(System.currentTimeMillis() - 16000L)
         val problems = listOf(staleProblem(description = "Model warning"))
-        every { extractor.extractAllProblems(mockProject) } returns problems
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = problems,
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1388,7 +1404,11 @@ class InspectionSnapshotStateTest {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
-        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1418,7 +1438,11 @@ class InspectionSnapshotStateTest {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
-        every { extractor.extractAllProblems(mockProject) } returns listOf(staleProblem(description = "Unexpected live warning"))
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = listOf(staleProblem(description = "Unexpected live warning")),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1455,7 +1479,11 @@ class InspectionSnapshotStateTest {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
-        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
         InspectionResultsStore.setSnapshot(
             snapshotKey(),
@@ -1635,7 +1663,11 @@ class InspectionSnapshotStateTest {
         every { otherProject.projectFilePath } returns "/tmp/OtherProject/.idea/OtherProject.iml"
         val otherProjectKey = projectKey(otherProject)
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns emptyList()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = emptyList(),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
+        )
         enhancedTreeExtractorFactory = { extractor }
 
         try {
@@ -1841,9 +1873,13 @@ class InspectionSnapshotStateTest {
             )
         )
         var extractorCalls = 0
-        every { extractor.extractAllProblems(mockProject) } answers {
+        every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
             extractorCalls += 1
-            if (extractorCalls == 1) emptyList() else liveProblems
+            ProblemExtractionResult(
+                problems = if (extractorCalls == 1) emptyList() else liveProblems,
+                succeeded = true,
+                source = ProblemExtractionSource.INSPECTION_RESULTS,
+            )
         }
         enhancedTreeExtractorFactory = { extractor }
 

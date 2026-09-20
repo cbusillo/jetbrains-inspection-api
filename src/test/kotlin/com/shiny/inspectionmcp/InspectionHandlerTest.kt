@@ -1992,12 +1992,16 @@ class InspectionHandlerTest {
         mockInspectionPrerequisites(mockProject)
         InspectionResultsStore.clear(projectKey(mockProject))
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns listOf(
-            mapOf(
-                "file" to "/tmp/TestProject/src/LiveOnly.kt",
-                "severity" to "warning",
-                "description" to "unverified live finding",
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            problems = listOf(
+                mapOf(
+                    "file" to "/tmp/TestProject/src/LiveOnly.kt",
+                    "severity" to "warning",
+                    "description" to "unverified live finding",
+                ),
             ),
+            succeeded = true,
+            source = ProblemExtractionSource.INSPECTION_RESULTS,
         )
         enhancedTreeExtractorFactory = { extractor }
 
@@ -2012,7 +2016,7 @@ class InspectionHandlerTest {
             assertTrue(body.contains("\"total_problems\": 0"), body)
             assertFalse(body.contains("unverified live finding"), body)
         }
-        verify(exactly = 0) { extractor.extractAllProblems(mockProject) }
+        verify(exactly = 0) { extractor.extractAllProblemsWithStatus(mockProject) }
     }
 
     @Test
@@ -9177,7 +9181,6 @@ class InspectionHandlerTest {
 
     private fun mockExtractor(problems: List<Map<String, Any>>) {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } returns problems
         every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
             problems = problems,
             succeeded = true,
@@ -9188,7 +9191,6 @@ class InspectionHandlerTest {
 
     private fun mockExtractorFailure() {
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblems(mockProject) } throws IllegalStateException("extractor failed")
         every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
             problems = emptyList(),
             succeeded = false,
