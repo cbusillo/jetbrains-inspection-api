@@ -1912,13 +1912,13 @@ class InspectionHandler : HttpRequestHandler() {
     internal var closeVerificationTimeoutMs: Long = 10_000
     internal var boundedExecutionProofTimeoutMs: Long = DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS
     internal var closeVerificationPollMs: Long = 100
-    internal var closeVerificationNow: () -> Long = { System.currentTimeMillis() }
+    internal var closeVerificationNow: () -> Long = { currentTimeMs() }
     internal var closeVerificationSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var pythonSdkSettleTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS
     internal var pythonSdkSettlePollMs: Long = DEFAULT_PYTHON_SDK_SETTLE_POLL_MS
     internal var pythonSdkSettleProgressGraceMs: Long = DEFAULT_PYTHON_SDK_SETTLE_PROGRESS_GRACE_MS
     internal var pythonSdkSettleMaxTimeoutMs: Long = DEFAULT_PYTHON_SDK_SETTLE_MAX_TIMEOUT_MS
-    internal var pythonSdkSettleNow: () -> Long = { System.currentTimeMillis() }
+    internal var pythonSdkSettleNow: () -> Long = { currentTimeMs() }
     internal var pythonSdkSettleSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
     internal var inspectionRunNowNanos: () -> Long = System::nanoTime
     internal var inspectionWorkerStackProvider: (Thread) -> List<String> = { thread ->
@@ -1929,11 +1929,13 @@ class InspectionHandler : HttpRequestHandler() {
     internal var lifecycleOpenRootStabilizationMs: Long = 10_000
     internal var lifecycleFallbackRootStabilizationMs: Long = 2_000
     internal var lifecycleFallbackFailureThreshold: Int = 3
-    internal var lifecycleOpenGuardNow: () -> Long = { System.currentTimeMillis() }
+    internal var lifecycleOpenGuardNow: () -> Long = { currentTimeMs() }
     internal var lifecycleOpenGuardSleep: (Long) -> Unit = { millis -> Thread.sleep(millis) }
-    internal var lifecycleOpenDiagnosticNow: () -> Long = { System.currentTimeMillis() }
+    internal var lifecycleOpenDiagnosticNow: () -> Long = { currentTimeMs() }
     internal var lifecycleOpenDiagnosticTtlMs: Long = DEFAULT_LIFECYCLE_OPEN_DIAGNOSTIC_TTL_MS
     internal var maxLifecycleOpenDiagnostics: Int = DEFAULT_MAX_LIFECYCLE_OPEN_DIAGNOSTICS
+    internal var currentTimeMs: () -> Long = System::currentTimeMillis
+    internal var waitPollSleep: (Long) -> Unit = TimeUnit.MILLISECONDS::sleep
     internal var inspectionRunExpirationMs: Long = 300000L
     internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
         ProgressManager.getInstance().runProcess(task, indicator)
@@ -1986,7 +1988,7 @@ class InspectionHandler : HttpRequestHandler() {
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
     internal var pythonSdkPreparationTimeoutMs: Long = 60_000
-    internal var pythonSdkPreparationNow: () -> Long = { System.currentTimeMillis() }
+    internal var pythonSdkPreparationNow: () -> Long = { currentTimeMs() }
     internal var schedulePythonSdkPreparationTimeout: (Runnable, Long) -> (() -> Unit) = { task, delayMs ->
         val future = AppExecutorUtil.getAppScheduledExecutorService().schedule(task, delayMs, TimeUnit.MILLISECONDS)
         val cancel: () -> Unit = { future.cancel(false) }
@@ -3244,7 +3246,7 @@ class InspectionHandler : HttpRequestHandler() {
             projectInstanceId = actualProjectInstanceId,
             basePath = resolved.projectIdentity["base_path"] as? String,
             sessionId = InspectionIdeSession.sessionId,
-            claimedAtMs = System.currentTimeMillis(),
+            claimedAtMs = currentTimeMs(),
             project = resolved.project,
         )
         leasesByProjectInstance[actualProjectInstanceId] = lease
@@ -4618,7 +4620,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "project_key" to lease.projectKey,
                 "lease_id" to lease.leaseId,
                 "session_id" to InspectionIdeSession.sessionId,
-                "closed_at_ms" to System.currentTimeMillis(),
+                "closed_at_ms" to currentTimeMs(),
                 "close_attempts" to closeAttemptPayload(closeAttempts),
             ) to HttpResponseStatus.OK
         } catch (error: Throwable) {
@@ -4887,7 +4889,7 @@ class InspectionHandler : HttpRequestHandler() {
             mapOf(
                 "session_id" to InspectionIdeSession.sessionId,
                 "started_at_ms" to InspectionIdeSession.startedAtMs,
-                "heartbeat_ms" to System.currentTimeMillis(),
+                "heartbeat_ms" to currentTimeMs(),
                 "pid" to ProcessHandle.current().pid(),
                 "port" to runCatching { resolveIdePort() }.getOrNull(),
                 "ide_name" to null,
@@ -5131,7 +5133,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "route" to routeMetadata(project),
                     "inspection_in_progress" to (runState?.inProgress == true),
                     "inspection_run_id" to runState?.runId,
-                    "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
+                    "timestamp" to (resultsStore.getTimestamp(key) ?: currentTimeMs()),
                     "message" to "Project files changed since the last inspection. Trigger a new inspection before trusting these results.",
                     "results_may_be_stale" to true,
                     "stale_reasons" to staleness.reasons,
@@ -5279,7 +5281,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "route" to routeMetadata(project),
                     "inspection_in_progress" to (runState?.inProgress == true),
                     "inspection_run_id" to runState?.runId,
-                    "timestamp" to (resultsStore.getTimestamp(key) ?: System.currentTimeMillis()),
+                    "timestamp" to (resultsStore.getTimestamp(key) ?: currentTimeMs()),
                     "total_problems" to page.total,
                     "problems_shown" to page.shown,
                     "problems" to page.problems,
@@ -5315,7 +5317,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "route" to routeMetadata(project),
                     "inspection_in_progress" to (runState?.inProgress == true),
                     "inspection_run_id" to runState?.runId,
-                    "timestamp" to System.currentTimeMillis(),
+                    "timestamp" to currentTimeMs(),
                     "message" to "No trustworthy inspection result was captured. Trigger and wait for a fresh inspection, or open the Inspection Results view for the exact worktree.",
                     "total_problems" to 0,
                     "problems_shown" to 0,
@@ -5476,7 +5478,7 @@ class InspectionHandler : HttpRequestHandler() {
         status["session_id"] = InspectionIdeSession.sessionId
         status["route"] = routeMetadata(project)
 
-        val currentTime = System.currentTimeMillis()
+        val currentTime = currentTimeMs()
         val runState = inspectionRunStatesByProject[key]
         val lastInspectionTriggerTime = runState?.triggerTimeMs ?: 0L
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
@@ -6075,11 +6077,11 @@ class InspectionHandler : HttpRequestHandler() {
     ): String {
         val timeoutMs = (timeoutMsRaw ?: 180000L).coerceIn(1000L, 300000L)
         val pollMs = (pollMsRaw ?: 1000L).coerceIn(200L, 5000L).coerceAtMost(timeoutMs)
-        val start = System.currentTimeMillis()
+        val start = currentTimeMs()
         val resolvedProjectName = normalizeProjectSelector(projectName)
         var project = ApplicationManager.getApplication().runReadAction<Project?, Exception> { getCurrentProject(resolvedProjectName) }
         while (project == null) {
-            if (System.currentTimeMillis() - start >= timeoutMs) {
+            if (currentTimeMs() - start >= timeoutMs) {
                 return formatWaitError(
                     buildMissingProjectResponse(resolvedProjectName),
                     start,
@@ -6091,7 +6093,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             try {
-                TimeUnit.MILLISECONDS.sleep(pollMs)
+                waitPollSleep(pollMs)
             } catch (_: Exception) {
                 return formatWaitError(
                     mutableMapOf("error" to "Wait interrupted"),
@@ -6141,7 +6143,7 @@ class InspectionHandler : HttpRequestHandler() {
             val timeSinceTrigger = (status["time_since_last_trigger_ms"] as? Number)?.toLong()
             val resultsMayBeStale = status["results_may_be_stale"] as? Boolean ?: false
             val minStableMs = 5000L
-            val now = System.currentTimeMillis()
+            val now = currentTimeMs()
 
             if (resultsMayBeStale && !isScanning && !inProgress) {
                 status["wait_note"] = "Cached inspection results are stale because the project changed after the last run. Trigger a new inspection before trusting these findings."
@@ -6241,7 +6243,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
 
-            if (System.currentTimeMillis() - start >= timeoutMs) {
+            if (currentTimeMs() - start >= timeoutMs) {
                 if (
                     resultsSource == "tool_window" &&
                     !hasResults &&
@@ -6278,7 +6280,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
 
             try {
-                TimeUnit.MILLISECONDS.sleep(pollMs)
+                waitPollSleep(pollMs)
             } catch (_: Exception) {
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted", requestAttribution)
             }
@@ -6313,7 +6315,7 @@ class InspectionHandler : HttpRequestHandler() {
         response["timed_out"] = false
         response["completion_reason"] = "run_changed"
         response["expected_inspection_run_id"] = expectedRunId
-        response["wait_ms"] = System.currentTimeMillis() - startMs
+        response["wait_ms"] = currentTimeMs() - startMs
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
         response["message"] = "A different inspection run replaced the run accepted by this request; no cancellation or cleanup authority is implied."
@@ -6344,7 +6346,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             response.remove("total_problems")
         }
-        val elapsed = System.currentTimeMillis() - startMs
+        val elapsed = currentTimeMs() - startMs
         response["wait_completed"] = completed
         response["timed_out"] = !completed && reason == "timeout"
         response["completion_reason"] = reason
@@ -6380,7 +6382,7 @@ class InspectionHandler : HttpRequestHandler() {
             response["wait_note"] = "No project found - ensure the IDE has an open project, or pass the exact project name."
         }
         response["completion_reason"] = reason
-        response["wait_ms"] = System.currentTimeMillis() - startMs
+        response["wait_ms"] = currentTimeMs() - startMs
         response["timeout_ms"] = timeoutMs
         response["poll_ms"] = pollMs
         addStatusInspectionVerdict(response)
@@ -6652,7 +6654,7 @@ class InspectionHandler : HttpRequestHandler() {
                     key,
                     InspectionResultsSnapshot(
                         problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
+                        timestamp = currentTimeMs(),
                         projectState = inspectionInputState,
                         outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                         source = "profile_resolution",
@@ -6720,7 +6722,7 @@ class InspectionHandler : HttpRequestHandler() {
                     key,
                     InspectionResultsSnapshot(
                         problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
+                        timestamp = currentTimeMs(),
                         projectState = inspectionInputState,
                         outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                         source = "profile_resolution",
@@ -6828,7 +6830,7 @@ class InspectionHandler : HttpRequestHandler() {
                         key,
                         InspectionResultsSnapshot(
                             problems = emptyList(),
-                            timestamp = System.currentTimeMillis(),
+                            timestamp = currentTimeMs(),
                             projectState = inspectionInputState,
                             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                             source = "inspection_input_validation",
@@ -6856,7 +6858,7 @@ class InspectionHandler : HttpRequestHandler() {
                         key,
                         InspectionResultsSnapshot(
                             problems = emptyList(),
-                            timestamp = System.currentTimeMillis(),
+                            timestamp = currentTimeMs(),
                             projectState = inspectionInputState,
                             outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                             source = "project_analysis_readiness",
@@ -6883,7 +6885,7 @@ class InspectionHandler : HttpRequestHandler() {
                     runId = runId,
                     snapshot = InspectionResultsSnapshot(
                         problems = emptyList(),
-                        timestamp = System.currentTimeMillis(),
+                        timestamp = currentTimeMs(),
                         projectState = inspectionInputState,
                         outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
                         source = "empty_changed_files",
@@ -7073,7 +7075,7 @@ class InspectionHandler : HttpRequestHandler() {
                             modelVerdict == InspectionModelVerdict.CLEAN &&
                             scopedContextResults.isEmpty()
 
-                        val captureStartMs = System.currentTimeMillis()
+                        val captureStartMs = currentTimeMs()
                         var bestResults: List<Map<String, Any>> = scopedContextResults
                         var bestSource = if (scopedContextResults.isNotEmpty()) "global_context" else "inspection_view"
 
@@ -7142,13 +7144,13 @@ class InspectionHandler : HttpRequestHandler() {
                         val proofFailureDiagnostic = proofInterruptionSource?.let { source ->
                             recordInspectionRunFailureDiagnostic(key, runId, project, source)
                         }
-                        val captureTiming = InspectionCaptureTiming(captureStartMs, System.currentTimeMillis())
-                        val canSettleResults = proofInterruptionSource == null && captureTiming.hasBudget(System.currentTimeMillis())
+                        val captureTiming = InspectionCaptureTiming(captureStartMs, currentTimeMs())
+                        val canSettleResults = proofInterruptionSource == null && captureTiming.hasBudget(currentTimeMs())
                         if (canSettleResults) {
                             transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
                         }
                         var lastSize = resultSettlingEvidence(bestResults, settlingScopedProofFindings).count
-                        var lastChangeMs = System.currentTimeMillis()
+                        var lastChangeMs = currentTimeMs()
                         val observedInspectionView = false
                         val observedSettledEmptyInspectionView = false
                         val observedStableReadableEmptyInspectionView = false
@@ -7175,7 +7177,7 @@ class InspectionHandler : HttpRequestHandler() {
                         var captureExitReason = proofInterruptionSource?.apiValue ?: "deadline"
                         val viewReadyOk = false
 
-                        while (captureTiming.hasBudget(System.currentTimeMillis()) &&
+                        while (captureTiming.hasBudget(currentTimeMs()) &&
                             (canSettleResults || toolWindowObservationCount == 0)
                         ) {
                             checkInspectionRunCancellation(key, runId)
@@ -7183,7 +7185,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 captureExitReason = "superseded"
                                 break
                             }
-                            val loopNow = System.currentTimeMillis()
+                            val loopNow = currentTimeMs()
                             var toolExtractionSucceeded = false
                             var toolExtractionSource = ProblemExtractionSource.NONE
                             val toolResults = try {
@@ -7333,14 +7335,14 @@ class InspectionHandler : HttpRequestHandler() {
                                 scopedContextResultsEmpty = scopedContextResults.isEmpty(),
                                 bestResultsEmpty = finalObservedResultEvidence.isEmpty,
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
-                                stableForMs = System.currentTimeMillis() - lastChangeMs,
-                                pollingElapsedMs = captureTiming.pollingElapsedMs(System.currentTimeMillis()),
+                                stableForMs = currentTimeMs() - lastChangeMs,
+                                pollingElapsedMs = captureTiming.pollingElapsedMs(currentTimeMs()),
                             )
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
                         }
-                        val finalStableForMs = System.currentTimeMillis() - lastChangeMs
-                        val finalPollingElapsedMs = captureTiming.pollingElapsedMs(System.currentTimeMillis())
+                        val finalStableForMs = currentTimeMs() - lastChangeMs
+                        val finalPollingElapsedMs = captureTiming.pollingElapsedMs(currentTimeMs())
                         if (
                             !observedModelCleanInspection &&
                             executionProofClean &&
@@ -7421,7 +7423,7 @@ class InspectionHandler : HttpRequestHandler() {
                             observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                             suspiciousEmptyModelReason = suspiciousEmptyModelReason,
                         )
-                        val captureEndMs = System.currentTimeMillis()
+                        val captureEndMs = currentTimeMs()
                         val stateDiagnostic = mapOf(
                             "project_state_changed_during_capture" to projectStateChangedDuringCapture,
                             "capture_start_psi_modification_count" to inspectionInputState.psiModificationCount,
@@ -7514,7 +7516,7 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionCaptureSnapshotInput(
                                 bestResults = bestResults,
                                 bestSource = bestSource,
-                                snapshotTimeMs = System.currentTimeMillis(),
+                                snapshotTimeMs = currentTimeMs(),
                                 projectState = snapshotState,
                                 emptyOutcome = emptyOutcome,
                                 emptyNote = emptyNote,
@@ -7591,7 +7593,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     key,
                                     InspectionResultsSnapshot(
                                         problems = emptyList(),
-                                        timestamp = System.currentTimeMillis(),
+                                        timestamp = currentTimeMs(),
                                         projectState = inspectionInputState,
                                         outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                                         source = "inspection_view",
@@ -7670,7 +7672,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun beginInspectionRunInternal(project: Project, captureScope: InspectionCaptureScope?): InspectionRunState {
         val key = projectKey(project)
-        val now = System.currentTimeMillis()
+        val now = currentTimeMs()
         val nowNanos = currentInspectionRunNanos()
         val runState = InspectionRunState(
             runId = runIdSequence.incrementAndGet(),
@@ -7915,7 +7917,7 @@ class InspectionHandler : HttpRequestHandler() {
             key,
             InspectionResultsSnapshot(
                 problems = emptyList(),
-                timestamp = System.currentTimeMillis(),
+                timestamp = currentTimeMs(),
                 projectState = captureProjectState(project),
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "inspection_view",
@@ -8361,7 +8363,7 @@ class InspectionHandler : HttpRequestHandler() {
             key,
             InspectionResultsSnapshot(
                 problems = emptyList(),
-                timestamp = System.currentTimeMillis(),
+                timestamp = currentTimeMs(),
                 projectState = projectState,
                 outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
                 source = "project_analysis_readiness",
