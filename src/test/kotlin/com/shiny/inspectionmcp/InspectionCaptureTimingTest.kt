@@ -26,7 +26,6 @@ class InspectionCaptureTimingTest {
     }
 
     private fun canTrustEmpty(pollingElapsedMs: Long): Boolean = shouldTrustStableScopedEmptyResults(
-        viewReadyOk = false,
         hasExecutionProofCleanEvidence = true,
         executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
         modelVerdict = InspectionModelVerdict.CLEAN,

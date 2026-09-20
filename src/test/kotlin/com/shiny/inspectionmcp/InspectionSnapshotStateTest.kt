@@ -2349,272 +2349,6 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Stable scoped empty results can confirm clean without readable view evidence")
-    fun testStableScopedEmptyResultsConfirmCleanBeforeDeadline() {
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 29999L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                hasSettledInspectionViewEvidence = false,
-                hasOpaqueSettledEmptyInspectionViewEvidence = true,
-                extractionSucceeded = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                extractionSucceeded = false,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = true,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-    }
-
-    @Test
-    @DisplayName("Scoped empty results do not hide extractor failures")
-    fun testStableScopedEmptyResultsRequireSuccessfulExtraction() {
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                extractionSucceeded = false,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                hasSettledInspectionViewEvidence = true,
-                extractionSucceeded = false,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                extractionSucceeded = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-    }
-
-    @Test
-    @DisplayName("Scoped empty results wait for observed inspection views to settle")
-    fun testStableScopedEmptyResultsWaitForObservedInspectionViewToSettle() {
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasSettledInspectionViewEvidence = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasTransientEmptyInspectionViewEvidence = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 59999L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasTransientEmptyInspectionViewEvidence = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = true,
-                stableForMs = 5000L,
-                pollingElapsedMs = 60000L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasTransientEmptyInspectionViewEvidence = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 60000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                hasSettledInspectionViewEvidence = false,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = false,
-                hasSettledInspectionViewEvidence = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-    }
-
-    @Test
-    @DisplayName("Model-clean evidence can prove scoped empty results while the view is updating")
-    fun testModelCleanEvidenceCanProveScopedEmptyResults() {
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasModelCleanEvidence = true,
-                extractionSucceeded = false,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasModelCleanEvidence = true,
-                extractionSucceeded = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = true,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertFalse(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasModelCleanEvidence = true,
-                extractionSucceeded = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 4999L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-
-        assertTrue(
-            shouldTrustStableScopedEmptyResults(
-                viewReadyOk = true,
-                observedInspectionView = true,
-                inspectionViewUpdating = true,
-                hasModelCleanEvidence = true,
-                extractionSucceeded = true,
-                hasScopedMatcher = true,
-                scopedContextResultsEmpty = true,
-                bestResultsEmpty = true,
-                observedNonEmptyInspectionTree = false,
-                stableForMs = 5000L,
-                pollingElapsedMs = 30000L,
-            )
-        )
-    }
-
-    @Test
     @DisplayName("Safe transient empty view evidence latches for scoped empty extraction")
     fun testTransientEmptyEvidenceCanUseSuccessfulToolExtraction() {
         assertFalse(
@@ -2872,7 +2606,6 @@ class InspectionSnapshotStateTest {
         assertEquals(listOf(inScopeProofFinding), appendDistinctProblems(emptyList(), scopedProofFindings))
         assertTrue(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 hasScopedMatcher = true,
@@ -2885,7 +2618,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 hasScopedMatcher = true,
@@ -3029,7 +2761,6 @@ class InspectionSnapshotStateTest {
     fun testStableEmptyExtractionWithProofConfirmsCleanWithoutInspectionResultsView() {
         assertTrue(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 hasModelCleanEvidence = true,
                 hasScopedMatcher = true,
@@ -3054,11 +2785,45 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Scoped empty results are trusted only when every clean condition holds")
+    fun testScopedEmptyResultsNeedEveryCleanCondition() {
+        fun trusted(
+            hasModelCleanEvidence: Boolean = true,
+            extractionSucceeded: Boolean = true,
+            hasScopedMatcher: Boolean = true,
+            scopedContextResultsEmpty: Boolean = true,
+            bestResultsEmpty: Boolean = true,
+            observedNonEmptyInspectionTree: Boolean = false,
+            stableForMs: Long = 5_000L,
+            pollingElapsedMs: Long = 30_000L,
+        ) = shouldTrustStableScopedEmptyResults(
+            hasExecutionProofCleanEvidence = true,
+            hasModelCleanEvidence = hasModelCleanEvidence,
+            extractionSucceeded = extractionSucceeded,
+            hasScopedMatcher = hasScopedMatcher,
+            scopedContextResultsEmpty = scopedContextResultsEmpty,
+            bestResultsEmpty = bestResultsEmpty,
+            observedNonEmptyInspectionTree = observedNonEmptyInspectionTree,
+            stableForMs = stableForMs,
+            pollingElapsedMs = pollingElapsedMs,
+        )
+
+        assertTrue(trusted())
+        assertFalse(trusted(hasModelCleanEvidence = false))
+        assertFalse(trusted(extractionSucceeded = false))
+        assertFalse(trusted(hasScopedMatcher = false))
+        assertFalse(trusted(scopedContextResultsEmpty = false))
+        assertFalse(trusted(bestResultsEmpty = false))
+        assertFalse(trusted(observedNonEmptyInspectionTree = true))
+        assertFalse(trusted(stableForMs = 4_999L))
+        assertFalse(trusted(pollingElapsedMs = 29_999L))
+    }
+
+    @Test
     @DisplayName("Missing proof remains incomplete but exact bounded proof survives cold tool-window extraction")
     fun testNoViewRequiresProofUnlessExactBoundedExecutionIsClean() {
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = false,
                 hasScopedMatcher = true,
                 scopedContextResultsEmpty = true,
@@ -3070,7 +2835,6 @@ class InspectionSnapshotStateTest {
         )
         assertTrue(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 extractionSucceeded = false,
@@ -3084,7 +2848,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.NATIVE_ATTESTED,
                 extractionSucceeded = false,
@@ -3098,7 +2861,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 modelVerdict = InspectionModelVerdict.UNREADABLE,
@@ -3113,7 +2875,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 modelVerdict = InspectionModelVerdict.HAS_PROBLEMS,
@@ -3128,7 +2889,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 extractionSucceeded = false,
@@ -3142,7 +2902,6 @@ class InspectionSnapshotStateTest {
         )
         assertFalse(
             shouldTrustStableScopedEmptyResults(
-                viewReadyOk = false,
                 hasExecutionProofCleanEvidence = true,
                 executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
                 extractionSucceeded = false,

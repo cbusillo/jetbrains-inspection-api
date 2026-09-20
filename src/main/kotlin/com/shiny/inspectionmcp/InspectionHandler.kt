@@ -1622,15 +1622,9 @@ internal fun problemKey(map: Map<String, Any>): String {
 }
 
 internal fun shouldTrustStableScopedEmptyResults(
-    viewReadyOk: Boolean,
     hasExecutionProofCleanEvidence: Boolean = false,
     executionProofMode: InspectionExecutionProofMode = InspectionExecutionProofMode.NONE,
     modelVerdict: InspectionModelVerdict = InspectionModelVerdict.UNKNOWN,
-    observedInspectionView: Boolean = false,
-    inspectionViewUpdating: Boolean = false,
-    hasSettledInspectionViewEvidence: Boolean = false,
-    hasOpaqueSettledEmptyInspectionViewEvidence: Boolean = false,
-    hasTransientEmptyInspectionViewEvidence: Boolean = false,
     hasModelCleanEvidence: Boolean = false,
     extractionSucceeded: Boolean = true,
     hasScopedMatcher: Boolean,
@@ -1641,24 +1635,13 @@ internal fun shouldTrustStableScopedEmptyResults(
     pollingElapsedMs: Long,
     minStableMs: Long = 5000L,
     minPollingMs: Long = 30000L,
-    maxUpdatingInspectionViewWaitMs: Long = 60000L,
 ): Boolean {
     val hasExactBoundedCleanProof =
         executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED &&
             hasExecutionProofCleanEvidence &&
             modelVerdict !in setOf(InspectionModelVerdict.UNREADABLE, InspectionModelVerdict.HAS_PROBLEMS)
-    val hasUsableInspectionViewEvidence = !observedInspectionView ||
-        (!inspectionViewUpdating && hasSettledInspectionViewEvidence) ||
-        (!inspectionViewUpdating && hasOpaqueSettledEmptyInspectionViewEvidence && extractionSucceeded) ||
-        hasModelCleanEvidence ||
-        (
-            inspectionViewUpdating &&
-                hasTransientEmptyInspectionViewEvidence &&
-                pollingElapsedMs >= maxUpdatingInspectionViewWaitMs
-        )
 
-    return (viewReadyOk || hasExactBoundedCleanProof || (hasExecutionProofCleanEvidence && hasModelCleanEvidence)) &&
-        hasUsableInspectionViewEvidence &&
+    return (hasExactBoundedCleanProof || (hasExecutionProofCleanEvidence && hasModelCleanEvidence)) &&
         (extractionSucceeded || hasExactBoundedCleanProof) &&
         hasScopedMatcher &&
         scopedContextResultsEmpty &&
@@ -7203,17 +7186,10 @@ class InspectionHandler : HttpRequestHandler() {
                             if (
                                 !observedStableEmptyResultsWithoutInspectionView &&
                                 shouldTrustStableScopedEmptyResults(
-                                    viewReadyOk = viewReadyOk,
                                     hasExecutionProofCleanEvidence = executionProofClean,
                                     executionProofMode = executionProofMode,
                                     modelVerdict = modelVerdict,
                                     hasScopedMatcher = scopeProblemMatcher != null,
-                                    observedInspectionView = observedInspectionView,
-                                    inspectionViewUpdating = inspectionViewUpdating,
-                                    hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
-                                        observedStableReadableEmptyInspectionView,
-                                    hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
-                                    hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
                                     hasModelCleanEvidence = modelExtractionClean,
                                     extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                         lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
@@ -7266,17 +7242,10 @@ class InspectionHandler : HttpRequestHandler() {
                         if (
                             !observedStableEmptyResultsWithoutInspectionView &&
                             shouldTrustStableScopedEmptyResults(
-                                viewReadyOk = viewReadyOk,
                                 hasExecutionProofCleanEvidence = executionProofClean,
                                 executionProofMode = executionProofMode,
                                 modelVerdict = modelVerdict,
                                 hasScopedMatcher = scopeProblemMatcher != null,
-                                observedInspectionView = observedInspectionView,
-                                inspectionViewUpdating = inspectionViewUpdating,
-                                hasSettledInspectionViewEvidence = observedSettledEmptyInspectionView ||
-                                    observedStableReadableEmptyInspectionView,
-                                hasOpaqueSettledEmptyInspectionViewEvidence = observedOpaqueSettledEmptyInspectionView,
-                                hasTransientEmptyInspectionViewEvidence = observedTransientEmptyInspectionViewEvidence,
                                 hasModelCleanEvidence = modelExtractionClean,
                                 extractionSucceeded = shouldTreatScopedEmptyExtractionAsSucceeded(
                                     lastExtractionCycleSucceeded = lastExtractionCycleSucceeded,
