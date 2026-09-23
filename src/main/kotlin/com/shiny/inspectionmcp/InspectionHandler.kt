@@ -10080,7 +10080,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         fun <T> runDeadlineAwareProofProcess(
             candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-            action: (ProgressIndicator, () -> Unit) -> T,
+            action: (ProgressIndicator) -> T,
         ): T {
             val indicator = ProgressIndicatorBase()
             val context = ExactProofFailureContext(candidate.shortName, candidate.filePath, Thread.currentThread())
@@ -10113,9 +10113,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ProgressManager.getInstance().runProcess(
                     Computable {
                         checkProofBudget()
-                        action(indicator) {
-                            observeFailure(InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED)
-                        }.also { checkProofBudget() }
+                        action(indicator).also { checkProofBudget() }
                     },
                     indicator,
                 )
@@ -10301,21 +10299,23 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
-                runDeadlineAwareProofProcess(candidate) { indicator, onPreempt ->
-                    runWritePriorityInspectionRead(indicator, onPreempt) {
-                        if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
-                            val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                            SupportedInspectionExecutor().executePreparedFile(
-                                candidate.value,
-                                listOf(localWrapper),
-                                indicator,
-                            ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
-                        } else {
-                            InspectionEngine.runInspectionOnFile(
-                                candidate.value,
-                                batchWrapper.toolWrapper,
-                                requireNotNull(batchWrapper.context).publicContext(),
-                            )
+                retryWritePreemptedInspectionRead(::checkProofBudget) {
+                    runDeadlineAwareProofProcess(candidate) { indicator ->
+                        runWritePriorityInspectionRead(indicator, {}) {
+                            if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
+                                val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                                SupportedInspectionExecutor().executePreparedFile(
+                                    candidate.value,
+                                    listOf(localWrapper),
+                                    indicator,
+                                ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                            } else {
+                                InspectionEngine.runInspectionOnFile(
+                                    candidate.value,
+                                    batchWrapper.toolWrapper,
+                                    requireNotNull(batchWrapper.context).publicContext(),
+                                )
+                            }
                         }
                     }
                 }

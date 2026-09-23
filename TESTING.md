@@ -576,6 +576,9 @@ inspection read is blocked. The write must complete within the test's bounded
 wait, the interrupted read must report preemption, and the callback must observe
 the worker before it unwinds. Separate cases preserve caller cancellation and
 ensure a diagnostic callback failure cannot prevent cancellation.
+`SupportedInspectionExecutorPlatformTest` also proves that bounded exact-file
+proof resumes the interrupted tool after the write and establishes proof within
+the original deadline, without recording a terminal preemption.
 `ExactFileExecutionProofTest` checks retained findings, incomplete obligations,
 worker shutdown, and wrapper cleanup. `InspectionCaptureTimingTest` verifies that
 proof time cannot substitute for the clean-result observation window or extend
@@ -585,5 +588,6 @@ outcome and frozen diagnostic coverage.
 These controls prove cooperative cancellation, not a forced stop of an arbitrary
 third-party inspection. For a real recurrence, preserve the exact scope/revision,
 `inspection_run_id`, `inspection_failure_diagnostic`, stage history, and owned
-cleanup. `exact_proof_deadline` and `exact_proof_write_preempted` identify the
-first interrupted tool and file; they do not authorize an automatic retry.
+cleanup. Transient write preemptions resume inside the same proof budget;
+`exact_proof_deadline` and an unrecovered `exact_proof_write_preempted` identify
+the interrupted tool and file. Neither authorizes an outer assessment retry.

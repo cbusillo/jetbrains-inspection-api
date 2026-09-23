@@ -6,6 +6,26 @@ import com.intellij.openapi.progress.util.ProgressIndicatorUtils
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
+internal fun <T> retryWritePreemptedInspectionRead(
+    checkBudget: () -> Unit,
+    action: () -> T,
+): T {
+    while (true) {
+        checkBudget()
+        try {
+            return action()
+        } catch (_: ExactFileProofWritePreemptedException) {
+            checkBudget()
+            try {
+                Thread.sleep(25L)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw ProcessCanceledException()
+            }
+        }
+    }
+}
+
 internal fun <T> runWritePriorityInspectionRead(
     indicator: ProgressIndicator,
     onPreempt: () -> Unit,

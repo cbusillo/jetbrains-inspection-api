@@ -12,9 +12,40 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class WritePriorityInspectionReadPlatformTest {
+    @Test
+    fun `write priority read resumes after an IDE write`() {
+        val enteredFirstRead = CountDownLatch(1)
+        val writeRan = CountDownLatch(1)
+        val attempts = AtomicInteger()
+        val future = ApplicationManager.getApplication().executeOnPooledThread<String> {
+            retryWritePreemptedInspectionRead(checkBudget = {}) {
+                val indicator = EmptyProgressIndicator()
+                runWritePriorityInspectionRead(indicator, {}) {
+                    if (attempts.incrementAndGet() == 1) {
+                        enteredFirstRead.countDown()
+                        while (!writeRan.await(25, TimeUnit.MILLISECONDS)) {
+                            indicator.checkCanceled()
+                        }
+                        indicator.checkCanceled()
+                    }
+                    "completed"
+                }
+            }
+        }
+
+        assertThat(enteredFirstRead.await(5, TimeUnit.SECONDS)).isTrue()
+        ApplicationManager.getApplication().invokeLater {
+            WriteAction.run<RuntimeException> { writeRan.countDown() }
+        }
+
+        assertThat(future.get(5, TimeUnit.SECONDS)).isEqualTo("completed")
+        assertThat(attempts.get()).isEqualTo(2)
+    }
+
     @Test
     fun `cooperative read yields to write after callback captures active worker`() {
         val indicator = EmptyProgressIndicator()
