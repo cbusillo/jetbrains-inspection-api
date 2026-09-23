@@ -115,6 +115,8 @@ internal data class BoundedExecutionProofResult(
     val hitFileLimit: Boolean = false,
     val hitTimeLimit: Boolean = false,
     val hitWritePreemption: Boolean = false,
+    val writePreemptionCount: Int = 0,
+    val firstWritePreemption: Map<String, String>? = null,
     val elapsedMs: Long = 0,
     val blockingExamples: List<Map<String, Any?>> = emptyList(),
     val nonBatchExamples: List<Map<String, Any?>> = emptyList(),

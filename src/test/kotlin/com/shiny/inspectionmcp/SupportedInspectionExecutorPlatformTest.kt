@@ -442,12 +442,10 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `bounded proof preempts cooperative inspection before a pending write`() {
+    fun `bounded proof resumes cooperative inspection after a pending write`() {
         val project = projectExtension.project
-        val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger())
+        val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger(), blockOnlyFirst = true)
         val writeRan = CountDownLatch(1)
-        val observedBeforeToolUnwind = AtomicReference<Boolean>()
-        val observedFailure = AtomicReference<ExactProofFailureContext>()
         val observedSource = AtomicReference<InspectionRunFailureSource>()
         blockingInspectionControl.set(control)
         val tool = WritePriorityBlockingInspection()
@@ -464,34 +462,35 @@ class SupportedInspectionExecutorPlatformTest {
                     profile = profile,
                     project = project,
                     scopeFiles = listOf(psiFile),
-                    failureObserver = { source, context ->
+                    failureObserver = { source, _ ->
                         observedSource.set(source)
-                        observedFailure.set(context)
-                        observedBeforeToolUnwind.set(control.toolExited.get() == 0)
                     },
                     cancellationCheck = {},
                 ),
             )
         }
 
-        assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
-        ApplicationManager.getApplication().invokeLater {
-            WriteAction.run<RuntimeException> { writeRan.countDown() }
-        }
+        try {
+            assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
+            ApplicationManager.getApplication().invokeLater {
+                WriteAction.run<RuntimeException> { writeRan.countDown() }
+            }
 
-        assertThat(writeRan.await(5, TimeUnit.SECONDS)).isTrue()
-        future.get(5, TimeUnit.SECONDS)
-        val proof = requireNotNull(result.get())
-        assertThat(proof.hitWritePreemption).isTrue()
-        assertThat(proof.proofEstablished).isFalse()
-        assertThat(proof.proofBlockReason).isEqualTo("write_action_preempted")
-        assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED)
-        assertThat(observedFailure.get()?.toolShortName).isEqualTo(tool.shortName)
-        assertThat(observedFailure.get()?.filePath).isEqualTo(psiFile.virtualFile.path)
-        assertThat(observedFailure.get()?.workerThread).isNotNull()
-        assertThat(observedBeforeToolUnwind.get()).isTrue()
-        assertThat(control.toolExited.get()).isEqualTo(1)
-        blockingInspectionControl.compareAndSet(control, null)
+            assertThat(writeRan.await(5, TimeUnit.SECONDS)).isTrue()
+            future.get(5, TimeUnit.SECONDS)
+            val proof = requireNotNull(result.get())
+            assertThat(proof.proofEstablished).isTrue()
+            assertThat(proof.hitWritePreemption).isFalse()
+            assertThat(proof.writePreemptionCount).isEqualTo(1)
+            assertThat(proof.firstWritePreemption).containsEntry("short_name", tool.shortName)
+                .containsEntry("file", psiFile.virtualFile.path)
+            assertThat(observedSource.get()).isNull()
+            assertThat(control.enteredCount.get()).isEqualTo(2)
+            assertThat(control.toolExited.get()).isEqualTo(1)
+        } finally {
+            control.release.countDown()
+            blockingInspectionControl.compareAndSet(control, null)
+        }
     }
 
     @Test
@@ -1068,6 +1067,9 @@ class SupportedInspectionExecutorPlatformTest {
         ): PsiElementVisitor {
             val control = requireNotNull(blockingInspectionControl.get())
             control.enteredTool.countDown()
+            if (control.blockOnlyFirst && control.enteredCount.incrementAndGet() > 1) {
+                return super.buildVisitor(holder, isOnTheFly, session)
+            }
             try {
                 while (true) {
                     if (control.release.await(25, TimeUnit.MILLISECONDS)) {
@@ -1148,6 +1150,8 @@ class SupportedInspectionExecutorPlatformTest {
         val enteredTool: CountDownLatch,
         val toolExited: AtomicInteger,
         val release: CountDownLatch = CountDownLatch(1),
+        val blockOnlyFirst: Boolean = false,
+        val enteredCount: AtomicInteger = AtomicInteger(),
     )
 
     private data class ParentInspectionContext(

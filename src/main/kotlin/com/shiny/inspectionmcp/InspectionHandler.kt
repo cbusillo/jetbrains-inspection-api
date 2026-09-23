@@ -98,6 +98,7 @@ import java.security.MessageDigest
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
@@ -9902,6 +9903,8 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_unvisited_descriptor_count" to proof.unvisitedDescriptorCount,
             "execution_proof_enumeration_error_count" to proof.enumerationErrorCount,
             "execution_proof_elapsed_ms" to proof.elapsedMs,
+            "execution_proof_write_preemption_count" to proof.writePreemptionCount,
+            "execution_proof_first_write_preemption" to proof.firstWritePreemption,
             "execution_proof_block_reason" to proof.proofBlockReason,
             "execution_proof_blocking_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_blocking_examples" to proof.blockingExamples.takeIf { it.isNotEmpty() },
@@ -10069,6 +10072,8 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val proofStartNanos = System.nanoTime()
+        val writePreemptionCount = AtomicInteger()
+        val firstWritePreemption = AtomicReference<Map<String, String>?>()
         val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
 
         fun proofDeadlineExceeded(): Boolean = System.nanoTime() - proofStartNanos > proofTimeoutNanos
@@ -10080,7 +10085,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         fun <T> runDeadlineAwareProofProcess(
             candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
-            action: (ProgressIndicator, () -> Unit) -> T,
+            action: (ProgressIndicator) -> T,
         ): T {
             val indicator = ProgressIndicatorBase()
             val context = ExactProofFailureContext(candidate.shortName, candidate.filePath, Thread.currentThread())
@@ -10113,9 +10118,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ProgressManager.getInstance().runProcess(
                     Computable {
                         checkProofBudget()
-                        action(indicator) {
-                            observeFailure(InspectionRunFailureSource.EXACT_PROOF_WRITE_PREEMPTED)
-                        }.also { checkProofBudget() }
+                        action(indicator).also { checkProofBudget() }
                     },
                     indicator,
                 )
@@ -10301,21 +10304,29 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
             ): List<com.intellij.codeInspection.ProblemDescriptor> =
-                runDeadlineAwareProofProcess(candidate) { indicator, onPreempt ->
-                    runWritePriorityInspectionRead(indicator, onPreempt) {
-                        if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
-                            val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                            SupportedInspectionExecutor().executePreparedFile(
-                                candidate.value,
-                                listOf(localWrapper),
-                                indicator,
-                            ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
-                        } else {
-                            InspectionEngine.runInspectionOnFile(
-                                candidate.value,
-                                batchWrapper.toolWrapper,
-                                requireNotNull(batchWrapper.context).publicContext(),
+                retryWritePreemptedInspectionRead(::checkProofBudget) {
+                    runDeadlineAwareProofProcess(candidate) { indicator ->
+                        runWritePriorityInspectionRead(indicator, {
+                            writePreemptionCount.incrementAndGet()
+                            firstWritePreemption.compareAndSet(
+                                null,
+                                mapOf("short_name" to candidate.shortName, "file" to candidate.filePath),
                             )
+                        }) {
+                            if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
+                                val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                                SupportedInspectionExecutor().executePreparedFile(
+                                    candidate.value,
+                                    listOf(localWrapper),
+                                    indicator,
+                                ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                            } else {
+                                InspectionEngine.runInspectionOnFile(
+                                    candidate.value,
+                                    batchWrapper.toolWrapper,
+                                    requireNotNull(batchWrapper.context).publicContext(),
+                                )
+                            }
                         }
                     }
                 }
@@ -10402,10 +10413,14 @@ class InspectionHandler : HttpRequestHandler() {
             problemKey = ::problemKey,
             adapter = adapter,
         )
+        val proofWithWriteContention = proof.copy(
+            writePreemptionCount = writePreemptionCount.get(),
+            firstWritePreemption = firstWritePreemption.get(),
+        )
         return if (enabledTools.errorExamples.isEmpty()) {
-            proof
+            proofWithWriteContention
         } else {
-            proof.copy(
+            proofWithWriteContention.copy(
                 blockingExamples = (enabledTools.errorExamples + proof.blockingExamples)
                     .take(MAX_EXACT_FILE_PROOF_EXAMPLES),
             )
