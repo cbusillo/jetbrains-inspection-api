@@ -632,7 +632,7 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 - `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`
 - `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
 - `inspection_stage_history`: Bounded completed-stage timings for diagnosing a slow run
-- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `timed_out`, `preempted`, `cancelled`, or `failed`. Exact-file proof yields to an IDE write and resumes with a fresh read attempt within its proof budget; exhausting that budget marks `timed_out`. An unrecovered write preemption marks `preempted`. A caller wait timeout alone does not determine the execution outcome. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
+- `inspection_terminal_outcome`: Frozen execution outcome after the run stops: `completed`, `timed_out`, `preempted`, `cancelled`, or `failed`. Exact-file proof yields to an IDE write and resumes with a fresh read attempt within its proof budget; exhausting that budget marks `timed_out`. An escaped write preemption marks `preempted`. A caller wait timeout alone does not determine the execution outcome. A cancellation request remains diagnostic evidence; it marks the terminal outcome `cancelled` only when execution observes cancellation.
 
 ## Proper Usage Workflow
 
@@ -721,6 +721,9 @@ up to three observations. These observations can remain on a subsequently
 completed run because they describe what a caller saw, while
 `inspection_terminal_outcome` describes how execution ended. The fields do not
 change the deadline, retry policy, or inspection verdict.
+The proof diagnostic also reports `execution_proof_write_preemption_count` and
+`execution_proof_first_write_preemption` (tool and file), including when the
+read resumes successfully or repeated writes exhaust the proof deadline.
 
 Exact local inspections yield cooperatively to pending IDE writes. An interrupted
 obligation does not establish execution proof and is not retried automatically;
