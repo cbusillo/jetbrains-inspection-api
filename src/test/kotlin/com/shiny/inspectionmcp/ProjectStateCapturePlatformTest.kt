@@ -4,6 +4,7 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
@@ -21,6 +22,7 @@ class ProjectStateCapturePlatformTest {
         val project = projectExtension.project
         val file = createContentFile()
         val handler = InspectionHandler()
+        DumbService.getInstance(project).waitForSmartMode()
         val before = handler.captureProjectState(project)
         val content = file.contentsToByteArray()
 

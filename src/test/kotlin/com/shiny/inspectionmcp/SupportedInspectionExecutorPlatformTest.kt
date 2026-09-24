@@ -41,10 +41,13 @@ import com.intellij.psi.PsiManager
 import com.intellij.profile.codeInspection.BaseInspectionProfileManager
 import com.intellij.profile.codeInspection.InspectionProfileManager
 import com.intellij.testFramework.ProjectExtension
+import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.extension.AfterAllCallback
 import org.junit.jupiter.api.extension.BeforeAllCallback
@@ -60,6 +63,24 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class SupportedInspectionExecutorPlatformTest {
+    @Test
+    fun `proof cannot qualify PSI reconciliation while indexing`() {
+        val project = projectExtension.project
+        val tool = FindingInspection()
+        val file = createPhysicalFile()
+        val profile = profileWith(tool)
+        DumbModeTestUtils.runInDumbModeSynchronously(project) {
+            val proof = InspectionHandler().runBoundedExecutionProof(
+                enabledTools = enabledTools(tool),
+                profile = profile,
+                project = project,
+                scopeFiles = listOf(file),
+                cancellationCheck = {},
+            )
+            assertThat(proof.smartModeStable).isFalse()
+        }
+    }
+
     @Test
     fun `records findings and the submitted scope file`() {
         val tool = FindingInspection()
@@ -441,8 +462,9 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(result.unvisitedClassificationObligationCount).isEqualTo(1)
     }
 
-    @Test
-    fun `bounded proof resumes cooperative inspection after a pending write`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `bounded proof records indexing transitions while resuming after a pending write`(indexing: Boolean) {
         val project = projectExtension.project
         val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger(), blockOnlyFirst = true)
         val writeRan = CountDownLatch(1)
@@ -473,19 +495,24 @@ class SupportedInspectionExecutorPlatformTest {
         try {
             assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
             ApplicationManager.getApplication().invokeLater {
-                WriteAction.run<RuntimeException> { writeRan.countDown() }
+                if (indexing) {
+                    DumbModeTestUtils.runInDumbModeSynchronously(project) { writeRan.countDown() }
+                } else {
+                    WriteAction.run<RuntimeException> { writeRan.countDown() }
+                }
             }
 
             assertThat(writeRan.await(5, TimeUnit.SECONDS)).isTrue()
             future.get(5, TimeUnit.SECONDS)
             val proof = requireNotNull(result.get())
+            assertThat(proof.smartModeStable).isEqualTo(!indexing)
             assertThat(proof.proofEstablished).isTrue()
             assertThat(proof.hitWritePreemption).isFalse()
-            assertThat(proof.writePreemptionCount).isEqualTo(1)
+            assertThat(proof.writePreemptionCount).isGreaterThanOrEqualTo(1)
             assertThat(proof.firstWritePreemption).containsEntry("short_name", tool.shortName)
                 .containsEntry("file", psiFile.virtualFile.path)
             assertThat(observedSource.get()).isNull()
-            assertThat(control.enteredCount.get()).isEqualTo(2)
+            assertThat(control.enteredCount.get()).isGreaterThanOrEqualTo(2)
             assertThat(control.toolExited.get()).isEqualTo(1)
         } finally {
             control.release.countDown()

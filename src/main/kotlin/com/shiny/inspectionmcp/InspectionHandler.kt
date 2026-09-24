@@ -5926,6 +5926,7 @@ class InspectionHandler : HttpRequestHandler() {
         val diagnostic = snapshot.captureDiagnostic ?: return false
         return diagnostic["execution_proof_mode"] == "exact_bounded" &&
             diagnostic["execution_proof_established"] == true &&
+            diagnostic["execution_proof_smart_mode_stable"] == true &&
             (snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED || diagnostic["execution_proof_clean"] == true)
     }
 
@@ -9905,6 +9906,7 @@ class InspectionHandler : HttpRequestHandler() {
         proof ?: return emptyMap()
         return mapOf(
             "execution_proof_mode" to "exact_bounded",
+            "execution_proof_smart_mode_stable" to proof.smartModeStable,
             "execution_proof_enabled_local_tool_count" to proof.enabledLocalToolCount,
             "execution_proof_executed_tool_count" to proof.executedToolCount,
             "execution_proof_descriptor_count" to proof.totalDescriptorCount,
@@ -10104,6 +10106,10 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val proofStartNanos = System.nanoTime()
+        val dumbService = DumbService.getInstance(project)
+        val dumbModeBeforeProof = app.runReadAction<Pair<Boolean, Long>, Exception> {
+            dumbService.isDumb to dumbService.modificationTracker.modificationCount
+        }
         val writePreemptionCount = AtomicInteger()
         val firstWritePreemption = AtomicReference<Map<String, String>?>()
         val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
@@ -10448,6 +10454,10 @@ class InspectionHandler : HttpRequestHandler() {
         val proofWithWriteContention = proof.copy(
             writePreemptionCount = writePreemptionCount.get(),
             firstWritePreemption = firstWritePreemption.get(),
+            smartModeStable = app.runReadAction<Boolean, Exception> {
+                !dumbModeBeforeProof.first && !dumbService.isDumb &&
+                    dumbModeBeforeProof.second == dumbService.modificationTracker.modificationCount
+            },
         )
         return if (enabledTools.errorExamples.isEmpty()) {
             proofWithWriteContention

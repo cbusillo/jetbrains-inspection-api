@@ -1816,7 +1816,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["missing", "native_run", "incomplete", "not_clean"])
+    @ValueSource(strings = ["missing", "native_attested", "incomplete", "not_clean", "indexing_during_proof"])
     fun `test files snapshots without complete exact proof still require live findings`(proof: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -1833,7 +1833,8 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         setInspectionRunState(key, InspectionRunState(1L, System.currentTimeMillis(), true))
         val diagnostic = when (proof) {
             "missing" -> emptyMap()
-            "native_run" -> exactFilesProof(true) + ("execution_proof_mode" to "native_run")
+            "native_attested" -> exactFilesProof(true) + ("execution_proof_mode" to "native_attested")
+            "indexing_during_proof" -> exactFilesProof(true) + ("execution_proof_smart_mode_stable" to false)
             "not_clean" -> exactFilesProof(false)
             else -> exactFilesProof(true) + ("execution_proof_established" to false)
         }
@@ -1862,6 +1863,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     private fun exactFilesProof(clean: Boolean): Map<String, Any?> = mapOf(
         "execution_proof_mode" to "exact_bounded",
         "execution_proof_established" to true,
+        "execution_proof_smart_mode_stable" to true,
         "execution_proof_clean" to clean,
     )
 

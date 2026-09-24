@@ -602,7 +602,10 @@ explicit-file scopes. Both must reconcile PSI-only churn with unchanged tracked
 inputs and matching findings, reject changed content, profiles, unavailable
 validation and publication races, and reject edits after publication. Complete exact-file execution proof must preserve GREEN and actionable RED
 without an Inspection Results window. Missing, incomplete, or non-exact proof
-still requires authoritative live extraction. Explicit files outside tracked roots,
+still requires authoritative live extraction. A real dumb-mode fixture and the
+publication controls also reject proof-backed reconciliation when indexing
+overlapped the native proof; indexing after completed smart-mode proof can be
+reconciled after input validation. Explicit files outside tracked roots,
 under excluded roots, or in ignored workspace metadata cannot reconcile a PSI
 change into fresh results. `ProjectStateCapturePlatformTest`
 uses a real indexing transition to prove that the PSI counter can advance while
