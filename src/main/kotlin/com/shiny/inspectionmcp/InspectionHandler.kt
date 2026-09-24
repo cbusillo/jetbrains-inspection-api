@@ -6911,6 +6911,9 @@ class InspectionHandler : HttpRequestHandler() {
                 requestedProfileName = requestedProfileName,
             )
             val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
+            val analysisDumbModeCount = ApplicationManager.getApplication().runReadAction<Long, Exception> {
+                DumbService.getInstance(project).modificationTracker.modificationCount
+            }
 
             transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_CONFIGURE)
             @Suppress("USELESS_CAST")
@@ -7057,6 +7060,7 @@ class InspectionHandler : HttpRequestHandler() {
                                             profile,
                                             project,
                                             capturedScopeFiles,
+                                            analysisDumbModeCount = analysisDumbModeCount,
                                             failureObserver = { source, context ->
                                                 recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
                                             },
@@ -10094,6 +10098,7 @@ class InspectionHandler : HttpRequestHandler() {
         profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
+        analysisDumbModeCount: Long,
         failureObserver: (InspectionRunFailureSource, ExactProofFailureContext) -> Unit = { _, _ -> },
         cancellationCheck: () -> Unit,
     ): BoundedExecutionProofResult {
@@ -10107,9 +10112,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
         val proofStartNanos = System.nanoTime()
         val dumbService = DumbService.getInstance(project)
-        val dumbModeBeforeProof = app.runReadAction<Pair<Boolean, Long>, Exception> {
-            dumbService.isDumb to dumbService.modificationTracker.modificationCount
-        }
+        val proofStartedInDumbMode = app.runReadAction<Boolean, Exception> { dumbService.isDumb }
         val writePreemptionCount = AtomicInteger()
         val firstWritePreemption = AtomicReference<Map<String, String>?>()
         val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
@@ -10455,8 +10458,8 @@ class InspectionHandler : HttpRequestHandler() {
             writePreemptionCount = writePreemptionCount.get(),
             firstWritePreemption = firstWritePreemption.get(),
             smartModeStable = app.runReadAction<Boolean, Exception> {
-                !dumbModeBeforeProof.first && !dumbService.isDumb &&
-                    dumbModeBeforeProof.second == dumbService.modificationTracker.modificationCount
+                !proofStartedInDumbMode && !dumbService.isDumb &&
+                    analysisDumbModeCount == dumbService.modificationTracker.modificationCount
             },
         )
         return if (enabledTools.errorExamples.isEmpty()) {

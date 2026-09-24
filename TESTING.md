@@ -604,7 +604,7 @@ validation and publication races, and reject edits after publication. Complete e
 without an Inspection Results window. Missing, incomplete, or non-exact proof
 still requires authoritative live extraction. A real dumb-mode fixture and the
 publication controls also reject proof-backed reconciliation when indexing
-overlapped the native proof; indexing after completed smart-mode proof can be
+overlapped native analysis or exact proof; indexing after completed smart-mode proof can be
 reconciled after input validation. Explicit files outside tracked roots,
 under excluded roots, or in ignored workspace metadata cannot reconcile a PSI
 change into fresh results. `ProjectStateCapturePlatformTest`

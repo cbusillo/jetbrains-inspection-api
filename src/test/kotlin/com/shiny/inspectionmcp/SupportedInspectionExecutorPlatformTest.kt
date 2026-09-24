@@ -69,16 +69,46 @@ class SupportedInspectionExecutorPlatformTest {
         val tool = FindingInspection()
         val file = createPhysicalFile()
         val profile = profileWith(tool)
+        profile.setToolEnabled(tool.shortName, true, project)
         DumbModeTestUtils.runInDumbModeSynchronously(project) {
             val proof = InspectionHandler().runBoundedExecutionProof(
                 enabledTools = enabledTools(tool),
                 profile = profile,
                 project = project,
                 scopeFiles = listOf(file),
+                analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
                 cancellationCheck = {},
             )
+            assertThat(proof.skippedReason).isNull()
+            assertThat(proof.executedToolCount).isGreaterThan(0)
             assertThat(proof.smartModeStable).isFalse()
         }
+    }
+
+    @Test
+    fun `indexing before exact proof prevents native result reconciliation`() {
+        val project = projectExtension.project
+        val tool = FindingInspection()
+        val file = createPhysicalFile()
+        val profile = profileWith(tool)
+        profile.setToolEnabled(tool.shortName, true, project)
+        val dumbService = DumbService.getInstance(project)
+        dumbService.waitForSmartMode()
+        val analysisDumbModeCount = dumbService.modificationTracker.modificationCount
+        DumbModeTestUtils.runInDumbModeSynchronously(project) {}
+
+        val proof = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(tool),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(file),
+            analysisDumbModeCount = analysisDumbModeCount,
+            cancellationCheck = {},
+        )
+
+        assertThat(proof.skippedReason).isNull()
+        assertThat(proof.proofEstablished).isTrue()
+        assertThat(proof.smartModeStable).isFalse()
     }
 
     @Test
@@ -427,6 +457,7 @@ class SupportedInspectionExecutorPlatformTest {
             profile = profile,
             project = project,
             scopeFiles = listOf(psiFile),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
 
@@ -453,6 +484,7 @@ class SupportedInspectionExecutorPlatformTest {
             profile = profile,
             project = project,
             scopeFiles = listOf(psiFile),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
 
@@ -484,6 +516,7 @@ class SupportedInspectionExecutorPlatformTest {
                     profile = profile,
                     project = project,
                     scopeFiles = listOf(psiFile),
+                    analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
                     failureObserver = { source, _ ->
                         observedSource.set(source)
                     },
@@ -508,11 +541,16 @@ class SupportedInspectionExecutorPlatformTest {
             assertThat(proof.smartModeStable).isEqualTo(!indexing)
             assertThat(proof.proofEstablished).isTrue()
             assertThat(proof.hitWritePreemption).isFalse()
-            assertThat(proof.writePreemptionCount).isGreaterThanOrEqualTo(1)
+            if (indexing) {
+                assertThat(proof.writePreemptionCount).isGreaterThanOrEqualTo(1)
+                assertThat(control.enteredCount.get()).isGreaterThanOrEqualTo(2)
+            } else {
+                assertThat(proof.writePreemptionCount).isEqualTo(1)
+                assertThat(control.enteredCount.get()).isEqualTo(2)
+            }
             assertThat(proof.firstWritePreemption).containsEntry("short_name", tool.shortName)
                 .containsEntry("file", psiFile.virtualFile.path)
             assertThat(observedSource.get()).isNull()
-            assertThat(control.enteredCount.get()).isGreaterThanOrEqualTo(2)
             assertThat(control.toolExited.get()).isEqualTo(1)
         } finally {
             control.release.countDown()
@@ -541,9 +579,10 @@ class SupportedInspectionExecutorPlatformTest {
                     profile = profile,
                     project = project,
                     scopeFiles = listOf(psiFile),
+                    analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
                     failureObserver = { source, _ ->
                         observedSource.set(source)
-                        observedBeforeToolUnwind.set(control.toolExited.get() == 0)
+                        observedBeforeToolUnwind.set(control.toolExited.get() < control.enteredCount.get())
                     },
                     cancellationCheck = {},
                 ),
@@ -558,7 +597,7 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(proof.proofBlockReason).isEqualTo("time_limit")
         assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_DEADLINE)
         assertThat(observedBeforeToolUnwind.get()).isTrue()
-        assertThat(control.toolExited.get()).isEqualTo(1)
+        assertThat(control.toolExited.get()).isEqualTo(control.enteredCount.get())
         blockingInspectionControl.compareAndSet(control, null)
     }
 
@@ -601,6 +640,7 @@ class SupportedInspectionExecutorPlatformTest {
             profile = profile,
             project = project,
             scopeFiles = listOf(psiFile),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
 
@@ -630,6 +670,7 @@ class SupportedInspectionExecutorPlatformTest {
             profile = profile,
             project = project,
             scopeFiles = listOf(psiFile),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
 
@@ -684,6 +725,7 @@ class SupportedInspectionExecutorPlatformTest {
             profile = profile,
             project = project,
             scopeFiles = listOf(psiFile),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
 
@@ -1094,7 +1136,8 @@ class SupportedInspectionExecutorPlatformTest {
         ): PsiElementVisitor {
             val control = requireNotNull(blockingInspectionControl.get())
             control.enteredTool.countDown()
-            if (control.blockOnlyFirst && control.enteredCount.incrementAndGet() > 1) {
+            val enteredCount = control.enteredCount.incrementAndGet()
+            if (control.blockOnlyFirst && enteredCount > 1) {
                 return super.buildVisitor(holder, isOnTheFly, session)
             }
             try {
