@@ -5647,6 +5647,7 @@ class InspectionHandler : HttpRequestHandler() {
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
         val canAttemptReconciliation = projectStateChangedDuringCapture &&
             stableInputValidationScope &&
+            filesCaptureInputsTracked(project, snapshot.captureScope, inspectionInputFingerprint) &&
             captureEndState.unsavedProjectDocuments == 0 &&
             hasInputValidation
         val requiresStableInputValidation = stableInputValidationScope && !projectStateChangedDuringCapture
@@ -5682,7 +5683,7 @@ class InspectionHandler : HttpRequestHandler() {
                     scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    if (isExactEmptyChangedFilesSnapshot(snapshot)) {
+                    if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
                         CurrentRunPsiChurnReconciliation(snapshot, true)
                     } else {
                         reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
@@ -5719,7 +5720,7 @@ class InspectionHandler : HttpRequestHandler() {
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(
                     "Inspection snapshot validation for ${project.name}: " +
-                        "liveFindingsMatched=${reconciliation.reconciled}, " +
+                        "resultEvidenceMatched=${reconciliation.reconciled}, " +
                         "contentChangedBefore=$contentChangedBeforeVerification, " +
                         "contentChangedAfter=$contentChangedAfterVerification, " +
                         "stateStableBefore=$stateStableBeforeVerification, " +
@@ -5735,7 +5736,9 @@ class InspectionHandler : HttpRequestHandler() {
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
                         projectState = captureEndState,
-                        reconciliationChangeKind = if (isChangedFilesCaptureScope(snapshot.captureScope)) {
+                        reconciliationChangeKind = if (
+                            isChangedFilesCaptureScope(snapshot.captureScope) || isFilesCaptureScope(snapshot.captureScope)
+                        ) {
                             CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue
                         } else {
                             snapshot.reconciliationChangeKind
@@ -5896,6 +5899,34 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun isChangedFilesCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
         return captureScope?.scopeParam?.trim()?.lowercase() == "changed_files"
+    }
+
+    private fun isFilesCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
+        return captureScope?.scopeParam?.trim()?.lowercase() == "files"
+    }
+
+    private fun filesCaptureInputsTracked(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+        fingerprint: InspectionProjectInputsFingerprint?,
+    ): Boolean {
+        if (!isFilesCaptureScope(captureScope)) return true
+        val files = captureScope?.resolvedFiles?.takeIf { it.isNotEmpty() } ?: return false
+        val inputs = fingerprint ?: return false
+        return files.all { path ->
+            isTrackedInspectionInputPath(project.basePath, inputs.rootPaths, path, inputs.excludedRootPaths)
+        }
+    }
+
+    private fun hasCompleteFilesExecutionProof(snapshot: InspectionResultsSnapshot): Boolean {
+        if (!isFilesCaptureScope(snapshot.captureScope)) return false
+        if (snapshot.outcome !in setOf(InspectionSnapshotOutcome.CLEAN_CONFIRMED, InspectionSnapshotOutcome.PROBLEMS_FOUND)) {
+            return false
+        }
+        val diagnostic = snapshot.captureDiagnostic ?: return false
+        return diagnostic["execution_proof_mode"] == "exact_bounded" &&
+            diagnostic["execution_proof_established"] == true &&
+            (snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED || diagnostic["execution_proof_clean"] == true)
     }
 
     private fun supportsStableInputValidation(captureScope: InspectionCaptureScope?): Boolean {

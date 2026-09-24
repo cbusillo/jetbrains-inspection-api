@@ -345,7 +345,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
 
         assertEquals(11L, reconciledSnapshot.projectState.psiModificationCount)
         assertEquals(false, completedStatus["results_may_be_stale"])
-        assertEquals("fresh", completedStatus["snapshot_change_kind"])
+        assertEquals(if (scope == "files") "current_run_psi_churn" else "fresh", completedStatus["snapshot_change_kind"])
         assertEquals(true, completedStatus["has_inspection_results"])
         assertEquals(true, editedStatus["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
@@ -380,6 +380,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(false) else null,
             runId = 1L,
         )
 
@@ -425,6 +426,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(true) else null,
             runId = 1L,
         )
 
@@ -569,6 +571,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(false) else null,
             runId = 1L,
         )
 
@@ -611,6 +614,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(true) else null,
             runId = 1L,
         )
 
@@ -647,6 +651,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(true) else null,
             runId = 1L,
         )
 
@@ -694,6 +699,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(false) else null,
             runId = 1L,
         )
 
@@ -726,7 +732,10 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         InspectionResultsStore.clear(key)
         val inputFingerprint = projectInputsFingerprint()
         val contentTracker = FakeInspectionProjectContentTracker()
-        handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            contentTracker.changed = true
+            inputFingerprint
+        }
         val snapshotProblems = listOf(
             mapOf(
                 "file" to "/tmp/TestProject/src/Included.kt",
@@ -736,7 +745,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         )
         val extractor = mockk<EnhancedTreeExtractor>()
         every { extractor.extractAllProblemsWithStatus(mockProject) } answers {
-            contentTracker.changed = true
             ProblemExtractionResult(
                 problems = snapshotProblems,
                 succeeded = true,
@@ -755,6 +763,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(false) else null,
             runId = 1L,
         )
 
@@ -809,6 +818,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
             captureScope = publicationScope(scope),
+            captureDiagnostic = if (scope == "files") exactFilesProof(false) else null,
             runId = 1L,
         )
 
@@ -823,8 +833,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
     }
 
-    @Test
-    fun `test files clean snapshot reconciles verified psi churn`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [true, false])
+    fun `test files execution proof reconciles psi churn without a results window`(clean: Boolean) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -833,8 +844,14 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         val inputFingerprint = projectInputsFingerprint()
         val contentTracker = FakeInspectionProjectContentTracker()
         handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
-        val snapshotProblems = emptyList<Map<String, Any>>()
-        mockExtractor(snapshotProblems)
+        val snapshotProblems = if (clean) emptyList() else listOf(
+            mapOf("file" to "/tmp/TestProject/src/Included.kt", "severity" to "warning", "description" to "current finding"),
+        )
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            emptyList(), true, ProblemExtractionSource.NONE,
+        )
+        enhancedTreeExtractorFactory = { extractor }
         setInspectionRunState(
             key,
             InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
@@ -843,7 +860,8 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             problems = snapshotProblems,
             timestamp = System.currentTimeMillis(),
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
-            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            outcome = if (clean) InspectionSnapshotOutcome.CLEAN_CONFIRMED else InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            captureDiagnostic = exactFilesProof(clean),
             source = "inspection_view",
             captureScope = InspectionCaptureScope(
                 scopeParam = "files",
@@ -868,9 +886,10 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
         val status = buildInspectionStatus()
         assertEquals(11L, publishedSnapshot.projectState.psiModificationCount)
-        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, publishedSnapshot.outcome)
+        assertEquals(snapshot.outcome, publishedSnapshot.outcome)
+        assertEquals(snapshotProblems, publishedSnapshot.problems)
         assertEquals(false, status["results_may_be_stale"])
-        assertEquals("GREEN", status["inspection_verdict"])
+        assertEquals(if (clean) "GREEN" else "RED", status["inspection_verdict"])
     }
 
     @ParameterizedTest
@@ -1756,6 +1775,96 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"client_run_id\": \"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\""), body)
         assertFalse(body.contains("boom"), body)
     }
+    @ParameterizedTest
+    @ValueSource(strings = ["/tmp/outside/Included.kt", "/tmp/TestProject/build/Included.kt", "/tmp/TestProject/.idea/workspace.xml"])
+    fun `test files publication cannot reconcile a selected file the tracker does not watch`(path: String) {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val fingerprint = projectInputsFingerprint().copy(excludedRootPaths = listOf("/tmp/TestProject/build"))
+        handler.projectInputsFingerprintProvider = { _, _ -> fingerprint }
+        val problems = listOf(mapOf("file" to path, "severity" to "warning", "description" to "finding before edit"))
+        mockExtractor(problems)
+        setInspectionRunState(key, InspectionRunState(1L, System.currentTimeMillis(), true))
+        val snapshot = InspectionResultsSnapshot(
+            problems = problems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(10L, 0),
+            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+            source = "global_context",
+            captureDiagnostic = exactFilesProof(false),
+            captureScope = InspectionCaptureScope(scopeParam = "files", files = listOf(path), resolvedFiles = listOf(path)),
+            runId = 1L,
+        )
+
+        assertFalse(isTrackedInspectionInputPath(mockProject.basePath, fingerprint.rootPaths, path, fingerprint.excludedRootPaths))
+        publishInspectionSnapshot(
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(11L, 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = fingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+        setInspectionRunState(key, InspectionRunState(1L, System.currentTimeMillis(), false))
+
+        val status = buildInspectionStatus()
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals(true, status["results_may_be_stale"])
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["missing", "native_run", "incomplete", "not_clean"])
+    fun `test files snapshots without complete exact proof still require live findings`(proof: String) {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        val fingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ -> fingerprint }
+        val extractor = mockk<EnhancedTreeExtractor>()
+        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
+            emptyList(), true, ProblemExtractionSource.NONE,
+        )
+        enhancedTreeExtractorFactory = { extractor }
+        setInspectionRunState(key, InspectionRunState(1L, System.currentTimeMillis(), true))
+        val diagnostic = when (proof) {
+            "missing" -> emptyMap()
+            "native_run" -> exactFilesProof(true) + ("execution_proof_mode" to "native_run")
+            "not_clean" -> exactFilesProof(false)
+            else -> exactFilesProof(true) + ("execution_proof_established" to false)
+        }
+        val snapshot = InspectionResultsSnapshot(
+            problems = emptyList(),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(10L, 0),
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
+            captureScope = publicationScope("files"),
+            captureDiagnostic = diagnostic,
+            runId = 1L,
+        )
+        publishInspectionSnapshot(
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(11L, 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = fingerprint,
+            projectContentTracker = FakeInspectionProjectContentTracker(),
+        )
+        setInspectionRunState(key, InspectionRunState(1L, System.currentTimeMillis(), false))
+        assertEquals("UNKNOWN", buildInspectionStatus()["inspection_verdict"])
+        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+    }
+
+    private fun exactFilesProof(clean: Boolean): Map<String, Any?> = mapOf(
+        "execution_proof_mode" to "exact_bounded",
+        "execution_proof_established" to true,
+        "execution_proof_clean" to clean,
+    )
+
     private fun publicationScope(scope: String) = InspectionCaptureScope(
         scopeParam = scope,
         files = if (scope == "files") listOf("src/Included.kt") else null,

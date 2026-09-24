@@ -600,8 +600,11 @@ assessment retry.
 `InspectionHandlerResultsTest` runs publication controls for whole-project and
 explicit-file scopes. Both must reconcile PSI-only churn with unchanged tracked
 inputs and matching findings, reject changed content, profiles, unavailable
-validation and publication races, and reject edits after publication. The
-clean-file control must still return GREEN. `ProjectStateCapturePlatformTest`
+validation and publication races, and reject edits after publication. Complete exact-file execution proof must preserve GREEN and actionable RED
+without an Inspection Results window. Missing, incomplete, or non-exact proof
+still requires authoritative live extraction. Explicit files outside tracked roots,
+under excluded roots, or in ignored workspace metadata cannot reconcile a PSI
+change into fresh results. `ProjectStateCapturePlatformTest`
 uses a real indexing transition to prove that the PSI counter can advance while
 file bytes and saved-document state stay unchanged.
 
