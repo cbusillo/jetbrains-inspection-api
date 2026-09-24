@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
 import com.intellij.lang.Language
@@ -263,8 +265,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertFalse(body.contains("excluded problem"))
     }
 
-    @Test
-    fun `test final publication reconciles verified psi churn without absorbing later edits`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication reconciles verified psi churn without absorbing later edits`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -317,7 +320,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -348,8 +351,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
     }
 
-    @Test
-    fun `test final publication validates unchanged psi inputs before publishing`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication validates unchanged psi inputs before publishing`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -375,7 +379,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -393,8 +397,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         }
     }
 
-    @Test
-    fun `test final publication closes tracker race before fresh publication`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication closes tracker race before fresh publication`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -419,7 +424,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -532,8 +537,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
-    @Test
-    fun `test final publication rejects input drift without psi churn`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication rejects input drift without psi churn`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -562,7 +568,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -582,8 +588,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
-    @Test
-    fun `test final publication rejects tracked file changes without psi churn`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication rejects tracked file changes without psi churn`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -603,7 +610,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -621,8 +628,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("inputs_changed", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
-    @Test
-    fun `test final publication rejects unavailable validation without psi churn`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication rejects unavailable validation without psi churn`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -638,7 +646,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -656,8 +664,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("validation_unavailable", publishedSnapshot.captureDiagnostic?.get("final_input_validation"))
     }
 
-    @Test
-    fun `test final publication keeps fail closed baseline for unsaved capture state`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication keeps fail closed baseline for unsaved capture state`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -684,7 +693,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -707,8 +716,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals("project_changed_since_inspection", completedStatus["snapshot_change_kind"])
     }
 
-    @Test
-    fun `test final publication rejects saved content changes during inspection`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication rejects saved content changes during inspection`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -744,7 +754,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -766,8 +776,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertTrue(publishedSnapshot.problems.isEmpty())
     }
 
-    @Test
-    fun `test final publication rejects project input changes during inspection`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication rejects project input changes during inspection`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -797,7 +808,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
             source = "global_context",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -813,7 +824,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @Test
-    fun `test final publication does not promote a narrow capture scope`() {
+    fun `test files clean snapshot reconciles verified psi churn`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -822,13 +833,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         val inputFingerprint = projectInputsFingerprint()
         val contentTracker = FakeInspectionProjectContentTracker()
         handler.projectInputsFingerprintProvider = { _, _ -> inputFingerprint }
-        val snapshotProblems = listOf(
-            mapOf(
-                "file" to "/tmp/TestProject/src/Included.kt",
-                "severity" to "warning",
-                "description" to "current run finding",
-            ),
-        )
+        val snapshotProblems = emptyList<Map<String, Any>>()
         mockExtractor(snapshotProblems)
         setInspectionRunState(
             key,
@@ -838,8 +843,8 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             problems = snapshotProblems,
             timestamp = System.currentTimeMillis(),
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
-            outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
-            source = "global_context",
+            outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+            source = "inspection_view",
             captureScope = InspectionCaptureScope(
                 scopeParam = "files",
                 files = listOf("src/Included.kt"),
@@ -856,11 +861,21 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectContentTracker = contentTracker,
         )
 
-        assertEquals(10L, requireNotNull(InspectionResultsStore.getSnapshot(key)).projectState.psiModificationCount)
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        val publishedSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        val status = buildInspectionStatus()
+        assertEquals(11L, publishedSnapshot.projectState.psiModificationCount)
+        assertEquals(InspectionSnapshotOutcome.CLEAN_CONFIRMED, publishedSnapshot.outcome)
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals("GREEN", status["inspection_verdict"])
     }
 
-    @Test
-    fun `test final publication requires authoritative live extraction`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["whole_project", "files"])
+    fun `test final publication requires authoritative live extraction`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)
@@ -886,7 +901,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectState = InspectionProjectStateSnapshot(psiModificationCount = 10L, unsavedProjectDocuments = 0),
             outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
             source = "inspection_view",
-            captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
+            captureScope = publicationScope(scope),
             runId = 1L,
         )
 
@@ -1741,4 +1756,10 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"client_run_id\": \"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\""), body)
         assertFalse(body.contains("boom"), body)
     }
+    private fun publicationScope(scope: String) = InspectionCaptureScope(
+        scopeParam = scope,
+        files = if (scope == "files") listOf("src/Included.kt") else null,
+        resolvedFiles = if (scope == "files") listOf("/tmp/TestProject/src/Included.kt") else null,
+    )
+
 }

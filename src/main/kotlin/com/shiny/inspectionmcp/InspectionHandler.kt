@@ -5903,6 +5903,7 @@ class InspectionHandler : HttpRequestHandler() {
         return scope == "whole_project" ||
             scope == "all" ||
             scope == "directory" ||
+            scope == "files" ||
             scope == "changed_files" ||
             scope == "current_file"
     }
