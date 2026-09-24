@@ -4,10 +4,12 @@ import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.command.WriteCommandAction
 import com.intellij.openapi.fileEditor.FileDocumentManager
+import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.testFramework.ProjectExtension
+import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -15,6 +17,26 @@ import org.junit.jupiter.api.extension.RegisterExtension
 import java.util.concurrent.TimeUnit
 
 class ProjectStateCapturePlatformTest {
+    @Test
+    fun `indexing transitions change the snapshot counter without editing project content`() {
+        val project = projectExtension.project
+        val file = createContentFile()
+        val handler = InspectionHandler()
+        DumbService.getInstance(project).waitForSmartMode()
+        val before = handler.captureProjectState(project)
+        val content = file.contentsToByteArray()
+
+        DumbModeTestUtils.runInDumbModeSynchronously(project) {
+            assertThat(handler.captureProjectState(project).psiModificationCount)
+                .isGreaterThan(before.psiModificationCount)
+        }
+
+        val after = handler.captureProjectState(project)
+        assertThat(after.psiModificationCount).isGreaterThan(before.psiModificationCount)
+        assertThat(after.unsavedProjectDocuments).isZero()
+        assertThat(file.contentsToByteArray()).isEqualTo(content)
+    }
+
     @Test
     fun `unsaved project documents are counted from a background thread without read access`() {
         val project = projectExtension.project

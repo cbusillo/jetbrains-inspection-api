@@ -594,3 +594,27 @@ proof diagnostic records their count and first tool and file. If writes exhaust
 the budget, `exact_proof_deadline` remains the terminal failure. Neither this
 deadline nor an escaped `exact_proof_write_preempted` authorizes an outer
 assessment retry.
+
+### Files-scope snapshot freshness
+
+`InspectionHandlerResultsTest` runs publication controls for whole-project and
+explicit-file scopes. Both must reconcile PSI-only churn with unchanged tracked
+inputs and matching findings, reject changed content, profiles, unavailable
+validation and publication races, and reject edits after publication. Complete exact-file execution proof must preserve GREEN and actionable RED
+without an Inspection Results window. Missing, incomplete, or non-exact proof
+still requires authoritative live extraction. A real dumb-mode fixture and the
+publication controls also reject proof-backed reconciliation when indexing
+overlapped native analysis or exact proof; indexing after completed smart-mode proof can be
+reconciled after input validation. Explicit files outside tracked roots,
+under excluded roots, or in ignored workspace metadata cannot reconcile a PSI
+change into fresh results. `ProjectStateCapturePlatformTest`
+uses a real indexing transition to prove that the PSI counter can advance while
+file bytes and saved-document state stay unchanged.
+
+Live Odoo acceptance uses two prepared CM website worktrees sharing the same
+pinned core sources. Open each through the inspection helper, start exact-file
+runs with `start-inspection` in both projects before waiting, and retain both
+run identities, input-validation diagnostics, Odoo findings, and lease-bound
+cleanup. A deliberately invalid Odoo reference must return actionable RED;
+restoring it must return GREEN. Preserve the original UNKNOWN evidence and do
+not attribute a PSI tick to a writer without independent evidence.

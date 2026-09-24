@@ -5647,6 +5647,7 @@ class InspectionHandler : HttpRequestHandler() {
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
         val canAttemptReconciliation = projectStateChangedDuringCapture &&
             stableInputValidationScope &&
+            filesCaptureInputsTracked(project, snapshot.captureScope, inspectionInputFingerprint) &&
             captureEndState.unsavedProjectDocuments == 0 &&
             hasInputValidation
         val requiresStableInputValidation = stableInputValidationScope && !projectStateChangedDuringCapture
@@ -5682,7 +5683,7 @@ class InspectionHandler : HttpRequestHandler() {
                     scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    if (isExactEmptyChangedFilesSnapshot(snapshot)) {
+                    if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
                         CurrentRunPsiChurnReconciliation(snapshot, true)
                     } else {
                         reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
@@ -5719,7 +5720,7 @@ class InspectionHandler : HttpRequestHandler() {
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(
                     "Inspection snapshot validation for ${project.name}: " +
-                        "liveFindingsMatched=${reconciliation.reconciled}, " +
+                        "resultEvidenceMatched=${reconciliation.reconciled}, " +
                         "contentChangedBefore=$contentChangedBeforeVerification, " +
                         "contentChangedAfter=$contentChangedAfterVerification, " +
                         "stateStableBefore=$stateStableBeforeVerification, " +
@@ -5735,7 +5736,9 @@ class InspectionHandler : HttpRequestHandler() {
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
                         projectState = captureEndState,
-                        reconciliationChangeKind = if (isChangedFilesCaptureScope(snapshot.captureScope)) {
+                        reconciliationChangeKind = if (
+                            isChangedFilesCaptureScope(snapshot.captureScope) || isFilesCaptureScope(snapshot.captureScope)
+                        ) {
                             CaptureIncompleteReason.CURRENT_RUN_PSI_CHURN.apiValue
                         } else {
                             snapshot.reconciliationChangeKind
@@ -5898,11 +5901,41 @@ class InspectionHandler : HttpRequestHandler() {
         return captureScope?.scopeParam?.trim()?.lowercase() == "changed_files"
     }
 
+    private fun isFilesCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
+        return captureScope?.scopeParam?.trim()?.lowercase() == "files"
+    }
+
+    private fun filesCaptureInputsTracked(
+        project: Project,
+        captureScope: InspectionCaptureScope?,
+        fingerprint: InspectionProjectInputsFingerprint?,
+    ): Boolean {
+        if (!isFilesCaptureScope(captureScope)) return true
+        val files = captureScope?.resolvedFiles?.takeIf { it.isNotEmpty() } ?: return false
+        val inputs = fingerprint ?: return false
+        return files.all { path ->
+            isTrackedInspectionInputPath(project.basePath, inputs.rootPaths, path, inputs.excludedRootPaths)
+        }
+    }
+
+    private fun hasCompleteFilesExecutionProof(snapshot: InspectionResultsSnapshot): Boolean {
+        if (!isFilesCaptureScope(snapshot.captureScope)) return false
+        if (snapshot.outcome !in setOf(InspectionSnapshotOutcome.CLEAN_CONFIRMED, InspectionSnapshotOutcome.PROBLEMS_FOUND)) {
+            return false
+        }
+        val diagnostic = snapshot.captureDiagnostic ?: return false
+        return diagnostic["execution_proof_mode"] == "exact_bounded" &&
+            diagnostic["execution_proof_established"] == true &&
+            diagnostic["execution_proof_smart_mode_stable"] == true &&
+            (snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED || diagnostic["execution_proof_clean"] == true)
+    }
+
     private fun supportsStableInputValidation(captureScope: InspectionCaptureScope?): Boolean {
         val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
         return scope == "whole_project" ||
             scope == "all" ||
             scope == "directory" ||
+            scope == "files" ||
             scope == "changed_files" ||
             scope == "current_file"
     }
@@ -6878,6 +6911,9 @@ class InspectionHandler : HttpRequestHandler() {
                 requestedProfileName = requestedProfileName,
             )
             val executionProofMode = inspectionExecutionProofMode(effectiveCaptureScope.scopeParam)
+            val analysisDumbModeCount = ApplicationManager.getApplication().runReadAction<Long, Exception> {
+                DumbService.getInstance(project).modificationTracker.modificationCount
+            }
 
             transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_CONFIGURE)
             @Suppress("USELESS_CAST")
@@ -7024,6 +7060,7 @@ class InspectionHandler : HttpRequestHandler() {
                                             profile,
                                             project,
                                             capturedScopeFiles,
+                                            analysisDumbModeCount = analysisDumbModeCount,
                                             failureObserver = { source, context ->
                                                 recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
                                             },
@@ -9873,6 +9910,7 @@ class InspectionHandler : HttpRequestHandler() {
         proof ?: return emptyMap()
         return mapOf(
             "execution_proof_mode" to "exact_bounded",
+            "execution_proof_smart_mode_stable" to proof.smartModeStable,
             "execution_proof_enabled_local_tool_count" to proof.enabledLocalToolCount,
             "execution_proof_executed_tool_count" to proof.executedToolCount,
             "execution_proof_descriptor_count" to proof.totalDescriptorCount,
@@ -10060,6 +10098,7 @@ class InspectionHandler : HttpRequestHandler() {
         profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
+        analysisDumbModeCount: Long,
         failureObserver: (InspectionRunFailureSource, ExactProofFailureContext) -> Unit = { _, _ -> },
         cancellationCheck: () -> Unit,
     ): BoundedExecutionProofResult {
@@ -10072,6 +10111,8 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         val proofStartNanos = System.nanoTime()
+        val dumbService = DumbService.getInstance(project)
+        val proofStartedInDumbMode = app.runReadAction<Boolean, Exception> { dumbService.isDumb }
         val writePreemptionCount = AtomicInteger()
         val firstWritePreemption = AtomicReference<Map<String, String>?>()
         val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
@@ -10416,6 +10457,10 @@ class InspectionHandler : HttpRequestHandler() {
         val proofWithWriteContention = proof.copy(
             writePreemptionCount = writePreemptionCount.get(),
             firstWritePreemption = firstWritePreemption.get(),
+            smartModeStable = app.runReadAction<Boolean, Exception> {
+                !proofStartedInDumbMode && !dumbService.isDumb &&
+                    analysisDumbModeCount == dumbService.modificationTracker.modificationCount
+            },
         )
         return if (enabledTools.errorExamples.isEmpty()) {
             proofWithWriteContention

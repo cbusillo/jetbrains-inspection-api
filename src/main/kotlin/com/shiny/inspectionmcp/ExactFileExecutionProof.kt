@@ -121,6 +121,7 @@ internal data class BoundedExecutionProofResult(
     val blockingExamples: List<Map<String, Any?>> = emptyList(),
     val nonBatchExamples: List<Map<String, Any?>> = emptyList(),
     val nonApplicableExamples: List<Map<String, Any?>> = emptyList(),
+    val smartModeStable: Boolean = false,
 ) {
     val proofEstablished: Boolean
         get() = skippedReason == null &&
