@@ -1149,6 +1149,180 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         }
     }
 
+    private fun quiescenceObservation(
+        dumb: Boolean = false,
+        psiModificationCount: Long = 10L,
+        projectFileEventCount: Long = 0L,
+    ) = ProjectQuiescenceObservation(
+        dumb = dumb,
+        projectState = InspectionProjectStateSnapshot(psiModificationCount, unsavedProjectDocuments = 0),
+        projectFileEventCount = projectFileEventCount,
+    )
+
+    @Test
+    fun `test project quiescence returns after one stable window when project is already quiet`() {
+        var clock = 0L
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation() },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.attempted)
+        assertFalse(evidence.timedOut)
+        assertEquals(300, evidence.waitedMs)
+        assertEquals(0, evidence.projectStateChangeCount)
+        assertFalse(evidence.dumbModeObserved)
+        assertFalse(evidence.projectFileEventsObserved)
+    }
+
+    @Test
+    fun `test project quiescence restarts stable window after post open churn`() {
+        var clock = 0L
+        val observations = ArrayDeque(
+            listOf(
+                quiescenceObservation(),
+                quiescenceObservation(dumb = true),
+                quiescenceObservation(psiModificationCount = 11L),
+                quiescenceObservation(psiModificationCount = 11L, projectFileEventCount = 1L),
+            ),
+        )
+        val settled = quiescenceObservation(psiModificationCount = 11L, projectFileEventCount = 1L)
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { observations.removeFirstOrNull() ?: settled },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertFalse(evidence.timedOut)
+        assertEquals(600, evidence.waitedMs)
+        assertTrue(evidence.dumbModeObserved)
+        assertTrue(evidence.projectFileEventsObserved)
+        assertEquals(1, evidence.projectStateChangeCount)
+    }
+
+    @Test
+    fun `test project quiescence waits a full stable window after indexing ends`() {
+        var clock = 0L
+        val observations = ArrayDeque(List(5) { quiescenceObservation(dumb = true) })
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { observations.removeFirstOrNull() ?: quiescenceObservation() },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.dumbModeObserved)
+        assertFalse(evidence.timedOut)
+        assertEquals(700, evidence.waitedMs)
+    }
+
+    @Test
+    fun `test project quiescence is bounded when project never settles`() {
+        var clock = 0L
+        var psiModificationCount = 0L
+
+        var polls = 0
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation(psiModificationCount = psiModificationCount++) },
+            checkCanceled = { check(++polls < 1_000) { "the wait never reached its upper bound" } },
+            stableMs = 300,
+            timeoutMs = 1_000,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.timedOut)
+        assertEquals(1_000, evidence.waitedMs)
+        assertEquals(true, evidence.diagnosticMap()["project_quiescence_timed_out"])
+    }
+
+    @Test
+    fun `test project quiescence reports dumb mode that outlasts the bound`() {
+        var clock = 0L
+        var polls = 0
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { quiescenceObservation(dumb = true) },
+            checkCanceled = { check(++polls < 1_000) { "the wait never reached its upper bound" } },
+            stableMs = 300,
+            timeoutMs = 100,
+            pollMs = 100,
+        )
+
+        assertTrue(evidence.timedOut)
+        assertTrue(evidence.dumbModeObserved)
+        assertEquals(300, evidence.waitedMs)
+    }
+
+    @Test
+    fun `test project quiescence propagates cancellation and is skipped when disabled`() {
+        assertThrows(com.intellij.openapi.progress.ProcessCanceledException::class.java) {
+            awaitProjectQuiescence(
+                now = { 0L },
+                sleep = {},
+                observe = { quiescenceObservation() },
+                checkCanceled = { throw com.intellij.openapi.progress.ProcessCanceledException() },
+                stableMs = 300,
+            )
+        }
+
+        val disabled = awaitProjectQuiescence(
+            now = { 0L },
+            sleep = { error("Disabled quiescence must not sleep.") },
+            observe = { error("Disabled quiescence must not observe.") },
+            checkCanceled = {},
+            stableMs = 0,
+        )
+        assertFalse(disabled.attempted)
+    }
+
+    @Test
+    fun `test inspection inputs are captured only after post-open project churn settles`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockProfileManager.profiles } returns emptyList()
+        every { mockProfileManager.getProfile("RedLane", false) } returns null
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val churnStartedMs = handler.currentTimeMs()
+        val settledModificationCount = 5_000L
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers {
+            val elapsedMs = handler.currentTimeMs() - churnStartedMs
+            if (elapsedMs < 1_500) elapsedMs else settledModificationCount
+        }
+
+        processTriggerRequest("/api/inspection/trigger?profile=RedLane")
+
+        assertEquals("profile_resolution_error", buildInspectionStatus()["capture_incomplete_reason"])
+        assertEquals(
+            settledModificationCount,
+            InspectionResultsStore.getProjectState(projectKey(mockProject))?.psiModificationCount,
+        )
+    }
+
     @Test
     fun `test explicit missing inspection profile publishes capture incomplete snapshot`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
