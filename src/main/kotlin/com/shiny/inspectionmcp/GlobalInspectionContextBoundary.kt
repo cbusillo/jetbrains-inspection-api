@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.analysis.AnalysisScope
 import com.intellij.codeInspection.GlobalInspectionContext
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.InspectListener
@@ -11,12 +12,12 @@ import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.NotNullLazyValue
 import com.intellij.psi.PsiFile
-import com.intellij.ui.content.ContentManager
+import com.intellij.ui.content.ContentFactory
 
 @Suppress("UnstableApiUsage")
 internal class GlobalInspectionContextBoundary private constructor(
     private val inspectionManager: InspectionManagerEx,
-    private val context: GlobalInspectionContextImpl,
+    private val context: GlobalInspectionContextEx,
 ) {
     fun configure(profile: InspectionProfileImpl, scope: AnalysisScope) {
         context.setExternalProfile(profile)
@@ -55,7 +56,6 @@ internal class GlobalInspectionContextBoundary private constructor(
         fun create(inspectionManager: InspectionManagerEx): GlobalInspectionContextBoundary {
             val context = NativeAttestedGlobalInspectionContext(
                 inspectionManager.project,
-                inspectionManager.contentManager,
                 null,
             )
             inspectionManager.runningContexts.add(context)
@@ -65,7 +65,7 @@ internal class GlobalInspectionContextBoundary private constructor(
 
         fun createForExactFile(inspectionManager: InspectionManagerEx): GlobalInspectionContextBoundary {
             val context = synchronized(inspectionManager) {
-                inspectionManager.createNewGlobalContext()
+                (inspectionManager as InspectionManager).createNewGlobalContext() as GlobalInspectionContextEx
             }
             return GlobalInspectionContextBoundary(inspectionManager, context)
         }
@@ -75,7 +75,7 @@ internal class GlobalInspectionContextBoundary private constructor(
             project: Project,
             collector: NativeInspectionExecutionProofCollector,
         ): GlobalInspectionContextBoundary {
-            val context = NativeAttestedGlobalInspectionContext(project, inspectionManager.contentManager, collector)
+            val context = NativeAttestedGlobalInspectionContext(project, collector)
             inspectionManager.runningContexts.add(context)
             context.openSynchronousFileTraversalGate()
             return GlobalInspectionContextBoundary(inspectionManager, context)
@@ -86,9 +86,11 @@ internal class GlobalInspectionContextBoundary private constructor(
 @Suppress("UnstableApiUsage")
 private class NativeAttestedGlobalInspectionContext(
     project: Project,
-    contentManager: NotNullLazyValue<out ContentManager>,
     collector: NativeInspectionExecutionProofCollector?,
-) : GlobalInspectionContextImpl(project, contentManager) {
+) : GlobalInspectionContextImpl(
+    project,
+    NotNullLazyValue.createValue { ContentFactory.getInstance().createContentManager(true, project) },
+) {
     private val platformPublisher = project.messageBus.syncPublisher(GlobalInspectionContextEx.INSPECT_TOPIC)
     private val attestedPublisher = object : InspectListener {
         override fun fileAnalyzed(file: PsiFile, eventProject: Project) {
@@ -115,16 +117,6 @@ private class NativeAttestedGlobalInspectionContext(
                 eventProject,
             )
             collector?.recordExactInspectionFinished(problemCount, toolWrapper, inspectionKind, eventProject)
-        }
-
-        override fun activityFinished(
-            durationMillis: Long,
-            threadId: Long,
-            activityKind: String,
-            eventProject: Project,
-        ) {
-            platformPublisher.activityFinished(durationMillis, threadId, activityKind, eventProject)
-            collector?.recordExactActivityFinished(eventProject)
         }
 
         override fun inspectionFailed(

@@ -16,11 +16,6 @@ internal data class NativeInspectionExecutionProofResult(
     val missingExpectedFileCount: Int,
     val unexpectedAnalyzedFileCount: Int,
     val inspectionFinishedCount: Int,
-    val localInspectionFinishedCount: Int,
-    val globalSimpleInspectionFinishedCount: Int,
-    val globalInspectionFinishedCount: Int,
-    val otherInspectionFinishedCount: Int,
-    val activityFinishedCount: Int,
     val inspectionFailureCount: Int,
     val reportedProblemCount: Int,
     val completedToolCount: Int,
@@ -69,11 +64,6 @@ internal class NativeInspectionExecutionProofCollector(
     private val completedNormally = AtomicBoolean(false)
     private val fileAnalyzedCount = AtomicInteger()
     private val inspectionFinishedCount = AtomicInteger()
-    private val localInspectionFinishedCount = AtomicInteger()
-    private val globalSimpleInspectionFinishedCount = AtomicInteger()
-    private val globalInspectionFinishedCount = AtomicInteger()
-    private val otherInspectionFinishedCount = AtomicInteger()
-    private val activityFinishedCount = AtomicInteger()
     private val inspectionFailureCount = AtomicInteger()
     private val reportedProblemCount = AtomicInteger()
     private val analyzedFiles = ConcurrentHashMap.newKeySet<String>()
@@ -82,15 +72,12 @@ internal class NativeInspectionExecutionProofCollector(
     @Volatile
     private var skippedReason: String? = null
 
-    override fun fileAnalyzed(file: PsiFile, eventProject: Project) = Unit
-
     fun recordExactFileAnalyzed(file: PsiFile, eventProject: Project) {
         if (eventProject !== project) return
         fileAnalyzedCount.incrementAndGet()
         runCatching { file.virtualFile?.path }.getOrNull()?.let(analyzedFiles::add)
     }
 
-    @Suppress("REDUNDANT_ELSE_IN_WHEN")
     override fun inspectionFinished(
         durationMillis: Long,
         threadId: Long,
@@ -109,10 +96,9 @@ internal class NativeInspectionExecutionProofCollector(
         }
         val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
         if (filePath !in expectedFiles) return
-        recordInspectionFinished(problemCount, toolWrapper, inspectionKind)
+        recordInspectionFinished(problemCount, toolWrapper)
     }
 
-    @Suppress("REDUNDANT_ELSE_IN_WHEN")
     fun recordExactInspectionFinished(
         problemCount: Int,
         toolWrapper: InspectionToolWrapper<*, *>,
@@ -126,37 +112,16 @@ internal class NativeInspectionExecutionProofCollector(
         ) {
             return
         }
-        recordInspectionFinished(problemCount, toolWrapper, inspectionKind)
+        recordInspectionFinished(problemCount, toolWrapper)
     }
 
-    @Suppress("REDUNDANT_ELSE_IN_WHEN")
     private fun recordInspectionFinished(
         problemCount: Int,
         toolWrapper: InspectionToolWrapper<*, *>,
-        inspectionKind: InspectListener.InspectionKind,
     ) {
         inspectionFinishedCount.incrementAndGet()
         reportedProblemCount.addAndGet(problemCount.coerceAtLeast(0))
         runCatching { toolWrapper.shortName }.getOrNull()?.let(completedTools::add)
-        when (inspectionKind) {
-            InspectListener.InspectionKind.LOCAL,
-            InspectListener.InspectionKind.LOCAL_PRIORITY,
-            -> localInspectionFinishedCount.incrementAndGet()
-            InspectListener.InspectionKind.GLOBAL_SIMPLE -> globalSimpleInspectionFinishedCount.incrementAndGet()
-            InspectListener.InspectionKind.GLOBAL -> globalInspectionFinishedCount.incrementAndGet()
-            else -> otherInspectionFinishedCount.incrementAndGet()
-        }
-    }
-
-    override fun activityFinished(
-        durationMillis: Long,
-        threadId: Long,
-        activityKind: String,
-        eventProject: Project,
-    ) = Unit
-
-    fun recordExactActivityFinished(eventProject: Project) {
-        if (eventProject === project) activityFinishedCount.incrementAndGet()
     }
 
     override fun inspectionFailed(
@@ -186,11 +151,6 @@ internal class NativeInspectionExecutionProofCollector(
         missingExpectedFileCount = (expectedFiles - analyzedFiles).size,
         unexpectedAnalyzedFileCount = (analyzedFiles - expectedFiles).size,
         inspectionFinishedCount = inspectionFinishedCount.get(),
-        localInspectionFinishedCount = localInspectionFinishedCount.get(),
-        globalSimpleInspectionFinishedCount = globalSimpleInspectionFinishedCount.get(),
-        globalInspectionFinishedCount = globalInspectionFinishedCount.get(),
-        otherInspectionFinishedCount = otherInspectionFinishedCount.get(),
-        activityFinishedCount = activityFinishedCount.get(),
         inspectionFailureCount = inspectionFailureCount.get(),
         reportedProblemCount = reportedProblemCount.get(),
         completedToolCount = completedTools.size,

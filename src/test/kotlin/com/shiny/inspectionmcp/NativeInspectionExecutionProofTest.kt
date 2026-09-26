@@ -68,7 +68,7 @@ class NativeInspectionExecutionProofTest {
         val result = collector.result()
         assertFalse(result.proofEstablished)
         assertFalse(result.proofClean)
-        assertEquals(1, result.globalInspectionFinishedCount)
+        assertEquals(1, result.inspectionFinishedCount)
         assertEquals("native_inspection_scope_incomplete", result.proofBlockReason)
     }
 
@@ -83,7 +83,7 @@ class NativeInspectionExecutionProofTest {
         val result = collector.result()
         assertTrue(result.proofEstablished)
         assertTrue(result.proofClean)
-        assertEquals(1, result.globalSimpleInspectionFinishedCount)
+        assertEquals(1, result.inspectionFinishedCount)
     }
 
     @Test
@@ -214,12 +214,34 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath, secondPath))
 
         collector.recordExactFileAnalyzed(file, project)
+        collector.inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
         collector.markCompletedNormally()
 
         val result = collector.result()
         assertFalse(result.proofEstablished)
+        assertFalse(result.proofClean)
         assertEquals(1, result.missingExpectedFileCount)
         assertEquals("native_inspection_scope_incomplete", result.proofBlockReason)
+    }
+
+    @Test
+    fun `unexpected file traversal keeps an otherwise complete run unproven`() {
+        val unexpectedFile = mockk<PsiFile> {
+            every { virtualFile } returns mockk<VirtualFile> {
+                every { path } returns "/tmp/TestProject/outside.txt"
+            }
+        }
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
+
+        collector.recordExactFileAnalyzed(file, project)
+        collector.recordExactFileAnalyzed(unexpectedFile, project)
+        collector.inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
+        collector.markCompletedNormally()
+
+        val result = collector.result()
+        assertFalse(result.proofEstablished)
+        assertFalse(result.proofClean)
+        assertEquals("native_inspection_scope_mismatch", result.proofBlockReason)
     }
 
     @Test
