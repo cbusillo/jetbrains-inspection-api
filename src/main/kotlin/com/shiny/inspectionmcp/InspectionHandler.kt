@@ -7083,6 +7083,13 @@ class InspectionHandler : HttpRequestHandler() {
                     .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
                 nativeProofConnection = null
             }
+            nativeProofCollector?.completionObservation?.observeCandidates { observation ->
+                runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
+                    observeNativeInspectionCandidates(
+                        observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
+                    )
+                }
+            }
             ProgressManager.checkCanceled()
 
             try {
@@ -7466,6 +7473,10 @@ class InspectionHandler : HttpRequestHandler() {
                         // Fix 7: Always include proof diagnostics; keep polling exit reason separate
                         val proofDiagnostic = buildProofDiagnostic(boundedProof) +
                             buildNativeProofDiagnostic(nativeProof) +
+                            (nativeProofCollector?.completionObservation?.let {
+                                mapOf("native_tool_completion_observation" to
+                                    (it.diagnostic() + ("inspection_run_id" to runId)))
+                            } ?: emptyMap()) +
                             mapOf(
                                 "execution_proof_mapped_finding_count" to scopedProofFindingCount,
                             ) + sourceComparisonDiagnostic
