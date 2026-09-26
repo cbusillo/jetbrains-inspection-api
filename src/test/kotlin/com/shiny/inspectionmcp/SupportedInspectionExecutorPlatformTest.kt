@@ -12,6 +12,7 @@ import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.GlobalInspectionContextBase
+import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
@@ -63,6 +64,44 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 class SupportedInspectionExecutorPlatformTest {
+    @Test
+    fun `completion observation excludes other languages but retains silent visitors as candidates`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val clean = CleanInspection()
+        val otherLanguage = JavaOnlyInspection()
+        val silent = EmptyVisitorInspection()
+        val profile = profileWith(clean, otherLanguage, silent)
+        listOf(clean, otherLanguage, silent).forEach { profile.setToolEnabled(it.shortName, true, project) }
+        val groups = profile.getAllEnabledInspectionTools(project)
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(file.virtualFile.path))
+        val connection = project.messageBus.connect()
+        connection.subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, collector)
+        resetVisits(clean)
+        try {
+            ReadAction.run<RuntimeException> {
+                SupportedInspectionExecutor().execute(
+                    AnalysisScope(file), groups.map { it.tool as LocalInspectionToolWrapper }, EmptyProgressIndicator(),
+                )
+                val visitsBeforeObservation = visitCount(clean)
+                collector.completionObservation.observeCandidates {
+                    observeNativeInspectionCandidates(it, groups, listOf(file), project, false)
+                }
+                assertThat(visitCount(clean)).isEqualTo(visitsBeforeObservation)
+                assertThat(visitsBeforeObservation).isEqualTo(1)
+            }
+            val diagnostic = collector.completionObservation.diagnostic()
+            assertThat(diagnostic["enumeration_complete"]).describedAs(diagnostic.toString()).isEqualTo(true)
+            assertThat(diagnostic["missing_examples"]).isEqualTo(
+                listOf(mapOf("tool" to silent.shortName, "file" to file.virtualFile.path)),
+            )
+            assertThat(diagnostic["exclusions"]).isEqualTo(mapOf("language_not_applicable" to 1))
+            assertThat(diagnostic["candidate_rule_would_block_clean"]).isEqualTo(true)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     @Test
     fun `proof cannot qualify PSI reconciliation while indexing`() {
         val project = projectExtension.project
@@ -1085,6 +1124,14 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     private class CleanInspection : RecordingInspection()
+
+    private class EmptyVisitorInspection : RecordingInspection() {
+        override fun buildVisitor(
+            holder: ProblemsHolder,
+            isOnTheFly: Boolean,
+            session: LocalInspectionToolSession,
+        ): PsiElementVisitor = PsiElementVisitor.EMPTY_VISITOR
+    }
 
     private class CancellingInspection : RecordingInspection() {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {

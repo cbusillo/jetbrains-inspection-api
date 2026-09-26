@@ -116,6 +116,7 @@ private class NativeAttestedGlobalInspectionContext(
                 file,
                 eventProject,
             )
+            collector?.observeExactToolCompletion(problemCount, toolWrapper, file, eventProject)
             collector?.recordExactInspectionFinished(problemCount, toolWrapper, inspectionKind, eventProject)
         }
 

@@ -60,6 +60,7 @@ internal class NativeInspectionExecutionProofCollector(
     private val project: Project,
     expectedFilePaths: Set<String>,
 ) : InspectListener {
+    val completionObservation = NativeInspectionCompletionObservation()
     private val expectedFiles = expectedFilePaths.toSet()
     private val completedNormally = AtomicBoolean(false)
     private val fileAnalyzedCount = AtomicInteger()
@@ -67,6 +68,7 @@ internal class NativeInspectionExecutionProofCollector(
     private val inspectionFailureCount = AtomicInteger()
     private val reportedProblemCount = AtomicInteger()
     private val analyzedFiles = ConcurrentHashMap.newKeySet<String>()
+    private val analyzedPsiFiles = ConcurrentHashMap<String, PsiFile>()
     private val completedTools = ConcurrentHashMap.newKeySet<String>()
     private val failedTools = ConcurrentHashMap.newKeySet<String>()
     @Volatile
@@ -75,7 +77,15 @@ internal class NativeInspectionExecutionProofCollector(
     fun recordExactFileAnalyzed(file: PsiFile, eventProject: Project) {
         if (eventProject !== project) return
         fileAnalyzedCount.incrementAndGet()
-        runCatching { file.virtualFile?.path }.getOrNull()?.let(analyzedFiles::add)
+        runCatching { file.virtualFile?.path }.getOrNull()?.let { path ->
+            analyzedFiles.add(path)
+            if (path in expectedFiles) analyzedPsiFiles[path] = file
+        }
+    }
+
+    fun observedScopeFiles(): List<PsiFile> {
+        check(analyzedPsiFiles.keys == expectedFiles) { "native_scope_traversal_incomplete" }
+        return analyzedPsiFiles.values.toList()
     }
 
     override fun inspectionFinished(
@@ -96,7 +106,20 @@ internal class NativeInspectionExecutionProofCollector(
         }
         val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
         if (filePath !in expectedFiles) return
+        completionObservation.recordCompletion(problemCount, toolWrapper, filePath)
         recordInspectionFinished(problemCount, toolWrapper)
+    }
+
+    fun observeExactToolCompletion(
+        problemCount: Int,
+        toolWrapper: InspectionToolWrapper<*, *>,
+        file: PsiFile?,
+        eventProject: Project,
+    ) {
+        if (eventProject !== project) return
+        val filePath = runCatching { file?.virtualFile?.path }.getOrNull()
+        if (file != null && filePath !in expectedFiles) return
+        completionObservation.recordCompletion(problemCount, toolWrapper, filePath)
     }
 
     fun recordExactInspectionFinished(
