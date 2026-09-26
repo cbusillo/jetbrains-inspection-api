@@ -288,6 +288,14 @@ The #296 evidence suite drives the real bounded adapter with a synthetic non-def
 
 Broad native execution no longer initializes or polls `InspectionResultsView`. Direct presentation descriptors remain the primary broad-scope model. Exact bounded execution proof can independently confirm an empty result after every applicable tool/file obligation completes, including in a fresh IDE session where no Inspection Results or Problems surface has been created; an unreadable model or a model with unmapped descriptors still remains `UNKNOWN`, and native broad-scope proof still requires a readable empty model. Stable successful tool-window extraction remains an alternate empty-result observation when available. Missing proof or incomplete semantic scope coverage remains `UNKNOWN`. The generic Problems/inspection tool-window fallback stays available, but the capture path no longer depends on `GlobalInspectionContextImpl.getView()` or `initializeViewIfNeeded()`.
 
+`NativeInspectionExecutionProofTest` checks that missing and unexpected files,
+missing completion events, and inspection failures prevent clean proof even
+when the remaining evidence is complete. Validate these controls with planted
+faults in event collection and the file-set guards. Native file events remain
+necessary: public path profiling skips out-of-scope files before recording a
+path and cannot preserve the unexpected-file check. Activity and per-kind
+completion counters are diagnostics only and are no longer collected.
+
 Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which copies maintained fixtures outside the plugin checkout; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
 Run the focused regression suite:
@@ -447,7 +455,7 @@ All production `GlobalInspectionContextImpl` source references must stay in
 `GlobalInspectionContextBoundary.kt` (including its private attested subclass),
 and the release-contract suite rejects source or Stable allowlist references
 that escape that named boundary. The boundary exists only for synchronous native
-execution, direct presentation access, lifecycle cleanup, and per-kind
+execution, direct presentation access, lifecycle cleanup, and native
 attestation that the supported bounded `inspectEx` path cannot provide.
 
 When an intentional Stable implementation change alters verifier findings,
