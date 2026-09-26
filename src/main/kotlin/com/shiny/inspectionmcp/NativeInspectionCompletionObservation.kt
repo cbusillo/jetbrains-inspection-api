@@ -52,12 +52,16 @@ internal class NativeInspectionCompletionObservation {
             enumerate(this)
             enumerationCompleted = true
         } catch (error: Throwable) {
-            unavailableReason = if (error is ObservationLimit) error.message else error.javaClass.simpleName
+            unavailableReason = when (error) {
+                is NativeInspectionObservationUnavailable -> error.message
+                is ExactFileProofWritePreemptedException -> "observation_write_preempted"
+                else -> error.javaClass.simpleName
+            }
         }
     }
 
     fun candidate(wrapper: InspectionToolWrapper<*, *>, filePath: String?) {
-        if (candidates.size >= MAX_EXECUTIONS) throw ObservationLimit("candidate_limit")
+        if (candidates.size >= MAX_EXECUTIONS) throw NativeInspectionObservationUnavailable("candidate_limit")
         candidates += NativeInspectionToolExecution(wrapper, filePath)
     }
 
@@ -110,7 +114,7 @@ internal class NativeInspectionCompletionObservation {
     }
 }
 
-private class ObservationLimit(reason: String) : RuntimeException(reason)
+internal class NativeInspectionObservationUnavailable(reason: String) : RuntimeException(reason)
 
 internal fun observeNativeInspectionCandidates(
     observation: NativeInspectionCompletionObservation,
@@ -123,8 +127,8 @@ internal fun observeNativeInspectionCandidates(
     var elementCount = 0
     fun checkBudget() {
         ProgressManager.checkCanceled()
-        if (System.nanoTime() >= deadline) throw ObservationLimit("enumeration_time_limit")
-        if (elementCount > 200_000) throw ObservationLimit("psi_element_limit")
+        if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("enumeration_time_limit")
+        if (elementCount > 200_000) throw NativeInspectionObservationUnavailable("psi_element_limit")
     }
     val perFileGroups = toolGroups.filter { group ->
         checkBudget()
@@ -139,12 +143,12 @@ internal fun observeNativeInspectionCandidates(
                 }
                 false
             }
-            else -> throw ObservationLimit("unsupported_tool_kind")
+            else -> throw NativeInspectionObservationUnavailable("unsupported_tool_kind")
         }
     }
     for (file in files) {
         checkBudget()
-        val filePath = file.virtualFile?.path ?: throw ObservationLimit("scope_file_unavailable")
+        val filePath = file.virtualFile?.path ?: throw NativeInspectionObservationUnavailable("scope_file_unavailable")
         val languages = linkedMapOf<Language, PsiElement>()
         file.viewProvider.allFiles.forEach { root ->
             root.accept(object : PsiRecursiveElementWalkingVisitor() {

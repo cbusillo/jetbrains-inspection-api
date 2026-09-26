@@ -84,7 +84,9 @@ internal class NativeInspectionExecutionProofCollector(
     }
 
     fun observedScopeFiles(): List<PsiFile> {
-        check(analyzedPsiFiles.keys == expectedFiles) { "native_scope_traversal_incomplete" }
+        if (analyzedPsiFiles.keys != expectedFiles) {
+            throw NativeInspectionObservationUnavailable("native_scope_traversal_incomplete")
+        }
         return analyzedPsiFiles.values.toList()
     }
 

@@ -73,4 +73,15 @@ class NativeInspectionCompletionObservationTest {
         assertThat(diagnostic["candidate_rule_would_block_clean"]).isNull()
         assertThat(diagnostic["unavailable_reason"]).isEqualTo(IllegalStateException::class.java.simpleName)
     }
+
+    @Test
+    fun `incomplete file traversal and write preemption have distinct diagnostic reasons`() {
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(path))
+        collector.completionObservation.observeCandidates { collector.observedScopeFiles() }
+        assertThat(collector.completionObservation.diagnostic()["unavailable_reason"]).isEqualTo("native_scope_traversal_incomplete")
+        val observation = NativeInspectionCompletionObservation()
+        observation.observeCandidates { throw ExactFileProofWritePreemptedException() }
+        assertThat(observation.diagnostic()["unavailable_reason"]).isEqualTo("observation_write_preempted")
+        assertThat(observation.diagnostic()["candidate_rule_would_block_clean"]).isNull()
+    }
 }

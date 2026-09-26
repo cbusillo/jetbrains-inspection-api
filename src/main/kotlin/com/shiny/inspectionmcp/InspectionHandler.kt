@@ -7084,7 +7084,7 @@ class InspectionHandler : HttpRequestHandler() {
                 nativeProofConnection = null
             }
             nativeProofCollector?.completionObservation?.observeCandidates { observation ->
-                ApplicationManager.getApplication().runReadAction {
+                runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
                     observeNativeInspectionCandidates(
                         observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
                     )
