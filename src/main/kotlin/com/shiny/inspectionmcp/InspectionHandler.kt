@@ -5714,7 +5714,14 @@ class InspectionHandler : HttpRequestHandler() {
         ) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
-        val liveProblems = liveExtraction.problems
+        return reconcileCurrentRunProblems(project, snapshot, liveExtraction.problems)
+    }
+
+    private fun reconcileCurrentRunProblems(
+        project: Project,
+        snapshot: InspectionResultsSnapshot,
+        liveProblems: List<Map<String, Any>>,
+    ): CurrentRunPsiChurnReconciliation {
         val captureScopeMatcher = snapshot.captureScope?.let { captureScope ->
             buildScopeProblemMatcher(
                 project = project,
@@ -5744,6 +5751,7 @@ class InspectionHandler : HttpRequestHandler() {
         projectStateChangedDuringCapture: Boolean,
         inspectionInputFingerprint: InspectionProjectInputsFingerprint?,
         projectContentTracker: InspectionProjectContentTracker?,
+        nativeContextExtraction: (() -> InspectionModelExtraction)? = null,
     ) {
         val key = projectKey(project)
         if (!isCurrentInspectionRun(key, runId)) {
@@ -5779,6 +5787,21 @@ class InspectionHandler : HttpRequestHandler() {
         val contentTracker = requireNotNull(projectContentTracker)
 
         try {
+            val nativeContextProblems = if (
+                canAttemptReconciliation &&
+                snapshot.captureDiagnostic?.get("execution_proof_mode") == "native_attested" &&
+                snapshot.captureDiagnostic["execution_proof_established"] == true
+            ) {
+                nativeContextExtraction?.invoke()?.takeIf {
+                    it.enabledToolCount > 0 &&
+                        it.unreadableToolCount == 0 &&
+                        it.readableToolCount == it.enabledToolCount &&
+                        (snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED ||
+                            it.verdict == InspectionModelVerdict.CLEAN)
+                }?.problems
+            } else {
+                null
+            }
             ApplicationManager.getApplication().runReadAction<Unit, Exception> {
                 val contentChangedBeforeVerification = contentTracker.hasChanges()
                 val stateStableBeforeVerification = captureProjectState(project) == captureEndState
@@ -5791,7 +5814,9 @@ class InspectionHandler : HttpRequestHandler() {
                     scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
+                    if (nativeContextProblems != null) {
+                        reconcileCurrentRunProblems(project, snapshot, nativeContextProblems)
+                    } else if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
                         CurrentRunPsiChurnReconciliation(snapshot, true)
                     } else {
                         reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
@@ -5844,6 +5869,10 @@ class InspectionHandler : HttpRequestHandler() {
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
                         projectState = captureEndState,
+                        captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                            "final_input_reconciliation_source" to
+                                if (nativeContextProblems != null) "native_context" else "existing_proof",
+                        ),
                         reconciliationChangeKind = if (
                             isChangedFilesCaptureScope(snapshot.captureScope) || isFilesCaptureScope(snapshot.captureScope)
                         ) {
@@ -7619,6 +7648,16 @@ class InspectionHandler : HttpRequestHandler() {
                             projectStateChangedDuringCapture = projectStateChangedDuringCapture,
                             inspectionInputFingerprint = inspectionInputFingerprint,
                             projectContentTracker = projectContentTracker,
+                            nativeContextExtraction = {
+                                extractProblemsFromContextSafe(
+                                    globalContext,
+                                    project,
+                                    profile,
+                                    emptySet(),
+                                    emptyList(),
+                                    cancellationCheck = { checkInspectionRunCancellation(key, runId) },
+                                )
+                            },
                         )
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                             recordInspectionRunFailureDiagnostic(

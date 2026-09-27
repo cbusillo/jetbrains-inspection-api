@@ -427,6 +427,7 @@ internal abstract class InspectionHandlerTestSupport {
         projectStateChangedDuringCapture: Boolean,
         inspectionInputFingerprint: InspectionProjectInputsFingerprint?,
         projectContentTracker: InspectionProjectContentTracker?,
+        nativeContextExtraction: (() -> InspectionModelExtraction)? = null,
     ) {
         val method = InspectionHandler::class.java.getDeclaredMethod(
             "publishInspectionSnapshot",
@@ -437,6 +438,7 @@ internal abstract class InspectionHandlerTestSupport {
             Boolean::class.javaPrimitiveType,
             InspectionProjectInputsFingerprint::class.java,
             InspectionProjectContentTracker::class.java,
+            Function0::class.java,
         )
         method.isAccessible = true
         method.invoke(
@@ -448,6 +450,7 @@ internal abstract class InspectionHandlerTestSupport {
             projectStateChangedDuringCapture,
             inspectionInputFingerprint,
             projectContentTracker,
+            nativeContextExtraction,
         )
     }
 

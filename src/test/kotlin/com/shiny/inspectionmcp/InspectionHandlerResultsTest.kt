@@ -352,6 +352,86 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = [
+        "matching_red", "matching_clean", "changed_finding", "changed_content", "changed_inputs",
+        "later_psi_change", "unproved_execution", "unreadable_context", "partial_context", "unmapped_clean",
+    ])
+    fun `test native context reconciles only proved unchanged inspection results`(scenario: String) {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiCount = AtomicLong(11L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers { psiCount.get() }
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        mockExtractorFailure()
+        val fingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            if (scenario == "changed_inputs") fingerprint.copy(projectSdkVersion = "3.14") else fingerprint
+        }
+        val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content")
+        val problems = if (scenario in setOf("matching_clean", "unmapped_clean")) emptyList() else listOf(
+            mapOf<String, Any>(
+                "file" to "/tmp/TestProject/src/Included.kt", "line" to 4, "column" to 7,
+                "severity" to "warning", "inspectionType" to "CurrentRunInspection",
+                "description" to "current native finding",
+            ),
+        )
+        val outcome = if (problems.isEmpty()) InspectionSnapshotOutcome.CLEAN_CONFIRMED
+            else InspectionSnapshotOutcome.PROBLEMS_FOUND
+        val snapshot = InspectionResultsSnapshot(
+            problems = problems,
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(10L, 0),
+            outcome = outcome,
+            source = "global_context",
+            captureScope = publicationScope("whole_project"),
+            captureDiagnostic = mapOf(
+                "execution_proof_mode" to "native_attested",
+                "execution_proof_established" to (scenario != "unproved_execution"),
+            ),
+            runId = 1L,
+        )
+        setInspectionRunState(key, InspectionRunState(runId = 1L, triggerTimeMs = 1L, inProgress = true))
+
+        publishInspectionSnapshot(
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(11L, 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = fingerprint,
+            projectContentTracker = tracker,
+            nativeContextExtraction = {
+                if (scenario == "later_psi_change") psiCount.incrementAndGet()
+                InspectionModelExtraction(
+                    problems = if (scenario == "changed_finding") {
+                        problems.map { it + ("description" to "different native finding") }
+                    } else problems,
+                    problemDescriptorCount = if (scenario == "unmapped_clean") 1 else problems.size,
+                    enabledToolCount = 2,
+                    readableToolCount = if (scenario == "partial_context") 1 else 2,
+                    unreadableToolCount = if (scenario == "unreadable_context") 1 else 0,
+                )
+            },
+        )
+
+        val published = requireNotNull(InspectionResultsStore.getSnapshot(key))
+        if (scenario.startsWith("matching_")) {
+            assertEquals(outcome, published.outcome)
+            assertEquals(problems, published.problems)
+            assertEquals(11L, published.projectState.psiModificationCount)
+            assertEquals("native_context", published.captureDiagnostic?.get("final_input_reconciliation_source"))
+            setInspectionRunState(key, InspectionRunState(runId = 1L, triggerTimeMs = 1L, inProgress = false))
+            assertEquals(false, buildInspectionStatus()["results_may_be_stale"])
+            psiCount.incrementAndGet()
+            assertEquals(true, buildInspectionStatus()["results_may_be_stale"])
+        } else {
+            assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, published.outcome)
+            assertTrue(published.problems.isEmpty())
+            assertEquals("inputs_changed", published.captureDiagnostic?.get("final_input_validation"))
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = ["whole_project", "files"])
     fun `test final publication validates unchanged psi inputs before publishing`(scope: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
