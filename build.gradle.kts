@@ -9,7 +9,6 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Instant
 import java.util.Properties
@@ -118,6 +117,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
 val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
 val generateInspectionBuildInfo = tasks.register<GenerateInspectionBuildInfoTask>("generateInspectionBuildInfo") {
+    description = "Records the plugin version and source provenance in the packaged resources."
     gitDirectory.set(layout.projectDirectory)
     pluginVersion.set(project.property("pluginVersion").toString())
     outputFile.set(generatedBuildInfoDir.map {
