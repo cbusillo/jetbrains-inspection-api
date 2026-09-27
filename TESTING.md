@@ -15,9 +15,9 @@ If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts. Set `JAVA_HOME_25` when Java 25 is not
 discoverable for a canary source build.
 
-In the Every Code sandbox, Gradle may need escalated permissions. If you see
-"Operation not permitted" from NativeServices, re-run the command with
-escalation.
+Gradle may need additional sandbox permissions. If you see "Operation not
+permitted" from NativeServices, re-run the command with the required
+permissions.
 
 ## Local commands
 
