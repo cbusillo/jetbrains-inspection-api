@@ -873,6 +873,7 @@ internal fun mergeCaptureFailureDiagnostic(
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
     val reconciled: Boolean,
+    val source: String? = null,
 )
 
 private data class InspectionProblemIdentity(
@@ -5790,7 +5791,11 @@ class InspectionHandler : HttpRequestHandler() {
             val nativeContextProblems = if (
                 canAttemptReconciliation &&
                 snapshot.captureDiagnostic?.get("execution_proof_mode") == "native_attested" &&
-                snapshot.captureDiagnostic["execution_proof_established"] == true
+                snapshot.captureDiagnostic["execution_proof_established"] == true &&
+                !contentTracker.hasChanges() &&
+                ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                    captureProjectState(project) == captureEndState
+                }
             ) {
                 nativeContextExtraction?.invoke()?.takeIf {
                     it.enabledToolCount > 0 &&
@@ -5814,12 +5819,15 @@ class InspectionHandler : HttpRequestHandler() {
                     scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    if (nativeContextProblems != null) {
-                        reconcileCurrentRunProblems(project, snapshot, nativeContextProblems)
+                    val nativeReconciliation = nativeContextProblems?.let {
+                        reconcileCurrentRunProblems(project, snapshot, it)
+                    }
+                    if (nativeReconciliation?.reconciled == true) {
+                        nativeReconciliation.copy(source = "native_context")
                     } else if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
-                        CurrentRunPsiChurnReconciliation(snapshot, true)
+                        CurrentRunPsiChurnReconciliation(snapshot, true, "exact_proof")
                     } else {
-                        reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
+                        reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot).copy(source = "inspection_results")
                     }
                 } else {
                     CurrentRunPsiChurnReconciliation(snapshot, false)
@@ -5870,8 +5878,7 @@ class InspectionHandler : HttpRequestHandler() {
                     snapshot.copy(
                         projectState = captureEndState,
                         captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
-                            "final_input_reconciliation_source" to
-                                if (nativeContextProblems != null) "native_context" else "existing_proof",
+                            "final_input_reconciliation_source" to reconciliation.source,
                         ),
                         reconciliationChangeKind = if (
                             isChangedFilesCaptureScope(snapshot.captureScope) || isFilesCaptureScope(snapshot.captureScope)
@@ -5921,6 +5928,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
         } catch (error: Exception) {
+            rethrowIfCanceled(error)
             logger.warn("Inspection snapshot validation failed for ${project.name}", error)
             if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                 val snapshotToPublish = if (projectStateChangedDuringCapture) {
