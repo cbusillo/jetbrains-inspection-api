@@ -873,6 +873,7 @@ internal fun mergeCaptureFailureDiagnostic(
 private data class CurrentRunPsiChurnReconciliation(
     val snapshot: InspectionResultsSnapshot?,
     val reconciled: Boolean,
+    val source: String? = null,
 )
 
 private data class InspectionProblemIdentity(
@@ -5714,7 +5715,14 @@ class InspectionHandler : HttpRequestHandler() {
         ) {
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
-        val liveProblems = liveExtraction.problems
+        return reconcileCurrentRunProblems(project, snapshot, liveExtraction.problems)
+    }
+
+    private fun reconcileCurrentRunProblems(
+        project: Project,
+        snapshot: InspectionResultsSnapshot,
+        liveProblems: List<Map<String, Any>>,
+    ): CurrentRunPsiChurnReconciliation {
         val captureScopeMatcher = snapshot.captureScope?.let { captureScope ->
             buildScopeProblemMatcher(
                 project = project,
@@ -5744,6 +5752,7 @@ class InspectionHandler : HttpRequestHandler() {
         projectStateChangedDuringCapture: Boolean,
         inspectionInputFingerprint: InspectionProjectInputsFingerprint?,
         projectContentTracker: InspectionProjectContentTracker?,
+        nativeContextExtraction: (() -> InspectionModelExtraction)? = null,
     ) {
         val key = projectKey(project)
         if (!isCurrentInspectionRun(key, runId)) {
@@ -5779,6 +5788,25 @@ class InspectionHandler : HttpRequestHandler() {
         val contentTracker = requireNotNull(projectContentTracker)
 
         try {
+            val nativeContextProblems = if (
+                canAttemptReconciliation &&
+                snapshot.captureDiagnostic?.get("execution_proof_mode") == "native_attested" &&
+                snapshot.captureDiagnostic["execution_proof_established"] == true &&
+                !contentTracker.hasChanges() &&
+                ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
+                    captureProjectState(project) == captureEndState
+                }
+            ) {
+                nativeContextExtraction?.invoke()?.takeIf {
+                    it.enabledToolCount > 0 &&
+                        it.unreadableToolCount == 0 &&
+                        it.readableToolCount == it.enabledToolCount &&
+                        (snapshot.outcome != InspectionSnapshotOutcome.CLEAN_CONFIRMED ||
+                            it.verdict == InspectionModelVerdict.CLEAN)
+                }?.problems
+            } else {
+                null
+            }
             ApplicationManager.getApplication().runReadAction<Unit, Exception> {
                 val contentChangedBeforeVerification = contentTracker.hasChanges()
                 val stateStableBeforeVerification = captureProjectState(project) == captureEndState
@@ -5791,10 +5819,15 @@ class InspectionHandler : HttpRequestHandler() {
                     scopeMatchedBeforeVerification &&
                     isCurrentInspectionRun(key, runId)
                 ) {
-                    if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
-                        CurrentRunPsiChurnReconciliation(snapshot, true)
+                    val nativeReconciliation = nativeContextProblems?.let {
+                        reconcileCurrentRunProblems(project, snapshot, it)
+                    }
+                    if (nativeReconciliation?.reconciled == true) {
+                        nativeReconciliation.copy(source = "native_context")
+                    } else if (isExactEmptyChangedFilesSnapshot(snapshot) || hasCompleteFilesExecutionProof(snapshot)) {
+                        CurrentRunPsiChurnReconciliation(snapshot, true, "exact_proof")
                     } else {
-                        reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
+                        reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot).copy(source = "inspection_results")
                     }
                 } else {
                     CurrentRunPsiChurnReconciliation(snapshot, false)
@@ -5844,6 +5877,9 @@ class InspectionHandler : HttpRequestHandler() {
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
                         projectState = captureEndState,
+                        captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                            "final_input_reconciliation_source" to reconciliation.source,
+                        ),
                         reconciliationChangeKind = if (
                             isChangedFilesCaptureScope(snapshot.captureScope) || isFilesCaptureScope(snapshot.captureScope)
                         ) {
@@ -5892,6 +5928,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
         } catch (error: Exception) {
+            rethrowIfCanceled(error)
             logger.warn("Inspection snapshot validation failed for ${project.name}", error)
             if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                 val snapshotToPublish = if (projectStateChangedDuringCapture) {
@@ -7619,6 +7656,16 @@ class InspectionHandler : HttpRequestHandler() {
                             projectStateChangedDuringCapture = projectStateChangedDuringCapture,
                             inspectionInputFingerprint = inspectionInputFingerprint,
                             projectContentTracker = projectContentTracker,
+                            nativeContextExtraction = {
+                                extractProblemsFromContextSafe(
+                                    globalContext,
+                                    project,
+                                    profile,
+                                    emptySet(),
+                                    emptyList(),
+                                    cancellationCheck = { checkInspectionRunCancellation(key, runId) },
+                                )
+                            },
                         )
                         } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
                             recordInspectionRunFailureDiagnostic(
