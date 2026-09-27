@@ -8,12 +8,10 @@ This project has three test surfaces:
 
 ## Prerequisites
 
-- Java 21 for Stable Gradle builds and trusted canary artifact verification.
-- Java 25 for the 262-only canary source build.
+- Java 21 for Gradle builds and artifact verification.
 
 If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
-JDK 21 path before running the scripts. Set `JAVA_HOME_25` when Java 25 is not
-discoverable for a canary source build.
+JDK 21 path before running the scripts.
 
 In the Every Code sandbox, Gradle may need escalated permissions. If you see
 "Operation not permitted" from NativeServices, re-run the command with
@@ -464,44 +462,9 @@ manifest with the sorted canonical first sentence of each approved finding, and
 rerun `./gradlew verifyPlugin` across every configured IDE. Never add a broader
 class-name pattern to make a report pass.
 
-Canary tags use `canary/vX.Y.Z-canary.N` but do not trigger publication.
-`.github/workflows/canary-release.yml` must be dispatched explicitly from the
-default branch with an existing isolated tag. Its build job treats the source,
-Gradle logic, verifier reports, and workspace as untrusted, persists no checkout
-credentials, uses no Gradle cache, and runs without Marketplace secrets. Same-tag
-dispatches are serialized. The untrusted 262-only source build uses Java 25 and
-is discarded after tests. A separate fresh packaging runner checks out the
-captured source SHA, re-resolves the immutable tag, proves the checkout is clean,
-and rebuilds the artifact and structure report from scratch. A fresh
-verification job checks out only trusted controls, downloads the built zip,
-requires the embedded commit,
-clean-state marker, and fingerprint to match the tagged source exactly,
-independently runs Plugin Verifier against that artifact on the pinned reviewed
-262 IDE build, and requires every
-artifact-derived report to match the trusted default-branch
-`config/plugin-verifier/canary-internal-api-allowlist.txt`. The verification job
-uses Java 21, automatically selecting `JAVA_HOME_21` when invoked from a newer
-Java runtime, records the artifact digest, and uploads its reports. Only then may the fresh
-publish job enter the default-branch-only, reviewer-approved
-`canary-marketplace` environment. It revalidates the tag SHA, archive identity,
-and verified digest, then uploads through the
-trusted `scripts/publish-canary-artifact.sh` with the environment-only
-`CANARY_PUBLISH_TOKEN`, explicit `canary` channel, required source SHA, and
-verified SHA-256. Artifact validation requires the canary's narrow
-`262..262.*` compatibility range and clean tagged-source provenance.
-That environment job has read-only repository permission. A separate write-only
-GitHub release job creates the prerelease only after Marketplace upload succeeds
-and rechecks the verified digest without receiving the Marketplace token. The release contract tests
-run the release scripts against fakes and cover malformed versions, Stable/canary
-version and channel separation, branch isolation,
-artifact identity, absent or wrong channels, unexpected internal APIs, and an
-adversarial attempt to replace trusted verifier controls and reports.
-The canary manifest is trusted, reviewable evidence. An intended canary finding
-must first update that default-branch manifest through review; the experimental
-branch must not modify the Stable manifest or replace exact matching with a
-broader rule. Manual verification and recovery publication must run from a
-separate, clean checkout pinned to the reviewed default-branch dispatch commit,
-never from the canary source worktree.
+The release contract tests run the Stable release scripts against fakes and
+cover version and channel rejection, artifact identity, source provenance,
+verified digests, unexpected internal APIs, and the release PR/tag flow.
 
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal

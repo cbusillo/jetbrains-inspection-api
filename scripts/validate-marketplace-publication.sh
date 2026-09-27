@@ -39,13 +39,5 @@ if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 0
 fi
 
-if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-canary\.[1-9][0-9]*$ ]]; then
-  if [ "$CHANNEL" != "canary" ]; then
-    echo "ERROR: Canary plugin versions require -PmarketplaceChannel=canary." >&2
-    exit 1
-  fi
-  exit 0
-fi
-
 echo "ERROR: Unsupported Marketplace plugin version: ${VERSION:-<empty>}." >&2
 exit 1
