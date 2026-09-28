@@ -1,16 +1,27 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.LocalInspectionTool
+import com.intellij.codeInspection.LocalInspectionToolSession
+import com.intellij.codeInspection.ProblemsHolder
+import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.Tools
 import com.intellij.lang.Language
+import com.intellij.openapi.progress.ProcessCanceledException
+import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiElement
+import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
+import com.intellij.util.PairProcessor
+import com.intellij.util.concurrency.AppExecutorUtil
+import java.util.concurrent.TimeUnit
 
 internal class NativeInspectionToolExecution(
     val wrapper: InspectionToolWrapper<*, *>,
@@ -33,6 +44,9 @@ internal class NativeInspectionCompletionObservation {
     private var negativeProblemCountEvents = 0
     private var enumerationCompleted = false
     private var unavailableReason: String? = null
+    private val missingClassifications = linkedMapOf<NativeInspectionToolExecution, MissingCompletionClass>()
+    private var classificationCompleted = false
+    private var classificationUnavailableReason: String? = null
 
     @Synchronized
     fun recordCompletion(problemCount: Int, wrapper: InspectionToolWrapper<*, *>, filePath: String?) {
@@ -60,6 +74,27 @@ internal class NativeInspectionCompletionObservation {
         }
     }
 
+    @Synchronized
+    fun classifyMissingCompletions(classify: (NativeInspectionCompletionObservation) -> Unit) {
+        if (!enumerationCompleted || unavailableReason != null) return
+        try {
+            classify(this)
+            classificationCompleted = true
+        } catch (error: Throwable) {
+            classificationUnavailableReason = when (error) {
+                is NativeInspectionObservationUnavailable -> error.message
+                is ExactFileProofWritePreemptedException -> "classification_write_preempted"
+                else -> error.javaClass.simpleName
+            }
+        }
+    }
+
+    fun missingExecutions(): List<NativeInspectionToolExecution> = (candidates - completed).toList()
+
+    fun classify(execution: NativeInspectionToolExecution, classification: MissingCompletionClass) {
+        missingClassifications[execution] = classification
+    }
+
     fun candidate(wrapper: InspectionToolWrapper<*, *>, filePath: String?) {
         if (candidates.size >= MAX_EXECUTIONS) throw NativeInspectionObservationUnavailable("candidate_limit")
         candidates += NativeInspectionToolExecution(wrapper, filePath)
@@ -76,6 +111,11 @@ internal class NativeInspectionCompletionObservation {
     fun diagnostic(): Map<String, Any?> = try {
         val missing = candidates - completed
         val complete = enumerationCompleted && unavailableReason == null
+        val classified = complete && classificationCompleted
+        val unexplained = missing.filter { missingClassifications[it] != MissingCompletionClass.EMPTY_VISITOR }
+        val classificationCounts = MissingCompletionClass.entries.associate { kind ->
+            kind.diagnosticName to missing.count { missingClassifications[it] == kind }
+        }
         mapOf(
             "schema_version" to 1,
             "mode" to "report_only",
@@ -90,6 +130,12 @@ internal class NativeInspectionCompletionObservation {
             "negative_problem_count_events" to negativeProblemCountEvents,
             "candidate_rule_would_block_clean" to if (complete) missing.isNotEmpty() || candidates.isEmpty() else null,
             "missing_examples" to missing.take(EXAMPLE_LIMIT).map { it.diagnostic() },
+            "missing_classification_complete" to classified,
+            "missing_classification_unavailable_reason" to classificationUnavailableReason,
+            "missing_classification_counts" to if (classified) classificationCounts else null,
+            "unexplained_missing_completion_count" to if (classified) unexplained.size else null,
+            "silent_skip_rule_would_block_clean" to if (classified) unexplained.isNotEmpty() || candidates.isEmpty() else null,
+            "unexplained_missing_examples" to if (classified) unexplained.take(EXAMPLE_LIMIT).map { it.diagnostic() } else null,
             "completed_examples" to completed.take(EXAMPLE_LIMIT).map { it.diagnostic() },
             "exclusions" to exclusions.toMap(),
             "exclusion_examples" to exclusionExamples.toList(),
@@ -101,6 +147,7 @@ internal class NativeInspectionCompletionObservation {
                 "injected_files_external_annotators_and_aggregate_hooks_not_modeled",
                 "missing_completion_is_not_inspection_failure",
                 "matching_completions_do_not_establish_additional_execution_proof",
+                "empty_visitor_classification_rebuilds_visitors_after_run",
             ),
         )
     } catch (error: Throwable) {
@@ -112,6 +159,12 @@ internal class NativeInspectionCompletionObservation {
         private const val MAX_EXECUTIONS = 100_000
         private const val EXAMPLE_LIMIT = 25
     }
+}
+
+internal enum class MissingCompletionClass(val diagnosticName: String) {
+    EMPTY_VISITOR("empty_visitor"),
+    NON_EMPTY_VISITOR("non_empty_visitor"),
+    NOT_PROBED("not_probed"),
 }
 
 internal class NativeInspectionObservationUnavailable(reason: String) : RuntimeException(reason)
@@ -176,5 +229,81 @@ internal fun observeNativeInspectionCandidates(
                 observation.candidate(wrapper, filePath)
             }
         }
+    }
+}
+
+internal fun classifyMissingNativeCompletions(
+    observation: NativeInspectionCompletionObservation,
+    files: List<PsiFile>,
+    context: GlobalInspectionContext,
+    project: Project,
+    indicator: ProgressIndicator,
+) {
+    val deadline = System.nanoTime() + CLASSIFICATION_BUDGET_NANOS
+    val deadlineCancellation = AppExecutorUtil.getAppScheduledExecutorService()
+        .schedule({ indicator.cancel() }, CLASSIFICATION_BUDGET_NANOS, TimeUnit.NANOSECONDS)
+    fun checkBudget() {
+        if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("classification_time_limit")
+        indicator.checkCanceled()
+    }
+    try {
+        val filesByPath = files.associateBy { it.virtualFile?.path }
+        for (execution in observation.missingExecutions()) {
+            checkBudget()
+            val file = filesByPath[execution.filePath]
+            val wrapper = execution.wrapper as? LocalInspectionToolWrapper
+            if (file == null || wrapper == null) {
+                observation.classify(execution, MissingCompletionClass.NOT_PROBED)
+                continue
+            }
+            var visitorWasEmpty: Boolean? = null
+            val copy = InspectionProfileImpl.copyToolSettings(wrapper) as LocalInspectionToolWrapper
+            try {
+                copy.initialize(context)
+                val probe = LocalInspectionToolWrapper(VisitorProbeInspection(copy.tool) { visitorWasEmpty = it })
+                InspectionEngine.inspectEx(
+                    listOf(probe), file, file.textRange, file.textRange, false, false, false, indicator, PairProcessor.alwaysTrue(),
+                )
+            } finally {
+                runCatching { copy.cleanup(project) }
+            }
+            checkBudget()
+            observation.classify(
+                execution,
+                when (visitorWasEmpty) {
+                    true -> MissingCompletionClass.EMPTY_VISITOR
+                    false -> MissingCompletionClass.NON_EMPTY_VISITOR
+                    null -> MissingCompletionClass.NOT_PROBED
+                },
+            )
+        }
+    } catch (cancelled: ProcessCanceledException) {
+        if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("classification_time_limit")
+        throw cancelled
+    } finally {
+        deadlineCancellation.cancel(false)
+    }
+}
+
+private const val CLASSIFICATION_BUDGET_NANOS = 2_000_000_000L
+
+private class VisitorProbeInspection(
+    private val target: LocalInspectionTool,
+    private val onVisitorBuilt: (Boolean) -> Unit,
+) : LocalInspectionTool() {
+    override fun getShortName(): String = "InspectionApiVisitorProbe." + target.shortName
+
+    override fun getDisplayName(): String = shortName
+
+    override fun getGroupDisplayName(): String = "Inspection API"
+
+    override fun buildVisitor(
+        holder: ProblemsHolder,
+        isOnTheFly: Boolean,
+        session: LocalInspectionToolSession,
+    ): PsiElementVisitor {
+        val visitor = InspectionEngine.createVisitor(target, holder, isOnTheFly, session)
+        onVisitorBuilt(visitor === PsiElementVisitor.EMPTY_VISITOR)
+        return PsiElementVisitor.EMPTY_VISITOR
     }
 }

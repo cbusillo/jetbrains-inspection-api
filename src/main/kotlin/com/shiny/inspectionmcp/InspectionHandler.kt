@@ -7147,6 +7147,14 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                 }
             }
+            nativeProofCollector?.completionObservation?.classifyMissingCompletions { observation ->
+                val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+                runWritePriorityInspectionRead(classificationIndicator, {}) {
+                    classifyMissingNativeCompletions(
+                        observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
+                    )
+                }
+            }
             ProgressManager.checkCanceled()
 
             try {
