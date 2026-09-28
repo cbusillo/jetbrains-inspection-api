@@ -346,25 +346,7 @@ internal abstract class InspectionHandlerTestSupport {
         uri: String,
         method: HttpMethod,
         content: io.netty.buffer.ByteBuf = Unpooled.EMPTY_BUFFER,
-    ): MutableList<FullHttpResponse> {
-        val urlDecoder = QueryStringDecoder(uri)
-        val mockRequest = mockk<FullHttpRequest>()
-        val mockContext = mockk<ChannelHandlerContext>()
-        val responses = mutableListOf<FullHttpResponse>()
-
-        every { mockRequest.uri() } returns uri
-        every { mockRequest.method() } returns method
-        every { mockRequest.content() } returns content
-        every { mockContext.writeAndFlush(any()) } answers {
-            responses += firstArg<FullHttpResponse>()
-            mockk(relaxed = true)
-        }
-
-        val result = handler.process(urlDecoder, mockRequest, mockContext)
-
-        assertTrue(result)
-        return responses
-    }
+    ): MutableList<FullHttpResponse> = processInspectionRequest(handler, uri, method, content)
 
     protected fun pythonSdkPreparationUri(projectInstanceId: String, closeToken: String): String =
         "/api/inspection/lifecycle/prepare-python-sdk" +
@@ -379,18 +361,7 @@ internal abstract class InspectionHandlerTestSupport {
         val body = response.content().toString(Charsets.UTF_8)
         assertEquals(HttpResponseStatus.OK, response.status(), body)
         @Suppress("UNCHECKED_CAST")
-        return jsonValue(kotlinx.serialization.json.Json.parseToJsonElement(body)) as MutableMap<String, Any>
-    }
-
-    private fun jsonValue(element: kotlinx.serialization.json.JsonElement): Any? = when (element) {
-        is kotlinx.serialization.json.JsonObject -> element.mapValuesTo(linkedMapOf()) { (_, value) -> jsonValue(value) }
-        is kotlinx.serialization.json.JsonArray -> element.map(::jsonValue)
-        kotlinx.serialization.json.JsonNull -> null
-        is kotlinx.serialization.json.JsonPrimitive -> when {
-            element.isString -> element.content
-            element.content == "true" || element.content == "false" -> element.content.toBoolean()
-            else -> element.content.toIntOrNull() ?: element.content.toLongOrNull() ?: element.content.toDouble()
-        }
+        return jsonResponseValue(body) as MutableMap<String, Any>
     }
 
     protected fun invokeTargetedAnalysisScopeResolver(methodName: String, virtualFile: VirtualFile): Any? {

@@ -79,6 +79,10 @@ class InspectionSnapshotStateTest {
         every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } answers {
             firstArg<ThrowableComputable<Any, Exception>>().compute()
         }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
 
         mockkStatic(DumbService::class)
         every { DumbService.getInstance(mockProject) } returns mockDumbService
@@ -618,7 +622,7 @@ class InspectionSnapshotStateTest {
         val statusAfterCurrentFinish = buildInspectionStatus()
 
         assertEquals(false, statusAfterCurrentFinish["inspection_in_progress"])
-        assertEquals(secondRun.runId, statusAfterCurrentFinish["inspection_run_id"])
+        assertEquals(secondRun.runId, (statusAfterCurrentFinish["inspection_run_id"] as Number).toLong())
     }
 
     @Test
@@ -1352,7 +1356,7 @@ class InspectionSnapshotStateTest {
         assertEquals(true, status["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
         assertEquals(listOf("project_changed_since_inspection"), status["stale_reasons"])
-        assertEquals(currentRun.runId, status["snapshot_run_id"])
+        assertEquals(currentRun.runId, (status["snapshot_run_id"] as Number).toLong())
     }
 
     @Test
@@ -1575,7 +1579,7 @@ class InspectionSnapshotStateTest {
 
         assertTrue(response.contains("\"status\": \"stale_results\""))
         assertTrue(response.contains("\"results_may_be_stale\": true"))
-        assertTrue(response.contains("\"stale_reasons\": [\"project_changed_since_inspection\"]"))
+        assertEquals(listOf("project_changed_since_inspection"), (jsonResponseValue(response) as Map<*, *>)["stale_reasons"])
         assertTrue(response.contains("\"snapshot_outcome\": \"problems_found\""))
         assertTrue(response.contains("\"cached_total_problems\": 1"))
         assertTrue(response.contains("\"cached_problems_shown\": 0"))
@@ -1757,6 +1761,16 @@ class InspectionSnapshotStateTest {
             ),
         )
         every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
+
+        val sourceDirectory = mockk<VirtualFile>()
+        every { sourceDirectory.path } returns "/tmp/TestProject/src"
+        every { sourceDirectory.isValid } returns true
+        every { sourceDirectory.isDirectory } returns true
+        every { sourceDirectory.isInLocalFileSystem } returns true
+        val localFileSystem = mockk<LocalFileSystem>()
+        mockkStatic(LocalFileSystem::class)
+        every { LocalFileSystem.getInstance() } returns localFileSystem
+        every { localFileSystem.findFileByPath("/tmp/TestProject/src") } returns sourceDirectory
 
         val response = json.parseToJsonElement(
             getInspectionProblems(scope = "directory", includeStale = true, directoryParam = "src")
@@ -2925,7 +2939,7 @@ class InspectionSnapshotStateTest {
 
         assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""), response)
         assertTrue(response.contains("\"inspection_verdict_reason\": \"execution_not_proven\""), response)
-        assertTrue(response.contains("\"proof_failures\": [\"execution_not_proven\"]"), response)
+        assertEquals(listOf("execution_not_proven"), (jsonResponseValue(response) as Map<*, *>)["proof_failures"], response)
     }
 
     @Test
@@ -3330,10 +3344,14 @@ class InspectionSnapshotStateTest {
     // ---- Fix 7: Polling exit reason separate from proof diagnostics ----
 
     private fun buildInspectionStatus(): MutableMap<String, Any> {
-        val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
-        method.isAccessible = true
+        val body = requestBody("/api/inspection/status?project=TestProject")
         @Suppress("UNCHECKED_CAST")
-        return method.invoke(handler, mockProject) as MutableMap<String, Any>
+        return jsonResponseValue(body) as MutableMap<String, Any>
+    }
+
+    private fun requestBody(uri: String): String {
+        val response = processInspectionRequest(handler, uri).single()
+        return response.content().toString(Charsets.UTF_8)
     }
 
     private fun pluginStatusGreenClean(): JsonObject {
@@ -3452,40 +3470,20 @@ class InspectionSnapshotStateTest {
         files: List<String>? = null,
         severity: String = "all",
     ): String {
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "getInspectionProblems",
-            Project::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            Int::class.javaPrimitiveType,
-            Int::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            List::class.java,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            Int::class.javaObjectType,
-        )
-        method.isAccessible = true
-        return method.invoke(
-            handler,
-            mockProject,
-            severity,
-            scope,
-            null,
-            null,
-            limit,
-            offset,
-            includeStale,
-            directoryParam,
-            files,
-            true,
-            null,
-            null,
-        ) as String
+        val query = buildList {
+            add("project=TestProject")
+            add("scope=" + encode(scope))
+            add("severity=" + encode(severity))
+            add("limit=$limit")
+            add("offset=$offset")
+            add("include_stale=$includeStale")
+            directoryParam?.let { add("dir=" + encode(it)) }
+            files?.forEach { add("file=" + encode(it)) }
+        }.joinToString("&")
+        return requestBody("/api/inspection/problems?$query")
     }
+
+    private fun encode(value: String): String = java.net.URLEncoder.encode(value, Charsets.UTF_8)
 
     private fun staleProblem(
         description: String = "Old warning",
@@ -3505,16 +3503,8 @@ class InspectionSnapshotStateTest {
         )
     }
 
-    private fun waitForInspection(timeoutMs: Long = 1000L, pollMs: Long = 200L): String {
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "waitForInspection",
-            String::class.java,
-            Long::class.javaObjectType,
-            Long::class.javaObjectType,
-        )
-        method.isAccessible = true
-        return method.invoke(handler, "TestProject", timeoutMs, pollMs) as String
-    }
+    private fun waitForInspection(timeoutMs: Long = 1000L, pollMs: Long = 200L): String =
+        requestBody("/api/inspection/wait?project=TestProject&timeout_ms=$timeoutMs&poll_ms=$pollMs")
 
     private fun contractCase(name: String): ContractCase {
         val path = contractFixturePath(name)
@@ -3577,9 +3567,13 @@ class InspectionSnapshotStateTest {
     }
 
     private fun beginInspectionRun(): InspectionRunState {
-        val method = InspectionHandler::class.java.getDeclaredMethod("beginInspectionRun", Project::class.java)
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "beginInspectionRunInternal",
+            Project::class.java,
+            InspectionCaptureScope::class.java,
+        )
         method.isAccessible = true
-        return method.invoke(handler, mockProject) as InspectionRunState
+        return method.invoke(handler, mockProject, null) as InspectionRunState
     }
 
     private fun finishInspectionRun(projectKey: String, runId: Long) {
