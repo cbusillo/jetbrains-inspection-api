@@ -14,6 +14,7 @@ import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
 import com.intellij.codeInspection.ex.GlobalInspectionContextBase
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
@@ -37,6 +38,7 @@ import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiElementVisitor
+import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.profile.codeInspection.BaseInspectionProfileManager
@@ -100,6 +102,76 @@ class SupportedInspectionExecutorPlatformTest {
         } finally {
             connection.disconnect()
         }
+    }
+
+    @Test
+    fun `missing completion classification separates silent visitors from dropped finish events`() {
+        val silent = EmptyVisitorInspection()
+        val dropped = DroppedFinishInspection()
+        val complete = classifyMissingCompletionsAfterRun(silent, dropped, dropFinishOf = null)
+        assertThat(complete["missing_classification_counts"]).describedAs(complete.toString()).isEqualTo(
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "not_probed" to 0),
+        )
+        assertThat(complete["candidate_rule_would_block_clean"]).isEqualTo(true)
+        assertThat(complete["silent_skip_rule_would_block_clean"]).isEqualTo(false)
+
+        val droppedFinish = classifyMissingCompletionsAfterRun(silent, dropped, dropFinishOf = dropped)
+        assertThat(droppedFinish["missing_classification_counts"]).describedAs(droppedFinish.toString()).isEqualTo(
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "not_probed" to 0),
+        )
+        assertThat(droppedFinish["unexplained_missing_examples"]).isEqualTo(
+            listOf(mapOf("tool" to dropped.shortName, "file" to droppedFinish["probe_file"])),
+        )
+        assertThat(droppedFinish["silent_skip_rule_would_block_clean"]).isEqualTo(true)
+    }
+
+    private fun classifyMissingCompletionsAfterRun(
+        silent: LocalInspectionTool,
+        running: LocalInspectionTool,
+        dropFinishOf: LocalInspectionTool?,
+    ): Map<String, Any?> {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val profile = profileWith(silent, running)
+        listOf(silent, running).forEach { profile.setToolEnabled(it.shortName, true, project) }
+        val groups = profile.getAllEnabledInspectionTools(project)
+        val collector = NativeInspectionExecutionProofCollector(project, setOf(file.virtualFile.path))
+        val connection = project.messageBus.connect()
+        connection.subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, object : InspectListener {
+            override fun inspectionFinished(
+                duration: Long,
+                threadId: Long,
+                problemsCount: Int,
+                tool: InspectionToolWrapper<*, *>,
+                inspectionKind: InspectListener.InspectionKind,
+                file: PsiFile?,
+                project: Project,
+            ) {
+                if (tool.shortName != dropFinishOf?.shortName) {
+                    collector.inspectionFinished(duration, threadId, problemsCount, tool, inspectionKind, file, project)
+                }
+            }
+        })
+        resetVisits(running)
+        try {
+            ReadAction.run<RuntimeException> {
+                SupportedInspectionExecutor().execute(
+                    AnalysisScope(file), groups.map { it.tool as LocalInspectionToolWrapper }, EmptyProgressIndicator(),
+                )
+            }
+        } finally {
+            connection.disconnect()
+        }
+        ReadAction.run<RuntimeException> {
+            collector.completionObservation.observeCandidates {
+                observeNativeInspectionCandidates(it, groups, listOf(file), project, false)
+            }
+            collector.completionObservation.classifyMissingCompletions {
+                classifyMissingNativeCompletions(it, listOf(file), project, EmptyProgressIndicator())
+            }
+        }
+        assertThat(visitCount(running)).describedAs("probing must not visit").isEqualTo(1)
+        return collector.completionObservation.diagnostic() + ("probe_file" to file.virtualFile.path)
     }
 
     @Test
@@ -1132,6 +1204,8 @@ class SupportedInspectionExecutorPlatformTest {
             session: LocalInspectionToolSession,
         ): PsiElementVisitor = PsiElementVisitor.EMPTY_VISITOR
     }
+
+    private class DroppedFinishInspection : RecordingInspection()
 
     private class CancellingInspection : RecordingInspection() {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {
