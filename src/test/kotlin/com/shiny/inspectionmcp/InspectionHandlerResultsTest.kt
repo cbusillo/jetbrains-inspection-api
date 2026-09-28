@@ -1793,6 +1793,81 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `test current file scope selects the project content file and skips previews`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        runPooledTasksInline()
+        val preview = editorFile("/virtual/TabPreviewDiffVirtualFile", inLocalFileSystem = false)
+        val main = editorFile("/tmp/TestProject/src/Main.kt")
+        mockEditorSelection(selected = arrayOf(preview, main), open = arrayOf(preview, main), contentFiles = setOf(main))
+        InspectionResultsStore.setSnapshot(
+            projectKey(mockProject),
+            InspectionResultsSnapshot(
+                problems = listOf(
+                    currentFileProblem("/tmp/TestProject/src/Main.kt", "main problem"),
+                    currentFileProblem("/tmp/TestProject/src/Other.kt", "other problem"),
+                ),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 11L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "test",
+                runId = 1L,
+            ),
+        )
+
+        val response = processGetRequest("/api/inspection/problems?scope=current_file")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.OK, response.status(), body)
+        assertTrue(body.contains("main problem"), body)
+        assertFalse(body.contains("other problem"), body)
+    }
+
+    @Test
+    fun `test current file scope does not substitute an unrelated open file`() {
+        runPooledTasksInline()
+        val preview = editorFile("/virtual/TabPreviewDiffVirtualFile", inLocalFileSystem = false)
+        val unrelated = editorFile("/tmp/TestProject/src/Other.kt")
+        mockEditorSelection(selected = arrayOf(preview), open = arrayOf(preview, unrelated), contentFiles = setOf(unrelated))
+
+        val response = processGetRequest("/api/inspection/problems?scope=current_file")
+        val body = response.content().toString(Charsets.UTF_8)
+
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status(), body)
+        assertTrue(body.contains("\"parameter\": \"scope\""), body)
+    }
+
+    private fun editorFile(path: String, inLocalFileSystem: Boolean = true): VirtualFile {
+        val file = mockk<VirtualFile>(relaxed = true)
+        every { file.path } returns path
+        every { file.isValid } returns true
+        every { file.isInLocalFileSystem } returns inLocalFileSystem
+        return file
+    }
+
+    private fun mockEditorSelection(selected: Array<VirtualFile>, open: Array<VirtualFile>, contentFiles: Set<VirtualFile>) {
+        val fileEditorManager = mockk<FileEditorManager>()
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } returns fileEditorManager
+        every { fileEditorManager.selectedFiles } returns selected
+        every { fileEditorManager.openFiles } returns open
+        val projectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+        (selected + open).distinct().forEach { file -> every { projectFileIndex.isInContent(file) } returns (file in contentFiles) }
+    }
+
+    private fun currentFileProblem(file: String, description: String): Map<String, Any> = mapOf(
+        "file" to file,
+        "line" to 1,
+        "column" to 1,
+        "severity" to "warning",
+        "inspectionType" to "CurrentFile",
+        "description" to description,
+    )
+
+    @Test
     fun `test status runtime failure returns HTTP 500`() {
         mockkStatic(ToolWindowManager::class)
         every { ToolWindowManager.getInstance(mockProject) } throws IllegalStateException("boom")

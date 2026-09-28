@@ -9,7 +9,6 @@ import io.mockk.*
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.fileEditor.FileEditorManager
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.util.ThrowableComputable
@@ -41,68 +40,6 @@ class InspectionScopeResolutionTest {
         every { p.isInitialized } returns true
         every { p.name } returns name
         return p
-    }
-
-    private fun mockVf(path: String, inLocal: Boolean = true, valid: Boolean = true): VirtualFile {
-        val vf = mockk<VirtualFile>(relaxed = true)
-        every { vf.path } returns path
-        every { vf.isValid } returns valid
-        every { vf.isInLocalFileSystem } returns inLocal
-        return vf
-    }
-
-    @Test
-    @DisplayName("resolveActiveEditorFile returns project content file and skips previews")
-    fun testResolveActiveEditorFileSelection() {
-        val project = mockProject()
-
-        val preview = mockVf("/virtual/TabPreviewDiffVirtualFile", inLocal = false)
-        val real = mockVf("/workspace/src/Main.kt", inLocal = true)
-
-        mockkStatic(FileEditorManager::class)
-        val fem = mockk<FileEditorManager>(relaxed = true)
-        every { FileEditorManager.getInstance(project) } returns fem
-        every { fem.selectedFiles } returns arrayOf(preview, real)
-        every { fem.openFiles } returns arrayOf(preview, real)
-
-        mockkStatic(ProjectFileIndex::class)
-        val index = mockk<ProjectFileIndex>(relaxed = true)
-        every { ProjectFileIndex.getInstance(project) } returns index
-        every { index.isInContent(preview) } returns false
-        every { index.isInContent(real) } returns true
-
-        val handler = InspectionHandler()
-        val m = InspectionHandler::class.java.getDeclaredMethod("resolveActiveEditorFile", Project::class.java)
-        m.isAccessible = true
-        val resolved = m.invoke(handler, project) as VirtualFile?
-
-        assertNotNull(resolved)
-        assertEquals(real, resolved)
-    }
-
-    @Test
-    @DisplayName("resolveActiveEditorFile does not substitute an unrelated open file")
-    fun testResolveActiveEditorFileRejectsUnrelatedOpenFile() {
-        val project = mockProject()
-        val preview = mockVf("/virtual/TabPreviewDiffVirtualFile", inLocal = false)
-        val unrelatedOpenFile = mockVf("/workspace/src/Other.kt")
-
-        mockkStatic(FileEditorManager::class)
-        val fileEditorManager = mockk<FileEditorManager>()
-        every { FileEditorManager.getInstance(project) } returns fileEditorManager
-        every { fileEditorManager.selectedFiles } returns arrayOf(preview)
-        every { fileEditorManager.openFiles } returns arrayOf(preview, unrelatedOpenFile)
-
-        mockkStatic(ProjectFileIndex::class)
-        val projectFileIndex = mockk<ProjectFileIndex>()
-        every { ProjectFileIndex.getInstance(project) } returns projectFileIndex
-        every { projectFileIndex.isInContent(preview) } returns false
-        every { projectFileIndex.isInContent(unrelatedOpenFile) } returns true
-
-        val method = InspectionHandler::class.java.getDeclaredMethod("resolveActiveEditorFile", Project::class.java)
-        method.isAccessible = true
-
-        assertNull(method.invoke(InspectionHandler(), project))
     }
 
     @Test
