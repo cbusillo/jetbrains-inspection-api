@@ -81,17 +81,24 @@ settings sync, and the installed inspection plugin. Follow the external
 ### Agent smoke acceptance
 
 Run this check from the supported coding agent used for the release, using the
-external `jetbrains-inspection` helper. Retain the request, complete helper JSON,
-and the agent's final interpretation with the release evidence.
+external `jetbrains-inspection` helper. Retain the request, exact helper command,
+complete helper JSON, and the agent's final interpretation with the release
+evidence.
 
 1. Copy `test-fixtures/inspection-red-lane` into a disposable project under the
-   host's permitted artifact root. Leave the original fixture unchanged.
+   host's permitted artifact root and the helper's trusted auto-open policy.
+   For an owned test copy outside the configured trusted roots, set
+   `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
+   command. Leave the original fixture unchanged.
 2. Ask the agent to run `jb-inspect.py agent-inspect --json` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
    `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
    `--ide-version 2026.2`. Use the installed helper path and its normal trusted
-   project/lifecycle flow.
+   project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
+   assurance comes from the helper's enforced worktree match. The compact JSON
+   does not include the route base path, so retain the exact command to show
+   which path was checked and that the check was enabled.
 3. Require the agent to identify the IDE and version, report `RED` with a
    positive finding count, confirm the exact copied-project route, and report
    owned-project cleanup as `closed`. A zero finding count, `GREEN`, `UNKNOWN`,
@@ -108,12 +115,13 @@ installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash
 HELPER="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
-uv run "$HELPER" inspect \
+uv run "$HELPER" agent-inspect \
   --repo "$PWD" \
   --scope changed_files
 ```
 
-For agent readiness, use `inspect-closeout` so cleanup status is explicit:
+For agent readiness, `agent-inspect` reports a compact verdict and explicit
+cleanup status. Use `inspect-closeout` when fuller diagnostics are needed:
 
 ```bash
 uv run "$HELPER" inspect-closeout \
@@ -121,8 +129,8 @@ uv run "$HELPER" inspect-closeout \
   --scope changed_files
 ```
 
-`inspect-closeout` serializes helper-owned IDE opens, requires an exact
-current-worktree route, runs inspection, and calls the plugin lifecycle close
+Both commands serialize helper-owned IDE opens, require an exact
+current-worktree route, run inspection, and call the plugin lifecycle close
 endpoint only for projects opened by the helper. Projects that were open before
 the helper started are left open. On macOS, lifecycle opens use `open -g` by
 default so the IDE should not take focus while readiness inspection is preparing
