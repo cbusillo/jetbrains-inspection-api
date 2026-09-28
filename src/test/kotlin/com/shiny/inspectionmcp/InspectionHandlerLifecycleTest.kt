@@ -518,7 +518,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { DataManager.getInstance() } returns mockDataManager
         every { CommonDataKeys.PROJECT.getData(dataContext) } returns dataContextProject
 
-        assertSame(dataContextProject, currentProjectWithoutSelector())
+        assertEquals("DataContextProject", statusProjectName())
     }
 
     @Test
@@ -536,7 +536,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockDataManager.dataContextFromFocusAsync } returns promise
         every { DataManager.getInstance() } returns mockDataManager
 
-        assertNull(currentProjectWithoutSelector())
+        assertNull(statusProjectName())
     }
 
     @Test
@@ -580,14 +580,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockWindowManager.suggestParentWindow(mockProject2) } returns mockWindow2
         every { mockWindowManager.suggestParentWindow(mockProject3) } returns mockWindow3
         
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        
-        val result = method.invoke(handler, null) as Project?
-        
-        assertNotNull(result)
-        assertEquals("ActiveProject", result?.name)
+        assertEquals("ActiveProject", statusProjectName())
     }
 
     @Test
@@ -625,14 +618,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockWindowManager.suggestParentWindow(mockProject1) } returns mockWindow1
         every { mockWindowManager.suggestParentWindow(mockProject2) } returns mockWindow2
         
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        
-        val result = method.invoke(handler, null) as Project?
-        
-        assertNotNull(result)
-        assertEquals("FirstProject", result?.name)
+        assertEquals("FirstProject", statusProjectName())
     }
 
     @Test
@@ -657,7 +643,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         every { mockWindowManager.suggestParentWindow(firstOpenProject) } returns inactiveWindow
         every { mockWindowManager.suggestParentWindow(activeWindowProject) } returns activeWindow
 
-        assertSame(activeWindowProject, currentProjectWithoutSelector())
+        assertEquals(activeWindowProject.name, statusProjectName())
     }
 
     @Test
@@ -677,32 +663,14 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         
         every { mockProjectManager.openProjects } returns arrayOf(mockProject1, mockProject2)
         
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        
-        val result1 = method.invoke(handler, "ProjectTwo") as Project?
-        assertNotNull(result1)
-        assertEquals("ProjectTwo", result1?.name)
-        
-        val result2 = method.invoke(handler, "ProjectOne") as Project?
-        assertNotNull(result2)
-        assertEquals("ProjectOne", result2?.name)
-        
-        val result3 = method.invoke(handler, "NonExistent") as Project?
-        assertNull(result3)
+        assertEquals("ProjectTwo", statusProjectName("ProjectTwo"))
+        assertEquals("ProjectOne", statusProjectName("ProjectOne"))
+        assertNull(statusProjectName("NonExistent"))
     }
 
     @Test
     fun `test getCurrentProject treats blank project name as fallback selector`() {
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-
-        val result = method.invoke(handler, "   ") as Project?
-
-        assertNotNull(result)
-        assertEquals("TestProject", result?.name)
+        assertEquals("TestProject", statusProjectName("   "))
     }
 
     @Test
@@ -3783,13 +3751,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         )
         every { mockProjectManager.openProjects } returns arrayOf(exactProjectFileMatch, longerContainingBasePath)
 
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-
-        val result = method.invoke(handler, "/repo/app/.idea/misc.xml") as Project?
-
-        assertNotNull(result)
-        assertEquals("ExactProjectFile", result?.name)
+        assertEquals("ExactProjectFile", statusProjectName("/repo/app/.idea/misc.xml"))
     }
 
     @Test
@@ -3879,13 +3841,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
         every { mockWindowManager.suggestParentWindow(mockProject) } returns null
 
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-
-        val result = method.invoke(handler, null) as Project?
-
-        assertNotNull(result)
-        assertEquals("TestProject", result?.name)
+        assertEquals("TestProject", statusProjectName())
     }
 }

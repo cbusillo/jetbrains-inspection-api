@@ -35,6 +35,7 @@ import io.netty.handler.codec.http.QueryStringDecoder
 import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
+import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.buffer.Unpooled
 import io.netty.channel.ChannelHandlerContext
 import org.jdom.Element
@@ -201,10 +202,15 @@ internal abstract class InspectionHandlerTestSupport {
         return project
     }
 
-    protected fun currentProjectWithoutSelector(): Project? {
-        val method = InspectionHandler::class.java.getDeclaredMethod("getCurrentProject", String::class.java)
-        method.isAccessible = true
-        return method.invoke(handler, null) as Project?
+    protected fun statusProjectName(selector: String? = null): String? {
+        ProjectManager.getInstance().openProjects.forEach(::mockInspectionPrerequisites)
+        every { mockApplication.isDispatchThread } returns true
+        val query = selector?.let { "?project=" + java.net.URLEncoder.encode(it, Charsets.UTF_8) } ?: ""
+        val response = processGetRequest("/api/inspection/status$query")
+        if (response.status() == HttpResponseStatus.NOT_FOUND) return null
+        val body = response.content().toString(Charsets.UTF_8)
+        return Regex("\"project_name\":\\s*\"([^\"]*)\"").find(body)?.groupValues?.get(1)
+            ?: error("status response has no project_name: $body")
     }
 
     protected fun seedCleanSnapshotFromEarlierRun() {
