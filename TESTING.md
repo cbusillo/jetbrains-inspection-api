@@ -15,9 +15,9 @@ If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts. Set `JAVA_HOME_25` when Java 25 is not
 discoverable for a canary source build.
 
-In the Every Code sandbox, Gradle may need escalated permissions. If you see
-"Operation not permitted" from NativeServices, re-run the command with
-escalation.
+Gradle may need additional sandbox permissions. If you see "Operation not
+permitted" from NativeServices, re-run the command with the required
+permissions.
 
 ## Local commands
 
@@ -64,6 +64,48 @@ When verifying an installed plugin in a live IDE:
 - **Redacted Failure Reporting**: On resolution failure, verify that dialogs and IDE logs report redacted strategy attempt outcomes with user home directory paths replaced by `~`.
 - **Workflow Support**: Confirm agent workflows operate via the preferred `codex-skills` `jetbrains-inspection` helper while MCP server tools remain fully supported.
 
+### IDE selection and lifecycle troubleshooting
+
+Product selectors such as `IntelliJ IDEA`, `PyCharm`, and `WebStorm` target the
+latest installed stable IDE. Use an EAP only when the test explicitly requires
+`--ide-channel eap`; discovering an EAP installation does not make it the target.
+Use exact version and app selectors for compatibility evidence.
+
+If auto-open reports `ide_selection_required`, `ide_config_ambiguous`, or
+`ide_config_missing`, check the repository's IDE metadata or pass an exact IDE
+selector for the run. Before changing plugin code for an auto-open failure,
+check trusted roots, pending project-opening prompts, IDE config layout,
+settings sync, and the installed inspection plugin. Follow the external
+`jetbrains-inspection` skill's lifecycle guidance when changing durable setup.
+
+### Agent smoke acceptance
+
+Run this check from the supported coding agent used for the release, using the
+external `jetbrains-inspection` helper. Retain the request, exact helper command,
+complete helper JSON, and the agent's final interpretation with the release
+evidence.
+
+1. Copy `test-fixtures/inspection-red-lane` into a disposable project under the
+   host's permitted artifact root and the helper's trusted auto-open policy.
+   For an owned test copy outside the configured trusted roots, set
+   `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
+   command. Leave the original fixture unchanged.
+2. Ask the agent to run `jb-inspect.py agent-inspect --json` on that exact copy
+   with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
+   `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
+   `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
+   `--ide-version 2026.2`. Use the installed helper path and its normal trusted
+   project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
+   assurance comes from the helper's enforced worktree match. The compact JSON
+   does not include the route base path, so retain the exact command to show
+   which path was checked and that the check was enabled.
+3. Require the agent to identify the IDE and version, report `RED` with a
+   positive finding count, confirm the exact copied-project route, and report
+   owned-project cleanup as `closed`. A zero finding count, `GREEN`, `UNKNOWN`,
+   mismatched route, or unresolved cleanup does not satisfy this check.
+4. Retain the evidence before removing the disposable copy, and confirm the
+   source fixture and preexisting IDE projects were left unchanged.
+
 ## Agent inspection helper
 
 The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
@@ -73,12 +115,13 @@ installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash
 HELPER="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
-uv run "$HELPER" inspect \
+uv run "$HELPER" agent-inspect \
   --repo "$PWD" \
   --scope changed_files
 ```
 
-For agent readiness, use `inspect-closeout` so cleanup status is explicit:
+For agent readiness, `agent-inspect` reports a compact verdict and explicit
+cleanup status. Use `inspect-closeout` when fuller diagnostics are needed:
 
 ```bash
 uv run "$HELPER" inspect-closeout \
@@ -86,8 +129,8 @@ uv run "$HELPER" inspect-closeout \
   --scope changed_files
 ```
 
-`inspect-closeout` serializes helper-owned IDE opens, requires an exact
-current-worktree route, runs inspection, and calls the plugin lifecycle close
+Both commands serialize helper-owned IDE opens, require an exact
+current-worktree route, run inspection, and call the plugin lifecycle close
 endpoint only for projects opened by the helper. Projects that were open before
 the helper started are left open. On macOS, lifecycle opens use `open -g` by
 default so the IDE should not take focus while readiness inspection is preparing
@@ -525,12 +568,8 @@ evidence for:
 - `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
   stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
-- The exec-harness worktree scenario in
-  `test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json`, with
-  `JETBRAINS_INSPECTION_API_REPO` pointing at this checkout,
-  `CODE_EXEC_HARNESS_ROOT` pointing at the checkout that contains
-  `tools/code-exec-harness`, and `JETBRAINS_INSPECTION_IDE_CONFIG_DIR` pointing
-  at the installed IntelliJ IDEA 2026.2 config directory.
+- [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable
+  2026.2 selector and the supported coding agent used for the release.
 
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a
@@ -541,14 +580,9 @@ the timed-out response still reports `inspection_in_progress`, exercise
 remains responsive while lifecycle close runs. A `run_changed` response must
 leave the newer run untouched and defer helper-owned project cleanup.
 
-For normal dogfood against the latest installed stable IDE, use
-`qualityGate.manualSmoke.execHarnessInstalledWorktree` from `.github/github.json`
-or run `test-fixtures/exec-harness/jetbrains-inspection-installed-worktree-live.json`
-with the harness output rooted in this checkout and
-`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` pointing at the installed stable IntelliJ
-IDEA config directory. The 2026.2 fixture is an exact EAP compatibility gate; do
-not use it for ordinary local agent-readiness checks unless the matching 2026.2
-EAP app and config directory are installed.
+For normal dogfood, use [agent smoke acceptance](#agent-smoke-acceptance)
+against the latest installed stable IDE. Reserve the exact 2026.2 selector for
+compatibility evidence when that version is installed.
 
 ### Normal-IDE traversal lifecycle
 

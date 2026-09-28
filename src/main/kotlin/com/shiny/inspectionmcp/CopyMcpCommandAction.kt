@@ -125,15 +125,11 @@ private fun buildMcpSetupOptions(jarPath: Path): List<McpSetupOption> {
     val port = resolveIdePort()?.toString()
     val name = "inspection-jetbrains"
 
-    val codeCommand = "code mcp add $name ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val codexCommand = "codex mcp add $name -- ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val claudeCommand = "claude mcp add --transport stdio $name --scope user -- ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val geminiCommand = "gemini mcp add -s user $name ${quote(javaBin)} -jar ${quote(jarPath.toString())}"
     val fixedPortNote = port?.let { "\n\nFixed-port fallback: add --env IDE_PORT=$it to target only this IDE." } ?: ""
     val allCommands = buildString {
-        appendLine("Every Code")
-        appendLine(codeCommand)
-        appendLine()
         appendLine("Codex CLI")
         appendLine(codexCommand)
         appendLine()
@@ -146,16 +142,11 @@ private fun buildMcpSetupOptions(jarPath: Path): List<McpSetupOption> {
     }.trim()
 
     return listOf(
-        McpSetupOption("Every Code", codeCommand),
         McpSetupOption("Codex CLI", codexCommand),
         McpSetupOption("Claude Code", claudeCommand),
         McpSetupOption("Gemini CLI", geminiCommand),
         McpSetupOption("Copy all commands", allCommands, McpSetupKind.MULTI)
     )
-}
-
-internal fun resolveMcpJarPath(): Path? {
-    return resolveMcpJarResult().jarPath
 }
 
 internal fun resolveMcpJarResult(
@@ -436,8 +427,7 @@ internal fun scanPluginsDirForMcpJar(pluginsPath: Path): Path? {
         Files.list(pluginsPath).use { stream ->
             stream.asSequence()
                 .filter { Files.isDirectory(it) }
-                .mapNotNull { child -> resolveMcpJarPathFromPluginPath(child) }
-                .firstOrNull()
+                .firstNotNullOfOrNull { child -> resolveMcpJarPathFromPluginPath(child) }
         }
     }.getOrNull()
 }

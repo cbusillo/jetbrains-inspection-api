@@ -56,9 +56,6 @@ You can also run `Tools` → `Copy MCP Setup`, pick your MCP client, then paste 
 Manual examples:
 
 ```bash
-# Every Code
-code mcp add inspection-jetbrains "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
-
 # Codex CLI
 codex mcp add inspection-jetbrains -- "/path/to/java" -jar "/path/to/plugin/lib/jetbrains-inspection-mcp.jar"
 
@@ -1011,19 +1008,14 @@ JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
 ./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ```
 
-For normal agent-facing worktree proof, run the maintained installed-IDE
-exec-harness scenario in
-`test-fixtures/exec-harness/jetbrains-inspection-installed-worktree-live.json`.
-It copies the red-lane fixture into an isolated workspace and requires the
-helper to prove a `RED` result, cleanup, and exact route matching in the latest
-installed stable IntelliJ IDEA. The 2026.2 fixture in
-`test-fixtures/exec-harness/jetbrains-inspection-262-worktree-live.json` is an
-exact 2026.2 compatibility gate; use it only when the matching 2026.2 app and
-config directory are installed. Set `JETBRAINS_INSPECTION_API_REPO` to this
-checkout and `CODE_EXEC_HARNESS_ROOT` to the checkout that contains
-`tools/code-exec-harness` when running either scenario directly. Set
-`JETBRAINS_INSPECTION_IDE_CONFIG_DIR` to the installed stable IntelliJ IDEA
-config directory for the installed-IDE scenario.
+For agent-facing worktree proof, follow
+[agent smoke acceptance](TESTING.md#agent-smoke-acceptance) with the supported
+coding agent used for the release. It must interpret the helper's expected
+`RED` result from an isolated copy of the red-lane fixture, verify the exact
+project route, and report completed owned-project cleanup. Use the latest
+installed stable IntelliJ IDEA for normal dogfood and the exact stable 2026.2
+selector for compatibility evidence. Retain the request, helper JSON, and
+agent answer together.
 
 Shortcut:
 
