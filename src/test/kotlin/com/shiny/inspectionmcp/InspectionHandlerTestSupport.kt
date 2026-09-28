@@ -375,10 +375,22 @@ internal abstract class InspectionHandlerTestSupport {
             "&close_token=$closeToken"
 
     protected fun buildInspectionStatus(): MutableMap<String, Any> {
-        val method = InspectionHandler::class.java.getDeclaredMethod("buildInspectionStatus", Project::class.java)
-        method.isAccessible = true
+        val response = processGetRequest("/api/inspection/status")
+        val body = response.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.OK, response.status(), body)
         @Suppress("UNCHECKED_CAST")
-        return method.invoke(handler, mockProject) as MutableMap<String, Any>
+        return jsonValue(kotlinx.serialization.json.Json.parseToJsonElement(body)) as MutableMap<String, Any>
+    }
+
+    private fun jsonValue(element: kotlinx.serialization.json.JsonElement): Any? = when (element) {
+        is kotlinx.serialization.json.JsonObject -> element.mapValuesTo(linkedMapOf()) { (_, value) -> jsonValue(value) }
+        is kotlinx.serialization.json.JsonArray -> element.map(::jsonValue)
+        kotlinx.serialization.json.JsonNull -> null
+        is kotlinx.serialization.json.JsonPrimitive -> when {
+            element.isString -> element.content
+            element.content == "true" || element.content == "false" -> element.content.toBoolean()
+            else -> element.content.toIntOrNull() ?: element.content.toLongOrNull() ?: element.content.toDouble()
+        }
     }
 
     protected fun invokeTargetedAnalysisScopeResolver(methodName: String, virtualFile: VirtualFile): Any? {
@@ -646,39 +658,10 @@ internal abstract class InspectionHandlerTestSupport {
     }
 
     protected fun getFileInspectionProblems(files: List<String>): String {
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "getInspectionProblems",
-            Project::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            Int::class.javaPrimitiveType,
-            Int::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            List::class.java,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            Int::class.javaObjectType,
-        )
-        method.isAccessible = true
-        return method.invoke(
-            handler,
-            mockProject,
-            "all",
-            "files",
-            null,
-            null,
-            100,
-            0,
-            false,
-            null,
-            files,
-            true,
-            null,
-            null,
-        ) as String
+        runPooledTasksInline()
+        val fileQuery = files.joinToString("") { "&file=" + java.net.URLEncoder.encode(it, Charsets.UTF_8) }
+        val response = processGetRequest("/api/inspection/problems?scope=files$fileQuery")
+        return response.content().toString(Charsets.UTF_8)
     }
 
     protected fun setInspectionRunState(projectKey: String, state: InspectionRunState) {
