@@ -31,6 +31,7 @@ import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.QueryStringDecoder
 import org.assertj.core.api.Assertions.assertThat
+import org.assertj.core.api.Assertions.assertThatThrownBy
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.net.URLEncoder
@@ -62,6 +63,27 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         ReadAction.run<RuntimeException> {
             assertThat(hasUnprovenCFamilyBatchAnnotator(profile.getAllEnabledInspectionTools(project), listOf(file), false)).isFalse()
             assertThat(hasUnprovenCFamilyBatchAnnotator(applicableProfile.getAllEnabledInspectionTools(project), listOf(file), false)).isTrue()
+        }
+    }
+
+    @Test
+    fun `module interface files count as C family and exhausted budgets fail closed`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, BatchAnnotatorInspection())
+        val root = requireNotNull(LocalFileSystem.getInstance().findFileByNioFile(Path.of(createLocalContentRoot("module.cxxm"))))
+        val file = ReadAction.compute<PsiFile, RuntimeException> {
+            requireNotNull(PsiManager.getInstance(project).findFile(requireNotNull(root.findChild("module.cxxm"))))
+        }
+        val groups = profile.getAllEnabledInspectionTools(project)
+        ReadAction.run<RuntimeException> {
+            assertThat(hasUnprovenCFamilyBatchAnnotator(groups, listOf(file), false)).isTrue()
+            var budgetChecks = 0
+            assertThatThrownBy {
+                hasUnprovenCFamilyBatchAnnotator(groups, listOf(file), false) {
+                    budgetChecks += 1
+                    if (budgetChecks > groups.size) throw NativeInspectionObservationUnavailable("time_limit")
+                }
+            }.isInstanceOf(NativeInspectionObservationUnavailable::class.java)
         }
     }
 

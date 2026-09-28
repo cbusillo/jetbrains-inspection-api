@@ -9,9 +9,11 @@ import com.intellij.psi.PsiFile
 
 internal const val UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON = "native_cpp_batch_annotator_unproven"
 
+private val C_FAMILY_FILE_TYPE_NAMES = setOf("C/C++", "C/C++ Header", "C++", "ObjectiveC")
+private val C_FAMILY_LANGUAGE_IDS = setOf("C++", "C", "ObjectiveC")
 private val C_FAMILY_SOURCE_EXTENSIONS = setOf(
-    "c", "cc", "cp", "cpp", "cxx", "c++", "cppm", "ixx",
-    "h", "hh", "hp", "hpp", "hxx", "h++", "inl", "ipp", "tpp", "tcc",
+    "c", "cc", "cp", "cpp", "cxx", "c++", "cppm", "ixx", "cxxm", "c++m", "ccm", "mxx",
+    "h", "hh", "hp", "hpp", "hxx", "h++", "icc", "inl", "ipp", "tpp", "tcc",
     "m", "mm", "cu", "cuh",
 )
 
@@ -19,6 +21,11 @@ internal fun isCFamilySourcePath(path: String): Boolean {
     val name = path.substringAfterLast('/')
     return name.contains('.') && name.substringAfterLast('.').lowercase() in C_FAMILY_SOURCE_EXTENSIONS
 }
+
+private fun isCFamilyFile(file: PsiFile): Boolean =
+    file.fileType.name in C_FAMILY_FILE_TYPE_NAMES ||
+        file.viewProvider.languages.any { it.id in C_FAMILY_LANGUAGE_IDS } ||
+        file.virtualFile?.path?.let(::isCFamilySourcePath) == true
 
 /**
  * The batch runner calls [ExternalAnnotatorBatchInspection] tools through `checkFile` without publishing
@@ -28,15 +35,20 @@ internal fun hasUnprovenCFamilyBatchAnnotator(
     toolGroups: Collection<Tools>,
     files: List<PsiFile>,
     includeDoNotShow: Boolean,
+    checkBudget: () -> Unit = {},
 ): Boolean {
     val batchAnnotatorGroups = toolGroups.filter { group ->
+        checkBudget()
         (group.tool as? LocalInspectionToolWrapper)?.tool is ExternalAnnotatorBatchInspection
     }
     if (batchAnnotatorGroups.isEmpty()) return false
-    return files.any { file ->
+    val cFamilyFiles = files.filter { file ->
+        checkBudget()
+        isCFamilyFile(file)
+    }
+    return cFamilyFiles.any { file ->
         ProgressManager.checkCanceled()
-        val path = file.virtualFile?.path ?: return@any false
-        if (!isCFamilySourcePath(path)) return@any false
+        checkBudget()
         val enabled = batchAnnotatorGroups.mapNotNull { group ->
             group.getEnabledTool(file, includeDoNotShow) as? LocalInspectionToolWrapper
         }
