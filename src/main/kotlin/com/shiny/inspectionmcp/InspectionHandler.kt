@@ -6152,11 +6152,6 @@ class InspectionHandler : HttpRequestHandler() {
         return resolveActiveEditorFile(project)?.path?.let(::normalizeFileSystemPath)
     }
 
-    @Suppress("unused")
-    private fun waitForInspection(projectName: String?, timeoutMsRaw: Long?, pollMsRaw: Long?): String {
-        return waitForInspection(projectName, timeoutMsRaw, pollMsRaw, null, null)
-    }
-
     private fun waitForInspection(
         projectName: String?,
         timeoutMsRaw: Long?,
@@ -7799,11 +7794,6 @@ class InspectionHandler : HttpRequestHandler() {
             )
         }
         return runState
-    }
-
-    @Suppress("unused")
-    private fun beginInspectionRun(project: Project): InspectionRunState {
-        return beginInspectionRunInternal(project, null)
     }
 
     private fun isInspectionInProgress(project: Project): Boolean {
