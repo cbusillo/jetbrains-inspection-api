@@ -5445,34 +5445,6 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    @Suppress("unused")
-    private fun getInspectionProblems(
-        project: Project,
-        severity: String = "all",
-        scope: String = "whole_project",
-        problemType: String? = null,
-        filePattern: String? = null,
-        limit: Int = 100,
-        offset: Int = 0,
-        includeStale: Boolean = false,
-    ): String {
-        return getInspectionProblemsInternal(
-            project = project,
-            severity = severity,
-            scope = scope,
-            problemType = problemType,
-            filePattern = filePattern,
-            limit = limit,
-            offset = offset,
-            includeStale = includeStale,
-            directoryParam = null,
-            files = null,
-            includeUnversioned = true,
-            changedFilesMode = null,
-            maxFiles = null,
-        )
-    }
-
     private fun withCurrentProject(
         context: ChannelHandlerContext,
         projectName: String?,
