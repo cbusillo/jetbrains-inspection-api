@@ -368,7 +368,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals("environment", diagnostic["outcome_ownership"])
         assertEquals(true, diagnostic["python_sdk_settle_observed_registered_local_sdk"])
         assertEquals(1, diagnostic["python_sdk_settle_deadline_extension_count"])
-        assertEquals(35L, diagnostic["python_sdk_settle_active_deadline_ms"])
+        assertEquals(35, diagnostic["python_sdk_settle_active_deadline_ms"])
         verify(exactly = 0) { mockInspectionManager.createNewGlobalContext() }
     }
 
@@ -2017,14 +2017,14 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val smartWaitStatus = buildInspectionStatus()
 
         assertEquals("sync", syncStatus["inspection_stage"])
-        assertEquals(500L, syncStatus["inspection_stage_elapsed_ms"])
-        assertEquals(1000L, syncStatus["inspection_run_elapsed_ms"])
+        assertEquals(500, syncStatus["inspection_stage_elapsed_ms"])
+        assertEquals(1000, syncStatus["inspection_run_elapsed_ms"])
         assertEquals("smart_wait", smartWaitStatus["inspection_stage"])
-        assertEquals(0L, smartWaitStatus["inspection_stage_elapsed_ms"])
-        assertEquals(2000L, smartWaitStatus["inspection_run_elapsed_ms"])
+        assertEquals(0, smartWaitStatus["inspection_stage_elapsed_ms"])
+        assertEquals(2000, smartWaitStatus["inspection_run_elapsed_ms"])
         @Suppress("UNCHECKED_CAST")
         val history = smartWaitStatus["inspection_stage_history"] as List<Map<String, Any>>
-        assertEquals(listOf(mapOf("stage" to "sync", "elapsed_ms" to 1500L)), history)
+        assertEquals(listOf(mapOf("stage" to "sync", "elapsed_ms" to 1500)), history)
 
         val transitionsPerRound = 12
         val historySizeAfterEachRound = (1..2).map {
@@ -2065,8 +2065,8 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val status = buildInspectionStatus()
 
         assertEquals("smart_wait", status["inspection_stage"])
-        assertEquals(2000L, status["inspection_stage_elapsed_ms"])
-        assertEquals(3000L, status["inspection_run_elapsed_ms"])
+        assertEquals(2000, status["inspection_stage_elapsed_ms"])
+        assertEquals(3000, status["inspection_run_elapsed_ms"])
         assertEquals("completed", status["inspection_terminal_outcome"])
     }
 

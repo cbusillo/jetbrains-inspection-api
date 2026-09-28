@@ -188,7 +188,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         val diagnostic = status["capture_diagnostic"] as Map<String, Any?>
         assertEquals(true, diagnostic["python_sdk_settle_attempted"])
         assertEquals(true, diagnostic["python_sdk_settle_timed_out"])
-        assertEquals(25L, diagnostic["python_sdk_settle_elapsed_ms"])
+        assertEquals(25, diagnostic["python_sdk_settle_elapsed_ms"])
     }
 
     @Test
