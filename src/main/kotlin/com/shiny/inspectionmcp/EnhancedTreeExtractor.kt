@@ -105,10 +105,6 @@ class EnhancedTreeExtractor {
         )
     }
     
-    fun extractAllProblems(project: Project): List<Map<String, Any>> {
-        return extractAllProblemsWithStatus(project).problems
-    }
-
     internal fun extractAllProblemsWithStatus(project: Project): ProblemExtractionResult {
         val problems = mutableListOf<Map<String, Any>>()
         var succeeded = true

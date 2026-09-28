@@ -872,7 +872,7 @@ class EnhancedTreeExtractorTest {
         panel.add(JTree(root))
         every { problemsContent.component } returns panel
 
-        val problems = extractor.extractAllProblems(project)
+        val problems = extractor.extractAllProblemsWithStatus(project).problems
 
         assertEquals(1, problems.size)
         assertEquals("Fallback warning", problems[0]["description"])
@@ -925,7 +925,7 @@ class EnhancedTreeExtractorTest {
         panel.add(JTree(root))
         every { problemsContent.component } returns panel
 
-        val problems = extractor.extractAllProblems(project)
+        val problems = extractor.extractAllProblemsWithStatus(project).problems
 
         assertEquals(1, problems.size)
         assertEquals("Fallback warning", problems[0]["description"])
