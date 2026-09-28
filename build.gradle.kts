@@ -1,5 +1,4 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
-import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.GradleException
@@ -10,7 +9,6 @@ import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.tasks.Internal
 import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.TaskAction
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.time.Instant
 import java.util.Properties
@@ -30,8 +28,6 @@ jacoco {
 
 group = "com.jetbrains.inspection"
 version = project.property("pluginVersion").toString()
-val isCanaryPluginVersion = Regex("^[0-9]+\\.[0-9]+\\.[0-9]+-canary\\.[1-9][0-9]*$")
-    .matches(version.toString())
 
 abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
     @get:Internal
@@ -121,6 +117,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
 val generatedBuildInfoDir = layout.buildDirectory.dir("generated/resources/inspectionBuildInfo")
 val generateInspectionBuildInfo = tasks.register<GenerateInspectionBuildInfoTask>("generateInspectionBuildInfo") {
+    description = "Records the plugin version and source provenance in the packaged resources."
     gitDirectory.set(layout.projectDirectory)
     pluginVersion.set(project.property("pluginVersion").toString())
     outputFile.set(generatedBuildInfoDir.map {
@@ -207,15 +204,10 @@ tasks {
         if (externalVerificationArchive.isPresent) {
             archiveFile.set(layout.file(externalVerificationArchive.map { file(it) }))
         }
-        val allowlistName = if (isCanaryPluginVersion) {
-            "canary-internal-api-allowlist.txt"
-        } else {
-            "stable-internal-api-allowlist.txt"
-        }
         val allowlistScriptPath = project.layout.projectDirectory
             .file("scripts/verify-internal-api-allowlist.py").asFile.absolutePath
         val allowlistManifestPath = project.layout.projectDirectory
-            .file("config/plugin-verifier/$allowlistName").asFile.absolutePath
+            .file("config/plugin-verifier/stable-internal-api-allowlist.txt").asFile.absolutePath
         val workingDirectoryPath = project.layout.projectDirectory.asFile.absolutePath
         inputs.file(allowlistScriptPath).withPropertyName("internalApiAllowlistScript")
         inputs.file(allowlistManifestPath).withPropertyName("internalApiAllowlistManifest")
@@ -408,11 +400,7 @@ intellijPlatform {
     
     pluginVerification {
         ides {
-            if (isCanaryPluginVersion) {
-                create(IntelliJPlatformType.IntellijIdeaUltimate, "262.9437.65")
-            } else {
-                recommended()
-            }
+            recommended()
         }
         failureLevel.set(listOf(
             VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
