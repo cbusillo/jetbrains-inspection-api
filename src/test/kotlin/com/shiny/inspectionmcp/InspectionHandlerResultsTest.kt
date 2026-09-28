@@ -112,39 +112,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             )
         )
 
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "getInspectionProblems",
-            Project::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            String::class.java,
-            Int::class.javaPrimitiveType,
-            Int::class.javaPrimitiveType,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            List::class.java,
-            Boolean::class.javaPrimitiveType,
-            String::class.java,
-            Int::class.javaObjectType,
-        )
-        method.isAccessible = true
-        val body = method.invoke(
-            handler,
-            mockProject,
-            "all",
-            "files",
-            null,
-            null,
-            100,
-            0,
-            false,
-            null,
-            listOf("src/Included.kt"),
-            true,
-            null,
-            null,
-        ) as String
+        val body = getFileInspectionProblems(listOf("src/Included.kt"))
 
         assertTrue(body.contains("\"total_problems\": 1"))
         assertTrue(body.contains("included problem"))
@@ -1766,16 +1734,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
 
     @Test
     fun `test waitForInspection reports missing explicit project clearly`() {
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "waitForInspection",
-            String::class.java,
-            Long::class.javaObjectType,
-            Long::class.javaObjectType,
-        )
-        method.isAccessible = true
-
-        val response = method.invoke(handler, "NonExistent", 10L, 10L) as String
+        runPooledTasksInline()
+        val response = processGetRequest("/api/inspection/wait?project=NonExistent&timeout_ms=10&poll_ms=10")
+            .content().toString(Charsets.UTF_8)
 
         assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
         assertTrue(response.contains("\"completion_reason\": \"no_project\""))
