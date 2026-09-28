@@ -1173,11 +1173,11 @@ private val EXACT_PROOF_RESULT_SETTLING_WINDOW = ResultSettlingWindow(minResults
 internal fun resultSettlingWindow(
     scopeParam: String?,
     exactProofEstablished: Boolean,
-    contextExtractionSucceeded: Boolean,
+    contextExtractionComplete: Boolean,
 ): ResultSettlingWindow {
     val exactProofCoversScope = scopeParam?.trim()?.lowercase() in setOf("files", "changed_files") &&
         exactProofEstablished &&
-        contextExtractionSucceeded
+        contextExtractionComplete
     return if (exactProofCoversScope) EXACT_PROOF_RESULT_SETTLING_WINDOW else DEFAULT_RESULT_SETTLING_WINDOW
 }
 
@@ -7279,7 +7279,8 @@ class InspectionHandler : HttpRequestHandler() {
                             scopeParam = effectiveCaptureScope.scopeParam,
                             exactProofEstablished = executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED &&
                                 boundedProof?.proofEstablished == true,
-                            contextExtractionSucceeded = extractedFromContextSucceeded,
+                            contextExtractionComplete = extractedFromContextSucceeded &&
+                                contextExtraction.unreadableToolCount == 0,
                         )
                         if (canSettleResults) {
                             transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
