@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This repo is designed to be worked on with **Every Code** (the Codex CLI fork).
+This repo contains the Inspection API plugin and its bundled MCP server.
 
 User-facing setup, API usage, and release details live in [README.md](README.md).
 Testing details live in [TESTING.md](TESTING.md) and manual IDE smoke recipes
@@ -22,8 +22,8 @@ workflows, and cleanup policy.
 
 - If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
   JDK 21 path (the IDE's bundled runtime is fine).
-- In the Every Code sandbox, Gradle may need escalated permissions; if you see
-  "Operation not permitted" from NativeServices, re-run with escalation.
+- Gradle may need additional sandbox permissions; if you see "Operation not
+  permitted" from NativeServices, re-run with the required permissions.
 - Prefer descriptive names to comments/docstrings; keep commentary minimal.
 - Avoid stale docs: keep this file evergreen and link to README for specifics.
 - If API status semantics, route metadata, clean/capture classification, or
