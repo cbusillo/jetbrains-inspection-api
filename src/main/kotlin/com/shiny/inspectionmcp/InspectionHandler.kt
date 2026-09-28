@@ -7122,6 +7122,27 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                 }
             }
+            nativeProofCollector?.let { collector ->
+                if (collector.result().proofEstablished && collector.expectedFilePaths().any(::isCFamilySourcePath)) {
+                    val deadline = System.nanoTime() + 2_000_000_000L
+                    val unproven = try {
+                        retryWritePreemptedInspectionRead(
+                            checkBudget = { if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("time_limit") },
+                        ) {
+                            runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
+                                hasUnprovenCFamilyBatchAnnotator(
+                                    globalContext.toolGroups(), collector.observedScopeFiles(), profile.singleTool != null,
+                                )
+                            }
+                        }
+                    } catch (error: ProcessCanceledException) {
+                        throw error
+                    } catch (_: Exception) {
+                        true
+                    }
+                    if (unproven) collector.markUnavailable(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+                }
+            }
             ProgressManager.checkCanceled()
 
             try {

@@ -160,6 +160,8 @@ internal class NativeInspectionExecutionProofCollector(
         failedTools += toolShortName
     }
 
+    fun expectedFilePaths(): Set<String> = expectedFiles
+
     fun markCompletedNormally() {
         completedNormally.set(true)
     }
