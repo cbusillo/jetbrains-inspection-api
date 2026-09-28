@@ -25,6 +25,39 @@ class InspectionCaptureTimingTest {
         assertTrue(canTrustEmpty(timing.pollingElapsedMs(32_000L)))
     }
 
+    @Test
+    fun `window for established exact proof on file scopes stops polling findings sooner than other windows`() {
+        val proven = resultSettlingWindow("files", exactProofEstablished = true, contextExtractionComplete = true)
+        val unproven = listOf(
+            resultSettlingWindow("files", exactProofEstablished = false, contextExtractionComplete = true),
+            resultSettlingWindow("changed_files", exactProofEstablished = true, contextExtractionComplete = false),
+            resultSettlingWindow("current_file", exactProofEstablished = true, contextExtractionComplete = true),
+            resultSettlingWindow("whole_project", exactProofEstablished = true, contextExtractionComplete = true),
+        )
+        val elapsedMs = proven.minResultsWaitMs
+
+        assertTrue(stopsWithFindings(proven, elapsedMs))
+        assertEquals(proven, resultSettlingWindow(" CHANGED_FILES ", exactProofEstablished = true, contextExtractionComplete = true))
+        unproven.forEach { window -> assertFalse(stopsWithFindings(window, elapsedMs)) }
+    }
+
+    @Test
+    fun `window for established exact proof on file scopes trusts empty results sooner than other windows`() {
+        val proven = resultSettlingWindow("changed_files", exactProofEstablished = true, contextExtractionComplete = true)
+        val unproven = resultSettlingWindow("changed_files", exactProofEstablished = false, contextExtractionComplete = true)
+        val elapsedMs = proven.minCleanPollingMs
+
+        assertTrue(canTrustEmpty(elapsedMs, proven.minCleanPollingMs))
+        assertFalse(canTrustEmpty(elapsedMs, unproven.minCleanPollingMs))
+    }
+
+    private fun stopsWithFindings(window: ResultSettlingWindow, pollingElapsedMs: Long): Boolean = shouldStopCapturePolling(
+        bestResultsCount = 1,
+        stableForMs = pollingElapsedMs,
+        pollingElapsedMs = pollingElapsedMs,
+        minResultsWaitMs = window.minResultsWaitMs,
+    )
+
     private fun canTrustEmpty(pollingElapsedMs: Long): Boolean = shouldTrustStableScopedEmptyResults(
         hasExecutionProofCleanEvidence = true,
         executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
@@ -35,5 +68,18 @@ class InspectionCaptureTimingTest {
         observedNonEmptyInspectionTree = false,
         stableForMs = 5_000L,
         pollingElapsedMs = pollingElapsedMs,
+    )
+
+    private fun canTrustEmpty(pollingElapsedMs: Long, minPollingMs: Long): Boolean = shouldTrustStableScopedEmptyResults(
+        hasExecutionProofCleanEvidence = true,
+        executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
+        modelVerdict = InspectionModelVerdict.CLEAN,
+        hasScopedMatcher = true,
+        scopedContextResultsEmpty = true,
+        bestResultsEmpty = true,
+        observedNonEmptyInspectionTree = false,
+        stableForMs = pollingElapsedMs,
+        pollingElapsedMs = pollingElapsedMs,
+        minPollingMs = minPollingMs,
     )
 }

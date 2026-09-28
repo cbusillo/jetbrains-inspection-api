@@ -1161,6 +1161,26 @@ internal data class InspectionCaptureTiming(
     fun hasBudget(nowMs: Long): Boolean = nowMs < deadlineMs
 }
 
+internal data class ResultSettlingWindow(
+    val minResultsWaitMs: Long,
+    val minCleanPollingMs: Long,
+)
+
+private val DEFAULT_RESULT_SETTLING_WINDOW = ResultSettlingWindow(minResultsWaitMs = 15_000L, minCleanPollingMs = 30_000L)
+private val EXACT_PROOF_RESULT_SETTLING_WINDOW = ResultSettlingWindow(minResultsWaitMs = 5_000L, minCleanPollingMs = 5_000L)
+
+// Ordinary use (#352): tool-window polling never added a finding beyond native context and an established exact proof.
+internal fun resultSettlingWindow(
+    scopeParam: String?,
+    exactProofEstablished: Boolean,
+    contextExtractionComplete: Boolean,
+): ResultSettlingWindow {
+    val exactProofCoversScope = scopeParam?.trim()?.lowercase() in setOf("files", "changed_files") &&
+        exactProofEstablished &&
+        contextExtractionComplete
+    return if (exactProofCoversScope) EXACT_PROOF_RESULT_SETTLING_WINDOW else DEFAULT_RESULT_SETTLING_WINDOW
+}
+
 internal data class ExactProofFailureContext(
     val toolShortName: String,
     val filePath: String,
@@ -7255,6 +7275,13 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                         val captureTiming = InspectionCaptureTiming(captureStartMs, currentTimeMs())
                         val canSettleResults = proofInterruptionSource == null && captureTiming.hasBudget(currentTimeMs())
+                        val settlingWindow = resultSettlingWindow(
+                            scopeParam = effectiveCaptureScope.scopeParam,
+                            exactProofEstablished = executionProofMode == InspectionExecutionProofMode.EXACT_BOUNDED &&
+                                boundedProof?.proofEstablished == true,
+                            contextExtractionComplete = extractedFromContextSucceeded &&
+                                contextExtraction.unreadableToolCount == 0,
+                        )
                         if (canSettleResults) {
                             transitionInspectionRunStage(key, runId, InspectionRunStage.RESULT_SETTLING)
                         }
@@ -7366,6 +7393,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
+                                    minPollingMs = settlingWindow.minCleanPollingMs,
                                 )
                             ) {
                                 observedStableEmptyResultsWithoutInspectionView = true
@@ -7377,7 +7405,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 observedResultEvidence.isEmpty &&
                                 !effectiveObservedNonEmptyInspectionTree &&
                                 stableForMs >= 5000L &&
-                                pollingElapsedMs >= 30000L
+                                pollingElapsedMs >= settlingWindow.minCleanPollingMs
                             ) {
                                 observedModelCleanInspection = true
                             }
@@ -7387,6 +7415,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     bestResultsCount = observedResultEvidence.count,
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
+                                    minResultsWaitMs = settlingWindow.minResultsWaitMs,
                                 )
                             ) {
                                 captureExitReason = "settled"
@@ -7418,6 +7447,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
                                 stableForMs = currentTimeMs() - lastChangeMs,
                                 pollingElapsedMs = captureTiming.pollingElapsedMs(currentTimeMs()),
+                                minPollingMs = settlingWindow.minCleanPollingMs,
                             )
                         ) {
                             observedStableEmptyResultsWithoutInspectionView = true
@@ -7431,7 +7461,7 @@ class InspectionHandler : HttpRequestHandler() {
                             finalObservedResultEvidence.isEmpty &&
                             !effectiveObservedNonEmptyInspectionTree &&
                             finalStableForMs >= 5000L &&
-                            finalPollingElapsedMs >= 30000L
+                            finalPollingElapsedMs >= settlingWindow.minCleanPollingMs
                         ) {
                             observedModelCleanInspection = true
                         }
