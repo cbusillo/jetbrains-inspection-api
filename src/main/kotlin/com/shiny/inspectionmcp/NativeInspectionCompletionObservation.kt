@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
@@ -10,6 +11,7 @@ import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.Tools
 import com.intellij.lang.Language
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
@@ -18,7 +20,8 @@ import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiRecursiveElementWalkingVisitor
 import com.intellij.util.PairProcessor
-import java.util.concurrent.ConcurrentHashMap
+import com.intellij.util.concurrency.AppExecutorUtil
+import java.util.concurrent.TimeUnit
 
 internal class NativeInspectionToolExecution(
     val wrapper: InspectionToolWrapper<*, *>,
@@ -232,44 +235,57 @@ internal fun observeNativeInspectionCandidates(
 internal fun classifyMissingNativeCompletions(
     observation: NativeInspectionCompletionObservation,
     files: List<PsiFile>,
+    context: GlobalInspectionContext,
     project: Project,
     indicator: ProgressIndicator,
 ) {
-    val deadline = System.nanoTime() + 2_000_000_000L
-    val filesByPath = files.associateBy { it.virtualFile?.path }
-    for ((filePath, executions) in observation.missingExecutions().groupBy { it.filePath }) {
-        indicator.checkCanceled()
+    val deadline = System.nanoTime() + CLASSIFICATION_BUDGET_NANOS
+    val deadlineCancellation = AppExecutorUtil.getAppScheduledExecutorService()
+        .schedule({ indicator.cancel() }, CLASSIFICATION_BUDGET_NANOS, TimeUnit.NANOSECONDS)
+    fun checkBudget() {
         if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("classification_time_limit")
-        val file = filesByPath[filePath]
-        val probed = if (file == null) emptyList() else executions.filter { it.wrapper is LocalInspectionToolWrapper }
-        (executions - probed.toSet()).forEach { observation.classify(it, MissingCompletionClass.NOT_PROBED) }
-        if (file == null || probed.isEmpty()) continue
-        val emptyByExecution = ConcurrentHashMap<NativeInspectionToolExecution, Boolean>()
-        val copies = mutableListOf<LocalInspectionToolWrapper>()
-        try {
-            val probes = probed.map { execution ->
-                val copy = InspectionProfileImpl.copyToolSettings(execution.wrapper) as LocalInspectionToolWrapper
-                copies.add(copy)
-                LocalInspectionToolWrapper(VisitorProbeInspection(copy.tool) { emptyByExecution[execution] = it })
+        indicator.checkCanceled()
+    }
+    try {
+        val filesByPath = files.associateBy { it.virtualFile?.path }
+        for (execution in observation.missingExecutions()) {
+            checkBudget()
+            val file = filesByPath[execution.filePath]
+            val wrapper = execution.wrapper as? LocalInspectionToolWrapper
+            if (file == null || wrapper == null) {
+                observation.classify(execution, MissingCompletionClass.NOT_PROBED)
+                continue
             }
-            InspectionEngine.inspectEx(
-                probes, file, file.textRange, file.textRange, false, false, false, indicator, PairProcessor.alwaysTrue(),
-            )
-        } finally {
-            copies.forEach { copy -> runCatching { copy.cleanup(project) } }
-        }
-        probed.forEach { execution ->
+            var visitorWasEmpty: Boolean? = null
+            val copy = InspectionProfileImpl.copyToolSettings(wrapper) as LocalInspectionToolWrapper
+            try {
+                copy.initialize(context)
+                val probe = LocalInspectionToolWrapper(VisitorProbeInspection(copy.tool) { visitorWasEmpty = it })
+                InspectionEngine.inspectEx(
+                    listOf(probe), file, file.textRange, file.textRange, false, false, false, indicator, PairProcessor.alwaysTrue(),
+                )
+            } finally {
+                runCatching { copy.cleanup(project) }
+            }
+            checkBudget()
             observation.classify(
                 execution,
-                when (emptyByExecution[execution]) {
+                when (visitorWasEmpty) {
                     true -> MissingCompletionClass.EMPTY_VISITOR
                     false -> MissingCompletionClass.NON_EMPTY_VISITOR
                     null -> MissingCompletionClass.NOT_PROBED
                 },
             )
         }
+    } catch (cancelled: ProcessCanceledException) {
+        if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("classification_time_limit")
+        throw cancelled
+    } finally {
+        deadlineCancellation.cancel(false)
     }
 }
+
+private const val CLASSIFICATION_BUDGET_NANOS = 2_000_000_000L
 
 private class VisitorProbeInspection(
     private val target: LocalInspectionTool,

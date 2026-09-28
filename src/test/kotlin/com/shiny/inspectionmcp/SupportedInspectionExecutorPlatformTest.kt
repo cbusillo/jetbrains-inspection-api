@@ -6,6 +6,7 @@ import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.GlobalInspectionTool
 import com.intellij.codeInspection.GlobalSimpleInspectionTool
 import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
@@ -123,6 +124,12 @@ class SupportedInspectionExecutorPlatformTest {
             listOf(mapOf("tool" to dropped.shortName, "file" to droppedFinish["probe_file"])),
         )
         assertThat(droppedFinish["silent_skip_rule_would_block_clean"]).isEqualTo(true)
+
+        val initialized = InitializationGatedInspection()
+        val droppedInitialized = classifyMissingCompletionsAfterRun(silent, initialized, dropFinishOf = initialized)
+        assertThat(droppedInitialized["missing_classification_counts"]).describedAs(droppedInitialized.toString()).isEqualTo(
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "not_probed" to 0),
+        )
     }
 
     private fun classifyMissingCompletionsAfterRun(
@@ -135,6 +142,8 @@ class SupportedInspectionExecutorPlatformTest {
         val profile = profileWith(silent, running)
         listOf(silent, running).forEach { profile.setToolEnabled(it.shortName, true, project) }
         val groups = profile.getAllEnabledInspectionTools(project)
+        val context = (InspectionManager.getInstance(project) as InspectionManagerEx).createNewGlobalContext()
+        groups.forEach { it.tool.initialize(context) }
         val collector = NativeInspectionExecutionProofCollector(project, setOf(file.virtualFile.path))
         val connection = project.messageBus.connect()
         connection.subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, object : InspectListener {
@@ -167,7 +176,9 @@ class SupportedInspectionExecutorPlatformTest {
                 observeNativeInspectionCandidates(it, groups, listOf(file), project, false)
             }
             collector.completionObservation.classifyMissingCompletions {
-                classifyMissingNativeCompletions(it, listOf(file), project, EmptyProgressIndicator())
+                classifyMissingNativeCompletions(
+                    it, listOf(file), context, project, EmptyProgressIndicator(),
+                )
             }
         }
         assertThat(visitCount(running)).describedAs("probing must not visit").isEqualTo(1)
@@ -1206,6 +1217,21 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     private class DroppedFinishInspection : RecordingInspection()
+
+    private class InitializationGatedInspection : RecordingInspection() {
+        @Volatile
+        private var initialized = false
+
+        override fun initialize(context: GlobalInspectionContext) {
+            initialized = true
+        }
+
+        override fun buildVisitor(
+            holder: ProblemsHolder,
+            isOnTheFly: Boolean,
+            session: LocalInspectionToolSession,
+        ): PsiElementVisitor = if (initialized) super.buildVisitor(holder, isOnTheFly, session) else PsiElementVisitor.EMPTY_VISITOR
+    }
 
     private class CancellingInspection : RecordingInspection() {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {

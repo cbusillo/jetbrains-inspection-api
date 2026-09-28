@@ -7151,7 +7151,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
                 runWritePriorityInspectionRead(classificationIndicator, {}) {
                     classifyMissingNativeCompletions(
-                        observation, nativeProofCollector.observedScopeFiles(), project, classificationIndicator,
+                        observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
                     )
                 }
             }
