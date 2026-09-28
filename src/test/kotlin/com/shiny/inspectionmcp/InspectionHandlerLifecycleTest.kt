@@ -3778,13 +3778,17 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
     @Test
     fun `test route base url uses numeric loopback`() {
-        val method = InspectionHandler::class.java.getDeclaredMethod("routeBaseUrl", Any::class.java)
-        method.isAccessible = true
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        mockkStatic("com.shiny.inspectionmcp.InspectionIdeIdentityKt")
+        every { resolveIdePort() } returns 63342
 
-        val result = method.invoke(handler, 63342)
+        val response = processGetRequest("/api/inspection/status")
+        val route = (jsonResponseValue(response.content().toString(Charsets.UTF_8)) as Map<*, *>)["route"] as Map<*, *>
 
         val expected = "http://" + "127.0.0.1" + ":63342" + "/api/" + "inspection"
-        assertEquals(expected, result)
+        assertEquals(expected, route["base_url"])
     }
 
     @Test

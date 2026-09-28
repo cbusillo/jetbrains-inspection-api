@@ -2680,29 +2680,21 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
 
     @Test
     fun `test buildMissingProjectResponse includes recent project suggestions`() {
-        val handler = InspectionHandler()
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "buildMissingProjectResponse",
-            String::class.java,
-        )
-        method.isAccessible = true
-
         val recentProjectManager = mockk<com.intellij.ide.RecentProjectsManagerBase>()
         val recentProjectPath = Files.createTempDirectory("inspection-recent-project").toAbsolutePath().toString()
-
         every { recentProjectManager.getRecentPaths() } returns listOf(recentProjectPath)
         every { recentProjectManager.getProjectName(recentProjectPath) } returns "Odoo API"
         every { recentProjectManager.getDisplayName(recentProjectPath) } returns "Odoo API"
-
         val originalProvider = recentProjectsManagerProvider
         recentProjectsManagerProvider = { recentProjectManager }
-
-        val response = try {
-            method.invoke(handler, "odoo api") as Map<*, *>
+        val httpResponse = try {
+            processGetRequest("/api/inspection/status?project=odoo%20api")
         } finally {
             recentProjectsManagerProvider = originalProvider
         }
+        val response = jsonResponseValue(httpResponse.content().toString(Charsets.UTF_8)) as Map<*, *>
 
+        assertEquals(HttpResponseStatus.NOT_FOUND, httpResponse.status())
         assertEquals("Requested project 'odoo api' is not open in the IDE.", response["error"])
         assertEquals("no_project", response["status"])
         assertEquals("UNKNOWN", response["inspection_verdict"])
@@ -3002,40 +2994,26 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
 
     @Test
     fun `test extractProjectQueryParameter prefers stable selectors over project`() {
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "extractProjectQueryParameter",
-            QueryStringDecoder::class.java,
-            FullHttpRequest::class.java,
+        every { mockProject.basePath } returns "/tmp/project"
+        every { mockProject.projectFilePath } returns "/tmp/project/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        every { mockApplication.isDispatchThread } returns true
+
+        val response = processGetRequest(
+            "/api/inspection/status?project=legacy-name&project_key=path:%2Ftmp%2Fproject",
         )
-        method.isAccessible = true
 
-        val urlDecoder = QueryStringDecoder("/api/inspection/route?project=legacy-name&project_key=path:%2Ftmp%2Fproject")
-        val request = mockk<FullHttpRequest>()
-        every { request.uri() } returns "/api/inspection/route?project=legacy-name&project_key=path:%2Ftmp%2Fproject"
-
-        val result = method.invoke(handler, urlDecoder, request) as String?
-
-        assertEquals("path:/tmp/project", result)
+        assertEquals(HttpResponseStatus.OK, response.status())
+        assertEquals("TestProject", (jsonResponseValue(response.content().toString(Charsets.UTF_8)) as Map<*, *>)["project_name"])
     }
 
     @Test
     fun `test project path selectors match nested directories but not siblings`() {
-        val method = InspectionHandler::class.java.getDeclaredMethod(
-            "projectMatches",
-            Project::class.java,
-            String::class.java,
-            String::class.java,
-        )
-        method.isAccessible = true
-
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
 
-        val nestedSelector = method.invoke(handler, mockProject, "ignored", "/repo/app/src/module") as Boolean
-        val siblingSelector = method.invoke(handler, mockProject, "ignored", "/repo/application/src") as Boolean
-
-        assertTrue(nestedSelector)
-        assertFalse(siblingSelector)
+        assertEquals("TestProject", statusProjectName("/repo/app/src/module"))
+        assertNull(statusProjectName("/repo/application/src"))
     }
 
     @Test
