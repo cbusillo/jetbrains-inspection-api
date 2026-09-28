@@ -52,6 +52,18 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
     }
 
     @Test
+    fun `files run with a C family file and an enabled batch annotator is not clean`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, CleanInspection(), BatchAnnotatorInspection())
+        val cppStatus = runFiles(project, Path.of(createLocalContentRoot("main.cpp"), "main.cpp").toString(), profile)
+        val javaRoot = createLocalContentRoot("Fixture.java", "class Fixture {}\n")
+        val javaStatus = runFiles(project, Path.of(javaRoot, "Fixture.java").toString(), profile)
+        assertThat(cppStatus).describedAs(cppStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(cppStatus).describedAs(cppStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON\"")
+        assertThat(javaStatus).describedAs(javaStatus).contains("\"inspection_verdict\": \"GREEN\"")
+    }
+
+    @Test
     fun `batch annotators restricted to another language do not block a C family file`() {
         val project = projectExtension.project
         val profile = registerProfile(project, JavaOnlyBatchAnnotatorInspection())
@@ -87,7 +99,13 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         }
     }
 
-    private fun runDirectory(project: Project, directory: String, profile: InspectionProfileImpl): String {
+    private fun runDirectory(project: Project, directory: String, profile: InspectionProfileImpl): String =
+        runScope(project, "scope=directory&dir=${encode(directory)}", profile)
+
+    private fun runFiles(project: Project, file: String, profile: InspectionProfileImpl): String =
+        runScope(project, "scope=files&file=${encode(file)}", profile)
+
+    private fun runScope(project: Project, scopeQuery: String, profile: InspectionProfileImpl): String {
         val handler = InspectionHandler()
         val previousExtractorFactory = enhancedTreeExtractorFactory
         val extractor = mockk<EnhancedTreeExtractor>()
@@ -97,7 +115,7 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         try {
             val trigger = request(
                 handler,
-                "/api/inspection/trigger?scope=directory&dir=${encode(directory)}&project=${encode(project.name)}&profile=${encode(profile.name)}",
+                "/api/inspection/trigger?$scopeQuery&project=${encode(project.name)}&profile=${encode(profile.name)}",
             )
             assertThat(trigger).describedAs(trigger).contains("\"status\": \"triggered\"")
             return awaitTerminalStatus(handler, project)
@@ -152,9 +170,9 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         return profile
     }
 
-    private fun createLocalContentRoot(fileName: String): String {
+    private fun createLocalContentRoot(fileName: String, content: String = "int main() { return 0; }\n"): String {
         val root = Files.createTempDirectory("c-family-batch-")
-        Files.writeString(root.resolve(fileName), "int main() { return 0; }\n")
+        Files.writeString(root.resolve(fileName), content)
         runInEdtAndGet {
             val directory = requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root))
             VfsUtil.markDirtyAndRefresh(false, true, true, directory)
