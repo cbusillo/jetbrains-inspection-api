@@ -5,8 +5,9 @@ import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
-import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.Tools
@@ -164,6 +165,7 @@ internal class NativeInspectionCompletionObservation {
 internal enum class MissingCompletionClass(val diagnosticName: String) {
     EMPTY_VISITOR("empty_visitor"),
     NON_EMPTY_VISITOR("non_empty_visitor"),
+    EXTERNAL_ANNOTATOR_BATCH("external_annotator_batch"),
     NOT_PROBED("not_probed"),
 }
 
@@ -254,6 +256,10 @@ internal fun classifyMissingNativeCompletions(
             val wrapper = execution.wrapper as? LocalInspectionToolWrapper
             if (file == null || wrapper == null) {
                 observation.classify(execution, MissingCompletionClass.NOT_PROBED)
+                continue
+            }
+            if (wrapper.tool is ExternalAnnotatorBatchInspection) {
+                observation.classify(execution, MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH)
                 continue
             }
             var visitorWasEmpty: Boolean? = null

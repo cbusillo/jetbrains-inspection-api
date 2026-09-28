@@ -12,6 +12,7 @@ import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.GlobalInspectionContextImpl
+import com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
 import com.intellij.codeInspection.ex.GlobalInspectionContextBase
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
@@ -111,24 +112,31 @@ class SupportedInspectionExecutorPlatformTest {
         val dropped = DroppedFinishInspection()
         val complete = classifyMissingCompletionsAfterRun(silent, dropped, dropFinishOf = null)
         assertThat(complete["missing_classification_counts"]).describedAs(complete.toString()).isEqualTo(
-            mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "not_probed" to 0),
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "external_annotator_batch" to 0, "not_probed" to 0),
         )
         assertThat(complete["candidate_rule_would_block_clean"]).isEqualTo(true)
         assertThat(complete["silent_skip_rule_would_block_clean"]).isEqualTo(false)
 
         val droppedFinish = classifyMissingCompletionsAfterRun(silent, dropped, dropFinishOf = dropped)
         assertThat(droppedFinish["missing_classification_counts"]).describedAs(droppedFinish.toString()).isEqualTo(
-            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "not_probed" to 0),
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "external_annotator_batch" to 0, "not_probed" to 0),
         )
         assertThat(droppedFinish["unexplained_missing_examples"]).isEqualTo(
             listOf(mapOf("tool" to dropped.shortName, "file" to droppedFinish["probe_file"])),
         )
         assertThat(droppedFinish["silent_skip_rule_would_block_clean"]).isEqualTo(true)
 
+        val batchAnnotator = BatchAnnotatorInspection()
+        val droppedBatchAnnotator = classifyMissingCompletionsAfterRun(silent, batchAnnotator, dropFinishOf = batchAnnotator)
+        assertThat(droppedBatchAnnotator["missing_classification_counts"]).describedAs(droppedBatchAnnotator.toString()).isEqualTo(
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "external_annotator_batch" to 1, "not_probed" to 0),
+        )
+        assertThat(droppedBatchAnnotator["silent_skip_rule_would_block_clean"]).isEqualTo(true)
+
         val initialized = InitializationGatedInspection()
         val droppedInitialized = classifyMissingCompletionsAfterRun(silent, initialized, dropFinishOf = initialized)
         assertThat(droppedInitialized["missing_classification_counts"]).describedAs(droppedInitialized.toString()).isEqualTo(
-            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "not_probed" to 0),
+            mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "external_annotator_batch" to 0, "not_probed" to 0),
         )
     }
 
@@ -1217,6 +1225,8 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     private class DroppedFinishInspection : RecordingInspection()
+
+    private class BatchAnnotatorInspection : RecordingInspection(), ExternalAnnotatorBatchInspection
 
     private class InitializationGatedInspection : RecordingInspection() {
         @Volatile
