@@ -123,6 +123,7 @@ internal data class BoundedExecutionProofResult(
     val nonApplicableExamples: List<Map<String, Any?>> = emptyList(),
     val smartModeStable: Boolean = false,
     val batchAnnotatorRuns: Set<Pair<String, String>> = emptySet(),
+    val unprovenBatchAnnotatorExamples: List<Map<String, String>> = emptyList(),
 ) {
     val proofEstablished: Boolean
         get() = skippedReason == null &&

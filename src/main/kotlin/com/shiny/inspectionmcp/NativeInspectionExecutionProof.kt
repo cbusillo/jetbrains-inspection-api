@@ -22,6 +22,7 @@ internal data class NativeInspectionExecutionProofResult(
     val failedToolCount: Int,
     val skippedReason: String?,
     val toolCompletionBlockReason: String?,
+    val unprovenBatchAnnotatorExamples: List<Map<String, String>> = emptyList(),
 ) {
     val proofEstablished: Boolean
         get() = proofBlockReason == null
@@ -68,6 +69,8 @@ internal class NativeInspectionExecutionProofCollector(
     private val failedTools = ConcurrentHashMap.newKeySet<String>()
     @Volatile
     private var skippedReason: String? = null
+    @Volatile
+    private var unprovenBatchAnnotatorExamples: List<Map<String, String>> = emptyList()
 
     fun recordExactFileAnalyzed(file: PsiFile, eventProject: Project) {
         if (eventProject !== project) return
@@ -163,6 +166,12 @@ internal class NativeInspectionExecutionProofCollector(
         if (skippedReason == null) skippedReason = reason
     }
 
+    fun markBatchAnnotatorsUnproven(unproven: UnprovenBatchAnnotators) {
+        if (skippedReason != null) return
+        skippedReason = unproven.reason
+        unprovenBatchAnnotatorExamples = unproven.examples
+    }
+
     fun result(): NativeInspectionExecutionProofResult = NativeInspectionExecutionProofResult(
         completedNormally = completedNormally.get(),
         expectedFileCount = expectedFiles.size,
@@ -177,5 +186,6 @@ internal class NativeInspectionExecutionProofCollector(
         failedToolCount = failedTools.size,
         skippedReason = skippedReason,
         toolCompletionBlockReason = completionObservation.unprovenCompletionReason(),
+        unprovenBatchAnnotatorExamples = unprovenBatchAnnotatorExamples,
     )
 }

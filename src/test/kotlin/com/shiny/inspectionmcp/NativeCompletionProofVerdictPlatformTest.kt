@@ -57,6 +57,7 @@ class NativeCompletionProofVerdictPlatformTest {
         val textStatus = runDirectory(project, createLocalContentRoot("fixture.txt"), profile)
         assertThat(cppStatus).describedAs(cppStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
         assertThat(cppStatus).describedAs(cppStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON\"")
+        assertNamesBlockingPair(cppStatus, "CFamilyBatchAnnotatorProbe", "main.cpp")
         assertThat(textStatus).describedAs(textStatus).contains("\"inspection_verdict\": \"GREEN\"")
     }
 
@@ -94,6 +95,7 @@ class NativeCompletionProofVerdictPlatformTest {
         assertThat(silentOverride).describedAs(silentOverride).contains("\"inspection_verdict\": \"UNKNOWN\"")
         assertThat(silentOverride).describedAs(silentOverride)
             .contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+        assertNamesBlockingPair(silentOverride, "SilentOverridingBatchAnnotatorProbe", "Checked.java")
     }
 
     @Test
@@ -110,6 +112,7 @@ class NativeCompletionProofVerdictPlatformTest {
             assertThat(directoryStatus).describedAs(directoryStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
             assertThat(directoryStatus).describedAs(directoryStatus)
                 .contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+            assertNamesBlockingPair(directoryStatus, "CFamilyBatchAnnotatorProbe", "check.txt")
         } finally {
             Disposer.dispose(pairing)
         }
@@ -136,8 +139,8 @@ class NativeCompletionProofVerdictPlatformTest {
         }
         val applicableProfile = registerProfile(project, BatchAnnotatorInspection())
         ReadAction.run<RuntimeException> {
-            assertThat(unprovenBatchAnnotatorReason(profile.getAllEnabledInspectionTools(project), listOf(file), false)).isNull()
-            assertThat(unprovenBatchAnnotatorReason(applicableProfile.getAllEnabledInspectionTools(project), listOf(file), false))
+            assertThat(unprovenBatchAnnotators(profile.getAllEnabledInspectionTools(project), listOf(file), false)).isNull()
+            assertThat(unprovenBatchAnnotators(applicableProfile.getAllEnabledInspectionTools(project), listOf(file), false)?.reason)
                 .isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
         }
     }
@@ -152,15 +155,46 @@ class NativeCompletionProofVerdictPlatformTest {
         }
         val groups = profile.getAllEnabledInspectionTools(project)
         ReadAction.run<RuntimeException> {
-            assertThat(unprovenBatchAnnotatorReason(groups, listOf(file), false)).isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+            assertThat(unprovenBatchAnnotators(groups, listOf(file), false)?.reason).isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
             var budgetChecks = 0
             assertThatThrownBy {
-                unprovenBatchAnnotatorReason(groups, listOf(file), false) {
+                unprovenBatchAnnotators(groups, listOf(file), false) {
                     budgetChecks += 1
                     if (budgetChecks > groups.size) throw NativeInspectionObservationUnavailable("time_limit")
                 }
             }.isInstanceOf(NativeInspectionObservationUnavailable::class.java)
         }
+    }
+
+    @Test
+    fun `a budget that runs out after a blocker keeps the blocking pairs found so far`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, BatchAnnotatorInspection())
+        val files = listOf("first.cpp", "second.cpp").map { name ->
+            val root = requireNotNull(LocalFileSystem.getInstance().findFileByNioFile(Path.of(createLocalContentRoot(name))))
+            ReadAction.compute<PsiFile, RuntimeException> {
+                requireNotNull(PsiManager.getInstance(project).findFile(requireNotNull(root.findChild(name))))
+            }
+        }
+        val groups = profile.getAllEnabledInspectionTools(project)
+        ReadAction.run<RuntimeException> {
+            var budgetChecks = 0
+            val unproven = unprovenBatchAnnotators(groups, files, false) {
+                budgetChecks += 1
+                if (budgetChecks > groups.size + 1) throw NativeInspectionObservationUnavailable("time_limit")
+            }
+            assertThat(unproven?.reason).isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+            assertThat(unproven?.examples?.map { it["tool"] to it["file"]?.substringAfterLast('/') })
+                .containsExactly("CFamilyBatchAnnotatorProbe" to "first.cpp")
+        }
+    }
+
+    private fun assertNamesBlockingPair(status: String, tool: String, fileName: String) {
+        val pair = Regex(
+            "\"execution_proof_unproven_batch_annotators\": \\[\\s*\\{\\s*\"tool\": \"${Regex.escape(tool)}\",\\s*\"file\": \"[^\"]*/${Regex.escape(fileName)}\"",
+        )
+        assertThat(status).describedAs(status).containsPattern(pair.toPattern())
+        assertThat(status).describedAs(status).containsPattern("\"inspection_verdict_next_action\": \"[^\"]*$tool on [^\"]*/$fileName")
     }
 
     private fun runDirectory(project: Project, directory: String, profile: InspectionProfileImpl): String =
