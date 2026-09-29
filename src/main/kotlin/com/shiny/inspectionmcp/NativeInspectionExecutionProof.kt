@@ -21,15 +21,10 @@ internal data class NativeInspectionExecutionProofResult(
     val completedToolCount: Int,
     val failedToolCount: Int,
     val skippedReason: String?,
+    val toolCompletionBlockReason: String?,
 ) {
     val proofEstablished: Boolean
-        get() = completedNormally &&
-            skippedReason == null &&
-            inspectionFailureCount == 0 &&
-            expectedFileCount > 0 &&
-            missingExpectedFileCount == 0 &&
-            unexpectedAnalyzedFileCount == 0 &&
-            inspectionFinishedCount > 0
+        get() = proofBlockReason == null
 
     val proofClean: Boolean
         get() = proofEstablished && reportedProblemCount == 0
@@ -43,7 +38,7 @@ internal data class NativeInspectionExecutionProofResult(
             missingExpectedFileCount > 0 -> "native_inspection_scope_incomplete"
             unexpectedAnalyzedFileCount > 0 -> "native_inspection_scope_mismatch"
             inspectionFinishedCount == 0 -> "native_inspection_no_tools_completed"
-            else -> null
+            else -> toolCompletionBlockReason
         }
 }
 
@@ -181,5 +176,6 @@ internal class NativeInspectionExecutionProofCollector(
         completedToolCount = completedTools.size,
         failedToolCount = failedTools.size,
         skippedReason = skippedReason,
+        toolCompletionBlockReason = completionObservation.unprovenCompletionReason(),
     )
 }

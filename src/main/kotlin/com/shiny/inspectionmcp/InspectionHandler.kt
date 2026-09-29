@@ -7107,22 +7107,30 @@ class InspectionHandler : HttpRequestHandler() {
                     .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
                 nativeProofConnection = null
             }
+            fun withinObservationBudget(reason: String): () -> Unit {
+                val deadline = System.nanoTime() + 2_000_000_000L
+                return { if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable(reason) }
+            }
             nativeProofCollector?.completionObservation?.observeCandidates { observation ->
-                runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
-                    observeNativeInspectionCandidates(
-                        observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
-                    )
+                retryWritePreemptedInspectionRead(withinObservationBudget("enumeration_time_limit")) {
+                    runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
+                        observeNativeInspectionCandidates(
+                            observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
+                        )
+                    }
                 }
             }
             nativeProofCollector?.completionObservation?.classifyMissingCompletions { observation ->
-                val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
-                runWritePriorityInspectionRead(classificationIndicator, {}) {
-                    classifyMissingNativeCompletions(
-                        observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
-                    )
+                retryWritePreemptedInspectionRead(withinObservationBudget("classification_time_limit")) {
+                    val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+                    runWritePriorityInspectionRead(classificationIndicator, {}) {
+                        classifyMissingNativeCompletions(
+                            observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
+                        )
+                    }
                 }
             }
-            fun hasUnprovenCFamilyBatchAnnotatorWithinBudget(files: List<com.intellij.psi.PsiFile>): Boolean {
+            fun unprovenBatchAnnotatorReasonWithinBudget(files: List<com.intellij.psi.PsiFile>): String? {
                 val deadline = System.nanoTime() + 2_000_000_000L
                 val checkBudget = {
                     if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("time_limit")
@@ -7130,7 +7138,7 @@ class InspectionHandler : HttpRequestHandler() {
                 return try {
                     retryWritePreemptedInspectionRead(checkBudget) {
                         runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
-                            hasUnprovenCFamilyBatchAnnotator(
+                            unprovenBatchAnnotatorReason(
                                 globalContext.toolGroups(), files, profile.singleTool != null, checkBudget,
                             )
                         }
@@ -7138,15 +7146,12 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (error: ProcessCanceledException) {
                     throw error
                 } catch (_: Exception) {
-                    true
+                    UNPROVEN_BATCH_ANNOTATOR_REASON
                 }
             }
             nativeProofCollector?.let { collector ->
-                if (
-                    collector.result().proofEstablished &&
-                    hasUnprovenCFamilyBatchAnnotatorWithinBudget(collector.observedScopeFiles())
-                ) {
-                    collector.markUnavailable(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+                if (collector.result().proofBlockReason in setOf(null, UNPROVEN_TOOL_COMPLETION_REASON)) {
+                    unprovenBatchAnnotatorReasonWithinBudget(collector.observedScopeFiles())?.let(collector::markUnavailable)
                 }
             }
             ProgressManager.checkCanceled()
@@ -7240,14 +7245,12 @@ class InspectionHandler : HttpRequestHandler() {
                                                 recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
                                             },
                                         ) { checkInspectionRunCancellation(key, runId) }
-                                        boundedProof = if (
-                                            proofRun.proofEstablished &&
-                                            hasUnprovenCFamilyBatchAnnotatorWithinBudget(capturedScopeFiles)
-                                        ) {
-                                            proofRun.copy(skippedReason = UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+                                        val batchAnnotatorReason = if (proofRun.proofEstablished) {
+                                            unprovenBatchAnnotatorReasonWithinBudget(capturedScopeFiles)
                                         } else {
-                                            proofRun
+                                            null
                                         }
+                                        boundedProof = batchAnnotatorReason?.let { proofRun.copy(skippedReason = it) } ?: proofRun
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
                                         rethrowIfCanceled(e)

@@ -40,6 +40,7 @@ class NativeInspectionExecutionProofTest {
         )
         collector.recordExactFileAnalyzed(file, project)
         collector.markCompletedNormally()
+        collector.observeCompletionOf(tool)
 
         val result = collector.result()
         assertTrue(result.proofEstablished)
@@ -48,6 +49,31 @@ class NativeInspectionExecutionProofTest {
         assertEquals(1, result.completedToolCount)
         assertNull(result.proofBlockReason)
         assertNull(nativeInspectionProofNotEstablishedReason(result))
+    }
+
+    @Test
+    fun `an unobserved or unfinished candidate withholds clean native proof`() {
+        val otherTool = mockk<InspectionToolWrapper<*, *>> {
+            every { shortName } returns "UnusedImport"
+        }
+        fun finishedRun() = NativeInspectionExecutionProofCollector(project, setOf(filePath)).apply {
+            inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
+            recordExactFileAnalyzed(file, project)
+            markCompletedNormally()
+        }
+
+        val unobserved = finishedRun().result()
+        val unfinished = finishedRun().apply { observeCompletionOf(tool, otherTool) }.result()
+
+        listOf(unobserved, unfinished).forEach { result ->
+            assertFalse(result.proofClean)
+            assertEquals(UNPROVEN_TOOL_COMPLETION_REASON, result.proofBlockReason)
+        }
+    }
+
+    private fun NativeInspectionExecutionProofCollector.observeCompletionOf(vararg tools: InspectionToolWrapper<*, *>) {
+        completionObservation.observeCandidates { observation -> tools.forEach { observation.candidate(it, filePath) } }
+        completionObservation.classifyMissingCompletions { }
     }
 
     @Test
@@ -77,8 +103,10 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.recordExactFileAnalyzed(file, project)
+        collector.observeExactToolCompletion(0, tool, file, project)
         collector.recordExactInspectionFinished(0, tool, InspectListener.InspectionKind.GLOBAL_SIMPLE, project)
         collector.markCompletedNormally()
+        collector.observeCompletionOf(tool)
 
         val result = collector.result()
         assertTrue(result.proofEstablished)
@@ -101,6 +129,7 @@ class NativeInspectionExecutionProofTest {
         )
         collector.recordExactFileAnalyzed(file, project)
         collector.markCompletedNormally()
+        collector.observeCompletionOf(tool)
 
         val result = collector.result()
         assertTrue(result.proofEstablished)

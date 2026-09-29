@@ -9,8 +9,12 @@ import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+import com.intellij.lang.ExternalLanguageAnnotators
+import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.fileTypes.PlainTextLanguage
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.profile.codeInspection.ProjectInspectionProfileManager
@@ -39,7 +43,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
 
-class CFamilyBatchAnnotatorVerdictPlatformTest {
+class NativeCompletionProofVerdictPlatformTest {
     @Test
     fun `directory run with a C family file and an enabled batch annotator is not clean`() {
         val project = projectExtension.project
@@ -64,6 +68,39 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
     }
 
     @Test
+    fun `a batch annotator paired with an annotator for the file is not clean outside C family`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, CleanInspection(), BatchAnnotatorInspection())
+        val pairing = Disposer.newDisposable("paired-batch-annotator")
+        try {
+            ExternalLanguageAnnotators.INSTANCE.addExplicitExtension(
+                PlainTextLanguage.INSTANCE, PairedExternalAnnotator(BatchAnnotatorInspection().shortName), pairing,
+            )
+            val root = createLocalContentRoot("check.txt")
+            val directoryStatus = runDirectory(project, root, profile)
+            val filesStatus = runFiles(project, Path.of(root, "check.txt").toString(), profile)
+            listOf(directoryStatus, filesStatus).forEach { status ->
+                assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"UNKNOWN\"")
+                assertThat(status).describedAs(status).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+            }
+        } finally {
+            Disposer.dispose(pairing)
+        }
+    }
+
+    @Test
+    fun `a batch annotator declaring the file's language is not clean`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, CleanInspection(), JavaOnlyBatchAnnotatorInspection())
+        val javaRoot = createLocalContentRoot("Declared.java", "class Declared {}\n")
+        val javaStatus = runFiles(project, Path.of(javaRoot, "Declared.java").toString(), profile)
+        val textStatus = runDirectory(project, createLocalContentRoot("undeclared.txt"), profile)
+        assertThat(javaStatus).describedAs(javaStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(javaStatus).describedAs(javaStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+        assertThat(textStatus).describedAs(textStatus).contains("\"inspection_verdict\": \"GREEN\"")
+    }
+
+    @Test
     fun `batch annotators restricted to another language do not block a C family file`() {
         val project = projectExtension.project
         val profile = registerProfile(project, JavaOnlyBatchAnnotatorInspection())
@@ -73,8 +110,9 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         }
         val applicableProfile = registerProfile(project, BatchAnnotatorInspection())
         ReadAction.run<RuntimeException> {
-            assertThat(hasUnprovenCFamilyBatchAnnotator(profile.getAllEnabledInspectionTools(project), listOf(file), false)).isFalse()
-            assertThat(hasUnprovenCFamilyBatchAnnotator(applicableProfile.getAllEnabledInspectionTools(project), listOf(file), false)).isTrue()
+            assertThat(unprovenBatchAnnotatorReason(profile.getAllEnabledInspectionTools(project), listOf(file), false)).isNull()
+            assertThat(unprovenBatchAnnotatorReason(applicableProfile.getAllEnabledInspectionTools(project), listOf(file), false))
+                .isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
         }
     }
 
@@ -88,10 +126,10 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         }
         val groups = profile.getAllEnabledInspectionTools(project)
         ReadAction.run<RuntimeException> {
-            assertThat(hasUnprovenCFamilyBatchAnnotator(groups, listOf(file), false)).isTrue()
+            assertThat(unprovenBatchAnnotatorReason(groups, listOf(file), false)).isEqualTo(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
             var budgetChecks = 0
             assertThatThrownBy {
-                hasUnprovenCFamilyBatchAnnotator(groups, listOf(file), false) {
+                unprovenBatchAnnotatorReason(groups, listOf(file), false) {
                     budgetChecks += 1
                     if (budgetChecks > groups.size) throw NativeInspectionObservationUnavailable("time_limit")
                 }
@@ -171,7 +209,7 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
     }
 
     private fun createLocalContentRoot(fileName: String, content: String = "int main() { return 0; }\n"): String {
-        val root = Files.createTempDirectory("c-family-batch-")
+        val root = Files.createTempDirectory("native-completion-proof-")
         Files.writeString(root.resolve(fileName), content)
         runInEdtAndGet {
             val directory = requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root))
@@ -201,6 +239,10 @@ class CFamilyBatchAnnotatorVerdictPlatformTest {
         override fun getDisplayName(): String = shortName
 
         override fun getGroupDisplayName(): String = "C family batch annotator tests"
+    }
+
+    private class PairedExternalAnnotator(private val batchShortName: String) : ExternalAnnotator<Unit, Unit>() {
+        override fun getPairedBatchInspectionShortName(): String = batchShortName
     }
 
     private class JavaOnlyBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
