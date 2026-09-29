@@ -10626,7 +10626,9 @@ class InspectionHandler : HttpRequestHandler() {
                             requireNotNull(batchWrapper.context).publicContext(),
                             InspectionManager.getInstance(project),
                         ).toList()
-                    }.also { batchAnnotatorRuns += candidate.shortName to candidate.filePath }
+                    }.also {
+                        if (usesPlatformCheckFile(batchAnnotator)) batchAnnotatorRuns += candidate.shortName to candidate.filePath
+                    }
                 }
                 return retryWritePreemptedInspectionRead(::checkProofBudget) {
                     runDeadlineAwareProofProcess(candidate) { indicator ->

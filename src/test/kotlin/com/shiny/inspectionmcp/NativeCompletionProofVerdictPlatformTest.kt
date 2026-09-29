@@ -69,10 +69,14 @@ class NativeCompletionProofVerdictPlatformTest {
         val clean = javaStatus(JavaOnlyBatchAnnotatorInspection())
         val finding = javaStatus(FindingBatchAnnotatorInspection())
         val failing = javaStatus(FailingBatchAnnotatorInspection())
+        val silentOverride = javaStatus(SilentOverridingBatchAnnotatorInspection())
         assertThat(clean).describedAs(clean).contains("\"inspection_verdict\": \"GREEN\"")
         assertThat(finding).describedAs(finding).contains("\"inspection_verdict\": \"RED\"")
         assertThat(finding).describedAs(finding).contains("\"total_problems\": 1,")
         assertThat(failing).describedAs(failing).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(silentOverride).describedAs(silentOverride).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(silentOverride).describedAs(silentOverride)
+            .contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
     }
 
     @Test
@@ -276,6 +280,19 @@ class NativeCompletionProofVerdictPlatformTest {
 
     private class PairedExternalAnnotator(private val batchShortName: String) : ExternalAnnotator<Unit, Unit>() {
         override fun getPairedBatchInspectionShortName(): String = batchShortName
+    }
+
+    private class SilentOverridingBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
+        override fun getShortName(): String = "SilentOverridingBatchAnnotatorProbe"
+
+        override fun getLanguage(): String = "JAVA"
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "C family batch annotator tests"
+
+        override fun checkFile(file: PsiFile, context: GlobalInspectionContext, manager: InspectionManager): Array<ProblemDescriptor> =
+            ProblemDescriptor.EMPTY_ARRAY
     }
 
     private class XmlOnlyBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {

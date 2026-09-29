@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.Tools
@@ -82,3 +84,13 @@ private fun hasPairedExternalAnnotator(tool: ExternalAnnotatorBatchInspection, f
             annotator.pairedBatchInspectionShortName == tool.shortName
         }
     }
+
+/**
+ * The platform's own `checkFile` runs the paired external annotator, so a normal return shows the tool ran. A tool
+ * that replaces it (clion-radler, ESLint) can return nothing without having analysed the file: a live IntelliJ run of
+ * clion-radler returned no descriptors for C++ with a missing return and an unused variable.
+ */
+internal fun usesPlatformCheckFile(tool: ExternalAnnotatorBatchInspection): Boolean = runCatching {
+    tool.javaClass.getMethod("checkFile", PsiFile::class.java, GlobalInspectionContext::class.java, InspectionManager::class.java)
+        .declaringClass == ExternalAnnotatorBatchInspection::class.java
+}.getOrDefault(false)
