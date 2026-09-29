@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.InspectionEngine
+import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.Tools
@@ -10,6 +12,12 @@ import com.intellij.psi.PsiFile
 
 internal const val UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON = "native_cpp_batch_annotator_unproven"
 internal const val UNPROVEN_BATCH_ANNOTATOR_REASON = "native_batch_annotator_unproven"
+
+/**
+ * External annotators give up silently: ShellCheck's stops the process after ten seconds and returns no result,
+ * which the platform's `checkFile` reports exactly like a clean file. A run this long is not proof of a clean result.
+ */
+internal const val EXTERNAL_ANNOTATOR_TIMEOUT_SIGNATURE_MS = 9_000L
 
 private val C_FAMILY_FILE_TYPE_NAMES = setOf("C/C++", "C/C++ Header", "C++", "ObjectiveC")
 private val C_FAMILY_LANGUAGE_IDS = setOf("C++", "C", "ObjectiveC")
@@ -35,11 +43,13 @@ private fun isCFamilyFile(file: PsiFile): Boolean =
  * tool applies to C/C++ files, to files of the language it declares (for example ESLint on JavaScript), and to
  * files with an external annotator paired with it, which is how the default `checkFile` finds its work.
  * Tools that declare no language and override `checkFile` (such as clion-radler) are taken to apply to C/C++ only.
+ * [provenRuns] lists tool/file pairs whose `checkFile` an exact-scope proof ran to completion itself.
  */
 internal fun unprovenBatchAnnotatorReason(
     toolGroups: Collection<Tools>,
     files: List<PsiFile>,
     includeDoNotShow: Boolean,
+    provenRuns: Set<Pair<String, String>> = emptySet(),
     checkBudget: () -> Unit = {},
 ): String? {
     val batchAnnotatorGroups = toolGroups.filter { group ->
@@ -57,7 +67,9 @@ internal fun unprovenBatchAnnotatorReason(
             group.getEnabledTool(file, includeDoNotShow) as? LocalInspectionToolWrapper
         }
         val dialectIds = InspectionEngine.calcElementDialectIds(file.viewProvider.allFiles, emptyList())
+        val filePath = file.virtualFile?.path
         val applicable = InspectionEngine.filterToolsApplicableByLanguage(enabled, dialectIds, dialectIds)
+            .filterNot { (it.shortName to filePath) in provenRuns }
         if (cFamily && applicable.isNotEmpty()) return UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON
         if (applicable.any { batchAnnotatorMayApply(it, file) }) {
             reason = UNPROVEN_BATCH_ANNOTATOR_REASON
@@ -78,3 +90,13 @@ private fun hasPairedExternalAnnotator(tool: ExternalAnnotatorBatchInspection, f
             annotator.pairedBatchInspectionShortName == tool.shortName
         }
     }
+
+/**
+ * The platform's own `checkFile` runs the paired external annotator, so a normal return shows the tool ran. A tool
+ * that replaces it (clion-radler, ESLint) can return nothing without having analysed the file: a live IntelliJ run of
+ * clion-radler returned no descriptors for C++ with a missing return and an unused variable.
+ */
+internal fun usesPlatformCheckFile(tool: ExternalAnnotatorBatchInspection): Boolean = runCatching {
+    tool.javaClass.getMethod("checkFile", PsiFile::class.java, GlobalInspectionContext::class.java, InspectionManager::class.java)
+        .declaringClass == ExternalAnnotatorBatchInspection::class.java
+}.getOrDefault(false)

@@ -7130,7 +7130,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
             }
-            fun unprovenBatchAnnotatorReasonWithinBudget(files: List<com.intellij.psi.PsiFile>): String? {
+            fun unprovenBatchAnnotatorReasonWithinBudget(
+                files: List<com.intellij.psi.PsiFile>,
+                provenRuns: Set<Pair<String, String>> = emptySet(),
+            ): String? {
                 val deadline = System.nanoTime() + 2_000_000_000L
                 val checkBudget = {
                     if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("time_limit")
@@ -7139,7 +7142,7 @@ class InspectionHandler : HttpRequestHandler() {
                     retryWritePreemptedInspectionRead(checkBudget) {
                         runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
                             unprovenBatchAnnotatorReason(
-                                globalContext.toolGroups(), files, profile.singleTool != null, checkBudget,
+                                globalContext.toolGroups(), files, profile.singleTool != null, provenRuns, checkBudget,
                             )
                         }
                     }
@@ -7246,7 +7249,7 @@ class InspectionHandler : HttpRequestHandler() {
                                             },
                                         ) { checkInspectionRunCancellation(key, runId) }
                                         val batchAnnotatorReason = if (proofRun.proofEstablished) {
-                                            unprovenBatchAnnotatorReasonWithinBudget(capturedScopeFiles)
+                                            unprovenBatchAnnotatorReasonWithinBudget(capturedScopeFiles, proofRun.batchAnnotatorRuns)
                                         } else {
                                             null
                                         }
@@ -10378,6 +10381,7 @@ class InspectionHandler : HttpRequestHandler() {
         val proofStartedInDumbMode = app.runReadAction<Boolean, Exception> { dumbService.isDumb }
         val writePreemptionCount = AtomicInteger()
         val firstWritePreemption = AtomicReference<Map<String, String>?>()
+        val batchAnnotatorRuns = java.util.concurrent.ConcurrentHashMap.newKeySet<Pair<String, String>>()
         val proofTimeoutNanos = boundedExecutionProofTimeoutMs * 1_000_000L
 
         fun proofDeadlineExceeded(): Boolean = System.nanoTime() - proofStartNanos > proofTimeoutNanos
@@ -10477,6 +10481,8 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.profile.codeInspection.InspectionProjectProfileManager
                 .getInstance(project)
                 .currentProfile
+        // External annotators such as ShellCheck read their settings from the current profile, not the requested one.
+        val selectedProfileIsCurrent = profile.name == currentProfile.name
         fun cleanupExactFileExecutionWrapper(executionWrapper: ExactFileInspectionExecutionWrapper) {
             var cleanupFailure: Exception? = null
             try {
@@ -10583,7 +10589,11 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 return try {
                     checkProofBudget()
-                    val executionContext = if (canExecuteWithInspectEx(copiedWrapper)) {
+                    val executionContext = if (
+                        canExecuteWithInspectEx(copiedWrapper) &&
+                        (copiedWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper)?.tool
+                            !is com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
+                    ) {
                         null
                     } else {
                         createExactFileExecutionContext(project, profile, candidate.value)
@@ -10607,8 +10617,30 @@ class InspectionHandler : HttpRequestHandler() {
             override fun execute(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
-            ): List<com.intellij.codeInspection.ProblemDescriptor> =
-                retryWritePreemptedInspectionRead(::checkProofBudget) {
+            ): List<com.intellij.codeInspection.ProblemDescriptor> {
+                val batchAnnotator = (batchWrapper.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper)
+                    ?.tool as? com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
+                if (batchAnnotator != null) {
+                    // checkFile takes its own read actions and runs the external tool outside them, as the batch runner does.
+                    val checkFileStartNanos = System.nanoTime()
+                    return runDeadlineAwareProofProcess(candidate) {
+                        batchAnnotator.checkFile(
+                            candidate.value,
+                            requireNotNull(batchWrapper.context).publicContext(),
+                            InspectionManager.getInstance(project),
+                        ).toList()
+                    }.also {
+                        val checkFileElapsedMs = (System.nanoTime() - checkFileStartNanos) / 1_000_000L
+                        if (
+                            selectedProfileIsCurrent &&
+                            usesPlatformCheckFile(batchAnnotator) &&
+                            checkFileElapsedMs < EXTERNAL_ANNOTATOR_TIMEOUT_SIGNATURE_MS
+                        ) {
+                            batchAnnotatorRuns += candidate.shortName to candidate.filePath
+                        }
+                    }
+                }
+                return retryWritePreemptedInspectionRead(::checkProofBudget) {
                     runDeadlineAwareProofProcess(candidate) { indicator ->
                         runWritePriorityInspectionRead(indicator, {
                             writePreemptionCount.incrementAndGet()
@@ -10634,6 +10666,7 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                     }
                 }
+            }
 
             override fun mapDescriptor(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
@@ -10718,6 +10751,7 @@ class InspectionHandler : HttpRequestHandler() {
             adapter = adapter,
         )
         val proofWithWriteContention = proof.copy(
+            batchAnnotatorRuns = batchAnnotatorRuns.toSet(),
             writePreemptionCount = writePreemptionCount.get(),
             firstWritePreemption = firstWritePreemption.get(),
             smartModeStable = app.runReadAction<Boolean, Exception> {

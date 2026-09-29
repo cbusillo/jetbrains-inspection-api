@@ -1,6 +1,10 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
+import com.intellij.codeInspection.GlobalInspectionContext
+import com.intellij.codeInspection.InspectionManager
+import com.intellij.codeInspection.ProblemDescriptor
+import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.codeInspection.LocalInspectionTool
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
@@ -10,6 +14,7 @@ import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.lang.ExternalLanguageAnnotators
+import com.intellij.lang.Language
 import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.fileTypes.PlainTextLanguage
@@ -56,15 +61,39 @@ class NativeCompletionProofVerdictPlatformTest {
     }
 
     @Test
-    fun `files run with a C family file and an enabled batch annotator is not clean`() {
+    fun `files runs prove a batch annotator by running it`() {
         val project = projectExtension.project
-        val profile = registerProfile(project, CleanInspection(), BatchAnnotatorInspection())
-        val cppStatus = runFiles(project, Path.of(createLocalContentRoot("main.cpp"), "main.cpp").toString(), profile)
-        val javaRoot = createLocalContentRoot("Fixture.java", "class Fixture {}\n")
-        val javaStatus = runFiles(project, Path.of(javaRoot, "Fixture.java").toString(), profile)
-        assertThat(cppStatus).describedAs(cppStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
-        assertThat(cppStatus).describedAs(cppStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON\"")
-        assertThat(javaStatus).describedAs(javaStatus).contains("\"inspection_verdict\": \"GREEN\"")
+        fun javaStatus(tool: LocalInspectionTool, current: Boolean = true): String {
+            val root = createLocalContentRoot("Checked.java", "class Checked {}\n")
+            val profile = registerProfile(project, CleanInspection(), tool, current = current)
+            return runFiles(project, Path.of(root, "Checked.java").toString(), profile)
+        }
+        val pairing = Disposer.newDisposable("recording-batch-annotator")
+        try {
+            val annotator = RecordingExternalAnnotator(JavaOnlyBatchAnnotatorInspection().shortName)
+            ExternalLanguageAnnotators.INSTANCE.addExplicitExtension(requireNotNull(Language.findLanguageByID("JAVA")), annotator, pairing)
+            val clean = javaStatus(JavaOnlyBatchAnnotatorInspection())
+            assertThat(clean).describedAs(clean).contains("\"inspection_verdict\": \"GREEN\"")
+            assertThat(annotator.runs.get()).describedAs("the paired annotator must have run").isGreaterThan(0)
+
+            val notCurrent = javaStatus(JavaOnlyBatchAnnotatorInspection(), current = false)
+            assertThat(notCurrent).describedAs(notCurrent).contains("\"inspection_verdict\": \"UNKNOWN\"")
+
+            annotator.delayMs = EXTERNAL_ANNOTATOR_TIMEOUT_SIGNATURE_MS + 500L
+            val slow = javaStatus(JavaOnlyBatchAnnotatorInspection())
+            assertThat(slow).describedAs(slow).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        } finally {
+            Disposer.dispose(pairing)
+        }
+        val finding = javaStatus(FindingBatchAnnotatorInspection())
+        val failing = javaStatus(FailingBatchAnnotatorInspection())
+        val silentOverride = javaStatus(SilentOverridingBatchAnnotatorInspection())
+        assertThat(finding).describedAs(finding).contains("\"inspection_verdict\": \"RED\"")
+        assertThat(finding).describedAs(finding).contains("\"total_problems\": 1,")
+        assertThat(failing).describedAs(failing).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(silentOverride).describedAs(silentOverride).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(silentOverride).describedAs(silentOverride)
+            .contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
     }
 
     @Test
@@ -78,11 +107,9 @@ class NativeCompletionProofVerdictPlatformTest {
             )
             val root = createLocalContentRoot("check.txt")
             val directoryStatus = runDirectory(project, root, profile)
-            val filesStatus = runFiles(project, Path.of(root, "check.txt").toString(), profile)
-            listOf(directoryStatus, filesStatus).forEach { status ->
-                assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"UNKNOWN\"")
-                assertThat(status).describedAs(status).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
-            }
+            assertThat(directoryStatus).describedAs(directoryStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
+            assertThat(directoryStatus).describedAs(directoryStatus)
+                .contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
         } finally {
             Disposer.dispose(pairing)
         }
@@ -91,12 +118,11 @@ class NativeCompletionProofVerdictPlatformTest {
     @Test
     fun `a batch annotator declaring the file's language is not clean`() {
         val project = projectExtension.project
-        val profile = registerProfile(project, CleanInspection(), JavaOnlyBatchAnnotatorInspection())
-        val javaRoot = createLocalContentRoot("Declared.java", "class Declared {}\n")
-        val javaStatus = runFiles(project, Path.of(javaRoot, "Declared.java").toString(), profile)
+        val profile = registerProfile(project, CleanInspection(), XmlOnlyBatchAnnotatorInspection())
+        val xmlStatus = runDirectory(project, createLocalContentRoot("declared.xml", "<declared/>\n"), profile)
         val textStatus = runDirectory(project, createLocalContentRoot("undeclared.txt"), profile)
-        assertThat(javaStatus).describedAs(javaStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
-        assertThat(javaStatus).describedAs(javaStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+        assertThat(xmlStatus).describedAs(xmlStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(xmlStatus).describedAs(xmlStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
         assertThat(textStatus).describedAs(textStatus).contains("\"inspection_verdict\": \"GREEN\"")
     }
 
@@ -190,7 +216,7 @@ class NativeCompletionProofVerdictPlatformTest {
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
-    private fun registerProfile(project: Project, vararg tools: LocalInspectionTool): InspectionProfileImpl {
+    private fun registerProfile(project: Project, vararg tools: LocalInspectionTool, current: Boolean = false): InspectionProfileImpl {
         val wrappers = tools.map(::LocalInspectionToolWrapper)
         wrappers.forEach { HighlightDisplayKey.findOrRegister(it.shortName, it.displayName) }
         val supplier = InspectionToolsSupplier.Simple(wrappers.map { it as InspectionToolWrapper<*, *> })
@@ -205,6 +231,7 @@ class NativeCompletionProofVerdictPlatformTest {
         }
         tools.forEach { profile.setToolEnabled(it.shortName, true, project) }
         manager.addProfile(profile)
+        if (current) manager.setRootProfile(profile.name)
         return profile
     }
 
@@ -241,8 +268,80 @@ class NativeCompletionProofVerdictPlatformTest {
         override fun getGroupDisplayName(): String = "C family batch annotator tests"
     }
 
+    private class FindingBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
+        override fun getShortName(): String = "FindingBatchAnnotatorProbe"
+
+        override fun getLanguage(): String = "JAVA"
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "C family batch annotator tests"
+
+        override fun checkFile(file: PsiFile, context: GlobalInspectionContext, manager: InspectionManager): Array<ProblemDescriptor> =
+            ReadAction.compute<Array<ProblemDescriptor>, RuntimeException> {
+                arrayOf(manager.createProblemDescriptor(file, BATCH_ANNOTATOR_FINDING, false, emptyArray(), ProblemHighlightType.GENERIC_ERROR_OR_WARNING))
+            }
+    }
+
+    private class FailingBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
+        override fun getShortName(): String = "FailingBatchAnnotatorProbe"
+
+        override fun getLanguage(): String = "JAVA"
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "C family batch annotator tests"
+
+        override fun checkFile(file: PsiFile, context: GlobalInspectionContext, manager: InspectionManager): Array<ProblemDescriptor> =
+            throw IllegalStateException("external tool failed")
+    }
+
+    private class RecordingExternalAnnotator(private val batchShortName: String) : ExternalAnnotator<Unit, Unit>() {
+        val runs = AtomicInteger()
+
+        @Volatile
+        var delayMs = 0L
+
+        override fun getPairedBatchInspectionShortName(): String = batchShortName
+
+        override fun collectInformation(file: PsiFile) = Unit
+
+        override fun doAnnotate(collectedInfo: Unit?): Unit? {
+            runs.incrementAndGet()
+            // Like ShellCheck after its process timeout: a long run that returns no result.
+            if (delayMs > 0) {
+                Thread.sleep(delayMs)
+                return null
+            }
+            return Unit
+        }
+    }
+
     private class PairedExternalAnnotator(private val batchShortName: String) : ExternalAnnotator<Unit, Unit>() {
         override fun getPairedBatchInspectionShortName(): String = batchShortName
+    }
+
+    private class SilentOverridingBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
+        override fun getShortName(): String = "SilentOverridingBatchAnnotatorProbe"
+
+        override fun getLanguage(): String = "JAVA"
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "C family batch annotator tests"
+
+        override fun checkFile(file: PsiFile, context: GlobalInspectionContext, manager: InspectionManager): Array<ProblemDescriptor> =
+            ProblemDescriptor.EMPTY_ARRAY
+    }
+
+    private class XmlOnlyBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
+        override fun getShortName(): String = "XmlOnlyBatchAnnotatorProbe"
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "C family batch annotator tests"
+
+        override fun getLanguage(): String = "XML"
     }
 
     private class JavaOnlyBatchAnnotatorInspection : LocalInspectionTool(), ExternalAnnotatorBatchInspection {
@@ -261,5 +360,6 @@ class NativeCompletionProofVerdictPlatformTest {
         val projectExtension = ProjectExtension()
 
         private val profileCounter = AtomicInteger()
+        private const val BATCH_ANNOTATOR_FINDING = "batch annotator finding"
     }
 }
