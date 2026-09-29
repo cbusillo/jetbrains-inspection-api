@@ -89,6 +89,18 @@ class NativeCompletionProofVerdictPlatformTest {
     }
 
     @Test
+    fun `a batch annotator declaring the file's language is not clean`() {
+        val project = projectExtension.project
+        val profile = registerProfile(project, CleanInspection(), JavaOnlyBatchAnnotatorInspection())
+        val javaRoot = createLocalContentRoot("Declared.java", "class Declared {}\n")
+        val javaStatus = runFiles(project, Path.of(javaRoot, "Declared.java").toString(), profile)
+        val textStatus = runDirectory(project, createLocalContentRoot("undeclared.txt"), profile)
+        assertThat(javaStatus).describedAs(javaStatus).contains("\"inspection_verdict\": \"UNKNOWN\"")
+        assertThat(javaStatus).describedAs(javaStatus).contains("\"execution_proof_block_reason\": \"$UNPROVEN_BATCH_ANNOTATOR_REASON\"")
+        assertThat(textStatus).describedAs(textStatus).contains("\"inspection_verdict\": \"GREEN\"")
+    }
+
+    @Test
     fun `batch annotators restricted to another language do not block a C family file`() {
         val project = projectExtension.project
         val profile = registerProfile(project, JavaOnlyBatchAnnotatorInspection())

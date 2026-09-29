@@ -31,9 +31,10 @@ private fun isCFamilyFile(file: PsiFile): Boolean =
 
 /**
  * The batch runner calls [ExternalAnnotatorBatchInspection] tools through `checkFile` without publishing
- * `inspectionFinished`, so their completion can never be proven on a file they apply to. They apply to C/C++
- * files, and to any file with an external annotator paired with the tool, which is how the default `checkFile`
- * finds its work (for example ShellCheck on shell scripts).
+ * `inspectionFinished`, so their completion can never be proven on a file they apply to. A language-applicable
+ * tool applies to C/C++ files, to files of the language it declares (for example ESLint on JavaScript), and to
+ * files with an external annotator paired with it, which is how the default `checkFile` finds its work.
+ * Tools that declare no language and override `checkFile` (such as clion-radler) are taken to apply to C/C++ only.
  */
 internal fun unprovenBatchAnnotatorReason(
     toolGroups: Collection<Tools>,
@@ -58,15 +59,18 @@ internal fun unprovenBatchAnnotatorReason(
         val dialectIds = InspectionEngine.calcElementDialectIds(file.viewProvider.allFiles, emptyList())
         val applicable = InspectionEngine.filterToolsApplicableByLanguage(enabled, dialectIds, dialectIds)
         if (cFamily && applicable.isNotEmpty()) return UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON
-        if (applicable.any { hasPairedExternalAnnotator(it.tool as ExternalAnnotatorBatchInspection, file) }) {
+        if (applicable.any { batchAnnotatorMayApply(it, file) }) {
             reason = UNPROVEN_BATCH_ANNOTATOR_REASON
         }
     }
     return reason
 }
 
-internal fun batchAnnotatorMayApply(tool: ExternalAnnotatorBatchInspection, file: PsiFile): Boolean =
-    isCFamilyFile(file) || hasPairedExternalAnnotator(tool, file)
+/** Assumes [wrapper] already passed the platform's language filter for [file]. */
+internal fun batchAnnotatorMayApply(wrapper: LocalInspectionToolWrapper, file: PsiFile): Boolean =
+    isCFamilyFile(file) ||
+        wrapper.language.let { !it.isNullOrBlank() && it != "any" } ||
+        hasPairedExternalAnnotator(wrapper.tool as ExternalAnnotatorBatchInspection, file)
 
 private fun hasPairedExternalAnnotator(tool: ExternalAnnotatorBatchInspection, file: PsiFile): Boolean =
     file.viewProvider.allFiles.any { root ->

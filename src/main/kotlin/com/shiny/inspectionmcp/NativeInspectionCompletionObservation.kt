@@ -285,7 +285,7 @@ internal fun classifyMissingNativeCompletions(
                 continue
             }
             if (wrapper.tool is ExternalAnnotatorBatchInspection) {
-                if (batchAnnotatorMayApply(wrapper.tool as ExternalAnnotatorBatchInspection, file)) {
+                if (batchAnnotatorMayApply(wrapper, file)) {
                     observation.classifyApplicableBatchAnnotator(execution)
                 } else {
                     observation.classify(execution, MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH)
