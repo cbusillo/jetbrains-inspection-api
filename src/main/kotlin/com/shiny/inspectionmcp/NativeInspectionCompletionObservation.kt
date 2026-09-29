@@ -46,6 +46,7 @@ internal class NativeInspectionCompletionObservation {
     private var enumerationCompleted = false
     private var unavailableReason: String? = null
     private val missingClassifications = linkedMapOf<NativeInspectionToolExecution, MissingCompletionClass>()
+    private val applicableBatchExecutions = mutableSetOf<NativeInspectionToolExecution>()
     private var classificationCompleted = false
     private var classificationUnavailableReason: String? = null
 
@@ -94,6 +95,29 @@ internal class NativeInspectionCompletionObservation {
 
     fun classify(execution: NativeInspectionToolExecution, classification: MissingCompletionClass) {
         missingClassifications[execution] = classification
+    }
+
+    fun classifyApplicableBatchAnnotator(execution: NativeInspectionToolExecution) {
+        classify(execution, MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH)
+        applicableBatchExecutions += execution
+    }
+
+    /**
+     * Clean proof needs every candidate tool/file pair to finish, or to be a proven silent skip: a tool whose
+     * visitor is empty, or a batch annotator on a file it does not apply to.
+     */
+    @Synchronized
+    fun unprovenCompletionReason(): String? {
+        val explained = enumerationCompleted && unavailableReason == null && classificationCompleted &&
+            candidates.isNotEmpty() &&
+            (candidates - completed).all { execution ->
+                when (missingClassifications[execution]) {
+                    MissingCompletionClass.EMPTY_VISITOR -> true
+                    MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH -> execution !in applicableBatchExecutions
+                    else -> false
+                }
+            }
+        return if (explained) null else UNPROVEN_TOOL_COMPLETION_REASON
     }
 
     fun candidate(wrapper: InspectionToolWrapper<*, *>, filePath: String?) {
@@ -161,6 +185,8 @@ internal class NativeInspectionCompletionObservation {
         private const val EXAMPLE_LIMIT = 25
     }
 }
+
+internal const val UNPROVEN_TOOL_COMPLETION_REASON = "native_tool_completion_unproven"
 
 internal enum class MissingCompletionClass(val diagnosticName: String) {
     EMPTY_VISITOR("empty_visitor"),
@@ -259,7 +285,11 @@ internal fun classifyMissingNativeCompletions(
                 continue
             }
             if (wrapper.tool is ExternalAnnotatorBatchInspection) {
-                observation.classify(execution, MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH)
+                if (batchAnnotatorMayApply(wrapper.tool as ExternalAnnotatorBatchInspection, file)) {
+                    observation.classifyApplicableBatchAnnotator(execution)
+                } else {
+                    observation.classify(execution, MissingCompletionClass.EXTERNAL_ANNOTATOR_BATCH)
+                }
                 continue
             }
             var visitorWasEmpty: Boolean? = null

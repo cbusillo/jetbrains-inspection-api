@@ -7122,7 +7122,7 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                 }
             }
-            fun hasUnprovenCFamilyBatchAnnotatorWithinBudget(files: List<com.intellij.psi.PsiFile>): Boolean {
+            fun unprovenBatchAnnotatorReasonWithinBudget(files: List<com.intellij.psi.PsiFile>): String? {
                 val deadline = System.nanoTime() + 2_000_000_000L
                 val checkBudget = {
                     if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("time_limit")
@@ -7130,7 +7130,7 @@ class InspectionHandler : HttpRequestHandler() {
                 return try {
                     retryWritePreemptedInspectionRead(checkBudget) {
                         runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
-                            hasUnprovenCFamilyBatchAnnotator(
+                            unprovenBatchAnnotatorReason(
                                 globalContext.toolGroups(), files, profile.singleTool != null, checkBudget,
                             )
                         }
@@ -7138,15 +7138,12 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (error: ProcessCanceledException) {
                     throw error
                 } catch (_: Exception) {
-                    true
+                    UNPROVEN_BATCH_ANNOTATOR_REASON
                 }
             }
             nativeProofCollector?.let { collector ->
-                if (
-                    collector.result().proofEstablished &&
-                    hasUnprovenCFamilyBatchAnnotatorWithinBudget(collector.observedScopeFiles())
-                ) {
-                    collector.markUnavailable(UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+                if (collector.result().proofBlockReason in setOf(null, UNPROVEN_TOOL_COMPLETION_REASON)) {
+                    unprovenBatchAnnotatorReasonWithinBudget(collector.observedScopeFiles())?.let(collector::markUnavailable)
                 }
             }
             ProgressManager.checkCanceled()
@@ -7240,14 +7237,12 @@ class InspectionHandler : HttpRequestHandler() {
                                                 recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
                                             },
                                         ) { checkInspectionRunCancellation(key, runId) }
-                                        boundedProof = if (
-                                            proofRun.proofEstablished &&
-                                            hasUnprovenCFamilyBatchAnnotatorWithinBudget(capturedScopeFiles)
-                                        ) {
-                                            proofRun.copy(skippedReason = UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON)
+                                        val batchAnnotatorReason = if (proofRun.proofEstablished) {
+                                            unprovenBatchAnnotatorReasonWithinBudget(capturedScopeFiles)
                                         } else {
-                                            proofRun
+                                            null
                                         }
+                                        boundedProof = batchAnnotatorReason?.let { proofRun.copy(skippedReason = it) } ?: proofRun
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
                                         rethrowIfCanceled(e)

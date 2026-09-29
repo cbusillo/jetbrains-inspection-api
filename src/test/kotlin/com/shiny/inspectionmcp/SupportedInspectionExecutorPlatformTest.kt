@@ -24,7 +24,10 @@ import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool
 import com.intellij.codeInspection.ex.UnfairLocalInspectionTool
+import com.intellij.lang.ExternalLanguageAnnotators
+import com.intellij.lang.annotation.ExternalAnnotator
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.fileTypes.PlainTextLanguage
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.application.ReadAction
@@ -116,6 +119,7 @@ class SupportedInspectionExecutorPlatformTest {
         )
         assertThat(complete["candidate_rule_would_block_clean"]).isEqualTo(true)
         assertThat(complete["silent_skip_rule_would_block_clean"]).isEqualTo(false)
+        assertThat(complete["completion_rule_reason"]).isNull()
 
         val droppedFinish = classifyMissingCompletionsAfterRun(silent, dropped, dropFinishOf = dropped)
         assertThat(droppedFinish["missing_classification_counts"]).describedAs(droppedFinish.toString()).isEqualTo(
@@ -125,6 +129,7 @@ class SupportedInspectionExecutorPlatformTest {
             listOf(mapOf("tool" to dropped.shortName, "file" to droppedFinish["probe_file"])),
         )
         assertThat(droppedFinish["silent_skip_rule_would_block_clean"]).isEqualTo(true)
+        assertThat(droppedFinish["completion_rule_reason"]).isEqualTo(UNPROVEN_TOOL_COMPLETION_REASON)
 
         val batchAnnotator = BatchAnnotatorInspection()
         val droppedBatchAnnotator = classifyMissingCompletionsAfterRun(silent, batchAnnotator, dropFinishOf = batchAnnotator)
@@ -132,12 +137,28 @@ class SupportedInspectionExecutorPlatformTest {
             mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "external_annotator_batch" to 1, "not_probed" to 0),
         )
         assertThat(droppedBatchAnnotator["silent_skip_rule_would_block_clean"]).isEqualTo(true)
+        assertThat(droppedBatchAnnotator["completion_rule_reason"]).describedAs("no annotator applies to the file").isNull()
+
+        val pairing = Disposer.newDisposable("paired-batch-annotator")
+        try {
+            ExternalLanguageAnnotators.INSTANCE.addExplicitExtension(
+                PlainTextLanguage.INSTANCE, PairedExternalAnnotator(batchAnnotator.shortName), pairing,
+            )
+            val pairedBatchAnnotator = classifyMissingCompletionsAfterRun(silent, batchAnnotator, dropFinishOf = batchAnnotator)
+            assertThat(pairedBatchAnnotator["missing_classification_counts"]).describedAs(pairedBatchAnnotator.toString()).isEqualTo(
+                mapOf("empty_visitor" to 1, "non_empty_visitor" to 0, "external_annotator_batch" to 1, "not_probed" to 0),
+            )
+            assertThat(pairedBatchAnnotator["completion_rule_reason"]).isEqualTo(UNPROVEN_TOOL_COMPLETION_REASON)
+        } finally {
+            Disposer.dispose(pairing)
+        }
 
         val initialized = InitializationGatedInspection()
         val droppedInitialized = classifyMissingCompletionsAfterRun(silent, initialized, dropFinishOf = initialized)
         assertThat(droppedInitialized["missing_classification_counts"]).describedAs(droppedInitialized.toString()).isEqualTo(
             mapOf("empty_visitor" to 1, "non_empty_visitor" to 1, "external_annotator_batch" to 0, "not_probed" to 0),
         )
+        assertThat(droppedInitialized["completion_rule_reason"]).isEqualTo(UNPROVEN_TOOL_COMPLETION_REASON)
     }
 
     private fun classifyMissingCompletionsAfterRun(
@@ -190,7 +211,10 @@ class SupportedInspectionExecutorPlatformTest {
             }
         }
         assertThat(visitCount(running)).describedAs("probing must not visit").isEqualTo(1)
-        return collector.completionObservation.diagnostic() + ("probe_file" to file.virtualFile.path)
+        return collector.completionObservation.diagnostic() + mapOf(
+            "probe_file" to file.virtualFile.path,
+            "completion_rule_reason" to collector.completionObservation.unprovenCompletionReason(),
+        )
     }
 
     @Test
@@ -1227,6 +1251,10 @@ class SupportedInspectionExecutorPlatformTest {
     private class DroppedFinishInspection : RecordingInspection()
 
     private class BatchAnnotatorInspection : RecordingInspection(), ExternalAnnotatorBatchInspection
+
+    private class PairedExternalAnnotator(private val batchShortName: String) : ExternalAnnotator<Unit, Unit>() {
+        override fun getPairedBatchInspectionShortName(): String = batchShortName
+    }
 
     private class InitializationGatedInspection : RecordingInspection() {
         @Volatile

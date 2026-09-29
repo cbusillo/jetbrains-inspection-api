@@ -23,7 +23,7 @@ class NativeInspectionCompletionObservationTest {
     }
 
     @Test
-    fun `dropped completion changes comparison without changing current clean proof`() {
+    fun `a dropped completion withholds clean proof`() {
         val first = tool("First")
         val second = tool("Second")
         fun run(dropSecond: Boolean): Pair<NativeInspectionExecutionProofResult, Map<String, Any?>> {
@@ -33,12 +33,14 @@ class NativeInspectionCompletionObservationTest {
             collector.recordExactFileAnalyzed(file, project)
             collector.markCompletedNormally()
             collector.completionObservation.observeCandidates { it.candidate(first, path); it.candidate(second, path) }
+            collector.completionObservation.classifyMissingCompletions { }
             return collector.result() to collector.completionObservation.diagnostic()
         }
         val complete = run(false)
         val dropped = run(true)
         assertThat(complete.first.proofClean).isTrue()
-        assertThat(dropped.first.proofClean).isTrue()
+        assertThat(dropped.first.proofClean).isFalse()
+        assertThat(dropped.first.proofBlockReason).isEqualTo(UNPROVEN_TOOL_COMPLETION_REASON)
         assertThat(complete.second["candidate_rule_would_block_clean"]).isEqualTo(false)
         assertThat(dropped.second["candidate_rule_would_block_clean"]).isEqualTo(true)
         assertThat(dropped.second["missing_examples"]).isEqualTo(listOf(mapOf("tool" to second.shortName, "file" to path)))
@@ -59,16 +61,16 @@ class NativeInspectionCompletionObservationTest {
     }
 
     @Test
-    fun `enumeration failure preserves native proof and disables comparison`() {
+    fun `enumeration failure withholds clean proof and disables comparison`() {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(path))
         collector.recordExactFileAnalyzed(file, project)
         collector.recordExactInspectionFinished(0, tool(), InspectListener.InspectionKind.GLOBAL, project)
         collector.markCompletedNormally()
-        val before = collector.result()
         collector.completionObservation.observeCandidates { error("metadata unavailable") }
+        collector.completionObservation.classifyMissingCompletions { }
         val diagnostic = collector.completionObservation.diagnostic()
-        assertThat(collector.result()).isEqualTo(before)
-        assertThat(before.proofClean).isTrue()
+        assertThat(collector.result().proofClean).isFalse()
+        assertThat(collector.result().proofBlockReason).isEqualTo(UNPROVEN_TOOL_COMPLETION_REASON)
         assertThat(diagnostic["enumeration_complete"]).isEqualTo(false)
         assertThat(diagnostic["candidate_rule_would_block_clean"]).isNull()
         assertThat(diagnostic["unavailable_reason"]).isEqualTo(IllegalStateException::class.java.simpleName)
