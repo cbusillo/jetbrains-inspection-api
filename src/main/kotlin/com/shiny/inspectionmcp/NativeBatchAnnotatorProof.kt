@@ -35,11 +35,13 @@ private fun isCFamilyFile(file: PsiFile): Boolean =
  * tool applies to C/C++ files, to files of the language it declares (for example ESLint on JavaScript), and to
  * files with an external annotator paired with it, which is how the default `checkFile` finds its work.
  * Tools that declare no language and override `checkFile` (such as clion-radler) are taken to apply to C/C++ only.
+ * [provenRuns] lists tool/file pairs whose `checkFile` an exact-scope proof ran to completion itself.
  */
 internal fun unprovenBatchAnnotatorReason(
     toolGroups: Collection<Tools>,
     files: List<PsiFile>,
     includeDoNotShow: Boolean,
+    provenRuns: Set<Pair<String, String>> = emptySet(),
     checkBudget: () -> Unit = {},
 ): String? {
     val batchAnnotatorGroups = toolGroups.filter { group ->
@@ -57,7 +59,9 @@ internal fun unprovenBatchAnnotatorReason(
             group.getEnabledTool(file, includeDoNotShow) as? LocalInspectionToolWrapper
         }
         val dialectIds = InspectionEngine.calcElementDialectIds(file.viewProvider.allFiles, emptyList())
+        val filePath = file.virtualFile?.path
         val applicable = InspectionEngine.filterToolsApplicableByLanguage(enabled, dialectIds, dialectIds)
+            .filterNot { (it.shortName to filePath) in provenRuns }
         if (cFamily && applicable.isNotEmpty()) return UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON
         if (applicable.any { batchAnnotatorMayApply(it, file) }) {
             reason = UNPROVEN_BATCH_ANNOTATOR_REASON

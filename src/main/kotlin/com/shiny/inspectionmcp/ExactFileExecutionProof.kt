@@ -122,6 +122,7 @@ internal data class BoundedExecutionProofResult(
     val nonBatchExamples: List<Map<String, Any?>> = emptyList(),
     val nonApplicableExamples: List<Map<String, Any?>> = emptyList(),
     val smartModeStable: Boolean = false,
+    val batchAnnotatorRuns: Set<Pair<String, String>> = emptySet(),
 ) {
     val proofEstablished: Boolean
         get() = skippedReason == null &&
