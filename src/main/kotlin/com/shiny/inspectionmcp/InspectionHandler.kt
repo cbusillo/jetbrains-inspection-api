@@ -2239,6 +2239,8 @@ class InspectionHandler : HttpRequestHandler() {
                     "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
                 "time_limit" ->
                     "Inspection execution exhausted its proof budget. Stop retrying and report the exact-proof tool, file, and worker diagnostic; do not report GREEN."
+                UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON, UNPROVEN_BATCH_ANNOTATOR_REASON ->
+                    unprovenBatchAnnotatorNextAction(diagnostic?.get("execution_proof_unproven_batch_annotators") as? List<*>)
                 "native_attestation_context_creation_failed" ->
                     "Update or reinstall the inspection plugin, restart the IDE, and include execution_proof diagnostics if native attestation remains unavailable."
                 "native_inspection_failures", "native_inspection_reported_problems" ->
@@ -7130,10 +7132,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
             }
-            fun unprovenBatchAnnotatorReasonWithinBudget(
+            fun unprovenBatchAnnotatorsWithinBudget(
                 files: List<com.intellij.psi.PsiFile>,
                 provenRuns: Set<Pair<String, String>> = emptySet(),
-            ): String? {
+            ): UnprovenBatchAnnotators? {
                 val deadline = System.nanoTime() + 2_000_000_000L
                 val checkBudget = {
                     if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("time_limit")
@@ -7141,7 +7143,7 @@ class InspectionHandler : HttpRequestHandler() {
                 return try {
                     retryWritePreemptedInspectionRead(checkBudget) {
                         runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
-                            unprovenBatchAnnotatorReason(
+                            unprovenBatchAnnotators(
                                 globalContext.toolGroups(), files, profile.singleTool != null, provenRuns, checkBudget,
                             )
                         }
@@ -7149,12 +7151,12 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (error: ProcessCanceledException) {
                     throw error
                 } catch (_: Exception) {
-                    UNPROVEN_BATCH_ANNOTATOR_REASON
+                    UnprovenBatchAnnotators(UNPROVEN_BATCH_ANNOTATOR_REASON, emptyList())
                 }
             }
             nativeProofCollector?.let { collector ->
                 if (collector.result().proofBlockReason in setOf(null, UNPROVEN_TOOL_COMPLETION_REASON)) {
-                    unprovenBatchAnnotatorReasonWithinBudget(collector.observedScopeFiles())?.let(collector::markUnavailable)
+                    unprovenBatchAnnotatorsWithinBudget(collector.observedScopeFiles())?.let(collector::markBatchAnnotatorsUnproven)
                 }
             }
             ProgressManager.checkCanceled()
@@ -7248,12 +7250,14 @@ class InspectionHandler : HttpRequestHandler() {
                                                 recordInspectionRunFailureDiagnostic(key, runId, project, source, context)
                                             },
                                         ) { checkInspectionRunCancellation(key, runId) }
-                                        val batchAnnotatorReason = if (proofRun.proofEstablished) {
-                                            unprovenBatchAnnotatorReasonWithinBudget(capturedScopeFiles, proofRun.batchAnnotatorRuns)
+                                        val unprovenBatchAnnotators = if (proofRun.proofEstablished) {
+                                            unprovenBatchAnnotatorsWithinBudget(capturedScopeFiles, proofRun.batchAnnotatorRuns)
                                         } else {
                                             null
                                         }
-                                        boundedProof = batchAnnotatorReason?.let { proofRun.copy(skippedReason = it) } ?: proofRun
+                                        boundedProof = unprovenBatchAnnotators?.let {
+                                            proofRun.copy(skippedReason = it.reason, unprovenBatchAnnotatorExamples = it.examples)
+                                        } ?: proofRun
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
                                         rethrowIfCanceled(e)
@@ -10226,6 +10230,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ),
             "execution_proof_non_applicable_examples_limit" to MAX_EXACT_FILE_PROOF_EXAMPLES,
             "execution_proof_non_applicable_examples" to proof.nonApplicableExamples.takeIf { it.isNotEmpty() },
+            "execution_proof_unproven_batch_annotators" to proof.unprovenBatchAnnotatorExamples.takeIf { it.isNotEmpty() },
             "execution_proof_skipped" to (proof.skippedReason != null),
             "execution_proof_skipped_reason" to proof.skippedReason,
             "execution_proof_established" to proof.proofEstablished,
@@ -10251,6 +10256,7 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_skipped" to (proof.skippedReason != null),
             "execution_proof_skipped_reason" to proof.skippedReason,
             "execution_proof_block_reason" to proof.proofBlockReason,
+            "execution_proof_unproven_batch_annotators" to proof.unprovenBatchAnnotatorExamples.takeIf { it.isNotEmpty() },
             "execution_proof_established" to proof.proofEstablished,
             "execution_proof_clean" to proof.proofClean,
         ).filterValues { it != null }

@@ -44,38 +44,74 @@ private fun isCFamilyFile(file: PsiFile): Boolean =
  * files with an external annotator paired with it, which is how the default `checkFile` finds its work.
  * Tools that declare no language and override `checkFile` (such as clion-radler) are taken to apply to C/C++ only.
  * [provenRuns] lists tool/file pairs whose `checkFile` an exact-scope proof ran to completion itself.
+ * The result names up to [MAX_EXACT_FILE_PROOF_EXAMPLES] blocking tool/file pairs so a caller can inspect around them.
  */
-internal fun unprovenBatchAnnotatorReason(
+internal fun unprovenBatchAnnotators(
     toolGroups: Collection<Tools>,
     files: List<PsiFile>,
     includeDoNotShow: Boolean,
     provenRuns: Set<Pair<String, String>> = emptySet(),
     checkBudget: () -> Unit = {},
-): String? {
+): UnprovenBatchAnnotators? {
     val batchAnnotatorGroups = toolGroups.filter { group ->
         checkBudget()
         (group.tool as? LocalInspectionToolWrapper)?.tool is ExternalAnnotatorBatchInspection
     }
     if (batchAnnotatorGroups.isEmpty()) return null
-    var reason: String? = null
+    var blocked = false
+    var cFamilyBlocked = false
+    val examples = mutableListOf<Map<String, String>>()
     for (file in files) {
         ProgressManager.checkCanceled()
-        checkBudget()
+        try {
+            checkBudget()
+        } catch (exhausted: NativeInspectionObservationUnavailable) {
+            if (!blocked) throw exhausted
+            break
+        }
         val cFamily = isCFamilyFile(file)
-        if (!cFamily && reason != null) continue
+        if (blocked && examples.size >= MAX_EXACT_FILE_PROOF_EXAMPLES && (cFamilyBlocked || !cFamily)) continue
         val enabled = batchAnnotatorGroups.mapNotNull { group ->
             group.getEnabledTool(file, includeDoNotShow) as? LocalInspectionToolWrapper
         }
         val dialectIds = InspectionEngine.calcElementDialectIds(file.viewProvider.allFiles, emptyList())
         val filePath = file.virtualFile?.path
-        val applicable = InspectionEngine.filterToolsApplicableByLanguage(enabled, dialectIds, dialectIds)
+        val blocking = InspectionEngine.filterToolsApplicableByLanguage(enabled, dialectIds, dialectIds)
             .filterNot { (it.shortName to filePath) in provenRuns }
-        if (cFamily && applicable.isNotEmpty()) return UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON
-        if (applicable.any { batchAnnotatorMayApply(it, file) }) {
-            reason = UNPROVEN_BATCH_ANNOTATOR_REASON
+            .filter { cFamily || batchAnnotatorMayApply(it, file) }
+        if (blocking.isEmpty()) continue
+        blocked = true
+        cFamilyBlocked = cFamilyBlocked || cFamily
+        blocking.take(MAX_EXACT_FILE_PROOF_EXAMPLES - examples.size).mapTo(examples) { wrapper ->
+            mapOf("tool" to wrapper.shortName, "file" to (filePath ?: file.name))
         }
     }
-    return reason
+    if (!blocked) return null
+    return UnprovenBatchAnnotators(
+        if (cFamilyBlocked) UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON else UNPROVEN_BATCH_ANNOTATOR_REASON,
+        examples,
+    )
+}
+
+internal data class UnprovenBatchAnnotators(
+    val reason: String,
+    val examples: List<Map<String, String>>,
+)
+
+internal fun unprovenBatchAnnotatorNextAction(examples: List<*>?): String {
+    val pairs = examples.orEmpty().mapNotNull { example ->
+        val entry = example as? Map<*, *> ?: return@mapNotNull null
+        val tool = entry["tool"] as? String ?: return@mapNotNull null
+        val file = entry["file"] as? String ?: return@mapNotNull null
+        "$tool on $file"
+    }
+    val blocking = if (pairs.isEmpty()) {
+        "batch-annotator inspections that could not prove they ran"
+    } else {
+        "batch-annotator inspections that could not prove they ran (${pairs.joinToString("; ")})"
+    }
+    return "Do not report GREEN and do not retry: this scope has $blocking. " +
+        "Inspect the scope without those files, or report UNKNOWN."
 }
 
 /** Assumes [wrapper] already passed the platform's language filter for [file]. */
