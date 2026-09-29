@@ -7107,19 +7107,27 @@ class InspectionHandler : HttpRequestHandler() {
                     .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
                 nativeProofConnection = null
             }
+            fun withinObservationBudget(reason: String): () -> Unit {
+                val deadline = System.nanoTime() + 2_000_000_000L
+                return { if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable(reason) }
+            }
             nativeProofCollector?.completionObservation?.observeCandidates { observation ->
-                runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
-                    observeNativeInspectionCandidates(
-                        observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
-                    )
+                retryWritePreemptedInspectionRead(withinObservationBudget("enumeration_time_limit")) {
+                    runWritePriorityInspectionRead(com.intellij.openapi.progress.EmptyProgressIndicator(), {}) {
+                        observeNativeInspectionCandidates(
+                            observation, globalContext.toolGroups(), nativeProofCollector.observedScopeFiles(), project, profile.singleTool != null,
+                        )
+                    }
                 }
             }
             nativeProofCollector?.completionObservation?.classifyMissingCompletions { observation ->
-                val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
-                runWritePriorityInspectionRead(classificationIndicator, {}) {
-                    classifyMissingNativeCompletions(
-                        observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
-                    )
+                retryWritePreemptedInspectionRead(withinObservationBudget("classification_time_limit")) {
+                    val classificationIndicator = com.intellij.openapi.progress.EmptyProgressIndicator()
+                    runWritePriorityInspectionRead(classificationIndicator, {}) {
+                        classifyMissingNativeCompletions(
+                            observation, nativeProofCollector.observedScopeFiles(), globalContext.publicContext(), project, classificationIndicator,
+                        )
+                    }
                 }
             }
             fun unprovenBatchAnnotatorReasonWithinBudget(files: List<com.intellij.psi.PsiFile>): String? {
