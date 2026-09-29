@@ -13,6 +13,12 @@ import com.intellij.psi.PsiFile
 internal const val UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON = "native_cpp_batch_annotator_unproven"
 internal const val UNPROVEN_BATCH_ANNOTATOR_REASON = "native_batch_annotator_unproven"
 
+/**
+ * External annotators give up silently: ShellCheck's stops the process after ten seconds and returns no result,
+ * which the platform's `checkFile` reports exactly like a clean file. A run this long is not proof of a clean result.
+ */
+internal const val EXTERNAL_ANNOTATOR_TIMEOUT_SIGNATURE_MS = 9_000L
+
 private val C_FAMILY_FILE_TYPE_NAMES = setOf("C/C++", "C/C++ Header", "C++", "ObjectiveC")
 private val C_FAMILY_LANGUAGE_IDS = setOf("C++", "C", "ObjectiveC")
 private val C_FAMILY_SOURCE_EXTENSIONS = setOf(

@@ -10481,6 +10481,8 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.profile.codeInspection.InspectionProjectProfileManager
                 .getInstance(project)
                 .currentProfile
+        // External annotators such as ShellCheck read their settings from the current profile, not the requested one.
+        val selectedProfileIsCurrent = profile.name == currentProfile.name
         fun cleanupExactFileExecutionWrapper(executionWrapper: ExactFileInspectionExecutionWrapper) {
             var cleanupFailure: Exception? = null
             try {
@@ -10620,6 +10622,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ?.tool as? com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
                 if (batchAnnotator != null) {
                     // checkFile takes its own read actions and runs the external tool outside them, as the batch runner does.
+                    val checkFileStartNanos = System.nanoTime()
                     return runDeadlineAwareProofProcess(candidate) {
                         batchAnnotator.checkFile(
                             candidate.value,
@@ -10627,7 +10630,14 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionManager.getInstance(project),
                         ).toList()
                     }.also {
-                        if (usesPlatformCheckFile(batchAnnotator)) batchAnnotatorRuns += candidate.shortName to candidate.filePath
+                        val checkFileElapsedMs = (System.nanoTime() - checkFileStartNanos) / 1_000_000L
+                        if (
+                            selectedProfileIsCurrent &&
+                            usesPlatformCheckFile(batchAnnotator) &&
+                            checkFileElapsedMs < EXTERNAL_ANNOTATOR_TIMEOUT_SIGNATURE_MS
+                        ) {
+                            batchAnnotatorRuns += candidate.shortName to candidate.filePath
+                        }
                     }
                 }
                 return retryWritePreemptedInspectionRead(::checkProofBudget) {
