@@ -37,7 +37,7 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     cooldown:
-      semver-major-days: 30
+      default-days: 7
     patterns:
       - "*"
     multi-ecosystem-group: tooling
