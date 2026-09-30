@@ -740,6 +740,29 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `SDK unregister requires a session and explicit dry run selector before running`() {
+        var called = false
+        handler.helperSdkUnregisterRunner = { _, _ -> called = true; mapOf("status" to "ok") }
+        handler.lifecycleCloseExecutor = { it.run() }
+        val response = processRequest("/api/inspection/lifecycle/unregister-python-sdk?worktree_path=/repo/app&dry_run=false", HttpMethod.POST)
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertFalse(called)
+    }
+
+    @Test
+    fun `SDK unregister forwards explicit dry run and exposes refusal`() {
+        handler.lifecycleCloseExecutor = { it.run() }
+        handler.helperSdkUnregisterRunner = { root, dryRun ->
+            assertEquals(Paths.get("/repo/app"), root)
+            assertTrue(dryRun)
+            mapOf("status" to "refused", "reason" to "not_helper_owned")
+        }
+        val response = processRequest("/api/inspection/lifecycle/unregister-python-sdk?worktree_path=/repo/app&dry_run=true&session_id=${InspectionIdeSession.sessionId}&client_run_id=835-sdk-lifecycle", HttpMethod.POST)
+        assertEquals(HttpResponseStatus.CONFLICT, response.status())
+        assertTrue(response.content().toString(Charsets.UTF_8).contains("not_helper_owned"))
+    }
+
+    @Test
     fun `test Python SDK preparation endpoint supports only POST`() {
         val post = mockk<FullHttpRequest>()
         every { post.uri() } returns "/api/inspection/lifecycle/prepare-python-sdk"

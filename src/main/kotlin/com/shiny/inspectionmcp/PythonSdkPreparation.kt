@@ -429,7 +429,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     } ?: false
 
     override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk {
-        val sdk = SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, "Inspection .venv")
+        val sdk = SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, helperSdkName())
         initializeDetachedSdkAdditionalData(type, sdk)
         return sdk
     }
@@ -591,6 +591,8 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         if (matching.isEmpty()) {
             try {
                 ProjectJdkTable.getInstance().addJdk(sdk)
+                ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
+                    .recordAddedSdk(sdk, Path.of(interpreterHome).parent.parent.parent)
             } catch (error: Throwable) {
                 models.forEach { model -> runCatching { model.dispose() } }
                 return PythonSdkCommitResult(

@@ -2029,6 +2029,10 @@ class InspectionHandler : HttpRequestHandler() {
         { inspectionManager, project, collector ->
             GlobalInspectionContextBoundary.createAttested(inspectionManager, project, collector)
         }
+    internal var helperSdkUnregisterRunner: (Path?, Boolean) -> Map<String, Any?> = { root, dryRun ->
+        HelperPythonSdkLifecycle().unregister(root, dryRun)
+    }
+
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
     }
@@ -2698,7 +2702,7 @@ class InspectionHandler : HttpRequestHandler() {
     override fun isSupported(request: FullHttpRequest): Boolean {
         val path = runCatching { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
         return when {
-            path == "/api/inspection/lifecycle/prepare-python-sdk" -> request.method() == HttpMethod.POST
+            path in setOf("/api/inspection/lifecycle/prepare-python-sdk", "/api/inspection/lifecycle/unregister-python-sdk") -> request.method() == HttpMethod.POST
             path.startsWith("/api/inspection") -> request.method() == HttpMethod.GET
             else -> false
         }
@@ -2768,6 +2772,43 @@ class InspectionHandler : HttpRequestHandler() {
                     if (schedulingFailure != null) {
                         sendInternalServerError(context, requestAttribution, parameters, schedulingFailure)
                     }
+                }
+                "/api/inspection/lifecycle/unregister-python-sdk" -> {
+                    if (request.method() != HttpMethod.POST || request.content().isReadable) {
+                        sendJsonResponse(context, formatJsonManually(mapOf("status" to "error",
+                            "reason" to "sdk_lifecycle_invalid_request")), HttpResponseStatus.BAD_REQUEST)
+                        return true
+                    }
+                    responseHasSessionDrift(parameters, requestAttribution)?.let {
+                        sendJsonResponse(context, it, HttpResponseStatus.CONFLICT)
+                        return true
+                    }
+                    val session = parameters["session_id"]?.singleOrNull()
+                    val dryRun = parameters["dry_run"]?.singleOrNull()?.toBooleanStrictOrNull()
+                    val worktree = parameters["worktree_path"]?.singleOrNull()
+                    val orphans = parameters["orphans"]?.singleOrNull() == "true"
+                    if (session != InspectionIdeSession.sessionId || dryRun == null ||
+                        (worktree == null) == !orphans ||
+                        (worktree != null && !Paths.get(worktree).isAbsolute) ||
+                        parameters.keys.any { it !in setOf("session_id", "dry_run", "worktree_path", "orphans", "client_run_id") }) {
+                        sendJsonResponse(context, formatJsonManually(mapOf("status" to "error",
+                            "reason" to "sdk_lifecycle_invalid_selector")), HttpResponseStatus.BAD_REQUEST)
+                        return true
+                    }
+                    lifecycleCloseExecutor(Runnable {
+                        try {
+                            if (session != InspectionIdeSession.sessionId) {
+                                sendJsonResponse(context, formatJsonManually(mapOf("status" to "error",
+                                    "reason" to "sdk_lifecycle_session_drift")), HttpResponseStatus.CONFLICT)
+                            } else {
+                                val result = helperSdkUnregisterRunner(worktree?.let { Paths.get(it) }, dryRun)
+                                sendJsonResponse(context, formatJsonManually(result + ("session_id" to session)),
+                                    if (result["status"] == "ok") HttpResponseStatus.OK else HttpResponseStatus.CONFLICT)
+                            }
+                        } catch (error: Throwable) {
+                            sendInternalServerError(context, requestAttribution, parameters, error)
+                        }
+                    })
                 }
                 "/api/inspection/lifecycle/prepare-python-sdk" -> {
                     if (request.method() != HttpMethod.POST) {
@@ -4954,6 +4995,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "plugin_build_time" to null,
                 "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
                 "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
+                "helper_sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
