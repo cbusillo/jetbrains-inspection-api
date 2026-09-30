@@ -187,6 +187,25 @@ tasks {
         dependsOn(generateInspectionBuildInfo)
     }
 
+    // Tests create hundreds of temp directories per run. Give each checkout and
+    // test task its own temp root and empty it before and after each run, so
+    // runs do not pile up entries in the shared per-user temp directory.
+    withType<Test>().configureEach {
+        val checkoutKey = Integer.toHexString(rootDir.absolutePath.hashCode())
+        val testTempDir = File(
+            System.getProperty("java.io.tmpdir"),
+            "jetbrains-inspection-api-tests-$checkoutKey-$name",
+        )
+        systemProperty("java.io.tmpdir", testTempDir.absolutePath)
+        doFirst {
+            testTempDir.deleteRecursively()
+            testTempDir.mkdirs()
+        }
+        doLast {
+            testTempDir.deleteRecursively()
+        }
+    }
+
     withType<JavaCompile> {
         sourceCompatibility = "21"
         targetCompatibility = "21"
