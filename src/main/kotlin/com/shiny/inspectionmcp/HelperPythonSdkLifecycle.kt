@@ -72,8 +72,11 @@ internal fun canonicalWorktree(root: Path): Path = try {
 
 internal fun canonicalInterpreter(home: String): Path {
     val path = Path.of(home).toAbsolutePath().normalize()
-    return canonicalWorktree(path.parent.parent.parent).resolve(path.parent.parent.fileName)
-        .resolve(path.parent.fileName).resolve(path.fileName)
+    val interpreterDirectory = path.parent ?: return path
+    val venv = interpreterDirectory.parent ?: return path
+    if (venv.fileName?.toString() != ".venv" || interpreterDirectory.fileName?.toString() !in setOf("bin", "Scripts")) return path
+    val root = venv.parent ?: return path
+    return canonicalWorktree(root).resolve(venv.fileName).resolve(interpreterDirectory.fileName).resolve(path.fileName)
 }
 
 internal fun helperSdkName(): String = "Inspection .venv [${UUID.randomUUID()}]"
@@ -165,7 +168,12 @@ internal class HelperPythonSdkLifecycle(
             }
             after = table.allJdks.size
         }
-        if (dryRun) read(action) else write(action)
+        try {
+            if (dryRun) read(action) else write(action)
+        } catch (_: TimeoutException) {
+            return mapOf("status" to "refused", "reason" to "sdk_lifecycle_busy", "dry_run" to dryRun,
+                "sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION, "sdks" to emptyList<Any>())
+        }
         if (!dryRun) persist()
         return mapOf("status" to if (entries.any { it["status"] == "refused" }) "refused" else "ok",
             "dry_run" to dryRun, "sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,

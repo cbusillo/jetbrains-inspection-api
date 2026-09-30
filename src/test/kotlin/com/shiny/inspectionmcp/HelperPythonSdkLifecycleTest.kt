@@ -146,6 +146,30 @@ class HelperPythonSdkLifecycleTest {
         assertEquals(listOf(owned), fixture.registered)
     }
 
+    @Test fun `unrelated shallow SDK homes do not crash owned retirement`() {
+        val root = directory.resolve("worktree")
+        val owned = sdk(root)
+        val system = sdk(root, "system")
+        every { system.homePath } returns "/python"
+        val fixture = Fixture().apply { registered.addAll(listOf(owned, system)); registry.recordAddedSdk(owned, root) }
+        assertEquals("would_remove", entries(fixture.lifecycle().unregister(root, true)).single()["status"])
+        assertEquals("removed", entries(fixture.lifecycle().unregister(root, false)).single()["status"])
+        assertEquals(listOf(system), fixture.registered)
+    }
+
+    @Test fun `modal scheduling timeout is a refusal and does not save settings`() {
+        val root = directory.resolve("worktree")
+        val owned = sdk(root)
+        val fixture = Fixture().apply { registered += owned; registry.recordAddedSdk(owned, root) }
+        val lifecycle = HelperPythonSdkLifecycle(fixture.registry, { fixture.table }, { _, _ -> false },
+            { throw java.util.concurrent.TimeoutException() }, { it() }, { fixture.saved = true })
+        val result = lifecycle.unregister(root, false)
+        assertEquals("refused", result["status"])
+        assertEquals("sdk_lifecycle_busy", result["reason"])
+        assertEquals(listOf(owned), fixture.registered)
+        assertFalse(fixture.saved)
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun entries(result: Map<String, Any?>) = result["sdks"] as List<Map<String, Any?>>
 }
