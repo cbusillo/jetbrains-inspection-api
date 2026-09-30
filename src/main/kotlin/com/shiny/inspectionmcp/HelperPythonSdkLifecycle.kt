@@ -67,7 +67,19 @@ internal fun definitelyMissingWorktree(root: Path): Boolean {
 internal fun canonicalWorktree(root: Path): Path = try {
     root.toRealPath()
 } catch (_: java.io.IOException) {
-    root.toAbsolutePath().normalize()
+    val absolute = root.toAbsolutePath().normalize()
+    absolute.parent?.let { canonicalWorktree(it).resolve(absolute.fileName) } ?: absolute
+}
+
+internal fun helperWorktreeRoot(projectRoot: Path): Path {
+    val root = canonicalWorktree(projectRoot)
+    var candidate: Path? = root
+    while (candidate != null) {
+        val marker = candidate.resolve(".git")
+        if (Files.isRegularFile(marker) || Files.isDirectory(marker)) return candidate
+        candidate = candidate.parent
+    }
+    return root
 }
 
 internal fun canonicalInterpreter(home: String): Path {
@@ -114,7 +126,7 @@ internal class HelperPythonSdkLifecycle(
         read { snapshot = registry.state.records.toList() }
         // Filesystem checks run on the request worker, outside the IDE write action.
         val records = snapshot.filter { record ->
-            if (root != null) canonicalWorktree(Path.of(record.worktreePath)) == root
+            if (root != null) canonicalWorktree(Path.of(record.worktreePath)).startsWith(root)
             else definitelyMissingWorktree(Path.of(record.worktreePath))
         }
         val recordRoots = records.associateWith { canonicalWorktree(Path.of(it.worktreePath)) }
@@ -127,11 +139,13 @@ internal class HelperPythonSdkLifecycle(
             before = table.allJdks.size
             for (record in records) {
                 val recordRoot = recordRoots.getValue(record)
-                val expectedHome = recordRoot.resolve(if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python")
+                val expectedHome = recordedHomes.getValue(record)
+                val projectRoot = expectedHome.parent?.parent?.parent
+                val expectedSuffix = if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python"
                 val matches = table.allJdks.filter { it.name == record.sdkName }
                 val sdk = matches.singleOrNull()
                 val reason = when {
-                    recordedHomes[record] != expectedHome -> "ownership_mismatch"
+                    projectRoot == null || !projectRoot.startsWith(recordRoot) || projectRoot.resolve(expectedSuffix) != expectedHome -> "ownership_mismatch"
                     matches.isEmpty() && table.allJdks.any { homes[it] == expectedHome } -> "ownership_mismatch"
                     matches.isEmpty() -> "already_absent"
                     sdk == null -> "ambiguous_sdk"
@@ -148,7 +162,7 @@ internal class HelperPythonSdkLifecycle(
                 }
                 entries.add(mapOf(
                     "sdk_name" to record.sdkName, "interpreter_home" to record.interpreterHome,
-                    "worktree_path" to record.worktreePath, "reason" to reason,
+                    "worktree_path" to (root?.toString() ?: record.worktreePath), "project_path" to projectRoot?.toString(), "reason" to reason,
                     "status" to when {
                         reason == "helper_owned" -> if (dryRun) "would_remove" else "removed"
                         reason == "already_absent" -> "absent"

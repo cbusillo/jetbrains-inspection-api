@@ -170,6 +170,39 @@ class HelperPythonSdkLifecycleTest {
         assertFalse(fixture.saved)
     }
 
+    @Test fun `nested project SDK is attributed to the Git worktree and retired with its root`() {
+        val root = Files.createDirectory(directory.resolve("worktree"))
+        Files.writeString(root.resolve(".git"), "gitdir: fixture")
+        val backend = Files.createDirectory(root.resolve("backend"))
+        val owned = sdk(backend)
+        val fixture = Fixture().apply {
+            registered += owned
+            registry.recordAddedSdk(owned, helperWorktreeRoot(backend))
+        }
+        assertEquals(root.toRealPath().toString(), fixture.registry.state.records.single().worktreePath)
+        val result = fixture.lifecycle().unregister(root, false)
+        assertEquals("removed", entries(result).single()["status"])
+        assertEquals(root.toRealPath().toString(), entries(result).single()["worktree_path"])
+        assertTrue(fixture.registered.isEmpty())
+    }
+
+    @Test fun `nested interpreter remains an orphan candidate after the whole worktree is removed`() {
+        val root = Files.createDirectory(directory.resolve("worktree"))
+        Files.writeString(root.resolve(".git"), "gitdir: fixture")
+        val backend = Files.createDirectory(root.resolve("backend"))
+        val owned = sdk(backend)
+        val fixture = Fixture().apply {
+            registered += owned
+            registry.recordAddedSdk(owned, helperWorktreeRoot(backend))
+        }
+        Files.delete(backend)
+        Files.delete(root.resolve(".git"))
+        Files.delete(root)
+        val result = fixture.lifecycle().unregister(null, false)
+        assertEquals("removed", entries(result).single()["status"])
+        assertTrue(fixture.registered.isEmpty())
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun entries(result: Map<String, Any?>) = result["sdks"] as List<Map<String, Any?>>
 }

@@ -466,6 +466,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         ownershipIsCurrent: () -> Boolean,
         indicator: ProgressIndicator,
     ): PythonSdkCommitResult {
+        val worktreeRoot = helperWorktreeRoot(Path.of(interpreterHome).parent.parent.parent)
         val result = AtomicReference<PythonSdkCommitResult>()
         ApplicationManager.getApplication().invokeAndWait {
             ApplicationManager.getApplication().runWriteAction {
@@ -476,6 +477,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
                     detachedSdk,
                     ownershipIsCurrent,
                     indicator,
+                    worktreeRoot,
                 ))
             }
         }
@@ -505,6 +507,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         detachedSdk: Sdk?,
         ownershipIsCurrent: () -> Boolean,
         indicator: ProgressIndicator,
+        worktreeRoot: Path,
     ): PythonSdkCommitResult {
         indicator.checkCanceled()
         if (project.isDisposed || !ownershipIsCurrent()) {
@@ -592,7 +595,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             try {
                 ProjectJdkTable.getInstance().addJdk(sdk)
                 ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
-                    .recordAddedSdk(sdk, Path.of(interpreterHome).parent.parent.parent)
+                    .recordAddedSdk(sdk, worktreeRoot)
             } catch (error: Throwable) {
                 models.forEach { model -> runCatching { model.dispose() } }
                 return PythonSdkCommitResult(

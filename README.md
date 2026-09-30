@@ -469,10 +469,12 @@ closes, or the IDE built-in HTTP server event loop.
 `worktree_path` or `orphans=true`. Preview with `dry_run=true` before applying.
 The response lists each SDK's name, interpreter, worktree, disposition, and
 reason, with before/after global SDK counts. `helper_sdk_lifecycle_version` in
-IDE identity advertises support. A refused SDK returns HTTP 409.
+IDE identity advertises support. A refused SDK returns HTTP 409. Modal scheduling that exceeds the bounded
+wait returns `sdk_lifecycle_busy`; close the modal and start a fresh preview.
 
 The plugin records ownership in application state only when preparation adds a
-new SDK; reused SDKs remain unowned. It unregisters through the running IDE's
+new SDK; reused SDKs remain unowned. SDKs prepared in a nested project are
+attributed to their containing Git worktree and retired with that worktree. It unregisters through the running IDE's
 SDK table and persists settings, refusing changed identities and SDKs used by
 any open project. Orphan cleanup requires the recorded worktree to be absent
 and its parent accessible. Older SDKs without ownership records remain untouched,
