@@ -19,6 +19,9 @@ import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.attribute.BasicFileAttributes
 import java.util.UUID
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 
 internal const val HELPER_SDK_LIFECYCLE_VERSION = 1
 
@@ -43,7 +46,7 @@ class HelperSdkOwnershipRegistry : PersistentStateComponent<HelperSdkOwnershipSt
         ownership.records.add(HelperSdkRecord().apply {
             sdkName = sdk.name
             interpreterHome = requireNotNull(sdk.homePath)
-            worktreePath = worktree.toAbsolutePath().normalize().toString()
+            worktreePath = canonicalWorktree(worktree).toString()
         })
     }
 }
@@ -61,6 +64,18 @@ internal fun definitelyMissingWorktree(root: Path): Boolean {
     }
 }
 
+internal fun canonicalWorktree(root: Path): Path = try {
+    root.toRealPath()
+} catch (_: java.io.IOException) {
+    root.toAbsolutePath().normalize()
+}
+
+internal fun canonicalInterpreter(home: String): Path {
+    val path = Path.of(home).toAbsolutePath().normalize()
+    return canonicalWorktree(path.parent.parent.parent).resolve(path.parent.parent.fileName)
+        .resolve(path.parent.fileName).resolve(path.fileName)
+}
+
 internal fun helperSdkName(): String = "Inspection .venv [${UUID.randomUUID()}]"
 
 internal class HelperPythonSdkLifecycle(
@@ -75,34 +90,49 @@ internal class HelperPythonSdkLifecycle(
         }
     },
     private val write: ((() -> Unit) -> Unit) = { action ->
-        ApplicationManager.getApplication().invokeAndWait {
-            ApplicationManager.getApplication().runWriteAction(action)
+        val task = FutureTask<Unit> { ApplicationManager.getApplication().runWriteAction(action) }
+        ApplicationManager.getApplication().invokeLater(task)
+        try {
+            task.get(10, TimeUnit.SECONDS)
+        } catch (error: TimeoutException) {
+            task.cancel(false)
+            throw error
         }
     },
+    private val read: ((() -> Unit) -> Unit) = { action -> ApplicationManager.getApplication().runReadAction(action) },
     private val persist: () -> Unit = { ApplicationManager.getApplication().saveSettings() },
 ) {
     fun unregister(worktree: Path?, dryRun: Boolean): Map<String, Any?> {
-        val root = worktree?.toAbsolutePath()?.normalize()
+        val root = worktree?.let { canonicalWorktree(it) }
         val entries = mutableListOf<Map<String, Any?>>()
         var before = 0
         var after = 0
-        write {
+        var snapshot = listOf<HelperSdkRecord>()
+        read { snapshot = registry.state.records.toList() }
+        // Filesystem checks run on the request worker, outside the IDE write action.
+        val records = snapshot.filter { record ->
+            if (root != null) canonicalWorktree(Path.of(record.worktreePath)) == root
+            else definitelyMissingWorktree(Path.of(record.worktreePath))
+        }
+        val recordRoots = records.associateWith { canonicalWorktree(Path.of(it.worktreePath)) }
+        val recordedHomes = records.associateWith { canonicalInterpreter(it.interpreterHome) }
+        var registeredHomes = mapOf<Sdk, String?>()
+        read { registeredHomes = sdkTable().allJdks.associateWith { it.homePath } }
+        val homes = registeredHomes.mapValues { (_, home) -> home?.let { canonicalInterpreter(it) } }
+        val action = {
             val table = sdkTable()
             before = table.allJdks.size
-            val records = registry.state.records.toList().filter { record ->
-                if (root != null) record.worktreePath == root.toString()
-                else definitelyMissingWorktree(Path.of(record.worktreePath))
-            }
             for (record in records) {
-                val recordRoot = Path.of(record.worktreePath).toAbsolutePath().normalize()
+                val recordRoot = recordRoots.getValue(record)
                 val expectedHome = recordRoot.resolve(if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python")
                 val matches = table.allJdks.filter { it.name == record.sdkName }
                 val sdk = matches.singleOrNull()
                 val reason = when {
-                    Path.of(record.interpreterHome).toAbsolutePath().normalize() != expectedHome -> "ownership_mismatch"
+                    recordedHomes[record] != expectedHome -> "ownership_mismatch"
+                    matches.isEmpty() && table.allJdks.any { homes[it] == expectedHome } -> "ownership_mismatch"
                     matches.isEmpty() -> "already_absent"
                     sdk == null -> "ambiguous_sdk"
-                    sdk.sdkType.name != "Python SDK" || sdk.homePath?.let { Path.of(it).toAbsolutePath().normalize() } != expectedHome -> "ownership_mismatch"
+                    sdk.sdkType.name != "Python SDK" || homes[sdk] != expectedHome || sdk.homePath != registeredHomes[sdk] -> "ownership_mismatch"
                     inUse(sdk, recordRoot) -> "sdk_in_use"
                     else -> "helper_owned"
                 }
@@ -126,7 +156,7 @@ internal class HelperPythonSdkLifecycle(
             // A selector must never authorize an SDK merely because its interpreter is under that path.
             if (root != null) {
                 val expected = root.resolve(if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python")
-                table.allJdks.filter { sdk -> sdk.homePath?.let { Path.of(it).toAbsolutePath().normalize() } == expected &&
+                table.allJdks.filter { sdk -> homes[sdk] == expected &&
                     records.none { it.sdkName == sdk.name }
                 }.forEach { sdk ->
                     entries.add(mapOf("sdk_name" to sdk.name, "interpreter_home" to expected.toString(),
@@ -135,6 +165,7 @@ internal class HelperPythonSdkLifecycle(
             }
             after = table.allJdks.size
         }
+        if (dryRun) read(action) else write(action)
         if (!dryRun) persist()
         return mapOf("status" to if (entries.any { it["status"] == "refused" }) "refused" else "ok",
             "dry_run" to dryRun, "sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,

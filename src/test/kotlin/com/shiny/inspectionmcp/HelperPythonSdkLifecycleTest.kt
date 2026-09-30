@@ -34,7 +34,7 @@ class HelperPythonSdkLifecycleTest {
             every { table.allJdks } answers { registered.toTypedArray() }
             every { table.removeJdk(any()) } answers { registered.remove(firstArg<Sdk>()); Unit }
         }
-        fun lifecycle() = HelperPythonSdkLifecycle(registry, { table }, { _, _ -> busy }, { it() }, { saved = true })
+        fun lifecycle() = HelperPythonSdkLifecycle(registry, { table }, { _, _ -> busy }, { it() }, { it() }, { saved = true })
     }
 
     @Test fun `dry run lists and apply removes only a recorded SDK and persists`() {
@@ -47,7 +47,7 @@ class HelperPythonSdkLifecycleTest {
         val restored = HelperSdkOwnershipRegistry().apply {
             loadState(XmlSerializer.deserialize(XmlSerializer.serialize(fixture.registry.state), HelperSdkOwnershipState::class.java))
         }
-        val lifecycle = HelperPythonSdkLifecycle(restored, { fixture.table }, { _, _ -> false }, { it() }, { fixture.saved = true })
+        val lifecycle = HelperPythonSdkLifecycle(restored, { fixture.table }, { _, _ -> false }, { it() }, { it() }, { fixture.saved = true })
 
         val preview = lifecycle.unregister(root, true)
         assertEquals("would_remove", entries(preview).single()["status"])
@@ -116,6 +116,34 @@ class HelperPythonSdkLifecycleTest {
         assertEquals("removed", entries(result).single()["status"])
         assertEquals(listOf(live, manual), fixture.registered)
         assertEquals(listOf(live.name), fixture.registry.state.records.map { it.sdkName })
+    }
+
+    @Test fun `renamed owned SDK retains ownership and refuses orphan cleanup`() {
+        val root = directory.resolve("removed")
+        val owned = sdk(root)
+        val fixture = Fixture().apply { registry.recordAddedSdk(owned, root); registered += owned }
+        every { owned.name } returns "renamed"
+        val result = fixture.lifecycle().unregister(null, false)
+        assertEquals("ownership_mismatch", entries(result).single()["reason"])
+        assertEquals(listOf(owned), fixture.registered)
+        assertEquals(1, fixture.registry.state.records.size)
+    }
+
+    @Test fun `worktree symlink selector identifies the recorded SDK`() {
+        val root = Files.createDirectory(directory.resolve("worktree"))
+        val alias = Files.createSymbolicLink(directory.resolve("alias"), root)
+        val owned = sdk(root)
+        val fixture = Fixture().apply { registry.recordAddedSdk(owned, root); registered += owned }
+        assertEquals("removed", entries(fixture.lifecycle().unregister(alias, false)).single()["status"])
+        assertTrue(fixture.registered.isEmpty())
+    }
+
+    @Test fun `missing parent never establishes an orphan`() {
+        val root = directory.resolve("unmounted").resolve("removed")
+        val owned = sdk(root)
+        val fixture = Fixture().apply { registry.recordAddedSdk(owned, root); registered += owned }
+        assertTrue(entries(fixture.lifecycle().unregister(null, false)).isEmpty())
+        assertEquals(listOf(owned), fixture.registered)
     }
 
     @Suppress("UNCHECKED_CAST")
