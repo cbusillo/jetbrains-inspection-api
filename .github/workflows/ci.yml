@@ -6,6 +6,7 @@ name: CI
   push:
     branches:
       - main
+      - "launchplane/train/**"
 
 permissions:
   checks: write
