@@ -4,6 +4,7 @@ import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.projectRoots.SdkType
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.util.xmlb.XmlSerializer
 import io.mockk.every
 import io.mockk.mockk
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -43,7 +44,9 @@ class HelperPythonSdkLifecycleTest {
         val fixture = Fixture()
         fixture.registered.addAll(listOf(owned, manual))
         fixture.registry.recordAddedSdk(owned, root)
-        val restored = HelperSdkOwnershipRegistry().apply { loadState(fixture.registry.state) }
+        val restored = HelperSdkOwnershipRegistry().apply {
+            loadState(XmlSerializer.deserialize(XmlSerializer.serialize(fixture.registry.state), HelperSdkOwnershipState::class.java))
+        }
         val lifecycle = HelperPythonSdkLifecycle(restored, { fixture.table }, { _, _ -> false }, { it() }, { fixture.saved = true })
 
         val preview = lifecycle.unregister(root, true)
@@ -78,6 +81,15 @@ class HelperPythonSdkLifecycleTest {
         assertEquals("ownership_mismatch", entries(result).single()["reason"])
         assertEquals(listOf(replacement), fixture.registered)
         assertEquals(1, fixture.registry.state.records.size)
+    }
+
+    @Test fun `equivalent interpreter spelling still identifies the owned SDK`() {
+        val root = directory.resolve("worktree")
+        val owned = sdk(root)
+        every { owned.homePath } returns root.resolve(if (SystemInfo.isWindows) ".venv/Scripts/./python.exe" else ".venv/bin/./python").toString()
+        val fixture = Fixture().apply { registry.recordAddedSdk(owned, root); registered += owned }
+        assertEquals("removed", entries(fixture.lifecycle().unregister(root, false)).single()["status"])
+        assertTrue(fixture.registered.isEmpty())
     }
 
     @Test fun `refuses SDK still used by an open project`() {

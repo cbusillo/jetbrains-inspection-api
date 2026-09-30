@@ -763,6 +763,16 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `duplicate worktree selectors cannot fall through to orphan cleanup`() {
+        var called = false
+        handler.lifecycleCloseExecutor = { it.run() }
+        handler.helperSdkUnregisterRunner = { _, _ -> called = true; mapOf("status" to "ok") }
+        val response = processRequest("/api/inspection/lifecycle/unregister-python-sdk?worktree_path=/repo/a&worktree_path=/repo/b&orphans=true&dry_run=false&session_id=${InspectionIdeSession.sessionId}", HttpMethod.POST)
+        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
+        assertFalse(called)
+    }
+
+    @Test
     fun `test Python SDK preparation endpoint supports only POST`() {
         val post = mockk<FullHttpRequest>()
         every { post.uri() } returns "/api/inspection/lifecycle/prepare-python-sdk"

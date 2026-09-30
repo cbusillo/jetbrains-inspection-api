@@ -2788,6 +2788,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val worktree = parameters["worktree_path"]?.singleOrNull()
                     val orphans = parameters["orphans"]?.singleOrNull() == "true"
                     if (session != InspectionIdeSession.sessionId || dryRun == null ||
+                        parameters.values.any { it.size != 1 } ||
                         (worktree == null) == !orphans ||
                         (worktree != null && !Paths.get(worktree).isAbsolute) ||
                         parameters.keys.any { it !in setOf("session_id", "dry_run", "worktree_path", "orphans", "client_run_id") }) {

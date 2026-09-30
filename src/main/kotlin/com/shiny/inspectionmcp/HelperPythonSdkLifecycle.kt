@@ -5,6 +5,7 @@ import com.intellij.openapi.components.PersistentStateComponent
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.State
 import com.intellij.openapi.components.Storage
+import com.intellij.openapi.components.RoamingType
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
@@ -32,7 +33,7 @@ class HelperSdkOwnershipState {
 }
 
 @Service(Service.Level.APP)
-@State(name = "InspectionHelperSdkOwnership", storages = [Storage("inspection-helper-sdks.xml")])
+@State(name = "InspectionHelperSdkOwnership", storages = [Storage("inspection-helper-sdks.xml", roamingType = RoamingType.DISABLED)])
 class HelperSdkOwnershipRegistry : PersistentStateComponent<HelperSdkOwnershipState> {
     private var ownership = HelperSdkOwnershipState()
     override fun getState(): HelperSdkOwnershipState = ownership
@@ -98,10 +99,10 @@ internal class HelperPythonSdkLifecycle(
                 val matches = table.allJdks.filter { it.name == record.sdkName }
                 val sdk = matches.singleOrNull()
                 val reason = when {
-                    record.interpreterHome != expectedHome.toString() -> "ownership_mismatch"
+                    Path.of(record.interpreterHome).toAbsolutePath().normalize() != expectedHome -> "ownership_mismatch"
                     matches.isEmpty() -> "already_absent"
                     sdk == null -> "ambiguous_sdk"
-                    sdk.sdkType.name != "Python SDK" || sdk.homePath != record.interpreterHome -> "ownership_mismatch"
+                    sdk.sdkType.name != "Python SDK" || sdk.homePath?.let { Path.of(it).toAbsolutePath().normalize() } != expectedHome -> "ownership_mismatch"
                     inUse(sdk, recordRoot) -> "sdk_in_use"
                     else -> "helper_owned"
                 }
@@ -124,11 +125,11 @@ internal class HelperPythonSdkLifecycle(
             }
             // A selector must never authorize an SDK merely because its interpreter is under that path.
             if (root != null) {
-                val expected = root.resolve(if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python").toString()
-                table.allJdks.filter { sdk -> sdk.homePath == expected &&
+                val expected = root.resolve(if (SystemInfo.isWindows) ".venv/Scripts/python.exe" else ".venv/bin/python")
+                table.allJdks.filter { sdk -> sdk.homePath?.let { Path.of(it).toAbsolutePath().normalize() } == expected &&
                     records.none { it.sdkName == sdk.name }
                 }.forEach { sdk ->
-                    entries.add(mapOf("sdk_name" to sdk.name, "interpreter_home" to expected,
+                    entries.add(mapOf("sdk_name" to sdk.name, "interpreter_home" to expected.toString(),
                         "worktree_path" to root.toString(), "status" to "refused", "reason" to "not_helper_owned"))
                 }
             }

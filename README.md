@@ -462,6 +462,25 @@ Agent-triggered inspections use a non-modal progress indicator. Long-running
 inspection work therefore remains cancellable without blocking lifecycle opens,
 closes, or the IDE built-in HTTP server event loop.
 
+### Helper-owned Python SDK retirement
+
+`POST /api/inspection/lifecycle/unregister-python-sdk` accepts the current
+`session_id`, an explicit `dry_run=true|false`, and either an absolute
+`worktree_path` or `orphans=true`. Preview with `dry_run=true` before applying.
+The response lists each SDK's name, interpreter, worktree, disposition, and
+reason, with before/after global SDK counts. `helper_sdk_lifecycle_version` in
+IDE identity advertises support. A refused SDK returns HTTP 409.
+
+The plugin records ownership in application state only when preparation adds a
+new SDK; reused SDKs remain unowned. It unregisters through the running IDE's
+SDK table and persists settings, refusing changed identities and SDKs used by
+any open project. Orphan cleanup requires the recorded worktree to be absent
+and its parent accessible. Older SDKs without ownership records remain untouched,
+including entries named `Inspection .venv`; a name or interpreter path alone
+is not ownership evidence. Unregister a closed prepared worktree before deleting
+it, or use orphan cleanup after removal. This operation never edits IDE settings
+files outside the IDE.
+
 ### Problems Endpoint
 **URL**: `GET /api/inspection/problems`
 
@@ -960,22 +979,3 @@ branch and refuses existing or version-mismatched tags.
 ## License
 
 MIT License: see [LICENSE](LICENSE) file for details.
-
-### Helper-owned Python SDK retirement
-
-`POST /api/inspection/lifecycle/unregister-python-sdk` accepts the current
-`session_id`, an explicit `dry_run=true|false`, and either an absolute
-`worktree_path` or `orphans=true`. Preview with `dry_run=true` before applying.
-The response lists each SDK's name, interpreter, worktree, disposition, and
-reason, with before/after global SDK counts. `helper_sdk_lifecycle_version` in
-IDE identity advertises support. A refused SDK returns HTTP 409.
-
-The plugin records ownership in application state only when preparation adds a
-new SDK; reused SDKs remain unowned. It unregisters through the running IDE's
-SDK table and persists settings, refusing changed identities and SDKs used by
-any open project. Orphan cleanup requires the recorded worktree to be absent
-and its parent accessible. Older SDKs without ownership records remain untouched,
-including entries named `Inspection .venv`; a name or interpreter path alone
-is not ownership evidence. Unregister a closed prepared worktree before deleting
-it, or use orphan cleanup after removal. This operation never edits IDE settings
-files outside the IDE.
