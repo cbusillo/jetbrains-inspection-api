@@ -429,7 +429,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     } ?: false
 
     override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk {
-        val sdk = SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, "Inspection .venv")
+        val sdk = SdkConfigurationUtil.createSdk(existingSdks, interpreterHome, type, null, helperSdkName())
         initializeDetachedSdkAdditionalData(type, sdk)
         return sdk
     }
@@ -466,6 +466,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         ownershipIsCurrent: () -> Boolean,
         indicator: ProgressIndicator,
     ): PythonSdkCommitResult {
+        val worktreeRoot = helperWorktreeRoot(Path.of(interpreterHome).parent.parent.parent)
         val result = AtomicReference<PythonSdkCommitResult>()
         ApplicationManager.getApplication().invokeAndWait {
             ApplicationManager.getApplication().runWriteAction {
@@ -476,6 +477,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
                     detachedSdk,
                     ownershipIsCurrent,
                     indicator,
+                    worktreeRoot,
                 ))
             }
         }
@@ -505,6 +507,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         detachedSdk: Sdk?,
         ownershipIsCurrent: () -> Boolean,
         indicator: ProgressIndicator,
+        worktreeRoot: Path,
     ): PythonSdkCommitResult {
         indicator.checkCanceled()
         if (project.isDisposed || !ownershipIsCurrent()) {
@@ -591,6 +594,8 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         if (matching.isEmpty()) {
             try {
                 ProjectJdkTable.getInstance().addJdk(sdk)
+                ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
+                    .recordAddedSdk(sdk, worktreeRoot)
             } catch (error: Throwable) {
                 models.forEach { model -> runCatching { model.dispose() } }
                 return PythonSdkCommitResult(

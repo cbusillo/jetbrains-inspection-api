@@ -191,6 +191,9 @@ tasks {
     // test task its own temp root and empty it before and after each run, so
     // runs do not pile up entries in the shared per-user temp directory.
     withType<Test>().configureEach {
+        // Bundled Kotlin indexing reads dependencies from Gradle's cache, which
+        // can live outside the test framework's default allowed home directory.
+        systemProperty("vfs.additional-allowed-roots", gradle.gradleUserHomeDir.absolutePath)
         val checkoutKey = Integer.toHexString(rootDir.absolutePath.hashCode())
         val testTempDir = File(
             System.getProperty("java.io.tmpdir"),
