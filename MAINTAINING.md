@@ -13,6 +13,12 @@ production changes, or restarting another worker's active IDE session. Follow
 
 ## Local plugin rollout
 
+Do not use `scripts/test-automated.sh` for a shared IDE rollout: its current
+installer force-stops matching IDE processes, removes the plugin directory,
+and selects the newest local zip without rollback or provenance checks. Use the
+bounded, backed-up procedure below; the script hazards are recorded with
+[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+
 1. Resolve the PR's final merge SHA, then create a host-approved linked worktree
    at that exact commit. Its tracked and untracked state must be clean. Resolve
    Java 21 using [Testing prerequisites](TESTING.md#prerequisites), and set
@@ -33,12 +39,17 @@ production changes, or restarting another worker's active IDE session. Follow
    Keep host-specific app selectors and plugin paths in ignored local
    configuration, not this document. Preserve the rollback copy through acceptance.
 3. Coordinate a maintenance window for the target IDEs so new inspections do not
-   start during replacement. Check the helper outcome log for unfinished work
-   and the current process inventory for inspection helpers. A log's last row
+   start during replacement, including helper, MCP, and direct HTTP callers.
+   Check every target IDE's route-pinned status through the maintained helper
+   for active inspection, the outcome log for unfinished work, and the process
+   inventory for inspection helpers. The process guard below detects helper
+   processes only; it cannot prove MCP/HTTP inactivity. A log's last row
    alone cannot prove inactivity. An installer must enforce a bounded wait and
    abort before quitting or copying when a helper remains active; printing a
    warning is not a guard. For example, this macOS shell-script guard waits at
-   most two minutes and fails if process inventory cannot be read:
+   most two minutes and fails if process inventory cannot be read. Put it in an
+   installer script file, not an interactive shell or a `shell -c` command whose
+   arguments themselves contain helper invocations:
 
    ```bash
    set -euo pipefail
@@ -71,27 +82,43 @@ production changes, or restarting another worker's active IDE session. Follow
    until its IDE process is gone, with a bounded wait. A cancelled quit, unsaved
    document, modal dialog, unreadable inventory, or expired wait aborts the
    install. Never force-kill. Do not copy jars while any target IDE is still alive.
-5. Replace only the inventoried plugin payload, using `cp -f` for jar replacement.
-   Compare every installed jar against the staged candidate with `cmp`, and
-   reconcile the payload manifest so an older version's jar cannot coexist with
-   the candidate. Keep unrelated plugins and IDE configuration intact. On any
-   failure, leave the IDEs stopped and restore the verified per-IDE rollback
-   payload before restarting; verify its bytes too. Relaunch normally with
-   `open -a` and the configured app selector.
+5. Inventory both candidate and rollback payload manifests. Replace only this
+   plugin's payload, using `cp -f` for jar replacement. The resulting file set
+   must exactly match the candidate manifest, including versioned jar names;
+   remove only this plugin's old files proven absent from that manifest. Keep
+   unrelated plugins and IDE configuration intact. Recheck that every target
+   IDE is still stopped after copying and before `cmp` or relaunch. Compare
+   every payload file's bytes against the staged candidate, not only its name.
+   If an IDE starts during replacement, abort the attempt and reestablish the
+   maintenance window and bounded normal quit before any further payload writes.
+   On replacement failure, restore the verified per-IDE rollback payload while
+   the IDEs are stopped. Remove only candidate files proven absent from the
+   rollback manifest; require the restored file set and all bytes to match that
+   manifest exactly. Relaunch normally with `open -a` and the configured selector.
 6. Verify each target IDE's runtime fingerprint through the maintained
    `jetbrains-inspection` helper. `list-projects --json` can verify an existing
    project route; an empty inventory is not fingerprint proof. Also check the
    identity returned by each smoke assessment. Run the product-specific
    [red-lane dogfood](TESTING.md#red-lane-dogfood) once per target IDE, using an
-   approved/trusted `SMOKE_ROOT`, `--work-root`, `--keep-project`, and a separate
+   approved/trusted `SMOKE_ROOT`, an explicit `--helper "$HELPER"` selecting the
+   maintained skill, `--work-root`, `--keep-project`, and a separate
    JSON evidence file for each product. Require the intended fingerprint,
    actionable `RED`, positive findings, exact fixture route, and cleanup `closed`.
    Preserve a fixture and its lease if cleanup is unresolved; the smoke script's
    legacy deletion behavior is tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
-7. Cold IDE warm-up can make a first assessment stale. Read the helper's
-   `retry_policy.retry` and its diagnosis; follow the maintained helper's bounded
-   retry contract rather than adding an outer loop. A terminal `UNKNOWN` or
-   unresolved cleanup remains unproven acceptance, not a regression or a pass.
+   A wrong runtime fingerprint or a decisive smoke regression fails rollout
+   verification. Within the authorized maintenance window, normally quit the
+   affected IDE, restore and verify its exact rollback manifest as in step 5,
+   then relaunch and verify the restored identity and smoke. Preserve both sets
+   of evidence. Do not copy rollback files into a still-running IDE.
+7. Cold IDE warm-up can make a first assessment stale. The smoke wrapper does
+   not retry automatically. Only if `retry_policy.retry=true`, allow at most one
+   further maintained-helper assessment on the same preserved fixture, after
+   its requested wait/readiness condition. Reuse the saved command's exact IDE,
+   scope and profile selectors so a new smoke invocation does not create another
+   fixture. Preserve the first result and any internal attempts. Do not add an
+   outer retry loop or retry a terminal result. A terminal `UNKNOWN` or unresolved
+   cleanup remains unproven acceptance, not a regression or a pass.
 8. Give the rollback directory a `.retain-until` review date about a week out,
    and use the owner's existing deployment-retention sweep after installation.
    That host workflow is not implemented by this repository. If it is unavailable,

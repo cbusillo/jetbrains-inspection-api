@@ -50,7 +50,11 @@ For local plugin rollout, rollback, and diagnosis techniques, see
 ## Automated IDE smoke test
 
 `./scripts/test-automated.sh` can install the plugin into a local IDE,
-start it with a test project, and hit a few API endpoints.
+start it with a test project, and hit a few API endpoints. Its current installer
+force-stops matching IDE processes and replaces the plugin without rollback or
+exact-build provenance checks. Do not use it for a shared IDE rollout; use the
+[maintainer procedure](MAINTAINING.md#local-plugin-rollout). The script hazards
+are recorded with [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
 - The smoke verifies that the live IDE reports the version from
