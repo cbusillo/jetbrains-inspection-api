@@ -403,7 +403,11 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   Preparation evidence does not imply an inspection verdict; clients must run
   and assess an independent inspection. The generic local SDK has no claimed
   uv-association metadata. Failures use a
-  `python_sdk_preparation_*` reason and remain fail-closed. The 60-second limit
+  `python_sdk_preparation_*` reason and remain fail-closed. A newly configured
+  SDK that fails setup returns HTTP 500 with
+  `python_sdk_preparation_setup_incomplete`; `detail` identifies the first failed
+  requirement: matching interpreter home, nonblank Python version, or populated
+  `CLASSES` roots. The 60-second limit
   bounds the HTTP response and requests cancellation. If platform SDK setup
   does not honor cancellation promptly, the worker remains marked active and
   lifecycle close remains blocked until that worker exits, preventing a late

@@ -8,6 +8,8 @@ import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.projectRoots.SdkAdditionalData
 import com.intellij.openapi.projectRoots.SdkModificator
 import com.intellij.openapi.projectRoots.SdkType
+import com.intellij.openapi.roots.OrderRootType
+import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.util.SystemInfo
 import io.mockk.Runs
 import io.mockk.every
@@ -273,6 +275,30 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `setup diagnostic identifies each failed requirement and accepts complete SDK`() {
+        val sdk = mockk<Sdk>()
+        val home = projectRoot.resolve(".venv/bin/python").toString()
+        val platform = JetBrainsPythonSdkPreparationPlatform()
+        every { sdk.homePath } returns projectRoot.resolve("other/python").toString()
+        assertEquals("SDK interpreter home does not match the worktree interpreter.", platform.setupIncompleteDetail(sdk, home))
+        assertFalse(platform.isSetupComplete(sdk, home))
+
+        every { sdk.homePath } returns home
+        every { sdk.versionString } returns " "
+        assertEquals("SDK Python version is missing after path setup.", platform.setupIncompleteDetail(sdk, home))
+        assertFalse(platform.isSetupComplete(sdk, home))
+
+        every { sdk.versionString } returns "Python 3.13"
+        every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns emptyArray()
+        assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(sdk, home))
+        assertFalse(platform.isSetupComplete(sdk, home))
+
+        every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns arrayOf(mockk<VirtualFile>())
+        assertNull(platform.setupIncompleteDetail(sdk, home))
+        assertTrue(platform.isSetupComplete(sdk, home))
+    }
+
+    @Test
     fun `initializes detached SDK additional data before Python path setup`() {
         val type = mockk<SdkType>()
         val sdk = mockk<Sdk>()
@@ -492,6 +518,7 @@ class PythonSdkPreparationServiceTest {
         val result = prepare()
 
         assertEquals("python_sdk_preparation_setup_incomplete", result.reason)
+        assertEquals("SDK CLASSES roots are missing after path setup.", result.detail)
         assertEquals(listOf("create", "setup"), platform.mutationEvents)
         assertTrue(platform.registered.isEmpty())
         assertEquals(0, platform.commitQueries)
@@ -770,11 +797,12 @@ class PythonSdkPreparationServiceTest {
             setupFailure?.let { throw it }
         }
 
-        override fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean {
+        override fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String? {
             assertEquals(interpreterHome, homes[sdk])
             setupCompleteQueries += 1
-            val results = setupCompleteResults ?: return setupComplete
-            return if (results.size > 1) results.removeFirst() else results.first()
+            val results = setupCompleteResults
+            val complete = if (results == null) setupComplete else if (results.size > 1) results.removeFirst() else results.first()
+            return if (complete) null else "SDK CLASSES roots are missing after path setup."
         }
 
         override fun commit(

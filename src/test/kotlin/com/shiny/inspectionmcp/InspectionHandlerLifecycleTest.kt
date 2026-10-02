@@ -859,6 +859,21 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(incompleteBody.contains("\"registered_local_python_sdk_count\": 1"), incompleteBody)
         assertTrue(incompleteBody.contains("\"classification\": \"configuration_blocked\""), incompleteBody)
 
+        val setupDetail = "SDK Python version is missing after path setup."
+        handler.pythonSdkPreparationRunner = {
+            PythonSdkPreparationResult(
+                prepared = false,
+                reason = "python_sdk_preparation_setup_incomplete",
+                detail = setupDetail,
+            )
+        }
+        val setupIncomplete = processRequest(uri, HttpMethod.POST)
+        val setupIncompleteBody = setupIncomplete.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, setupIncomplete.status())
+        assertTrue(setupIncompleteBody.contains("\"reason\": \"python_sdk_preparation_setup_incomplete\""), setupIncompleteBody)
+        assertTrue(setupIncompleteBody.contains("\"detail\": \"$setupDetail\""), setupIncompleteBody)
+        assertTrue(setupIncompleteBody.contains("\"classification\": \"tool_caused\""), setupIncompleteBody)
+
         handler.pythonSdkPreparationRunner = {
             PythonSdkPreparationResult(
                 prepared = false,

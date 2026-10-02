@@ -99,7 +99,9 @@ internal interface PythonSdkPreparationPlatform {
     fun isValidSdk(sdk: Sdk): Boolean
     fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk
     fun setupSdkPaths(type: SdkType, sdk: Sdk, indicator: ProgressIndicator)
-    fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean
+    fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String?
+    fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean =
+        setupIncompleteDetail(sdk, interpreterHome) == null
     fun commit(
         project: Project,
         expectedModules: List<Module>,
@@ -180,11 +182,13 @@ internal class PythonSdkPreparationService(
                 request.checkCurrent()
                 platform.setupSdkPaths(type, candidate, request.indicator)
                 request.checkCurrent()
-                if (!platform.isSetupComplete(candidate, interpreterHome)) {
+                val setupDetail = platform.setupIncompleteDetail(candidate, interpreterHome)
+                if (setupDetail != null) {
                     return failure(
                         "python_sdk_preparation_setup_incomplete",
                         interpreterHome,
                         snapshot.modules.size,
+                        detail = setupDetail,
                     )
                 }
                 candidate
@@ -452,10 +456,11 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         ProgressManager.getInstance().runProcess({ type.setupSdkPaths(sdk) }, indicator)
     }
 
-    override fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean {
-        return normalizedHome(sdk) == interpreterHome &&
-            !sdk.versionString.isNullOrBlank() &&
-            sdk.rootProvider.getFiles(OrderRootType.CLASSES).isNotEmpty()
+    override fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String? = when {
+        normalizedHome(sdk) != interpreterHome -> "SDK interpreter home does not match the worktree interpreter."
+        sdk.versionString.isNullOrBlank() -> "SDK Python version is missing after path setup."
+        sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty() -> "SDK CLASSES roots are missing after path setup."
+        else -> null
     }
 
     override fun commit(
