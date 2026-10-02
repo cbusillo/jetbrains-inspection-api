@@ -40,8 +40,10 @@ bounded, backed-up procedure below; the script hazards are recorded with
    configuration such as `AGENTS.local.md`, not this document. Preserve the rollback copy through acceptance.
 3. Coordinate a maintenance window for the target IDEs so new inspections do not
    start during replacement, including helper, MCP, and direct HTTP callers.
-   Check every target IDE's route-pinned status through the maintained helper
-   for active inspection, the outcome log for unfinished work, and the process
+   Check route-pinned status for every open project in each target IDE through
+   the maintained helper, rather than sampling one project per IDE. For an IDE
+   with no open projects, coordinate its callers and use the process/outcome
+   checks; there is no project route to query. Also check the outcome log for unfinished work, and the process
    inventory for inspection helpers. The process guard below detects helper
    processes only; it cannot prove MCP/HTTP inactivity. A log's last row
    alone cannot prove inactivity. An installer must enforce a bounded wait and
@@ -101,7 +103,9 @@ bounded, backed-up procedure below; the script hazards are recorded with
    On replacement failure, restore the verified per-IDE rollback payload while
    the IDEs are stopped. Remove only candidate files proven absent from the
    rollback manifest; require the restored file set and all bytes to match that
-   manifest exactly. Relaunch normally with `open -a` and the configured selector.
+   manifest exactly. After successful verification of either the candidate or
+   restored rollback payload, relaunch each target normally with `open -a` and
+   its configured selector.
 6. Verify each target IDE's runtime fingerprint through the maintained
    `jetbrains-inspection` helper. `list-projects --json` exposes fingerprints on
    project routes, or on `identities[]` when provided for responding IDEs without
@@ -122,10 +126,11 @@ bounded, backed-up procedure below; the script hazards are recorded with
    Preserve a fixture and its lease if cleanup is unresolved; the smoke script's
    legacy deletion behavior is tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
    A wrong runtime fingerprint or a decisive smoke regression fails rollout
-   verification. Repeat step 3's quiescence checks within the authorized window,
-   then step 4's bounded normal quit for the affected IDE. Restore and verify
-   its exact rollback manifest as in step 5,
-   then relaunch and verify the restored identity and smoke. Preserve both sets
+   verification. By default, roll back every IDE targeted by that candidate,
+   restoring the previously verified rollout set. Repeat step 3's quiescence
+   checks within the authorized window, then step 4's bounded normal quit for
+   each target. Restore and verify each exact rollback manifest as in step 5,
+   then relaunch and verify the restored identities and smokes. Preserve both sets
    of evidence. Do not copy rollback files into a still-running IDE.
 7. Cold IDE warm-up can make a first assessment stale. The smoke wrapper does
    not retry automatically. The helper may already have consumed its bounded
@@ -168,7 +173,8 @@ retain their provenance, and distinguish trial evidence from landed-build data.
   `files` acceptance, use `inspect-closeout --scope files` with explicit `--file`
   selectors on preserved fixture copies. As [TESTING.md](TESTING.md) specifies,
   clean controls use a separately named fixture profile with the same inspection
-  settings; RedLane intentionally makes clean files `UNKNOWN`. Keep that same
+  settings. Create that profile only in the preserved fixture copy, leaving
+  `test-fixtures/` unchanged; RedLane intentionally makes clean files `UNKNOWN`. Keep that same
   named profile, scope, inputs and runtime fingerprint across before/after runs.
 - **Test removals:** plant the fault a candidate test claims to catch in an
   isolated task worktree based on current `main`, then confirm a behavioral
