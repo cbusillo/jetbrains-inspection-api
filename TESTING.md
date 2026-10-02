@@ -44,6 +44,9 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platform
 ./scripts/test-all.sh
 ```
 
+For local plugin rollout, rollback, and diagnosis techniques, see
+[the maintainer guide](MAINTAINING.md).
+
 ## Automated IDE smoke test
 
 `./scripts/test-automated.sh` can install the plugin into a local IDE,
