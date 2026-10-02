@@ -10,7 +10,7 @@ including IDE-only batch inspections such as PyCharm's Odoo plugin checks.
 - **Scope-based inspection and filtering** (whole project, current file, directory, changed files, or specific files)
 - **Severity filtering** (error, warning, weak_warning, info, or all)
 - **File/path filtering** for targeted inspection analysis
-- **Works with all JetBrains IDEs** (IntelliJ IDEA, PyCharm, WebStorm, etc.)
+- **JetBrains IDE support** (IntelliJ IDEA, PyCharm, WebStorm, etc., within the build range configured in `build.gradle.kts`)
 - **MCP integration** for seamless AI assistant access
 - **JetBrains batch inspection framework** - drives the IDE's Inspect Code / InspectionProfile pipeline
 - **Batch-capable tool coverage** - reports enabled classic inspection-profile tools and local inspection tools that the IDE exposes for batch execution
@@ -19,6 +19,11 @@ including IDE-only batch inspections such as PyCharm's Odoo plugin checks.
 ## Quick Start
 
 ### 1. Install Plugin
+**From Marketplace:**
+Search for **Inspection API** in `Settings` → `Plugins` → `Marketplace`.
+The normal Stable listing is the distribution path; local source builds may
+contain changes that have not yet been accepted on Marketplace.
+
 **From Releases:**
 1. Download a `.zip` file from [Releases](https://github.com/cbusillo/jetbrains-inspection-api/releases)
 2. In your IDE: `Settings` → `Plugins` → `⚙️` → `Install Plugin from Disk...`
@@ -28,12 +33,13 @@ including IDE-only batch inspections such as PyCharm's Odoo plugin checks.
 ```bash
 git clone https://github.com/cbusillo/jetbrains-inspection-api.git
 cd jetbrains-inspection-api
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin
 # Plugin will be in build/distributions/
 ```
 
 If `/usr/libexec/java_home -v 21` fails, set `JAVA_HOME_21` to your JDK 21
-path and rerun the command.
+path and rerun the command. Direct Gradle calls read `JAVA_HOME`, not
+`JAVA_HOME_21`; the example uses the override before macOS Java discovery.
 
 ### 2. Configure IDE Built-in Server
 1. **Open IDE Settings**: `File` → `Settings` (or `IntelliJ IDEA` → `Preferences` on macOS)
@@ -76,7 +82,7 @@ Notes:
 ## Usage
 
 ### With an MCP client
-```bash
+```python
 # Trigger a full project inspection
 inspection_trigger()
 
@@ -594,8 +600,10 @@ running a whole-project analysis.
 
 Only one inspection may run for a project at a time. A concurrent trigger returns
 HTTP 409 with `error: "inspection_in_progress"`; wait for that run to finish or
-restart the IDE session if the worker remains stuck before triggering another
-profile or scope.
+request cancellation with `/cancel`, passing `inspection_run_id` plus the same
+`project_key` and `session_id`. Poll `/status` with those project/session
+selectors until `inspection_in_progress` is false before triggering another
+profile or scope. Cancellation is cooperative.
 
 **Examples**:
 ```bash
@@ -650,9 +658,9 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 ```
 
 **Key Status Fields**:
-- `clean_inspection`: `true` when inspection completed with no problems
-- `is_scanning`: `true` if inspection is currently running
-- `has_inspection_results`: `true` when problems were found and are available
+- `clean_inspection`: `true` when a fresh, completed clean snapshot has execution and semantic-coverage proof
+- `is_scanning`: `true` while IDE indexing or the inspection run is active
+- `has_inspection_results`: `true` when a fresh, captured snapshot is available, including a zero-finding snapshot; read `inspection_verdict` to distinguish GREEN, RED, and UNKNOWN
 - `time_since_last_trigger_ms`: Time since last inspection was triggered
 - `inspection_stage`: Current inspection work for the reported `inspection_run_id`: `sync`, `smart_wait`, `python_sdk_readiness`, `native_configure`, `native_execute`, `exact_proof`, `result_settling`, or `publish`. `smart_wait` covers both the IDE smart-mode wait and a bounded project quiescence wait (no indexing, PSI changes, or project file events for a 2-second window, at most 20 seconds), so inspections of freshly opened projects start from settled inputs; when the bound expires the run proceeds and the existing staleness checks still apply
 - `inspection_stage_elapsed_ms` and `inspection_run_elapsed_ms`: Monotonic elapsed time in the current stage and run; these values do not depend on wall-clock changes
@@ -661,32 +669,51 @@ curl "http://127.0.0.1:63340/api/inspection/trigger?profile=LLM%20Fast%20Checks"
 
 ## Proper Usage Workflow
 
-**Important**: Always check inspection status before retrieving problems to ensure accurate results.
+Resolve the exact project, pin the accepted run, and use a bounded wait. Read
+`inspection_verdict` and its reason even when `wait_completed` is true: a
+completed wait can report UNKNOWN.
 
 ### Recommended Pattern
+
+Run this Bash example from the project root with the project already open in
+the IDE. It requires `curl` and `jq`.
+
 ```bash
-# 1. Trigger inspection
-curl "http://127.0.0.1:63340/api/inspection/trigger"
+(
+API="http://127.0.0.1:63340/api/inspection"
+ROUTE=$(curl --fail-with-body --silent --show-error --max-time 10 --get "$API/route" \
+  --data-urlencode "project_path=$PWD") || { printf '%s\n' "$ROUTE" >&2; exit 1; }
+PROJECT_KEY=$(printf '%s' "$ROUTE" | jq -er '.route.project_key // error("No exact project route; check the project root and IDE port")') || exit 1
+SESSION_ID=$(printf '%s' "$ROUTE" | jq -er '.route.session_id') || exit 1
 
-# 2. Wait for completion (check every 2-3 seconds)
-while true; do
-  STATUS=$(curl -s "http://127.0.0.1:63340/api/inspection/status")
-  IS_SCANNING=$(echo $STATUS | jq -r '.is_scanning')
-  HAS_RESULTS=$(echo $STATUS | jq -r '.has_inspection_results')
-  CLEAN=$(echo $STATUS | jq -r '.clean_inspection')
-  
-  if [ "$IS_SCANNING" = "false" ] && { [ "$HAS_RESULTS" = "true" ] || [ "$CLEAN" = "true" ]; }; then
-    echo "✅ Inspection complete!"
-    break
-  else
-    echo "⏳ Waiting for inspection to complete..."
-    sleep 2
-  fi
-done
+TRIGGER=$(curl --fail-with-body --silent --show-error --max-time 10 --get "$API/trigger" \
+  --data-urlencode "project_key=$PROJECT_KEY" \
+  --data-urlencode "session_id=$SESSION_ID" \
+  --data-urlencode 'scope=whole_project') || { printf '%s\n' "$TRIGGER" >&2; exit 1; }
+RUN_ID=$(printf '%s' "$TRIGGER" | jq -er '.run_id') || exit 1
 
-# 3. Get problems when ready
-curl "http://127.0.0.1:63340/api/inspection/problems?severity=all"
+# A terminal UNKNOWN ends this wait too; it must never be reported as clean.
+WAIT=$(curl --fail-with-body --silent --show-error --max-time 190 --get "$API/wait" \
+  --data-urlencode "project_key=$PROJECT_KEY" \
+  --data-urlencode "session_id=$SESSION_ID" \
+  --data-urlencode "inspection_run_id=$RUN_ID" \
+  --data-urlencode 'timeout_ms=180000' \
+  --data-urlencode 'poll_ms=1000') || { printf '%s\n' "$WAIT" >&2; exit 1; }
+printf '%s' "$WAIT" | jq '{wait_completed, timed_out, inspection_verdict,
+  inspection_verdict_reason, inspection_verdict_next_action}'
+
+curl --fail-with-body --silent --show-error --max-time 10 --get "$API/problems" \
+  --data-urlencode "project_key=$PROJECT_KEY" \
+  --data-urlencode "session_id=$SESSION_ID" \
+  --data-urlencode "inspection_run_id=$RUN_ID" \
+  --data-urlencode 'scope=whole_project' | jq .
+)
 ```
+
+If you trigger a targeted scope, repeat its scope-defining parameters when
+fetching problems. A session or run mismatch requires resolving and triggering
+again. A wait timeout leaves any active worker running; follow the cancellation
+notes below before helper-owned project cleanup.
 
 ### Understanding Status Response
 
@@ -695,7 +722,7 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 ```json
 {
   "is_scanning": false,
-  "has_inspection_results": false,
+  "has_inspection_results": true,
   "clean_inspection": true, 
   "time_since_last_trigger_ms": 15000
 }
@@ -707,9 +734,10 @@ The status endpoint includes a `clean_inspection` field that makes the outcome e
 - `snapshot_change_kind: "current_run_psi_churn"` → The plugin observed a PSI modification-count tick from the originating run. During an active run it is still verifying the result; for a completed `files` or `changed_files` run, the marker means exact scope, input, and result equivalence was proven. Any later unverified tick makes the snapshot stale.
 - `capture_incomplete_reason: "..."` → The subsystem bucket behind an inconclusive capture. IDE-state/retry buckets are `view_not_ready`, `view_updating_unreadable`, `unreadable_tree`, `scope_not_covered`, `current_run_psi_churn`, `inspection_inputs_changed`, `project_analysis_not_ready`, `timeout`, and `inspection_trigger_empty_model`; `language_sdk_missing` requires configuring the selected files' language SDK; profile configuration bucket is `profile_resolution_error`; bounded execution proof bucket is `execution_not_proven` (see below); plugin/helper investigation buckets are `extractor_failure`, `non_empty_unmapped_tree`, `helper_plugin_error`, and `unknown`.
 - `clean_inspection: true` → Inspection complete; `inspection_verdict` is `GREEN` for the selected scope/filter
-- `has_inspection_results: true` → Problems found, retrieve with `/problems`
-- If all three are false and `time_since_last_trigger_ms` is recent, the inspection finished but results were not captured. Re-run the inspection or open the Inspection Results tool window.
-- If all three are false and `time_since_last_trigger_ms` is old, there was no recent inspection. Trigger one first.
+- `has_inspection_results: true` → A fresh snapshot is available; retrieve `/problems` and use its verdict, not this flag or a zero count alone
+- If scanning has stopped without usable results, read `inspection_triggered`,
+  `capture_incomplete_reason`, and the verdict reason. Elapsed time alone cannot
+  distinguish a missing run from a failed or incomplete capture.
 
 ### Wait Response Notes
 `/api/inspection/wait` always includes `wait_completed`, `timed_out`,
@@ -751,8 +779,10 @@ The proof diagnostic also reports `execution_proof_write_preemption_count` and
 read resumes successfully or repeated writes exhaust the proof deadline.
 
 Exact local inspections yield cooperatively to pending IDE writes. An interrupted
-obligation does not establish execution proof and is not retried automatically;
-already captured findings remain available with their proof gap. Tools that ignore
+read attempt does not establish execution proof. The same obligation resumes
+with a fresh read within the original proof budget; this is not an outer
+assessment retry. Already captured findings remain available with their proof
+gap. Tools that ignore
 cancellation can still delay completion; worker diagnostics do not claim forcible
 termination. The existing 60-second capture budget includes proof execution,
 but clean-result settling counts only observations after proof returns. Diagnostics
@@ -869,18 +899,17 @@ alone.
 ./scripts/test-automated.sh
 ```
 
-This will automatically:
-- Build the plugin
-- Stop any running IDE
-- Install the plugin
-- Start the IDE with your test project
-- Run comprehensive API tests
-- Report results
+After reading `AGENTS.local.md`, the script builds the plugin, unconditionally
+stops processes whose command line matches `IDE_TYPE` (force-killing survivors
+after five seconds), installs it, opens the test project, and checks API
+reachability, plugin version, and one source-file inspection. It has no
+confirmation prompt or `--yes` option. Save your work before running it; this
+local install/lifecycle smoke changes the installed plugin and running IDE state.
 
 ### Unit Tests
 ```bash
 # Run unit tests
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 ```
 
 ## Releases
@@ -912,7 +941,7 @@ plugin bytes and intentionally fails against an existing different asset. If
 the expected zip is already attached, the workflow downloads it and requires
 its SHA-256 to match before continuing; it never uses a clobbering upload. A
 missing asset is attached on rerun, while a mismatched existing asset fails
-closed for explicit operator recovery.
+closed for explicit manual recovery.
 
 The GitHub Release is created before Marketplace publication, preserving the
 existing Stable failure semantics. Its job has GitHub contents write permission
@@ -947,14 +976,16 @@ Before publishing a compatibility-range update, capture release evidence for the
 target IDE line:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin
 ./scripts/release-compatibility-gate.sh
-./scripts/dogfood-red-lane-smoke.sh --product intellij --ide "IntelliJ IDEA" --ide-app "IntelliJ IDEA" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
-./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide "PyCharm" --ide-app "PyCharm" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
-./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide "WebStorm" --ide-app "WebStorm" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000
 ```
+
+Run the [red-lane dogfood commands](TESTING.md#red-lane-dogfood) for IntelliJ
+IDEA, PyCharm, and WebStorm with the maintained helper, host-approved artifact
+root, and retained project copy. Add `--ide-channel stable --ide-version 2026.2
+--timeout-ms 300000 --prepare-timeout-ms 300000` for that compatibility line.
 
 For agent-facing worktree proof, follow
 [agent smoke acceptance](TESTING.md#agent-smoke-acceptance) with the supported

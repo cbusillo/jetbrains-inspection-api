@@ -11,7 +11,8 @@ workflows, and cleanup policy.
 
 ## Tooling
 
-- Plugin: Kotlin/Gradle (JetBrains 2025.x), requires Java 21.
+- Plugin: Kotlin/Gradle, requires Java 21. Supported IDE builds are configured
+  in `build.gradle.kts` (currently 251–262.*).
 - MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
 - Agent inspection helper: the external `jetbrains-inspection` skill's
   `scripts/jb-inspect.py` is the primary LLM-facing path for this plugin; keep
@@ -21,7 +22,9 @@ workflows, and cleanup policy.
 ## Always-on rules
 
 - If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
-  JDK 21 path (the IDE's bundled runtime is fine).
+  JDK 21 path. Repository shell scripts resolve this override; direct
+  `./gradlew` calls require `JAVA_HOME="$JAVA_HOME_21"`. An IDE's bundled
+  runtime works only if it is Java 21.
 - Gradle may need additional sandbox permissions; if you see "Operation not
   permitted" from NativeServices, re-run with the required permissions.
 - Prefer descriptive names to comments/docstrings; keep commentary minimal.
