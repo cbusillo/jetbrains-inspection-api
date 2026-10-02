@@ -37,7 +37,7 @@ bounded, backed-up procedure below; the script hazards are recorded with
    IDE (normally IntelliJ IDEA, PyCharm, and WebStorm), copy all of them into a
    per-IDE rollback directory, and verify those copies before replacing anything.
    Keep host-specific app selectors and plugin paths in ignored local
-   configuration, not this document. Preserve the rollback copy through acceptance.
+   configuration such as `AGENTS.local.md`, not this document. Preserve the rollback copy through acceptance.
 3. Coordinate a maintenance window for the target IDEs so new inspections do not
    start during replacement, including helper, MCP, and direct HTTP callers.
    Check every target IDE's route-pinned status through the maintained helper
@@ -55,7 +55,7 @@ bounded, backed-up procedure below; the script hazards are recorded with
    set -euo pipefail
    rollout_wait_deadline=$((SECONDS + 120))
    while :; do
-       rollout_processes=$(ps -axo command) || exit 1
+       rollout_processes=$(ps -axww -o command=) || exit 1
        if ! printf '%s\n' "$rollout_processes" |
            awk '/[j]b-inspect[.]py/ { found = 1 } END { exit !found }'; then
            break
@@ -68,7 +68,7 @@ bounded, backed-up procedure below; the script hazards are recorded with
    done
    ```
 
-   Use `ps -axo command`; `pgrep -E` is not a macOS option. Recheck quiescence
+   Use `ps -axww -o command=`; `pgrep -E` is not a macOS option. Recheck quiescence
    immediately before replacement, within the coordinated window. If other
    agents cannot pause, retain the candidate and continue source work.
 4. Quit each target IDE normally. On macOS, for example:
@@ -78,7 +78,7 @@ bounded, backed-up procedure below; the script hazards are recorded with
    ```
 
    Use the configured app selector for the other IDEs. IntelliJ can require a
-   second normal quit request. Check `ps -axo command` for each exact app bundle
+   second normal quit request. Check `ps -axww -o command=` for each exact app bundle
    until its IDE process is gone, with a bounded wait. A cancelled quit, unsaved
    document, modal dialog, unreadable inventory, or expired wait aborts the
    install. Never force-kill. Do not copy jars while any target IDE is still alive.
@@ -96,14 +96,21 @@ bounded, backed-up procedure below; the script hazards are recorded with
    rollback manifest; require the restored file set and all bytes to match that
    manifest exactly. Relaunch normally with `open -a` and the configured selector.
 6. Verify each target IDE's runtime fingerprint through the maintained
-   `jetbrains-inspection` helper. `list-projects --json` can verify an existing
-   project route; an empty inventory is not fingerprint proof. Also check the
-   identity returned by each smoke assessment. Run the product-specific
+   `jetbrains-inspection` helper. `list-projects --json` exposes fingerprints on
+   project routes, or on `identities[]` when provided for responding IDEs without
+   open projects. No responding identity for a target means its fingerprint is
+   unproven. Also check each smoke's retained native helper payload: read
+   `.payload.route.ide.plugin_build_fingerprint` (or the retained
+   `.payload.inspection_attribution.plugin_build_fingerprint` when present),
+   requiring available identity fields to agree. The current smoke wrapper's
+   `.identity.plugin_fingerprint` summary field is wrong and can be null; its
+   correction is tracked in #443. Do not use that summary as fingerprint proof. Run the product-specific
    [red-lane dogfood](TESTING.md#red-lane-dogfood) once per target IDE, using an
    approved/trusted `SMOKE_ROOT`, an explicit `--helper "$HELPER"` selecting the
    maintained skill, `--work-root`, `--keep-project`, and a separate
    JSON evidence file for each product. Require the intended fingerprint,
-   actionable `RED`, positive findings, exact fixture route, and cleanup `closed`.
+   actionable `RED` with `agent_result.bucket=actionable_findings`, positive
+   findings, exact fixture route, helper exit code at most 1, and cleanup `closed`.
    Preserve a fixture and its lease if cleanup is unresolved; the smoke script's
    legacy deletion behavior is tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
    A wrong runtime fingerprint or a decisive smoke regression fails rollout
@@ -112,11 +119,15 @@ bounded, backed-up procedure below; the script hazards are recorded with
    then relaunch and verify the restored identity and smoke. Preserve both sets
    of evidence. Do not copy rollback files into a still-running IDE.
 7. Cold IDE warm-up can make a first assessment stale. The smoke wrapper does
-   not retry automatically. Only if `retry_policy.retry=true`, allow at most one
+   not retry automatically. The helper may already have consumed its bounded
+   stale/capture retry and returned `retry=false`; that result is final. Only if
+   `retry_policy.retry=true`, allow at most one
    further maintained-helper assessment on the same preserved fixture, after
    its requested wait/readiness condition. Reuse the saved command's exact IDE,
    scope and profile selectors so a new smoke invocation does not create another
-   fixture. Preserve the first result and any internal attempts. Do not add an
+   fixture. Keep the same trusted-root environment and apply all step 6
+   identity, verdict, finding, exit-code, and cleanup criteria to the retry too.
+   Preserve the first result and any internal attempts. Do not add an
    outer retry loop or retry a terminal result. A terminal `UNKNOWN` or unresolved
    cleanup remains unproven acceptance, not a regression or a pass.
 8. Give the rollback directory a `.retain-until` review date about a week out,
@@ -143,9 +154,10 @@ retain their provenance, and distinguish trial evidence from landed-build data.
   before publication. Observation is evidence, not proof of the writing process.
 - **File-scope before/after:** the red-lane smoke uses `whole_project`. For
   `files` acceptance, use `inspect-closeout --scope files` with explicit `--file`
-  selectors on preserved fixture copies. Use the IDE default profile for clean
-  controls: the RedLane profile intentionally makes clean files `UNKNOWN`.
-  Match scope, profile, inputs and runtime fingerprint across the comparison.
+  selectors on preserved fixture copies. As [TESTING.md](TESTING.md) specifies,
+  clean controls use a separately named fixture profile with the same inspection
+  settings; RedLane intentionally makes clean files `UNKNOWN`. Keep that same
+  named profile, scope, inputs and runtime fingerprint across before/after runs.
 - **Test removals:** plant the fault a candidate test claims to catch in an
   isolated task worktree based on current `main`, then confirm a behavioral
   failure. Do not modify `main` directly. A duplicate/delete candidate may expose
