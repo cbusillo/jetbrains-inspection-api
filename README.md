@@ -82,7 +82,7 @@ Notes:
 ## Usage
 
 ### With an MCP client
-```bash
+```python
 # Trigger a full project inspection
 inspection_trigger()
 
