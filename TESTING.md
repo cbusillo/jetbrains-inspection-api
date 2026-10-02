@@ -318,6 +318,11 @@ host-approved artifact root (on Chris-Studio, under Developer-Artifacts).
 Keep the copied project until IDE cleanup is confirmed; the script's legacy
 default and unconditional deletion are tracked in
 [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+The artifact root must also be trusted by the helper. For a dedicated smoke
+directory outside configured trusted roots, set
+`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$SMOKE_ROOT"` for the smoke
+command. After retaining the evidence and confirming cleanup `closed`, remove
+only that run's copied project; preserve unresolved copies and their leases.
 
 Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed

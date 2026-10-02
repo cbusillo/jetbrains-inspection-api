@@ -117,8 +117,7 @@ SMOKE_ROOT="/path/to/host-approved/artifacts/red-lane-smoke"
 ```
 
 The command copies the selected `test-fixtures/inspection-red-lane*` fixture to
-a disposable project under
-`~/.code/working/jetbrains-inspection-api/red-lane-smoke`, runs helper
+a disposable project under `SMOKE_ROOT`, runs helper
 `inspect-closeout` with `scope=whole_project`, and passes only when the
 structured helper JSON reports `VERDICT=RED`, reports `total_problems > 0`, and
 closes the helper-owned project. The helper may exit non-zero because `RED` is
@@ -126,6 +125,11 @@ not readiness-clean. Pass `--helper` with the maintained skill path,
 `--work-root` with the host-approved artifact root, and `--keep-project` to
 preserve the copy until cleanup is verified; the legacy default and unconditional
 copy deletion are tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+Use a root trusted by the helper, or set
+`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$SMOKE_ROOT"` for the command
+when this is a dedicated smoke directory. Once evidence is retained and cleanup
+is confirmed `closed`, remove only that run's copied project. Preserve any copy
+whose cleanup remains unresolved.
 
 ## Fast-path scopes (manual)
 

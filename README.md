@@ -596,8 +596,9 @@ running a whole-project analysis.
 
 Only one inspection may run for a project at a time. A concurrent trigger returns
 HTTP 409 with `error: "inspection_in_progress"`; wait for that run to finish or
-request cancellation with `/cancel?inspection_run_id=<run_id>` and poll
-`/status` until `inspection_in_progress` is false before triggering another
+request cancellation with `/cancel`, passing `inspection_run_id` plus the same
+`project_key` and `session_id`. Poll `/status` with those project/session
+selectors until `inspection_in_progress` is false before triggering another
 profile or scope. Cancellation is cooperative.
 
 **Examples**:
@@ -674,33 +675,35 @@ Run this Bash example from the project root with the project already open in
 the IDE. It requires `curl` and `jq`.
 
 ```bash
+(
 API="http://127.0.0.1:63340/api/inspection"
-ROUTE=$(curl --fail --silent --show-error --max-time 10 --get "$API/route" \
-  --data-urlencode "project_path=$PWD") || exit 1
-PROJECT_KEY=$(printf '%s' "$ROUTE" | jq -er '.route.project_key') || exit 1
+ROUTE=$(curl --fail-with-body --silent --show-error --max-time 10 --get "$API/route" \
+  --data-urlencode "project_path=$PWD") || { printf '%s\n' "$ROUTE" >&2; exit 1; }
+PROJECT_KEY=$(printf '%s' "$ROUTE" | jq -er '.route.project_key // error("No exact project route; check the project root and IDE port")') || exit 1
 SESSION_ID=$(printf '%s' "$ROUTE" | jq -er '.route.session_id') || exit 1
 
-TRIGGER=$(curl --fail --silent --show-error --max-time 10 --get "$API/trigger" \
+TRIGGER=$(curl --fail-with-body --silent --show-error --max-time 10 --get "$API/trigger" \
   --data-urlencode "project_key=$PROJECT_KEY" \
   --data-urlencode "session_id=$SESSION_ID" \
-  --data-urlencode 'scope=whole_project') || exit 1
+  --data-urlencode 'scope=whole_project') || { printf '%s\n' "$TRIGGER" >&2; exit 1; }
 RUN_ID=$(printf '%s' "$TRIGGER" | jq -er '.run_id') || exit 1
 
 # A terminal UNKNOWN ends this wait too; it must never be reported as clean.
-WAIT=$(curl --fail --silent --show-error --max-time 190 --get "$API/wait" \
+WAIT=$(curl --fail-with-body --silent --show-error --max-time 190 --get "$API/wait" \
   --data-urlencode "project_key=$PROJECT_KEY" \
   --data-urlencode "session_id=$SESSION_ID" \
   --data-urlencode "inspection_run_id=$RUN_ID" \
   --data-urlencode 'timeout_ms=180000' \
-  --data-urlencode 'poll_ms=1000') || exit 1
+  --data-urlencode 'poll_ms=1000') || { printf '%s\n' "$WAIT" >&2; exit 1; }
 printf '%s' "$WAIT" | jq '{wait_completed, timed_out, inspection_verdict,
   inspection_verdict_reason, inspection_verdict_next_action}'
 
-curl --fail --silent --show-error --max-time 10 --get "$API/problems" \
+curl --fail-with-body --silent --show-error --max-time 10 --get "$API/problems" \
   --data-urlencode "project_key=$PROJECT_KEY" \
   --data-urlencode "session_id=$SESSION_ID" \
   --data-urlencode "inspection_run_id=$RUN_ID" \
   --data-urlencode 'scope=whole_project' | jq .
+)
 ```
 
 If you trigger a targeted scope, repeat its scope-defining parameters when
@@ -892,11 +895,12 @@ alone.
 ./scripts/test-automated.sh
 ```
 
-After reading `AGENTS.local.md`, the script builds the plugin, prompts before
-stopping matching processes of the configured IDE (unless `--yes` is passed),
-installs it, opens the test project, and checks API reachability, plugin version,
-and one source-file inspection. This is a local install/lifecycle smoke; it
-changes the installed plugin and running IDE state.
+After reading `AGENTS.local.md`, the script builds the plugin, unconditionally
+stops processes whose command line matches `IDE_TYPE` (force-killing survivors
+after five seconds), installs it, opens the test project, and checks API
+reachability, plugin version, and one source-file inspection. It has no
+confirmation prompt or `--yes` option. Save your work before running it; this
+local install/lifecycle smoke changes the installed plugin and running IDE state.
 
 ### Unit Tests
 ```bash
