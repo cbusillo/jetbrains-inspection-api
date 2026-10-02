@@ -5,6 +5,7 @@ This repo contains the Inspection API plugin and its bundled MCP server.
 User-facing setup, API usage, and release details live in [README.md](README.md).
 Testing details live in [TESTING.md](TESTING.md) and manual IDE smoke recipes
 live in [TESTING_INSTRUCTIONS.md](TESTING_INSTRUCTIONS.md).
+Local plugin rollout and diagnosis guidance lives in [MAINTAINING.md](MAINTAINING.md).
 Use `.github/github.json` for non-secret repo workflow facts,
 validation commands, GitHub signal availability, docs routing, important
 workflows, and cleanup policy.
