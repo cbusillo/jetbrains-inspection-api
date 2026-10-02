@@ -16,6 +16,7 @@ import com.intellij.psi.util.PsiModificationTracker
 import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import com.intellij.openapi.vfs.LocalFileSystem
+import io.netty.handler.codec.http.HttpResponseStatus
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -1536,6 +1537,34 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"snapshot_change_kind\": \"snapshot_predates_current_trigger\""))
         assertTrue(response.contains("\"snapshot_run_id\": ${oldRun.runId}"))
         assertTrue(response.contains("\"inspection_run_id\": ${currentRun.runId}"))
+    }
+
+    @Test
+    @DisplayName("Status total_problems matches the current snapshot through HTTP")
+    fun testStatusReportsCurrentSnapshotProblemCount() {
+        val problems = listOf(
+            staleProblem(description = "Unresolved reference", severity = "error"),
+            staleProblem(description = "Unused declaration", line = 20, severity = "warning"),
+        )
+        InspectionResultsStore.setSnapshot(
+            snapshotKey(),
+            InspectionResultsSnapshot(
+                problems = problems,
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
+                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                source = "inspection_view",
+            ),
+        )
+
+        val response = processInspectionRequest(handler, "/api/inspection/status?project=TestProject").single()
+        val body = response.content().toString(Charsets.UTF_8)
+        val status = jsonResponseValue(body) as Map<*, *>
+
+        assertEquals(HttpResponseStatus.OK, response.status(), body)
+        assertEquals(false, status["results_may_be_stale"])
+        assertEquals(problems.size, status["total_problems"])
+        assertFalse(status.containsKey("cached_total_problems"))
     }
 
     @Test
