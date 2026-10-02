@@ -21,11 +21,11 @@ permissions.
 
 ```bash
 # Plugin tests
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew test
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 
 # Real-fixture plugin tests only (*PlatformTest); `:test` runs these first, in their own JVM,
 # because a real test Application and mockkStatic(ApplicationManager) classes must not share one
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest
 
 # Core tests
 ./gradlew :inspection-core:test
@@ -112,7 +112,8 @@ workflows while MCP remains supported). Run it from the
 installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash
-HELPER="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
+# Set this to the jetbrains-inspection skill directory reported by your agent.
+HELPER="/path/to/jetbrains-inspection/scripts/jb-inspect.py"
 uv run "$HELPER" agent-inspect \
   --repo "$PWD" \
   --scope changed_files
@@ -289,24 +290,34 @@ visible. A warm IDE red-lane run should normally be
 but must still end in a trustworthy RED with cleanup `closed`.
 
 ```bash
+SMOKE_ROOT="/path/to/host-approved/artifacts/red-lane-smoke"
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product intellij \
   --ide "IntelliJ IDEA" \
   --ide-app "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product pycharm \
   --ide "PyCharm" \
   --ide-app "PyCharm" \
   --json-out tmp/dogfood-red-lane-pycharm.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product webstorm \
   --ide "WebStorm" \
   --ide-app "WebStorm" \
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
+
+Set `HELPER` to the maintained skill path as above and `SMOKE_ROOT` to the
+host-approved artifact root (on Chris-Studio, under Developer-Artifacts).
+Keep the copied project until IDE cleanup is confirmed; the script's legacy
+default and unconditional deletion are tracked in
+[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
 
 Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed
@@ -342,9 +353,9 @@ Automated wrapper tests prove only API reachability: local wrappers can use `ins
 Run the focused regression suite:
 
 ```bash
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :platformTest \
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest \
   --tests "*.SupportedInspectionExecutorPlatformTest"
-JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew :test \
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :test \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
   --tests "*.InspectionSnapshotStateTest.*execution*" \
@@ -391,34 +402,33 @@ validation.
 
 ## Dogfood smoke matrix
 
-Use `./scripts/dogfood-smoke-matrix.sh` before release, after lifecycle or
-capture behavior changes, and when closing a dogfood session that should prove
-agent readiness inspection behavior. The matrix wraps
+`./scripts/dogfood-smoke-matrix.sh` wraps
 `jb-inspect.py inspect-closeout`, includes this repo by default, includes
 `~/Developer/mediaforce` when present, and runs both preexisting-project and
 helper-opened worktree cases.
 
-```bash
-./scripts/dogfood-smoke-matrix.sh \
-  --json-out tmp/dogfood-smoke-matrix.json
-```
+The matrix's legacy creation/cleanup flow is tracked in
+[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443). Until
+that is fixed, use the manual [helper lifecycle smoke](TESTING_INSTRUCTIONS.md#helper-lifecycle-smoke)
+on a worktree created by the host-approved helper, preserving any unresolved
+IDE lease or dirty worktree. On Chris-Studio, task/review worktrees belong under
+`/Volumes/Developer-Artifacts/worktrees/<repo>/<task-slug>`.
 
 The preexisting case uses `--no-open` and expects cleanup `not_needed`; if the
 project is not already open it is reported as a skipped preexisting row. The
-helper-opened case creates a disposable linked worktree under
+legacy helper-opened case creates a disposable linked worktree under
 `~/.code/working/jetbrains-inspection-api/dogfood-smoke`, expects
 `opened_by_helper=true`, and expects cleanup `closed`. Each row records the IDE
 identity, plugin version, cleanup status, result bucket, helper `agent_result`
 bucket/retry decision, and the issue bucket to check for failures such as
 `capture_incomplete`, opaque helper errors, or lifecycle cleanup regressions.
 
-For a smaller targeted pass, restrict the matrix explicitly:
+For a supported targeted pass on your host-approved task worktree, use the
+helper directly:
 
 ```bash
-./scripts/dogfood-smoke-matrix.sh \
-  --ide "IntelliJ IDEA" \
-  --case helper-opened \
-  --repo plugin="$PWD"
+uv run "$HELPER" inspect-closeout \
+  --ide "IntelliJ IDEA" --scope changed_files --repo "$PWD"
 ```
 
 ## Local cleanup
@@ -446,17 +456,19 @@ by CI.
 
 The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
 maps changed paths to lanes: documentation-only changes run nothing beyond the
-version sync check, workflow and script changes run the contract tests without
-Gradle, and anything else (including an unknown change set) runs everything.
+version sync check; workflow and script changes normally run the contract tests
+without Gradle. Changes to `ci.yml`, `commit-gate.sh`, or
+`changed-file-lanes.sh` run both lanes; anything else (including an unknown
+change set) runs everything.
 The local hook classifies staged files; CI passes the pull request's file list
-through `COMMIT_GATE_CHANGED_FILES`. Pushes to `main` and both release workflows
-always run the full gate. The CI job reports its duration against a 300-second
-budget in the job summary and raises a warning annotation when it is exceeded.
+through `COMMIT_GATE_CHANGED_FILES`. Pushes to `main`, merge-train branches,
+and the tag-triggered release workflow always run the full gate. The CI job
+reports its duration against a 300-second budget in the job summary and raises
+a warning annotation when it is exceeded.
 
-Code scanning is tracked through the required `Analyze (actions)` and
-`Analyze (python)` checks alongside `commit-gate`. `Analyze (java-kotlin)` also
-runs as a non-required signal so Kotlin and plugin upgrades can be validated
-before that check is considered stable enough to require.
+The required status check is `commit-gate`. CodeQL is enforced separately by
+the code-scanning ruleset and thresholds recorded in `.github/github.json`;
+individual `Analyze (...)` jobs are not additional required status checks.
 
 Version tags (`v*`) run `.github/workflows/release.yml`, which rejects tag,
 `pluginVersion`, or `plugin.xml` mismatches before publication, repeats the
@@ -526,9 +538,9 @@ Release preparation is a two-phase protected-branch flow:
 Before publishing a compatibility-range change for JetBrains 2026.2, capture
 evidence for:
 
-- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew buildPlugin`
-- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPluginStructure`
-- `JAVA_HOME=$(/usr/libexec/java_home -v 21) ./gradlew verifyPlugin`
+- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin`
+- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure`
+- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
   stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable

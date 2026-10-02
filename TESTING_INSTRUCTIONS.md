@@ -15,7 +15,7 @@ PROJECT_NAME="MyProject"
 
 curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?project=$PROJECT_NAME&scope=whole_project"
 
-# Poll until is_scanning=false and either clean_inspection=true or has_inspection_results=true
+# Inspect the verdict and reason; availability flags alone do not prove clean
 curl "http://127.0.0.1:$IDE_PORT/api/inspection/status?project=$PROJECT_NAME"
 
 # Or long-poll until results are ready
@@ -27,7 +27,9 @@ curl "http://127.0.0.1:$IDE_PORT/api/inspection/problems?project=$PROJECT_NAME&s
 Expected behavior:
 
 - With `project=...`, the plugin targets that project.
-- Without `project`, the plugin targets the currently focused project.
+- Without `project`, HTTP selection prefers the focused/active project and
+  falls back to the first usable open project. For automation, use the exact
+  route- and run-pinned [recommended pattern](README.md#recommended-pattern).
 - If the project name is wrong, you will get a "Project not found" style error.
 
 ## MCP auto-routing smoke
@@ -61,15 +63,12 @@ Expected behavior:
 
 Use this when validating worktree readiness inspection behavior from the
 external helper.
-For release, merge-readiness, or dogfood-exit validation, prefer the repeatable
-matrix runner first:
-
-```bash
-./scripts/dogfood-smoke-matrix.sh --json-out tmp/dogfood-smoke-matrix.json
-```
-
-Use the manual sequence below when debugging one matrix row or a
-product-specific IDE failure.
+The matrix runner's legacy worktree and cleanup behavior is tracked in
+[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443). Use the
+manual sequence below with a host-approved linked worktree until it is fixed.
+On Chris-Studio, create it with `dev-worktree` under Developer-Artifacts. Retain
+the project/worktree if cleanup is unresolved; do not delete it while the IDE
+still owns it.
 
 1. Pick a repo worktree that is not currently open in the target IDE.
 2. Run `jb-inspect.py inspect-closeout --repo <worktree> --scope changed_files`.
@@ -96,17 +95,22 @@ Use this when changing verdict classification, extraction, or helper readiness i
 behavior and you need to prove a real IDE finding reaches agents as `RED`:
 
 ```bash
+HELPER="/path/to/jetbrains-inspection/scripts/jb-inspect.py"
+SMOKE_ROOT="/path/to/host-approved/artifacts/red-lane-smoke"
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product intellij \
   --ide "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product pycharm \
   --ide "PyCharm" \
   --json-out tmp/dogfood-red-lane-pycharm.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
+  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
   --product webstorm \
   --ide "WebStorm" \
   --json-out tmp/dogfood-red-lane-webstorm.json
@@ -118,7 +122,10 @@ a disposable project under
 `inspect-closeout` with `scope=whole_project`, and passes only when the
 structured helper JSON reports `VERDICT=RED`, reports `total_problems > 0`, and
 closes the helper-owned project. The helper may exit non-zero because `RED` is
-not readiness-clean.
+not readiness-clean. Pass `--helper` with the maintained skill path,
+`--work-root` with the host-approved artifact root, and `--keep-project` to
+preserve the copy until cleanup is verified; the legacy default and unconditional
+copy deletion are tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
 
 ## Fast-path scopes (manual)
 

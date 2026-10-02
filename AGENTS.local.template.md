@@ -8,6 +8,7 @@ Copy this file to `AGENTS.local.md` and customize for your machine.
 
 ```bash
 IDE_TYPE="PyCharm"  # or IntelliJ, WebStorm, etc.
+IDE_VERSION=""  # optional JetBrains config-directory suffix, e.g. 2026.2
 IDE_PORT="63341"
 
 # Optional: Java 21 home (helps when /usr/libexec/java_home -v 21 fails)
@@ -15,10 +16,11 @@ JAVA_HOME_21="/path/to/jdk-21"
 
 # Optional: where the IDE installs plugins (useful for debugging scripted installs)
 PLUGIN_DIR=""  # optional; if empty, scripts try to auto-detect the newest IDE install
-
-# Optional: IDE log path
-IDE_LOG_PATH=""  # optional
 ```
+
+`test-automated.sh` reads these quoted assignments from this file. It does not
+read an `IDE_LOG_PATH` setting; inspect the selected IDE's `idea.log` directly
+when debugging.
 
 ## Test Project
 
