@@ -937,7 +937,7 @@ plugin bytes and intentionally fails against an existing different asset. If
 the expected zip is already attached, the workflow downloads it and requires
 its SHA-256 to match before continuing; it never uses a clobbering upload. A
 missing asset is attached on rerun, while a mismatched existing asset fails
-closed for explicit Director recovery.
+closed for explicit manual recovery.
 
 The GitHub Release is created before Marketplace publication, preserving the
 existing Stable failure semantics. Its job has GitHub contents write permission

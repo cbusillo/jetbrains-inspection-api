@@ -130,6 +130,8 @@ Use a root trusted by the helper, or set
 when this is a dedicated smoke directory. Once evidence is retained and cleanup
 is confirmed `closed`, remove only that run's copied project. Preserve any copy
 whose cleanup remains unresolved.
+The script generates copy names, so the dedicated parent root is intentional
+and becomes an IDE Trusted Location.
 
 ## Fast-path scopes (manual)
 

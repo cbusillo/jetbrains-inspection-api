@@ -323,6 +323,8 @@ directory outside configured trusted roots, set
 `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$SMOKE_ROOT"` for the smoke
 command. After retaining the evidence and confirming cleanup `closed`, remove
 only that run's copied project; preserve unresolved copies and their leases.
+The script generates copy names, so this dedicated parent root is intentional;
+the helper also adds it to the IDE's persistent Trusted Locations.
 
 Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed
