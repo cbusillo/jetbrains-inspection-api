@@ -4,6 +4,7 @@
   "docs": {
     "overview": "README.md",
     "testing": "TESTING.md",
+    "maintenance": "MAINTAINING.md",
     "manualSmoke": "TESTING_INSTRUCTIONS.md",
     "agentSmoke": "TESTING.md#agent-smoke-acceptance",
     "buildManifest": "build.gradle.kts",
