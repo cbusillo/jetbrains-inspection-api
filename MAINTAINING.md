@@ -34,7 +34,7 @@ bounded, backed-up procedure below; the script hazards are recorded with
    A feature head, dirty build, or matching version number alone is insufficient.
 2. Stage the exact candidate in a dated deployment directory under the host's
    approved artifact root. Inventory the plugin's installed jars in each target
-   IDE (normally IntelliJ IDEA, PyCharm, and WebStorm), copy all of them into a
+   IDE (normally IntelliJ IDEA, PyCharm, and WebStorm), inventory the complete plugin-directory file set and copy it into a
    per-IDE rollback directory, and verify those copies before replacing anything.
    Keep host-specific app selectors and plugin paths in ignored local
    configuration such as `AGENTS.local.md`, not this document. Preserve the rollback copy through acceptance.
@@ -55,9 +55,9 @@ bounded, backed-up procedure below; the script hazards are recorded with
    set -euo pipefail
    rollout_wait_deadline=$((SECONDS + 120))
    while :; do
-       rollout_processes=$(ps -axww -o command=) || exit 1
+       rollout_processes=$(ps -axww -o ucomm= -o command=) || exit 1
        if ! printf '%s\n' "$rollout_processes" |
-           awk '/[j]b-inspect[.]py/ { found = 1 } END { exit !found }'; then
+           awk 'tolower($1) ~ /^(uv|python[0-9.]*)$/ && /[j]b-inspect[.]py/ { found = 1 } END { exit !found }'; then
            break
        fi
        if (( SECONDS >= rollout_wait_deadline )); then
@@ -68,18 +68,25 @@ bounded, backed-up procedure below; the script hazards are recorded with
    done
    ```
 
-   Use `ps -axww -o command=`; `pgrep -E` is not a macOS option. Recheck quiescence
+   The guard matches uv/Python interpreter processes, not a reviewer/editor
+   prompt that merely mentions the helper. Use wide `ps` output; `pgrep -E` is
+   not a macOS option. Recheck quiescence
    immediately before replacement, within the coordinated window. If other
    agents cannot pause, retain the candidate and continue source work.
 4. Quit each target IDE normally. On macOS, for example:
 
    ```bash
-   osascript -e 'tell application "IntelliJ IDEA" to quit'
+   osascript -e 'if application "IntelliJ IDEA" is running then' \
+       -e 'tell application "IntelliJ IDEA" to quit' \
+       -e 'end if'
    ```
 
-   Use the configured app selector for the other IDEs. IntelliJ can require a
-   second normal quit request. Check `ps -axww -o command=` for each exact app bundle
-   until its IDE process is gone, with a bounded wait. A cancelled quit, unsaved
+   Send quit only to an app that is already running. Use the configured app
+   selector for the other IDEs. IntelliJ can require a
+   second normal quit request. Check `ps -axww -o command=` for each exact main
+   IDE executable (`<bundle>/Contents/MacOS/<launcher>`) until it is gone, with a
+   bounded wait. Gradle/Kotlin daemons using the bundle's Java runtime are not
+   the main IDE process; do not kill them or count them as an unclosed IDE. A cancelled quit, unsaved
    document, modal dialog, unreadable inventory, or expired wait aborts the
    install. Never force-kill. Do not copy jars while any target IDE is still alive.
 5. Inventory both candidate and rollback payload manifests. Replace only this
@@ -98,7 +105,8 @@ bounded, backed-up procedure below; the script hazards are recorded with
 6. Verify each target IDE's runtime fingerprint through the maintained
    `jetbrains-inspection` helper. `list-projects --json` exposes fingerprints on
    project routes, or on `identities[]` when provided for responding IDEs without
-   open projects. No responding identity for a target means its fingerprint is
+   open projects anywhere in the discovery response. No responding identity
+   for a target means its fingerprint is
    unproven. Also check each smoke's retained native helper payload: read
    `.payload.route.ide.plugin_build_fingerprint` (or the retained
    `.payload.inspection_attribution.plugin_build_fingerprint` when present),
@@ -114,8 +122,9 @@ bounded, backed-up procedure below; the script hazards are recorded with
    Preserve a fixture and its lease if cleanup is unresolved; the smoke script's
    legacy deletion behavior is tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
    A wrong runtime fingerprint or a decisive smoke regression fails rollout
-   verification. Within the authorized maintenance window, normally quit the
-   affected IDE, restore and verify its exact rollback manifest as in step 5,
+   verification. Repeat step 3's quiescence checks within the authorized window,
+   then step 4's bounded normal quit for the affected IDE. Restore and verify
+   its exact rollback manifest as in step 5,
    then relaunch and verify the restored identity and smoke. Preserve both sets
    of evidence. Do not copy rollback files into a still-running IDE.
 7. Cold IDE warm-up can make a first assessment stale. The smoke wrapper does
@@ -129,7 +138,10 @@ bounded, backed-up procedure below; the script hazards are recorded with
    identity, verdict, finding, exit-code, and cleanup criteria to the retry too.
    Preserve the first result and any internal attempts. Do not add an
    outer retry loop or retry a terminal result. A terminal `UNKNOWN` or unresolved
-   cleanup remains unproven acceptance, not a regression or a pass.
+   cleanup remains unproven acceptance, not a regression or a pass. After
+   acceptance evidence is retained and cleanup is proven closed, remove only
+   that run's owned fixture copy under the host's artifact-cleanup policy; keep
+   unresolved copies and leases.
 8. Give the rollback directory a `.retain-until` review date about a week out,
    and use the owner's existing deployment-retention sweep after installation.
    That host workflow is not implemented by this repository. If it is unavailable,
