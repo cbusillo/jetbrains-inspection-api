@@ -2878,7 +2878,6 @@ class InspectionHandler : HttpRequestHandler() {
                             withCurrentProject(
                                 context,
                                 projectName,
-                                refreshProjectState = false,
                                 requestAttribution = requestAttribution,
                                 parameters = parameters,
                             ) { project ->
@@ -5493,7 +5492,6 @@ class InspectionHandler : HttpRequestHandler() {
     private fun withCurrentProject(
         context: ChannelHandlerContext,
         projectName: String?,
-        refreshProjectState: Boolean = false,
         requestAttribution: InspectionRequestAttribution? = null,
         parameters: Map<String, List<String>> = emptyMap(),
         action: (Project) -> Unit,
@@ -5514,9 +5512,6 @@ class InspectionHandler : HttpRequestHandler() {
                 )
             }
             return
-        }
-        if (refreshProjectState && !isInspectionInProgress(project)) {
-            syncProjectState(project)
         }
         action(project)
     }
