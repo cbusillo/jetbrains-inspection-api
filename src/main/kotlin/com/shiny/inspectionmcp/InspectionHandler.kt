@@ -2723,6 +2723,12 @@ class InspectionHandler : HttpRequestHandler() {
             parameters = urlDecoder.parameters() ?: emptyMap()
             requestAttribution = requestAttribution(path, parameters)
             when (path) {
+                "/api/inspection/memory" -> {
+                    sendJsonResponse(context, formatJsonManually(mapOf(
+                        "session_id" to InspectionIdeSession.sessionId,
+                        "ide_memory" to InspectionIdeMemory.snapshot(),
+                    )))
+                }
                 "/api/inspection/identity" -> {
                     val result = ApplicationManager.getApplication().runReadAction<String, Exception> {
                         formatJsonManually(buildInspectionIdentity())
@@ -5015,6 +5021,7 @@ class InspectionHandler : HttpRequestHandler() {
             "project_file_path" to resolved.projectIdentity["project_file_path"],
             "focused" to resolved.projectIdentity["focused"],
             "lifecycle_readiness" to lifecycleContentRootReadinessForRoute(resolved.project),
+            "ide_memory_diagnostic_version" to resolved.identity["ide_memory_diagnostic_version"],
             "ide" to ideRouteMetadata(resolved.identity),
             "score" to resolved.score,
         )
