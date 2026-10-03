@@ -322,6 +322,24 @@ seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
 
 ### Helper Lifecycle Endpoints
 
+`GET /api/inspection/memory` returns the IDE `session_id` and `ide_memory`
+without waiting for a project or an IDE read action. Identity advertises
+`ide_memory_diagnostic_version: 1`. The memory status is `exhausted` after an
+`OutOfMemoryError` observed as the root throwable of a severe log record in
+the IDE process, `low_memory` for thirty seconds after an overloaded-GC signal,
+or `normal` when neither has been observed. This is diagnostic evidence, not
+a guarantee of available memory. Exhaustion stays recorded for the diagnostic service lifetime;
+IDE restart or plugin reload creates fresh in-memory diagnostic state. The public application-frame
+lifecycle callback starts an application service that observes logging
+continuously, so later log output and rotation cannot
+erase an observed OOM. Message text and nested remote build failures do not
+prove IDE exhaustion. The log handler and low-memory watcher are disposed with
+the service. Errors not logged as a root throwable remain unobserved. The response includes heap
+usage and a next action that names the Java heap space project-opening dialog
+and restart prerequisite. The endpoint never dismisses a dialog or restarts
+the IDE. If the IDE cannot serve HTTP at all, clients retain the original
+transport failure rather than guessing that memory exhaustion caused it.
+
 The helper lifecycle endpoints are for automation that needs to open an exact
 worktree, run inspection, and clean up only the IDE project it opened. Ordinary
 clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and

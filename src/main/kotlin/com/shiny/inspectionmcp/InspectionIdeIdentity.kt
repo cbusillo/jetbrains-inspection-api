@@ -86,6 +86,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "helper_sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,
         "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
         "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
+        "ide_memory_diagnostic_version" to 1,
         "open_projects" to openProjectIdentities(),
     )
 }
@@ -120,6 +121,8 @@ internal object InspectionIdeRegistry {
         if (!started.compareAndSet(false, true)) {
             return
         }
+
+        runCatching { InspectionIdeMemory.ensureObserving() }
 
         AppExecutorUtil.getAppExecutorService().execute {
             waitForBuiltInServerStart()

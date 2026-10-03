@@ -102,6 +102,7 @@
     <depends>com.intellij.modules.platform</depends>
     
     <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="com.shiny.inspectionmcp.InspectionIdeMemory"/>
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>
         <notificationGroup
                 id="inspection.api"
@@ -110,6 +111,11 @@
                 key="notification.group.name" />
         <postStartupActivity implementation="com.shiny.inspectionmcp.McpOnboardingStartupActivity"/>
     </extensions>
+
+    <applicationListeners>
+        <listener class="com.shiny.inspectionmcp.InspectionIdeMemoryStartupListener"
+                  topic="com.intellij.ide.AppLifecycleListener"/>
+    </applicationListeners>
 
     <actions resource-bundle="messages.InspectionApiBundle">
         <action id="InspectionApi.CopyMcpCommand"
