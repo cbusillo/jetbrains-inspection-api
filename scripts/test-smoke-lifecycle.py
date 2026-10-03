@@ -7,6 +7,7 @@ import importlib.util
 import io
 import json
 import plistlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -68,6 +69,8 @@ class SmokeLifecycle(unittest.TestCase):
                 self.source, "smoke", self.root / "worktrees", self.root / "manager"
             )
         self.worktree = Path(self.receipt["root"])
+        self.evidence = self.root / "evidence"
+        self.evidence.mkdir()
         self.calls = []
 
     def helper_run(self, *args):
@@ -94,7 +97,7 @@ class SmokeLifecycle(unittest.TestCase):
         smoke.run_original = smoke.run
         with patch.object(smoke, "run", side_effect=self.helper_run):
             return smoke.retire(
-                self.receipt, payload, Path("/maintained/jb-inspect.py")
+                self.receipt, payload, Path("/maintained/jb-inspect.py"), self.evidence
             )
 
     def test_failed_lifecycle_preserves_exact_worktree_and_branch(self):
@@ -129,11 +132,63 @@ class SmokeLifecycle(unittest.TestCase):
         exclude = self.source / ".git/info/exclude"
         exclude.write_text(".idea/\n")
         (self.worktree / ".idea").mkdir()
-        (self.worktree / ".idea/workspace.xml").write_text("IDE mutation")
+        (self.worktree / ".idea/private-notes.xml").write_text("IDE mutation")
         result = self.retire({"cleanup": {"status": "closed"}})
         self.assertEqual(result["reason"], "project_changed")
         self.assertEqual(self.calls, [])
-        self.assertTrue((self.worktree / ".idea/workspace.xml").exists())
+        self.assertTrue((self.worktree / ".idea/private-notes.xml").exists())
+
+    def test_generated_workspace_is_preserved_before_successful_removal(self):
+        (self.source / ".git/info/exclude").write_text(".idea/\n")
+        (self.worktree / ".idea").mkdir()
+        workspace = self.worktree / ".idea/workspace.xml"
+        workspace.write_bytes(b"per-run workspace bytes")
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["status"], "removed")
+        self.assertEqual(
+            (
+                Path(result["generated_state_archive"]) / ".idea/workspace.xml"
+            ).read_bytes(),
+            b"per-run workspace bytes",
+        )
+        self.assertFalse(self.worktree.exists())
+
+    def test_fixture_workspace_is_ignored_while_source_changes_remain_dirty(self):
+        fixtures = self.source / "test-fixtures"
+        fixtures.mkdir()
+        for name in [
+            "inspection-red-lane",
+            "inspection-red-lane-pycharm",
+            "inspection-red-lane-webstorm",
+        ]:
+            shutil.copytree(ROOT / "test-fixtures" / name, fixtures / name)
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.source),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "fixtures",
+            ],
+            check=True,
+        )
+        for directory in fixtures.iterdir():
+            (directory / ".idea/workspace.xml").write_text("generated IDE workspace")
+        self.assertEqual(
+            smoke.run("git", "-C", str(self.source), "status", "--porcelain"), ""
+        )
+        source = next((fixtures / "inspection-red-lane-pycharm/src").glob("*.py"))
+        source.write_text(source.read_text() + "\nprint('source changed')\n")
+        self.assertIn(
+            source.relative_to(self.source).as_posix(),
+            smoke.run("git", "-C", str(self.source), "status", "--porcelain"),
+        )
 
     def test_preview_failure_keeps_worktree(self):
         original = smoke.run
@@ -148,7 +203,10 @@ class SmokeLifecycle(unittest.TestCase):
             self.assertRaises(subprocess.CalledProcessError),
         ):
             smoke.retire(
-                self.receipt, {"cleanup": {"status": "closed"}}, Path("/helper")
+                self.receipt,
+                {"cleanup": {"status": "closed"}},
+                Path("/helper"),
+                self.evidence,
             )
         self.assertTrue(self.worktree.is_dir())
 
@@ -163,7 +221,10 @@ class SmokeLifecycle(unittest.TestCase):
 
         with patch.object(smoke, "run", side_effect=changed):
             result = smoke.retire(
-                self.receipt, {"cleanup": {"status": "closed"}}, Path("/helper")
+                self.receipt,
+                {"cleanup": {"status": "closed"}},
+                Path("/helper"),
+                self.evidence,
             )
         self.assertEqual(result["reason"], "project_changed_during_preview")
         self.assertEqual((self.worktree / "unexpected").read_text(), "retain")
@@ -261,6 +322,80 @@ class LocalInstaller(unittest.TestCase):
             )
         self.assertEqual(installer.inventory(self.target), self.old)
 
+    def test_alias_running_app_cannot_be_treated_as_stopped(self):
+        executable = Path("/IDE.app/Contents/MacOS/idea")
+        with (
+            patch.object(
+                installer,
+                "process_inventory",
+                return_value="42 /alias.app/Contents/MacOS/idea\n",
+            ),
+            patch.object(installer, "app_is_running", return_value=True),
+            self.assertRaises(ValueError),
+        ):
+            installer.require_stopped(executable)
+        with (
+            patch.object(installer, "process_inventory", return_value=""),
+            patch.object(installer, "app_is_running", return_value=True),
+            self.assertRaises(ValueError),
+        ):
+            installer.quit_normally(Path("/IDE.app"), executable, 1)
+
+    def test_bundle_config_selector_keeps_editions_separate(self):
+        selectors = [
+            "IntelliJIdea2026.2",
+            "IdeaIC2026.2",
+            "PyCharm2026.2",
+            "PyCharmCE2026.2",
+        ]
+        for selector in selectors:
+            with self.subTest(selector=selector):
+                app = self.root / (selector + ".app")
+                resources = app / "Contents/Resources"
+                resources.mkdir(parents=True)
+                metadata = {
+                    "dataDirectoryName": selector,
+                    "productCode": "fixture-product",
+                }
+                (resources / "product-info.json").write_text(json.dumps(metadata))
+                expected = (
+                    self.root
+                    / "Library/Application Support/JetBrains"
+                    / metadata["dataDirectoryName"]
+                )
+                (expected / "options").mkdir(parents=True)
+                product = SimpleNamespace(
+                    product_codes=(metadata["productCode"],),
+                    config_prefixes=(selector,),
+                )
+                helper = SimpleNamespace(
+                    ide_app_candidate=lambda _: SimpleNamespace(product_key="fixture"),
+                    IDE_PRODUCTS={"fixture": product},
+                )
+                with patch.object(Path, "home", return_value=self.root):
+                    actual = installer.app_config_dir(app, helper)
+                self.assertEqual(actual, expected)
+
+    def test_idle_project_needs_no_previous_inspection_verdict(self):
+        raw = {"indexing": False, "is_scanning": False, "inspection_in_progress": False}
+        installer.require_idle_status({"raw": raw, "verdict": "UNKNOWN"})
+        for field in raw:
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                installer.require_idle_status({"raw": raw | {field: True}})
+        with self.assertRaises(ValueError):
+            installer.require_idle_status({"raw": {}})
+
+    def test_helper_error_reports_maintenance_failure(self):
+        class InspectError(Exception):
+            pass
+
+        helper = SimpleNamespace(InspectError=InspectError)
+        with (
+            self.assertRaisesRegex(ValueError, "maintenance window"),
+            installer.helper_errors(helper),
+        ):
+            raise InspectError("lock unavailable")
+
     def test_exact_executable_and_helper_process_guards(self):
         text = "1 /IDE/launcher /IDE/launcher\n2 /foreign/launcher /foreign/launcher\n3 /bin/codex prompt python jb-inspect.py\n"
         self.assertEqual(installer.main_processes(text, Path("/IDE/launcher")), [1])
@@ -337,6 +472,7 @@ class LocalInstaller(unittest.TestCase):
         )
         fake_installer = SimpleNamespace(
             load_helper=lambda _: helper,
+            app_config_dir=lambda *_: config,
             wait_no_helpers=lambda _: None,
             require_stopped=lambda _: (_ for _ in ()).throw(ValueError("IDE running")),
         )

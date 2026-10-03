@@ -8,7 +8,9 @@ import argparse
 import hashlib
 import json
 import platform
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 HOST_ROOT = Path("/Volumes/Developer-Artifacts/worktrees")
@@ -24,7 +26,9 @@ def manifest(root):
         relative = path.relative_to(root).as_posix()
         if relative == ".git" or relative.startswith(".git/"):
             continue
-        if path.is_symlink():
+        if path.name.startswith(".env") and path.name != ".env.example":
+            result[relative] = {"protected": True}
+        elif path.is_symlink():
             result[relative] = {"link": str(path.readlink())}
         elif path.is_file():
             result[relative] = {"sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
@@ -81,7 +85,70 @@ def create(source, slug, parent, manager):
     }
 
 
-def retire(receipt, payload, helper):
+def generated_path(relative):
+    parts = Path(relative).parts
+    if any(
+        part.startswith(".env")
+        or part in {"id_rsa", "id_ed25519"}
+        or part.endswith((".key", ".p12", ".pfx"))
+        for part in parts
+    ):
+        return False
+    if ".idea" in parts:
+        suffix = parts[parts.index(".idea") + 1 :]
+        return not suffix or suffix[0] in {
+            "workspace.xml",
+            "editor.xml",
+            ".name",
+            "kotlinc.xml",
+        }
+    return bool(parts) and any(
+        part in {".gradle", ".kotlin", "build", "out", ".intellijPlatform"}
+        for part in parts
+    )
+
+
+def preserve_generated_state(root, before, current, evidence):
+    changed = [
+        name
+        for name in set(before) | set(current)
+        if before.get(name) != current.get(name)
+    ]
+    # Unknown ignored data remains in the exact project. Only known generated files can be archived.
+    if any(not generated_path(name) for name in changed):
+        return None
+    if evidence.resolve().is_relative_to(root.resolve()):
+        raise ValueError("Preservation evidence must be outside the project.")
+    archive = Path(tempfile.mkdtemp(prefix="generated-state-", dir=evidence))
+    for name in changed:
+        value = current.get(name)
+        if value is None:
+            continue
+        source = root / name
+        target = archive / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if "link" in value:
+            target.symlink_to(source.readlink())
+        elif "directory" in value:
+            target.mkdir(exist_ok=True)
+        else:
+            shutil.copy2(source, target)
+    archived = manifest(archive)
+    if any(
+        archived.get(name) != value
+        for name, value in current.items()
+        if name in changed
+    ):
+        raise ValueError(
+            "Generated-state preservation did not verify; retain the project."
+        )
+    (evidence / (archive.name + "-manifest.json")).write_text(
+        json.dumps({name: current.get(name) for name in changed}, indent=2)
+    )
+    return str(archive)
+
+
+def retire(receipt, payload, helper, evidence):
     root = Path(receipt["root"])
     if not root.is_dir() or root.is_symlink():
         return {"status": "retained", "reason": "worktree_identity_changed"}
@@ -97,11 +164,16 @@ def retire(receipt, payload, helper):
         or run("git", "-C", str(root), "branch", "--show-current") != receipt["branch"]
     ):
         return {"status": "retained", "reason": "worktree_identity_changed"}
-    if (
-        run("git", "-C", str(root), "status", "--porcelain", "--untracked-files=all")
-        or manifest(root) != receipt["manifest"]
-    ):
+    if run("git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"):
         return {"status": "retained", "reason": "project_changed"}
+    current = manifest(root)
+    if any(value.get("protected") for value in current.values()):
+        return {"status": "retained", "reason": "private_configuration"}
+    archive = None
+    if current != receipt["manifest"]:
+        archive = preserve_generated_state(root, receipt["manifest"], current, evidence)
+        if archive is None:
+            return {"status": "retained", "reason": "project_changed"}
     gitdir = Path(run("git", "-C", str(root), "rev-parse", "--absolute-git-dir"))
     lock = gitdir / "locked"
     lock_reason = lock.read_text() if lock.exists() else None
@@ -120,7 +192,7 @@ def retire(receipt, payload, helper):
             "preview": preview,
         }
     if (
-        manifest(root) != receipt["manifest"]
+        manifest(root) != current
         or run("git", "-C", str(root), "rev-parse", "HEAD") != receipt["head"]
     ):
         return {
@@ -172,12 +244,27 @@ def retire(receipt, payload, helper):
                 str(root),
             )
     # No smoke commit was created; delete only the branch still at its original head.
+    branch_cleanup = {"status": "not_needed"}
     if (
         run("git", "-C", receipt["source"], "rev-parse", receipt["branch"])
         == receipt["head"]
     ):
-        run("git", "-C", receipt["source"], "branch", "-d", receipt["branch"])
-    return {"status": "removed", "preview": preview, "apply": applied}
+        try:
+            run("git", "-C", receipt["source"], "branch", "-d", receipt["branch"])
+            branch_cleanup = {"status": "removed"}
+        except subprocess.CalledProcessError as error:
+            branch_cleanup = {
+                "status": "retained",
+                "branch": receipt["branch"],
+                "error": str(error),
+            }
+    return {
+        "status": "removed",
+        "preview": preview,
+        "apply": applied,
+        "generated_state_archive": archive,
+        "branch_cleanup": branch_cleanup,
+    }
 
 
 def main():
@@ -208,6 +295,7 @@ def main():
                     json.loads(args.receipt.read_text()),
                     json.loads(args.payload.read_text()),
                     args.helper,
+                    args.receipt.parent,
                 )
             except (OSError, ValueError, subprocess.CalledProcessError) as error:
                 result = {

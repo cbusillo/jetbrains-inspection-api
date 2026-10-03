@@ -70,14 +70,7 @@ def main():
             "--apply requires --maintenance-window and an existing --artifact-root for backup."
         )
     app = args.ide_app.resolve(strict=True)
-    selection = helper.resolve_ide_selection({"ide_app": str(app)})
-    if (
-        not selection
-        or not selection.config_dir
-        or not selection.app_path
-        or selection.app_path.resolve() != app
-    ):
-        parser.error("Exact app/config identity unavailable.")
+    config_dir = installer.app_config_dir(app, helper)
     with (app / "Contents/Info.plist").open("rb") as stream:
         executable = (
             app / "Contents/MacOS" / plistlib.load(stream)["CFBundleExecutable"]
@@ -89,7 +82,7 @@ def main():
                 parser.error(
                     "A smoke lease remains; reconcile it through the maintained helper first."
                 )
-        path = selection.config_dir / "options/trusted-paths.xml"
+        path = config_dir / "options/trusted-paths.xml"
         if path.is_symlink():
             parser.error("Trust settings must not be a symlink.")
         if not path.exists():
@@ -121,9 +114,12 @@ def main():
                 parser.error(
                     "Trust settings or smoke root changed; preserve the backup and retry after settling."
                 )
-            staged = path.with_name(path.name + ".smoke-retirement")
-            with staged.open("xb") as stream:
+            with tempfile.NamedTemporaryFile(
+                prefix=".smoke-retirement-", dir=path.parent, delete=False
+            ) as stream:
+                staged = Path(stream.name)
                 tree.write(stream, encoding="utf-8")
+            installer.require_stopped(executable)
             staged.replace(path)
             report.update({"status": "removed", "backup": str(backup)})
         print(json.dumps(report))

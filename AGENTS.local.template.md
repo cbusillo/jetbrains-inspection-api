@@ -24,7 +24,7 @@ install or restart an IDE by default. Build/test shell scripts consume the expor
 `JAVA_HOME_21` override; they do not read it from this file. Direct Gradle calls
 require `JAVA_HOME="$JAVA_HOME_21"` in the shell.
 The explicit `--install` command resolves the configuration directory from the
-exact app bundle through the maintained helper, including `IntelliJIdea`,
+exact app bundle using its bundled `dataDirectoryName`, including `IntelliJIdea`,
 `IdeaIC`, `PyCharm` and `PyCharmCE`. An optional `--plugin-dir` must match that
 resolved directory. It prints no guessed log path; inspect the selected
 configuration's `idea.log` when debugging.

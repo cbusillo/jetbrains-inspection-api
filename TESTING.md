@@ -331,7 +331,8 @@ pass `--helper` to select a different maintained installation explicitly.
 The report records the exact project, worktree, helper command, evidence directory,
 native `plugin_build_fingerprint`, and `worktree_retirement`. Without
 `--keep-project`, retirement requires cleanup `closed`, the original branch/head,
-and an unchanged complete file snapshot (including ignored IDE state), followed
+and an unchanged tracked/untracked state, verified preservation of known generated
+IDE/build state outside the project, and no unknown ignored changes, followed
 by the maintained helper's live SDK preview and apply. Unresolved lifecycle or
 SDK cleanup, dirty projects and interrupted runs preserve the worktree and
 registration. There is no force removal or directory-deletion fallback.
@@ -436,7 +437,8 @@ helper-opened worktree cases.
 Helper-opened worktrees use `dev-worktree` on Chris-Studio and its validated
 Developer-Artifacts volume. Portable hosts pass an explicit `--worktree-root`.
 Each run prints its retained evidence directory. Cleanup checks the original
-branch/head and complete file snapshot before delegating live SDK preview/apply
+branch/head and tracked/untracked state and archives byte-verified generated IDE/build state
+outside the worktree before delegating live SDK preview/apply
 and non-force removal to the maintained helper. Interrupted, changed or
 lifecycle-busy worktrees remain registered with their evidence.
 

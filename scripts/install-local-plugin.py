@@ -17,10 +17,21 @@ import sys
 import tempfile
 import time
 import zipfile
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 PLUGIN = "jetbrains-inspection-api"
+
+
+@contextmanager
+def helper_errors(helper):
+    try:
+        yield
+    except helper.InspectError as error:
+        raise ValueError(
+            f"Inspection helper could not establish the maintenance window: {error}"
+        ) from error
 
 
 def load_helper(path):
@@ -29,6 +40,45 @@ def load_helper(path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def app_config_dir(app, helper):
+    candidate = helper.ide_app_candidate(app)
+    if candidate is None:
+        raise ValueError("The exact app is not a supported JetBrains bundle.")
+    metadata = json.loads((app / "Contents/Resources/product-info.json").read_text())
+    product = helper.IDE_PRODUCTS[candidate.product_key]
+    selector = metadata.get("dataDirectoryName", "")
+    if (
+        metadata.get("productCode") not in product.product_codes
+        or not re.fullmatch(r"[A-Za-z0-9._-]+", selector)
+        or not selector.startswith(product.config_prefixes)
+    ):
+        raise ValueError(
+            "Bundle metadata does not prove the product's config selector."
+        )
+    config = Path.home() / "Library/Application Support/JetBrains" / selector
+    if not (config / "options").is_dir():
+        raise ValueError(
+            "Start the exact app once to create its configuration, then quit normally."
+        )
+    return config
+
+
+def require_idle_status(status):
+    raw = status.get("raw")
+    if (
+        not isinstance(raw, dict)
+        or any(
+            raw.get(field) is not False
+            for field in ("indexing", "is_scanning", "inspection_in_progress")
+        )
+        or any(
+            status.get(field)
+            for field in ("session_drift", "ambiguous", "unavailable", "timed_out")
+        )
+    ):
+        raise ValueError("An exact target project is busy or its idleness is unproven.")
 
 
 def inventory(root):
@@ -120,8 +170,30 @@ def wait_no_helpers(timeout):
         time.sleep(1)
 
 
+def app_is_running(app):
+    result = subprocess.check_output(
+        [
+            "osascript",
+            "-e",
+            "on run argv",
+            "-e",
+            "return application (item 1 of argv) is running",
+            "-e",
+            "end run",
+            str(app),
+        ],
+        text=True,
+        timeout=10,
+    ).strip()
+    if result not in {"true", "false"}:
+        raise ValueError("Native app-running state is unproven.")
+    return result == "true"
+
+
 def require_stopped(executable):
-    if main_processes(process_inventory(), executable):
+    if main_processes(process_inventory(), executable) or app_is_running(
+        executable.parents[2]
+    ):
         raise ValueError("Exact target IDE is still running; payload retained.")
 
 
@@ -130,6 +202,10 @@ def quit_normally(app, executable, timeout):
     if len(pids) > 1:
         raise ValueError("Multiple target IDE processes; do not quit foreign sessions.")
     if not pids:
+        if app_is_running(app):
+            raise ValueError(
+                "The app is running through an unverified executable identity; quit it normally before installation."
+            )
         return
     subprocess.run(
         [
@@ -170,7 +246,9 @@ def replace_payload(candidate, target, evidence, executable):
         if inventory(evidence / "rollback") != prior_manifest:
             raise ValueError("Rollback copy verification failed.")
     target.parent.mkdir(parents=True, exist_ok=True)
-    sibling = Path(tempfile.mkdtemp(prefix=".inspection-candidate-", dir=target.parent))
+    sibling = Path(
+        tempfile.mkdtemp(prefix=".inspection-candidate-", dir=target.parent.parent)
+    )
     staged = sibling / PLUGIN
     previous = sibling / "previous"
     shutil.copytree(candidate, staged)
@@ -220,10 +298,7 @@ def install(args):
     executable = app / "Contents/MacOS" / info["CFBundleExecutable"]
     executable.resolve(strict=True)
     helper = load_helper(args.helper.resolve(strict=True))
-    selection = helper.resolve_ide_selection({"ide_app": str(app)})
-    if not selection or not selection.config_dir or selection.app_path.resolve() != app:
-        raise ValueError("Cannot prove exact app/config identity.")
-    plugins = selection.config_dir.resolve() / "plugins"
+    plugins = app_config_dir(app, helper).resolve() / "plugins"
     if args.plugin_dir and args.plugin_dir.resolve() != plugins:
         raise ValueError(
             "Plugin directory does not match the selected app configuration."
@@ -263,6 +338,7 @@ def install(args):
         raise ValueError("Build source must be the exact clean source checkout.")
     wait_no_helpers(args.timeout)
     with (
+        helper_errors(helper),
         helper.outcome_routing_lock(args.timeout * 1000),
         helper.lifecycle_lock(args.timeout * 1000),
     ):
@@ -294,10 +370,7 @@ def install(args):
                     status_args, helper.build_context(status_args)
                 )
                 # The outer operation holds outcome routing; avoid a second process's emit/log lock.
-                if helper.classify_status_exit(status) != 0:
-                    raise ValueError(
-                        "An exact target project is busy or its status is unproven."
-                    )
+                require_idle_status(status)
         quit_normally(app, executable, args.timeout)
         require_stopped(executable)
         receipt = replace_payload(candidate, plugins / PLUGIN, evidence, executable)
@@ -312,8 +385,9 @@ def install(args):
             json.dumps(receipt, indent=2) + "\n"
         )
         print(json.dumps(receipt))
-    # Source verification and payload replacement do not claim runtime acceptance.
-    subprocess.run(["open", "-a", str(app)], check=True)
+    # Preserve a stopped target; relaunch only an app this operation normally quit.
+    if pids:
+        subprocess.run(["open", "-a", str(app)], check=True)
 
 
 def main():

@@ -16,7 +16,7 @@ production changes, or restarting another worker's active IDE session. Follow
 The default `scripts/test-automated.sh` inspects a local test project without
 installing or restarting. Within a separately authorized maintenance window,
 its explicit installer stages a verified exact-SHA archive, resolves the exact
-app/config pair (including Community editions), waits for helper quiescence,
+app/config pair from the bundle's data-directory selector (including Community editions), waits for helper quiescence,
 checks all visible target projects and requests bounded normal quit. A cancelled
 quit or unresolved/unsaved-document modal aborts the operation; an ordinary exit
 confirmation can be handled through the IDE's normal quit UI. It never force-kills
@@ -33,7 +33,9 @@ or discards documents.
 The source checkout must be clean at the full SHA embedded in the archive.
 `--maintenance-window` records that every helper, MCP and HTTP caller of this
 IDE has been paused for the whole operation; process checks alone cannot prove
-that coordination. Stage builds separately using the Java 21 override described
+that coordination. The automated resolver supports the bundle's standard config path. For a
+custom `idea.config.path`, use the manual procedure below with the verified
+actual installed path. Stage builds separately using the Java 21 override described
 in TESTING.md. The installer uses the maintained helper's lifecycle and outcome
 routing locks, preserves the prior payload and complete byte manifests, and
 swaps only this plugin directory. A replacement failure restores the entire
@@ -41,7 +43,8 @@ prior file set while stopped, including removal of candidate-only files by movin
 the failed directory aside. If the IDE restarts during replacement, both payloads
 remain and restoration waits for another stopped maintenance window. The receipt
 names the rollback and retained staging paths and marks runtime acceptance
-pending; complete the fingerprint/smoke checks below. No installed state is
+pending; complete the fingerprint/smoke checks below. An initially stopped IDE
+stays stopped; only an IDE this operation quit is relaunched. No installed state is
 accepted solely from an installation receipt.
 
 1. Resolve the PR's final merge SHA, then create a host-approved linked worktree
@@ -170,8 +173,8 @@ accepted solely from an installation receipt.
    acceptance evidence is retained and cleanup is proven closed, retire only
    that run's owned worktree through `scripts/smoke-worktree.py retire`, using
    its retained `worktree.json` receipt and native `payload.json`, `--helper`
-   and `--out` for the retirement result. The script checks the unchanged file
-   snapshot and delegates SDK retirement/removal to the maintained helper;
+   and `--out` for the retirement result. The script retains dirty or unknown files, preserves known generated files
+   in the run evidence, and delegates SDK retirement/removal to the maintained helper;
    mutations or unresolved leases keep the project and registration intact.
 8. Give the rollback directory a `.retain-until` review date about a week out,
    and use the owner's existing deployment-retention sweep after installation.
