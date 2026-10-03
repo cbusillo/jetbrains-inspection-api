@@ -1,23 +1,19 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.application.PathManager
 import com.intellij.openapi.util.LowMemoryWatcher
 import java.lang.management.ManagementFactory
-import java.nio.ByteBuffer
-import java.nio.channels.FileChannel
-import java.nio.file.Path
-import java.nio.file.StandardOpenOption
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.util.concurrent.atomic.AtomicLong
+import java.util.logging.Handler
+import java.util.logging.Level
+import java.util.logging.LogRecord
+import java.util.logging.Logger
 
 internal class InspectionIdeMemoryState(
-    private val logPath: Path,
     private val processStartedAtMs: Long,
     private val now: () -> Long = System::currentTimeMillis,
-) {
+) : Handler() {
     private val lowMemoryAtMs = AtomicLong(0)
     private val exhaustedAtMs = AtomicLong(0)
 
@@ -25,19 +21,23 @@ internal class InspectionIdeMemoryState(
         lowMemoryAtMs.set(now())
     }
 
+    override fun publish(record: LogRecord) {
+        if (record.level.intValue() >= Level.SEVERE.intValue() &&
+            record.thrown is OutOfMemoryError && record.millis >= processStartedAtMs && record.millis <= now()
+        ) {
+            exhaustedAtMs.compareAndSet(0, record.millis)
+        }
+    }
+
+    override fun flush() = Unit
+    override fun close() = Unit
+
     fun snapshot(): Map<String, Any?> {
-        if (exhaustedAtMs.get() == 0L) {
-            runCatching {
-                FileChannel.open(logPath, StandardOpenOption.READ).use { channel ->
-                    val size = channel.size()
-                    val offset = (size - MAX_LOG_BYTES).coerceAtLeast(0)
-                    channel.position(offset)
-                    val buffer = ByteBuffer.allocate((size - offset).toInt())
-                    while (buffer.hasRemaining() && channel.read(buffer) > 0) { }
-                    buffer.flip()
-                    observeLog(Charsets.UTF_8.decode(buffer).toString())
-                }
-            }
+        val heap = try {
+            ManagementFactory.getMemoryMXBean().heapMemoryUsage
+        } catch (error: OutOfMemoryError) {
+            exhaustedAtMs.compareAndSet(0, now())
+            throw error
         }
         val exhausted = exhaustedAtMs.get()
         val signal = lowMemoryAtMs.get()
@@ -51,55 +51,40 @@ internal class InspectionIdeMemoryState(
             "status" to status,
             "out_of_memory_at_ms" to exhausted.takeIf { it > 0 },
             "low_memory_signal_at_ms" to signal.takeIf { it > 0 },
-            "heap_used_bytes" to ManagementFactory.getMemoryMXBean().heapMemoryUsage.used,
-            "heap_max_bytes" to ManagementFactory.getMemoryMXBean().heapMemoryUsage.max,
+            "heap_used_bytes" to heap.used,
+            "heap_max_bytes" to heap.max,
             "next_action" to when (status) {
-                "exhausted" -> "Check for the Java heap space project-opening dialog, dismiss it, and restart the IDE before inspecting again."
-                "low_memory" -> "Wait for IDE memory pressure to settle before opening another project; restart the IDE if it persists."
+                "exhausted" -> "Ask the IDE owner to check for a memory-error project-opening dialog (such as Java heap space), dismiss it, and restart the IDE before inspecting again."
+                "low_memory" -> "Recent IDE memory pressure is diagnostic context; it does not prove heap exhaustion."
                 else -> null
             },
         )
     }
 
-    private fun observeLog(text: String) {
-        var timestamp: Long? = null
-        text.lineSequence().forEach { line ->
-            LOG_TIMESTAMP.find(line)?.let { match ->
-                timestamp = runCatching {
-                    LocalDateTime.parse(match.value, LOG_DATE_FORMAT)
-                        .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
-                }.getOrNull()
-            }
-            val observedAt = timestamp
-            if (observedAt != null && observedAt >= processStartedAtMs && observedAt <= now() &&
-                line.contains("java.lang.OutOfMemoryError")
-            ) {
-                exhaustedAtMs.compareAndSet(0, observedAt)
-            }
-        }
-    }
-
     companion object {
-        private const val MAX_LOG_BYTES = 262_144L
         private const val LOW_MEMORY_WINDOW_MS = 30_000L
-        private val LOG_TIMESTAMP = Regex("^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}")
-        private val LOG_DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss,SSS")
     }
 }
 
-internal object InspectionIdeMemory {
-    private val state by lazy {
-        InspectionIdeMemoryState(
-            Path.of(PathManager.getLogPath(), "idea.log"),
-            ManagementFactory.getRuntimeMXBean().startTime,
-        ).also { memory ->
-            LowMemoryWatcher.register(
-                memory::lowMemorySignal,
-                LowMemoryWatcher.LowMemoryWatcherType.ONLY_AFTER_GC,
-                ApplicationManager.getApplication(),
-            )
-        }
+internal class InspectionIdeMemory : Disposable {
+    private val state = InspectionIdeMemoryState(ManagementFactory.getRuntimeMXBean().startTime)
+    private val rootLogger = Logger.getLogger("")
+
+    init {
+        rootLogger.addHandler(state)
+        LowMemoryWatcher.register(
+            state::lowMemorySignal,
+            LowMemoryWatcher.LowMemoryWatcherType.ONLY_AFTER_GC,
+            this,
+        )
     }
 
-    fun snapshot(): Map<String, Any?> = state.snapshot()
+    override fun dispose() {
+        rootLogger.removeHandler(state)
+    }
+
+    companion object {
+        fun snapshot(): Map<String, Any?> = ApplicationManager.getApplication()
+            .getService(InspectionIdeMemory::class.java).state.snapshot()
+    }
 }

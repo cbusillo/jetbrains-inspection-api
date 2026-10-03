@@ -325,11 +325,15 @@ seconds, and optionally scan `JETBRAINS_INSPECTION_PORTS` such as
 `GET /api/inspection/memory` returns the IDE `session_id` and `ide_memory`
 without waiting for a project or an IDE read action. Identity advertises
 `ide_memory_diagnostic_version: 1`. The memory status is `exhausted` after an
-`OutOfMemoryError` observed in the bounded tail of the current process's
-`idea.log`, `low_memory` for thirty seconds after an overloaded-GC signal,
+`OutOfMemoryError` observed as the root throwable of a severe log record in
+the IDE process, `low_memory` for thirty seconds after an overloaded-GC signal,
 or `normal` when neither has been observed. This is diagnostic evidence, not
 a guarantee of available memory. Exhaustion stays recorded until IDE restart;
-log entries from earlier processes are ignored. The response includes heap
+queued records from earlier processes are ignored. A preloaded application
+service observes logging continuously, so later log output and rotation cannot
+erase an observed OOM. Message text and nested remote build failures do not
+prove IDE exhaustion. The log handler and low-memory watcher are disposed with
+the service. Errors not logged as a root throwable remain unobserved. The response includes heap
 usage and a next action that names the Java heap space project-opening dialog
 and restart prerequisite. The endpoint never dismisses a dialog or restarts
 the IDE. If the IDE cannot serve HTTP at all, clients retain the original

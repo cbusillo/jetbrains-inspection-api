@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test
 internal class InspectionHandlerMemoryTest : InspectionHandlerTestSupport() {
     @Test
     fun `memory endpoint returns current session OOM diagnostic without a project selector`() {
-        mockkObject(InspectionIdeMemory)
+        mockkObject(InspectionIdeMemory.Companion)
         try {
             every { InspectionIdeMemory.snapshot() } returns mapOf(
                 "status" to "exhausted",
@@ -24,7 +24,7 @@ internal class InspectionHandlerMemoryTest : InspectionHandlerTestSupport() {
             assertTrue(body.contains("\"status\": \"exhausted\""), body)
             assertTrue(body.contains("\"out_of_memory_at_ms\": 1234"), body)
         } finally {
-            unmockkObject(InspectionIdeMemory)
+            unmockkObject(InspectionIdeMemory.Companion)
         }
     }
 }

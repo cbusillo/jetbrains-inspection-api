@@ -122,7 +122,7 @@ internal object InspectionIdeRegistry {
             return
         }
 
-        InspectionIdeMemory.snapshot()
+        runCatching { InspectionIdeMemory.snapshot() }
 
         AppExecutorUtil.getAppExecutorService().execute {
             waitForBuiltInServerStart()

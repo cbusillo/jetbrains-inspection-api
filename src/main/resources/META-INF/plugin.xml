@@ -102,6 +102,7 @@
     <depends>com.intellij.modules.platform</depends>
     
     <extensions defaultExtensionNs="com.intellij">
+        <applicationService serviceImplementation="com.shiny.inspectionmcp.InspectionIdeMemory" preload="true"/>
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>
         <notificationGroup
                 id="inspection.api"
