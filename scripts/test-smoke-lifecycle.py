@@ -116,6 +116,17 @@ class SmokeLifecycle(unittest.TestCase):
                     "work/smoke",
                 )
 
+    def test_replaced_directory_is_preserved_even_with_identical_git_contents(self):
+        moved = self.root / "original-worktree"
+        self.worktree.rename(moved)
+        shutil.copytree(moved, self.worktree)
+        self.assertEqual(smoke.manifest(self.worktree), self.receipt["manifest"])
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["reason"], "worktree_identity_changed")
+        self.assertTrue(self.worktree.is_dir())
+        self.assertTrue(moved.is_dir())
+        self.assertEqual(self.calls, [])
+
     def test_closed_project_retires_sdk_before_nonforce_removal(self):
         unrelated = self.root / "unrelated"
         unrelated.mkdir()
@@ -230,6 +241,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual((self.worktree / "unexpected").read_text(), "retain")
 
     def test_host_creation_uses_manager_and_refuses_root_override(self):
+        identity = self.worktree.stat()
         with (
             patch.object(smoke.platform, "node", return_value="Chris-Studio"),
             patch.object(smoke, "run") as command,
@@ -241,17 +253,19 @@ class SmokeLifecycle(unittest.TestCase):
             command.side_effect = [
                 self.receipt["head"],
                 "/Volumes/Developer-Artifacts/worktrees/source/other",
+                self.receipt["common_git_dir"],
             ]
             with (
                 patch.object(
                     Path, "resolve", autospec=True, side_effect=lambda path, **_: path
                 ),
                 patch.object(smoke, "manifest", return_value={}),
+                patch.object(Path, "stat", return_value=identity),
             ):
                 result = smoke.create(self.source, "other", None, Path("/manager"))
             self.assertTrue(result["managed"])
             self.assertEqual(
-                command.call_args.args,
+                command.call_args_list[1].args,
                 ("/manager", str(self.source), "other", self.receipt["head"]),
             )
 

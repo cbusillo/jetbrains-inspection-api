@@ -81,6 +81,16 @@ def create(source, slug, parent, manager):
         "branch": f"work/{slug}",
         "managed": managed,
         "manager": str(manager),
+        "root_device": root.stat().st_dev,
+        "root_inode": root.stat().st_ino,
+        "common_git_dir": run(
+            "git",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        ),
         "manifest": manifest(root),
     }
 
@@ -151,6 +161,21 @@ def preserve_generated_state(root, before, current, evidence):
 def retire(receipt, payload, helper, evidence):
     root = Path(receipt["root"])
     if not root.is_dir() or root.is_symlink():
+        return {"status": "retained", "reason": "worktree_identity_changed"}
+    current_identity = root.stat()
+    if (
+        current_identity.st_dev != receipt.get("root_device")
+        or current_identity.st_ino != receipt.get("root_inode")
+        or run(
+            "git",
+            "-C",
+            str(root),
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-common-dir",
+        )
+        != receipt.get("common_git_dir")
+    ):
         return {"status": "retained", "reason": "worktree_identity_changed"}
     if (
         not isinstance(payload, dict)
