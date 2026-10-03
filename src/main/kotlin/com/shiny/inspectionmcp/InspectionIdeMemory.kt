@@ -11,7 +11,6 @@ import java.util.logging.LogRecord
 import java.util.logging.Logger
 
 internal class InspectionIdeMemoryState(
-    private val processStartedAtMs: Long,
     private val now: () -> Long = System::currentTimeMillis,
 ) : Handler() {
     private val lowMemoryAtMs = AtomicLong(0)
@@ -23,9 +22,9 @@ internal class InspectionIdeMemoryState(
 
     override fun publish(record: LogRecord) {
         if (record.level.intValue() >= Level.SEVERE.intValue() &&
-            record.thrown is OutOfMemoryError && record.millis >= processStartedAtMs && record.millis <= now()
+            record.thrown is OutOfMemoryError
         ) {
-            exhaustedAtMs.compareAndSet(0, record.millis)
+            exhaustedAtMs.compareAndSet(0, now())
         }
     }
 
@@ -67,7 +66,7 @@ internal class InspectionIdeMemoryState(
 }
 
 internal class InspectionIdeMemory : Disposable {
-    private val state = InspectionIdeMemoryState(ManagementFactory.getRuntimeMXBean().startTime)
+    private val state = InspectionIdeMemoryState()
     private val rootLogger = Logger.getLogger("")
 
     init {
@@ -84,6 +83,10 @@ internal class InspectionIdeMemory : Disposable {
     }
 
     companion object {
+        fun ensureObserving() {
+            ApplicationManager.getApplication().getService(InspectionIdeMemory::class.java)
+        }
+
         fun snapshot(): Map<String, Any?> = ApplicationManager.getApplication()
             .getService(InspectionIdeMemory::class.java).state.snapshot()
     }

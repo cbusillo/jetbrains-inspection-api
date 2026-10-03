@@ -11,7 +11,7 @@ internal class InspectionIdeMemoryTest {
     @Test
     fun `logged local OOM remains exhausted after later unrelated records`() {
         val now = System.currentTimeMillis()
-        val state = InspectionIdeMemoryState(now - 1000) { now + 1000 }
+        val state = InspectionIdeMemoryState { now + 1000 }
         val logger = Logger.getAnonymousLogger().apply {
             useParentHandlers = false
             addHandler(state)
@@ -29,18 +29,18 @@ internal class InspectionIdeMemoryTest {
     }
 
     @Test
-    fun `earlier process record does not contaminate restarted process`() {
-        val state = InspectionIdeMemoryState(2000) { 3000 }
-        state.publish(LogRecord(Level.SEVERE, "Old queued error").apply {
+    fun `new diagnostic state does not inherit a previous state's OOM`() {
+        val previous = InspectionIdeMemoryState()
+        previous.publish(LogRecord(Level.SEVERE, "OOM").apply {
             thrown = OutOfMemoryError("Java heap space")
-            instant = java.time.Instant.ofEpochMilli(1000)
         })
-        assertEquals("normal", state.snapshot()["status"])
+        assertEquals("exhausted", previous.snapshot()["status"])
+        assertEquals("normal", InspectionIdeMemoryState().snapshot()["status"])
     }
 
     @Test
     fun `remote cause and OOM message text do not classify the IDE as exhausted`() {
-        val state = InspectionIdeMemoryState(1)
+        val state = InspectionIdeMemoryState()
         state.publish(LogRecord(Level.SEVERE, "Gradle failed: java.lang.OutOfMemoryError: Metaspace"))
         state.publish(LogRecord(Level.SEVERE, "Gradle sync failed").apply {
             thrown = RuntimeException("Remote build failure", OutOfMemoryError("Java heap space"))
@@ -51,7 +51,7 @@ internal class InspectionIdeMemoryTest {
     @Test
     fun `low memory signal recovers without being classified as OOM`() {
         var now = 1000L
-        val state = InspectionIdeMemoryState(1) { now }
+        val state = InspectionIdeMemoryState { now }
         state.lowMemorySignal()
         assertEquals("low_memory", state.snapshot()["status"])
         now += 60_000
