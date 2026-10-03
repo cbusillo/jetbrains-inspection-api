@@ -5,47 +5,6 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
-grep -q -- '--product NAME' scripts/dogfood-red-lane-smoke.sh
-grep -q -- 'inspection-red-lane-pycharm' scripts/dogfood-red-lane-smoke.sh
-grep -q -- 'inspection-red-lane-webstorm' scripts/dogfood-red-lane-smoke.sh
-grep -q -- '--scope whole_project' scripts/dogfood-red-lane-smoke.sh
-grep -q -- '--profile RedLane' scripts/dogfood-red-lane-smoke.sh
-grep -q -- '--ide-channel' scripts/dogfood-red-lane-smoke.sh
-grep -q -- '--ide-version' scripts/dogfood-red-lane-smoke.sh
-
-assert_fixture_intellij() {
-	local fixture_source="test-fixtures/inspection-red-lane/src/main/java/com/example/redlane/DefinitelyRed.java"
-	local fixture_profile="test-fixtures/inspection-red-lane/.idea/inspectionProfiles/RedLane.xml"
-
-	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
-	grep -q 'private String redLaneField' "$fixture_source"
-	grep -q 'redLaneField must stay non-final' "$fixture_source"
-	grep -q 'UnusedDeclaration' "$fixture_profile"
-}
-
-assert_fixture_pycharm() {
-	local fixture_source="test-fixtures/inspection-red-lane-pycharm/src/definitely_red.py"
-	local fixture_profile="test-fixtures/inspection-red-lane-pycharm/.idea/inspectionProfiles/RedLane.xml"
-
-	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
-	grep -q '"duplicate": "first"' "$fixture_source"
-	grep -q '"duplicate": "second"' "$fixture_source"
-	test -f test-fixtures/inspection-red-lane-pycharm/pyproject.toml
-	grep -q 'PyDictDuplicateKeysInspection' "$fixture_profile"
-}
-
-assert_fixture_webstorm() {
-	local fixture_source="test-fixtures/inspection-red-lane-webstorm/src/definitely-red.json"
-	local fixture_profile="test-fixtures/inspection-red-lane-webstorm/.idea/inspectionProfiles/RedLane.xml"
-
-	grep -q 'INTENTIONAL RED-LANE FIXTURE' "$fixture_source"
-	grep -q '"duplicate": "first"' "$fixture_source"
-	grep -q '"duplicate": "second"' "$fixture_source"
-	test -f test-fixtures/inspection-red-lane-webstorm/package.json
-	grep -q 'JsonDuplicatePropertyKeys' "$fixture_profile"
-	grep -q 'JsonStandardCompliance' "$fixture_profile"
-}
-
 TMP_DIR=$(mktemp -d)
 cleanup() {
 	rm -rf "$TMP_DIR"
@@ -60,6 +19,12 @@ import os
 import sys
 from pathlib import Path
 
+if "--profile" not in sys.argv:
+    repo = sys.argv[sys.argv.index("--repo") + 1]
+    cleanup = "not_needed" if "--no-open" in sys.argv else os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")
+    print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": cleanup},
+                      "prepared": {"lease": {"opened_by_helper": "--no-open" not in sys.argv}}}))
+    sys.exit(0)
 repo = ""
 ide = ""
 ide_channel = ""
@@ -106,7 +71,7 @@ if stub_bucket:
         "verdict": "UNKNOWN",
         "verdict_reason": "no_results",
         "total_problems": 0,
-        "cleanup": {"status": "closed"},
+        "cleanup": {"status": os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")},
         "agent_result": {
             "bucket": stub_bucket,
             "retry_policy": {"retry": retry, "max_attempts": 1 if retry else 0},
@@ -126,7 +91,7 @@ print(json.dumps({
     "total_problems": 1,
     "problems_shown": 1,
     "clean": False,
-    "cleanup": {"status": "closed"},
+    "cleanup": {"status": os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")},
     "agent_result": {
         "bucket": "actionable_findings",
         "retry_policy": {"retry": False, "max_attempts": 0},
@@ -134,11 +99,52 @@ print(json.dumps({
     },
     "open_attempts": [{"method": "running_ide", "accepted": True, "endpoint_status": "opening"}],
     "ide_selection": {"channel": ide_channel or None, "version": ide_version or None},
-    "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide, "plugin_version": "test-1.0.0", "plugin_fingerprint": "test-clean"}},
+    "route": {"base_path": repo, "project_name": Path(repo).name, "ide": {"name": ide, "plugin_version": "test-1.0.0", "plugin_build_fingerprint": "test-clean"}},
     "problems": [{"severity": "error", "file": str(fixture), "line": 1, "description": f"Cannot resolve symbol {marker}"}],
 }))
 STUB
 chmod +x "$HELPER"
+mkdir -p "$TMP_DIR/bin"
+cat >"$TMP_DIR/bin/uv" <<'UV'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$2" == */smoke-worktree.py ]]; then
+    shift 2
+    command=$1
+    shift
+    source=""; parent=""; slug=""; receipt=""; payload=""; out=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        --source) source=$2;; --slug) slug=$2;; --parent) parent=$2;;
+        --receipt) receipt=$2;; --payload) payload=$2;; --out) out=$2;; --helper) :;;
+        *) exit 2;;
+        esac
+        shift 2
+    done
+    if [ "$command" = create ]; then
+        project="$parent/$slug"
+        mkdir -p "$project/test-fixtures"
+        cp -R "$source/test-fixtures"/. "$project/test-fixtures"/
+        jq -n --arg root "$project" '{root:$root}' > "$receipt"
+        printf '%s\n' "$project"
+    else
+        project=$(jq -r .root "$receipt")
+        if jq -e '.cleanup.status == "closed"' "$payload" >/dev/null; then
+            rm -rf "$project"
+            printf '%s\n' '{"status":"removed"}' > "$out"
+        else
+            printf '%s\n' '{"status":"retained","reason":"lifecycle_cleanup_unresolved"}' > "$out"
+            exit 1
+        fi
+    fi
+else
+    exec "$REAL_UV" "$@"
+fi
+UV
+chmod +x "$TMP_DIR/bin/uv"
+export REAL_UV
+REAL_UV=$(command -v uv)
+export PATH="$TMP_DIR/bin:$PATH"
 
 run_case() {
 	local product=$1
@@ -173,6 +179,8 @@ run_case() {
     .first_attempt_reliable == true and
     .open_methods == ["running_ide"] and
     .identity.plugin_version == "test-1.0.0" and
+    .identity.plugin_build_fingerprint == "test-clean" and
+    .worktree_retirement.status == "removed" and
     (.payload.problems[0].description | contains($expected_marker))
   ' "$json_out" >/dev/null
 }
@@ -212,14 +220,27 @@ run_unknown_case() {
   ' "$json_out" >/dev/null
 }
 
-assert_fixture_intellij
-assert_fixture_pycharm
-assert_fixture_webstorm
-
 run_case intellij "IntelliJ IDEA" redLaneField
 run_case pycharm PyCharm duplicate
 run_case webstorm WebStorm duplicate
 run_unknown_case pycharm capture_not_ready true red_unknown_retryable:capture_not_ready
 run_unknown_case pycharm tool_bug false red_unknown_terminal:tool_bug
 
-echo "red-lane smoke script contract passed"
+retained_report="$TMP_DIR/retained.json"
+if JB_INSPECT_STUB_CLEANUP=deferred ./scripts/dogfood-red-lane-smoke.sh --helper "$HELPER" --work-root "$TMP_DIR/work" --json-out "$retained_report"; then
+	echo "expected deferred lifecycle to fail" >&2
+	exit 1
+fi
+jq -e '.cleanup.status == "deferred" and .worktree_retirement.status == "retained"' "$retained_report" >/dev/null
+retained_project=$(jq -r .project "$retained_report")
+test -f "$retained_project/src/main/java/com/example/redlane/DefinitelyRed.java"
+matrix_report="$TMP_DIR/matrix.json"
+./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"
+jq -e '.status == "ok" and (.rows | length) == 2 and any(.rows[]; .scenario == "preexisting" and .cleanup.status == "not_needed") and any(.rows[]; .scenario == "helper-opened" and .worktree_retirement.status == "removed")' "$matrix_report" >/dev/null
+if JB_INSPECT_STUB_CLEANUP=deferred ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case helper-opened --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"; then
+	echo "expected deferred matrix lifecycle to fail" >&2
+	exit 1
+fi
+jq -e '.status == "failed" and .rows[0].worktree_retirement.status == "retained"' "$matrix_report" >/dev/null
+test -d "$(jq -r '.rows[0].worktree_path' "$matrix_report")"
+echo "red-lane and matrix smoke script contracts passed"

@@ -40,6 +40,8 @@ print_result() {
   fi
 }
 
+uv run "$ROOT/scripts/test-smoke-lifecycle.py" || OVERALL_RESULT=1
+
 # Step 1: Plugin Tests
 print_section "1. Running Kotlin Plugin Tests with Coverage"
 

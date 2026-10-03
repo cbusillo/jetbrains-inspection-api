@@ -5,14 +5,8 @@ set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 1
 
-DEFAULT_HELPER_DEV="$HOME/Developer/codex-skills/jetbrains-inspection/scripts/jb-inspect.py"
-DEFAULT_HELPER_HOME="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
-
-if [ -x "$DEFAULT_HELPER_DEV" ]; then
-	HELPER="$DEFAULT_HELPER_DEV"
-else
-	HELPER="$DEFAULT_HELPER_HOME"
-fi
+HELPER="${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}"
+WORKTREE_TOOL="$ROOT/scripts/smoke-worktree.py"
 
 PRODUCT="intellij"
 IDE=""
@@ -21,7 +15,7 @@ IDE_CHANNEL=""
 IDE_VERSION=""
 TIMEOUT_MS=180000
 PREPARE_TIMEOUT_MS=180000
-WORK_ROOT="$HOME/.code/working/jetbrains-inspection-api/red-lane-smoke"
+WORK_ROOT=""
 JSON_OUT=""
 KEEP_PROJECT=0
 
@@ -29,7 +23,7 @@ usage() {
 	cat <<'USAGE'
 Usage: ./scripts/dogfood-red-lane-smoke.sh [options]
 
-Copies the maintained inspection-red-lane fixture to a disposable local project,
+Checks out the maintained inspection-red-lane fixture in a disposable linked worktree,
 runs the JetBrains inspection helper readiness inspection, and requires a RED verdict.
 This is a live IDE dogfood smoke, not a normal CI unit test.
 
@@ -42,7 +36,7 @@ Options:
   --ide-version VERSION      Exact IDE version selector, e.g. 2026.2.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
-  --work-root PATH           Parent directory for disposable fixture copies.
+  --work-root PATH           Portable hosts: explicit worktree parent; omit on Chris-Studio.
   --json-out PATH            Write JSON report to PATH.
   --keep-project             Leave the disposable fixture project on disk.
   -h, --help                 Show this help.
@@ -56,14 +50,6 @@ USAGE
 die() {
 	echo "ERROR: $*" >&2
 	exit 2
-}
-
-abs_path() {
-	local path=$1
-	case "$path" in
-	/*) printf '%s\n' "$path" ;;
-	*) printf '%s/%s\n' "$PWD" "$path" ;;
-	esac
 }
 
 while [ $# -gt 0 ]; do
@@ -169,27 +155,28 @@ fi
 [ -x "$HELPER" ] || die "helper is not executable: $HELPER"
 [ -d "$FIXTURE" ] || die "fixture is missing: $FIXTURE"
 
-WORK_ROOT=$(abs_path "$WORK_ROOT")
-mkdir -p "$WORK_ROOT"
-
+EVIDENCE=$(mktemp -d)
+echo "Retained smoke evidence: $EVIDENCE" >&2
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
-PROJECT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID"
-RAW_OUT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.raw.json"
-ERR_OUT="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.stderr.txt"
-PAYLOAD_FILE="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.payload.json"
-COMMAND_FILE="$WORK_ROOT/$PROJECT_SLUG-$RUN_ID.command.json"
-
-# shellcheck disable=SC2329
-cleanup() {
-	if [ "$KEEP_PROJECT" -eq 0 ]; then
-		rm -rf "$PROJECT"
-	fi
-}
-trap cleanup EXIT
-
-rm -rf "$PROJECT"
-mkdir -p "$PROJECT"
-cp -R "$FIXTURE"/. "$PROJECT"/
+RECEIPT="$EVIDENCE/worktree.json"
+CREATE=(uv run "$WORKTREE_TOOL" create --source "$ROOT" --slug "smoke-$PROJECT_SLUG-$RUN_ID" --receipt "$RECEIPT")
+[ -z "$WORK_ROOT" ] || CREATE+=(--parent "$WORK_ROOT")
+WORKTREE=$("${CREATE[@]}") || exit 2
+if [[ "$WORKTREE" == /Volumes/Developer-Artifacts/worktrees/* ]]; then
+	EVIDENCE_PARENT="/Volumes/Developer-Artifacts/task-evidence/jetbrains-inspection-api/smoke"
+	mkdir -p "$EVIDENCE_PARENT"
+	MOVED_EVIDENCE="$EVIDENCE_PARENT/$(basename "$WORKTREE")"
+	mv "$EVIDENCE" "$MOVED_EVIDENCE"
+	EVIDENCE=$MOVED_EVIDENCE
+	RECEIPT="$EVIDENCE/worktree.json"
+fi
+PROJECT="$WORKTREE/${FIXTURE#"$ROOT/"}"
+RAW_OUT="$EVIDENCE/raw.json"
+ERR_OUT="$EVIDENCE/stderr.txt"
+PAYLOAD_FILE="$EVIDENCE/payload.json"
+COMMAND_FILE="$EVIDENCE/command.json"
+# Never delete a project on EXIT: the complete response controls retirement.
+trap 'echo "Smoke evidence retained: $EVIDENCE; worktree: $WORKTREE" >&2' EXIT
 
 PROFILE_FILE="$PROJECT/.idea/inspectionProfiles/RedLane.xml"
 [ -f "$PROFILE_FILE" ] || die "fixture profile is missing: $PROFILE_FILE"
@@ -211,19 +198,27 @@ jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
 EXIT_CODE=$?
 
-if jq empty "$RAW_OUT" >/dev/null 2>&1; then
+if jq -e 'type == "object"' "$RAW_OUT" >/dev/null 2>&1; then
 	cp "$RAW_OUT" "$PAYLOAD_FILE"
 else
 	jq -n --arg error "helper did not emit valid JSON" --arg raw "$(head -c 4000 "$RAW_OUT" 2>/dev/null || true)" '{status:"error", error_reason:"invalid_helper_json", error:$error, raw_output_excerpt:$raw}' >"$PAYLOAD_FILE"
 fi
 
+RETIREMENT="$EVIDENCE/retirement.json"
+if [ "$KEEP_PROJECT" -eq 0 ]; then
+	uv run "$WORKTREE_TOOL" retire --receipt "$RECEIPT" --payload "$PAYLOAD_FILE" --helper "$HELPER" --out "$RETIREMENT" >&2 || true
+else
+	printf '%s\n' '{"status":"retained","reason":"keep_requested"}' >"$RETIREMENT"
+fi
+
+RETIREMENT_STATUS=$(jq -r .status "$RETIREMENT")
 VERDICT=$(jq -r '.verdict // .inspection_verdict // ""' "$PAYLOAD_FILE")
 TOTAL=$(jq -r '.total_problems // 0' "$PAYLOAD_FILE")
 CLEANUP_STATUS=$(jq -r '.cleanup.status // ""' "$PAYLOAD_FILE")
 AGENT_BUCKET=$(jq -r '.agent_result.bucket // .bucket // ""' "$PAYLOAD_FILE")
 AGENT_RETRY=$(jq -r '(.agent_result.retry_policy.retry // .retry_policy.retry // false) | tostring' "$PAYLOAD_FILE")
 
-if [ "$EXIT_CODE" -le 1 ] && [ "$VERDICT" = "RED" ] && { [ "$AGENT_BUCKET" = "" ] || [ "$AGENT_BUCKET" = "actionable_findings" ]; } && [ "$TOTAL" != "0" ] && [ "$TOTAL" != "null" ] && [ "$CLEANUP_STATUS" = "closed" ]; then
+if [ "$EXIT_CODE" -le 1 ] && [ "$VERDICT" = "RED" ] && { [ "$AGENT_BUCKET" = "" ] || [ "$AGENT_BUCKET" = "actionable_findings" ]; } && [ "$TOTAL" != "0" ] && [ "$TOTAL" != "null" ] && [ "$CLEANUP_STATUS" = "closed" ] && { [ "$KEEP_PROJECT" -eq 1 ] || [ "$RETIREMENT_STATUS" = "removed" ]; }; then
 	STATUS="ok"
 	BUCKET="red_confirmed"
 else
@@ -251,6 +246,9 @@ REPORT=$(
 		--arg ide_version "$IDE_VERSION" \
 		--arg fixture "$FIXTURE" \
 		--arg project "$PROJECT" \
+		--arg worktree "$WORKTREE" \
+		--arg evidence "$EVIDENCE" \
+		--slurpfile retirement "$RETIREMENT" \
 		--argjson exit_code "$EXIT_CODE" \
 		--slurpfile command "$COMMAND_FILE" \
 		--slurpfile payload "$PAYLOAD_FILE" \
@@ -271,6 +269,9 @@ REPORT=$(
         ide_version: (if $ide_version == "" then null else $ide_version end),
         fixture: $fixture,
         project: $project,
+        worktree: $worktree,
+        evidence: $evidence,
+        worktree_retirement: $retirement[0],
         exit_code: $exit_code,
         verdict: (payload.verdict // payload.inspection_verdict // null),
         verdict_reason: (payload.verdict_reason // payload.inspection_verdict_reason // null),
@@ -295,7 +296,7 @@ REPORT=$(
           product_code: (identity.product_code // null),
           version: (identity.version // null),
           plugin_version: (identity.plugin_version // null),
-          plugin_fingerprint: (identity.plugin_fingerprint // null),
+          plugin_build_fingerprint: (identity.plugin_build_fingerprint // null),
           pid: (identity.pid // null)
         },
         command: command,
