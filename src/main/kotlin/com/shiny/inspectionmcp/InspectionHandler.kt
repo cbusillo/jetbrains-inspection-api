@@ -3483,14 +3483,12 @@ class InspectionHandler : HttpRequestHandler() {
 
         val scheduled = runCatching {
             ApplicationManager.getApplication().invokeLater {
-                var opened: Project? = null
                 var keepOpeningGuard = false
                 var routeHidden = false
                 try {
                     recordLifecycleOpenDiagnostic(target.key, "edt_started", "open_started")
                     val preexistingProject = findOpenProjectForLifecycleOpen(target.projectRoot.toString())
                     if (preexistingProject != null) {
-                        opened = preexistingProject
                         recordLifecycleOpenDiagnostic(
                             target.key,
                             "opened_mismatched_or_reused",
@@ -3505,7 +3503,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val openedProjectCandidate = AtomicReference<Project?>()
                     trustProjectPath(target.projectRoot)
                     refreshProjectRoot(target.projectRoot.toString())
-                    opened = openProjectPath(target.openPath) { project ->
+                    val opened = openProjectPath(target.openPath) { project ->
                         openedProjectCandidate.compareAndSet(null, project)
                     }
                     if (opened == null) {
@@ -5480,38 +5478,6 @@ class InspectionHandler : HttpRequestHandler() {
         snapshot?.runId?.let { response["snapshot_run_id"] = it }
         addStatusInspectionVerdict(response)
         return formatJsonManually(response)
-    }
-
-    private fun getInspectionProblems(
-        project: Project,
-        severity: String = "all",
-        scope: String = "whole_project",
-        problemType: String? = null,
-        filePattern: String? = null,
-        limit: Int = 100,
-        offset: Int = 0,
-        includeStale: Boolean = false,
-        directoryParam: String? = null,
-        files: List<String>? = null,
-        includeUnversioned: Boolean = true,
-        changedFilesMode: String? = null,
-        maxFiles: Int? = null,
-    ): String {
-        return getInspectionProblemsInternal(
-            project = project,
-            severity = severity,
-            scope = scope,
-            problemType = problemType,
-            filePattern = filePattern,
-            limit = limit,
-            offset = offset,
-            includeStale = includeStale,
-            directoryParam = directoryParam,
-            files = files,
-            includeUnversioned = includeUnversioned,
-            changedFilesMode = changedFilesMode,
-            maxFiles = maxFiles,
-        )
     }
 
     private fun withCurrentProject(
@@ -10899,10 +10865,8 @@ class InspectionHandler : HttpRequestHandler() {
         var line = 0
         var column = 0
         var severity = "warning"
-        var psiElement: com.intellij.psi.PsiElement? = null
-
         if (descriptor is com.intellij.codeInspection.ProblemDescriptor) {
-            psiElement = descriptor.psiElement?.takeIf { it.isValid }
+            val psiElement = descriptor.psiElement?.takeIf { it.isValid }
             val location = resolveProblemLocation(descriptor, project)
             if (location != null) {
                 filePath = location.filePath
