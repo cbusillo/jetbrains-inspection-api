@@ -198,7 +198,7 @@ jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
 EXIT_CODE=$?
 
-if jq -e 'type == "object"' "$RAW_OUT" >/dev/null 2>&1; then
+if jq -se 'length == 1 and (.[0] | type == "object")' "$RAW_OUT" >/dev/null 2>&1; then
 	cp "$RAW_OUT" "$PAYLOAD_FILE"
 else
 	jq -n --arg error "helper did not emit valid JSON" --arg raw "$(head -c 4000 "$RAW_OUT" 2>/dev/null || true)" '{status:"error", error_reason:"invalid_helper_json", error:$error, raw_output_excerpt:$raw}' >"$PAYLOAD_FILE"
@@ -314,8 +314,8 @@ REPORT=$(
 printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) reason=\(.verdict_reason // .error_reason // "-") agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-") attempts=\(.open_attempt_count) methods=\((.open_methods // []) | join(",")) plugin=\(.identity.plugin_version // "unknown")"'
 
 if [ -n "$JSON_OUT" ]; then
-	mkdir -p "$(dirname "$JSON_OUT")"
-	printf '%s\n' "$REPORT" >"$JSON_OUT"
+	mkdir -p "$(dirname "$JSON_OUT")" || exit 2
+	printf '%s\n' "$REPORT" >"$JSON_OUT" || exit 2
 	echo "wrote $JSON_OUT" >&2
 fi
 

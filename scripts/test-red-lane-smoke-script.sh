@@ -19,6 +19,9 @@ import os
 import sys
 from pathlib import Path
 
+if os.environ.get("JB_INSPECT_STUB_MULTIPLE") == "1":
+    print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": "not_needed"}}))
+
 if "--profile" not in sys.argv:
     repo = sys.argv[sys.argv.index("--repo") + 1]
     cleanup = "not_needed" if "--no-open" in sys.argv else os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")
@@ -277,6 +280,20 @@ merge_evidence=$(sed -n 's/^Smoke evidence retained: //p' "$TMP_DIR/jq-failure.s
 merge_receipt=$(find "$merge_evidence" -maxdepth 1 -name 'worktree-*.json' -print -quit)
 test -f "$merge_receipt"
 test -d "$(jq -r .root "$merge_receipt")"
+if JB_INSPECT_STUB_MULTIPLE=1 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case preexisting --json-out "$TMP_DIR/multiple.json"; then
+	echo "multiple helper documents must fail" >&2
+	exit 1
+fi
+jq -e '.status == "failed"' "$TMP_DIR/multiple.json" >/dev/null
+mkdir "$TMP_DIR/output-directory"
+if ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case preexisting --json-out "$TMP_DIR/output-directory"; then
+	echo "matrix output write failure must fail" >&2
+	exit 1
+fi
+if ./scripts/dogfood-red-lane-smoke.sh --helper "$HELPER" --work-root "$TMP_DIR/work" --json-out "$TMP_DIR/output-directory"; then
+	echo "red output write failure must fail" >&2
+	exit 1
+fi
 # Stock macOS Bash must delegate when no local options are configured.
 mkdir "$TMP_DIR/plain-repo"
 git -C "$TMP_DIR/plain-repo" init -q

@@ -415,7 +415,7 @@ class SmokeLifecycle(unittest.TestCase):
         result = json.loads(output.read_text())
         self.assertFalse(result["worktree_present"])
         self.assertEqual(
-            (self.evidence / "sdk-apply-stdout.txt").read_text(),
+            (Path(result["evidence"]) / "sdk-apply-stdout.txt").read_text(),
             "malformed apply output",
         )
         self.assertFalse(self.worktree.exists())
@@ -425,6 +425,51 @@ class SmokeLifecycle(unittest.TestCase):
             ),
             self.receipt["head"],
         )
+
+    def test_matrix_retirement_calls_preserve_each_sdk_response(self):
+        receipt = self.evidence / "worktree.json"
+        payload = self.evidence / "payload.json"
+        output = self.evidence / "retirement.json"
+        receipt.write_text(json.dumps(self.receipt))
+        payload.write_text(json.dumps({"cleanup": {"status": "closed"}}))
+        original = smoke.run
+        responses = iter(
+            ["first malformed SDK response", "second malformed SDK response"]
+        )
+
+        def native(*args):
+            return next(responses) if args[0] == "uv" else original(*args)
+
+        results = []
+        with (
+            patch.object(smoke, "run", side_effect=native),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "smoke-worktree.py",
+                    "retire",
+                    "--receipt",
+                    str(receipt),
+                    "--payload",
+                    str(payload),
+                    "--helper",
+                    "/helper.py",
+                    "--out",
+                    str(output),
+                ],
+            ),
+        ):
+            for _ in range(2):
+                self.assertEqual(smoke.main(), 1)
+                results.append(json.loads(output.read_text()))
+        first, second = [
+            Path(result["evidence"]) / "sdk-preview-stdout.txt" for result in results
+        ]
+        self.assertNotEqual(first.parent, second.parent)
+        self.assertEqual(first.read_text(), "first malformed SDK response")
+        self.assertEqual(second.read_text(), "second malformed SDK response")
+        self.assertTrue(self.worktree.exists())
 
     def test_preview_failure_keeps_worktree(self):
         original = smoke.run
@@ -630,6 +675,11 @@ class LocalInstaller(unittest.TestCase):
             {"session_id": "target-session"},
             {"route": {"ide": {"pid": 42}}},
             {"worktree_root": "/target/project"},
+            {"repo_path": "/target/project"},
+            {
+                "lifecycle_target_path": "/other/nested",
+                "worktree_root": "/target/project",
+            },
         ]:
             with (
                 self.subTest(lease=lease),

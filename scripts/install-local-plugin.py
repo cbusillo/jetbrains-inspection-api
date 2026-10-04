@@ -97,11 +97,15 @@ def require_no_target_leases(leases, identities):
     }
     for _, lease in leases:
         route = lease.get("route") or {}
-        path = lease.get("lifecycle_target_path") or lease.get("worktree_root")
+        paths = [
+            lease.get(field)
+            for field in ("lifecycle_target_path", "worktree_root", "repo_path")
+            if isinstance(lease.get(field), str)
+        ]
         if (
             lease.get("session_id") in sessions
             or route.get("ide", {}).get("pid") in pids
-            or (path and Path(path).resolve() in projects)
+            or any(Path(path).resolve() in projects for path in paths)
         ):
             raise ValueError(
                 "An exact target IDE helper lease remains; run cleanup-helper-leases through the maintained helper before installation."

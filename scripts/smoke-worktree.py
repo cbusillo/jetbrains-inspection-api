@@ -380,13 +380,23 @@ def main():
             print(receipt["root"])
         else:
             receipt = None
+            evidence = None
             try:
                 receipt = json.loads(args.receipt.read_text())
+                if args.receipt.parent.resolve().is_relative_to(
+                    Path(receipt["root"]).resolve()
+                ):
+                    raise ValueError(
+                        "Keep retirement receipts and evidence outside the worktree."
+                    )
+                evidence = Path(
+                    tempfile.mkdtemp(prefix="retirement-", dir=args.receipt.parent)
+                )
                 result = retire(
                     receipt,
                     json.loads(args.payload.read_text()),
                     args.helper,
-                    args.receipt.parent,
+                    evidence,
                 )
             except (OSError, ValueError, subprocess.CalledProcessError) as error:
                 result = {
@@ -414,6 +424,7 @@ def main():
                         record.write_text(content or "")
                         record.chmod(0o600)
                     result["failure_evidence"] = str(records)
+            result["evidence"] = str(evidence) if evidence else None
             args.out.write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
             return 0 if result["status"] == "removed" else 1

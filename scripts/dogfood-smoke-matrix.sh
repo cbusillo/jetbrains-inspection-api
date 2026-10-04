@@ -503,7 +503,7 @@ run_case() {
 	else
 		"${cmd[@]}" >"$raw_file" 2>"$stderr_file"
 		exit_code=$?
-		if jq -e 'type == "object"' "$raw_file" >/dev/null 2>&1; then
+		if jq -se 'length == 1 and (.[0] | type == "object")' "$raw_file" >/dev/null 2>&1; then
 			cp "$raw_file" "$payload_file"
 		else
 			valid_json=false
@@ -550,16 +550,16 @@ done
 
 ROWS_FILE="$TMP_DIR/rows.json"
 if compgen -G "$TMP_DIR/row-*.json" >/dev/null; then
-	jq -s '.' "$TMP_DIR"/row-*.json >"$ROWS_FILE"
+	jq -s '.' "$TMP_DIR"/row-*.json >"$ROWS_FILE" || exit 2
 else
-	echo '[]' >"$ROWS_FILE"
+	echo '[]' >"$ROWS_FILE" || exit 2
 fi
 
 STATUS=$(jq -r '
   def pass_bucket:
     . == "clean" or . == "dry_run" or . == "skipped_preexisting_not_open";
   if any(.[]; (.bucket | pass_bucket | not)) then "failed" else "ok" end
-' "$ROWS_FILE")
+' "$ROWS_FILE") || exit 2
 
 REPORT=$(
 	jq -n \
@@ -592,7 +592,7 @@ REPORT=$(
       },
       rows: $rows[0]
     }'
-)
+) || exit 2
 
 printf '%s\n' "$REPORT" | jq -r '
   "status=\(.status) rows=\(.summary.rows)",
@@ -600,8 +600,8 @@ printf '%s\n' "$REPORT" | jq -r '
 '
 
 if [ -n "$JSON_OUT" ]; then
-	mkdir -p "$(dirname "$JSON_OUT")"
-	printf '%s\n' "$REPORT" >"$JSON_OUT"
+	mkdir -p "$(dirname "$JSON_OUT")" || exit 2
+	printf '%s\n' "$REPORT" >"$JSON_OUT" || exit 2
 	echo "wrote $JSON_OUT" >&2
 fi
 
