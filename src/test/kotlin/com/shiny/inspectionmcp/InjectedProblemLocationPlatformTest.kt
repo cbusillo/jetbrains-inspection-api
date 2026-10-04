@@ -72,7 +72,7 @@ class InjectedProblemLocationPlatformTest {
                 }
                 val descriptor = InspectionManager.getInstance(project).createProblemDescriptor(
                     injectedElement,
-                    "injected finding",
+                    INJECTED_FINDING,
                     null as LocalQuickFix?,
                     ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
                     false,
@@ -103,7 +103,7 @@ class InjectedProblemLocationPlatformTest {
             assertThat(proof.languageApplicableObligationCount).isEqualTo(1)
             assertThat(proof.proofProblems).extracting("file").containsOnly(hostFile.virtualFile.path)
             assertThat(proof.proofProblems).extracting("line").containsExactlyInAnyOrder(2, 3)
-            assertThat(proof.proofProblems).extracting("description").containsOnly("injected finding")
+            assertThat(proof.proofProblems).extracting("description").containsOnly(INJECTED_FINDING)
         }
     }
 
@@ -247,12 +247,12 @@ class InjectedProblemLocationPlatformTest {
 
     private open class InjectedFindingInspection : LocalInspectionTool() {
         override fun getDisplayName(): String = shortName
-        override fun getGroupDisplayName(): String = "Injected Proof Tests"
+        override fun getGroupDisplayName(): String = "Injected proof tests"
         override fun getLanguage(): String = PlainTextLanguage.INSTANCE.id
         override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean, session: LocalInspectionToolSession): PsiElementVisitor =
             object : PsiElementVisitor() {
                 override fun visitFile(file: PsiFile) {
-                    holder.registerProblem(file, "injected finding")
+                    holder.registerProblem(file, INJECTED_FINDING)
                 }
             }
     }
@@ -325,6 +325,7 @@ class InjectedProblemLocationPlatformTest {
     }
 
     companion object {
+        private const val INJECTED_FINDING = "Injected finding"
         private val injectedSlowVisitorStarted = AtomicBoolean()
         private val injectedSlowVisitorCancelled = AtomicBoolean()
 
