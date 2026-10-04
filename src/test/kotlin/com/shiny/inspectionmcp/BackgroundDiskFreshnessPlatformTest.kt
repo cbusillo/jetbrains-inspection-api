@@ -75,6 +75,7 @@ class BackgroundDiskFreshnessPlatformTest {
         val stale = inspect(handler, uri, project)
         assertThat(stale).describedAs(stale).contains("\"inspection_verdict\": \"UNKNOWN\"")
         assertThat(stale).contains("disk_psi_content_mismatch", "inspection_inputs_changed", path)
+        assertThat(stale).contains("inspection_verdict_next_action", "Reload from Disk", "modification time")
         assertThat(tool.visits.get()).isZero()
 
         runInEdtAndGet {
@@ -107,6 +108,40 @@ class BackgroundDiskFreshnessPlatformTest {
         val deletedDuringRun = inspect(handler, uri, project)
         assertThat(deletedDuringRun).describedAs(deletedDuringRun)
             .contains("\"inspection_verdict\": \"UNKNOWN\"", "scoped_disk_read_failed", "inspection_inputs_changed")
+    }
+
+    @Test
+    fun `VFS deletion between lookup and read is an unavailable input`() {
+        val project = projectExtension.project
+        val localFileSystem = LocalFileSystem.getInstance()
+        val file = runInEdtAndGet {
+            val root = Files.createTempDirectory("disk-invalidated-")
+            val path = Files.writeString(root.resolve("invalidated.xml"), "<root/>")
+            requireNotNull(localFileSystem.refreshAndFindFileByNioFile(path))
+        }
+        val path = file.path
+        io.mockk.mockkStatic(LocalFileSystem::class)
+        try {
+            val lookup = io.mockk.mockk<LocalFileSystem>()
+            io.mockk.every { LocalFileSystem.getInstance() } returns lookup
+            io.mockk.every { lookup.findFileByPath(path) } answers {
+                runInEdtAndGet { WriteAction.run<RuntimeException> { file.delete(this) } }
+                assertThat(file.isValid).isFalse()
+                file
+            }
+            val method = InspectionHandler::class.java.getDeclaredMethod(
+                "inspectionScopeDiskFailure", Project::class.java, InspectionCaptureScope::class.java,
+                String::class.java, Long::class.javaPrimitiveType,
+            )
+            method.isAccessible = true
+            val result = method.invoke(
+                InspectionHandler(), project, InspectionCaptureScope(scopeParam = "files", resolvedFiles = listOf(path)),
+                project.name, 1L,
+            )
+            assertThat(result.toString()).contains("scoped_psi_unavailable", path)
+        } finally {
+            io.mockk.unmockkStatic(LocalFileSystem::class)
+        }
     }
 
     private fun inspect(handler: InspectionHandler, uri: String, project: Project): String {

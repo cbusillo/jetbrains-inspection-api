@@ -183,6 +183,7 @@ internal abstract class InspectionHandlerTestSupport {
         mockkStatic(VirtualFileManager::class)
         every { VirtualFileManager.getInstance() } returns mockVirtualFileManager
         val syntheticFile = mockk<VirtualFile>(relaxed = true)
+        every { syntheticFile.isValid } returns true
         every { syntheticFile.isInLocalFileSystem } returns false
         val localFileSystem = mockk<LocalFileSystem>()
         every { localFileSystem.findFileByPath(any()) } returns syntheticFile
