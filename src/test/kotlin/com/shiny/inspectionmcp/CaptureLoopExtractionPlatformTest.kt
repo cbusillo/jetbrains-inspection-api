@@ -33,6 +33,7 @@ import org.junit.jupiter.api.extension.RegisterExtension
 import java.net.URLEncoder
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class CaptureLoopExtractionPlatformTest {
     @Test
@@ -40,18 +41,40 @@ class CaptureLoopExtractionPlatformTest {
         val project = projectExtension.project
         val directory = createLocalContentRoot()
         val profile = registerProfile(project, CleanInspection())
-        val status = runWithFailingExtraction(project, directory, profile)
+        val status = runWithExtraction(project, directory, profile)
         assertThat(status).describedAs(status).contains("\"exit_reason\": \"deadline\"")
         assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"GREEN\"")
         assertThat(status).describedAs(status).doesNotContain("\"extraction_failure_count\": 0")
     }
 
-    private fun runWithFailingExtraction(project: Project, directory: String, profile: InspectionProfileImpl): String {
+    @Test
+    fun `clean model confirms a deadline exit without a post-loop stable-empty observation`() {
+        val project = projectExtension.project
+        val directory = createLocalContentRoot()
+        val profile = registerProfile(project, CleanInspection())
+        val status = runWithExtraction(project, directory, profile, extractionSucceeded = true, expireDuringExtraction = true)
+        assertThat(status).describedAs(status).contains("\"exit_reason\": \"deadline\"", "\"inspection_verdict\": \"GREEN\"")
+        assertThat(status).describedAs(status).contains("\"inspection_terminal_outcome\": \"timed_out\"")
+        assertThat(status).describedAs(status).contains("\"observed_model_clean_inspection\": true")
+        assertThat(status).describedAs(status).contains("\"observed_stable_empty_results_without_inspection_view\": false")
+    }
+
+    private fun runWithExtraction(
+        project: Project,
+        directory: String,
+        profile: InspectionProfileImpl,
+        extractionSucceeded: Boolean = false,
+        expireDuringExtraction: Boolean = false,
+    ): String {
         val handler = InspectionHandler()
+        val clockOffsetMs = AtomicLong()
+        handler.currentTimeMs = { System.currentTimeMillis() + clockOffsetMs.get() }
         val previousExtractorFactory = enhancedTreeExtractorFactory
         val extractor = mockk<EnhancedTreeExtractor>()
-        every { extractor.extractAllProblemsWithStatus(any()) } returns
-            ProblemExtractionResult(emptyList(), succeeded = false, source = ProblemExtractionSource.NONE)
+        every { extractor.extractAllProblemsWithStatus(any()) } answers {
+            if (expireDuringExtraction) clockOffsetMs.compareAndSet(0, InspectionCaptureTiming(0, 0).deadlineMs)
+            ProblemExtractionResult(emptyList(), succeeded = extractionSucceeded, source = ProblemExtractionSource.NONE)
+        }
         enhancedTreeExtractorFactory = { extractor }
         try {
             val trigger = request(
