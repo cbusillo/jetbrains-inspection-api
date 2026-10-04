@@ -3029,7 +3029,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
     }
 
     @Test
-    fun `test extractProjectQueryParameter prefers stable selectors over project`() {
+    fun `test project selector prefers stable selectors over project`() {
         every { mockProject.basePath } returns "/tmp/project"
         every { mockProject.projectFilePath } returns "/tmp/project/.idea/misc.xml"
         mockInspectionPrerequisites(mockProject)

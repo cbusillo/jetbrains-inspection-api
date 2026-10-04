@@ -182,7 +182,7 @@ private data class RunnableExactFileProofObligation<T, W>(
     val batchWrapper: W,
 )
 
-private class ExactFileProofExecutionState<T, W, D>(
+private class ExactFileProofExecutionState<T, W>(
     val obligation: RunnableExactFileProofObligation<T, W>,
 ) {
     var executionWrapper: W? = null
@@ -497,7 +497,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         runnable += RunnableExactFileProofObligation(candidate, sourceWrapper, batchWrapper)
     }
 
-    val executionStates = runnable.map { obligation -> ExactFileProofExecutionState<T, W, D>(obligation) }
+    val executionStates = runnable.map { obligation -> ExactFileProofExecutionState(obligation) }
     val deadlineTriggered = AtomicBoolean(false)
     val writePreempted = AtomicBoolean(false)
     val externalCancellation = AtomicReference<RuntimeException?>()
@@ -545,7 +545,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         return null
     }
 
-    fun executeState(state: ExactFileProofExecutionState<T, W, D>): Boolean {
+    fun executeState(state: ExactFileProofExecutionState<T, W>): Boolean {
         val obligation = state.obligation
         var stage = "wrapper_copy"
         var executionWrapper: W? = null
@@ -659,7 +659,7 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             !writePreempted.get()
     }
 
-    fun executeFile(states: List<ExactFileProofExecutionState<T, W, D>>) {
+    fun executeFile(states: List<ExactFileProofExecutionState<T, W>>) {
         for (state in states) {
             if (writePreempted.get()) break
             if (!executeState(state)) break

@@ -1,6 +1,5 @@
 package com.shiny.inspectionmcp
 
-import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -31,13 +30,10 @@ import com.intellij.openapi.util.ThrowableComputable
 import com.intellij.psi.PsiDocumentManager
 import com.intellij.psi.PsiFile
 import com.intellij.psi.util.PsiModificationTracker
-import io.netty.handler.codec.http.QueryStringDecoder
-import io.netty.handler.codec.http.FullHttpRequest
 import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.buffer.Unpooled
-import io.netty.channel.ChannelHandlerContext
 import org.jdom.Element
 import org.jetbrains.concurrency.Promise
 import org.jetbrains.concurrency.resolvedPromise
@@ -75,7 +71,7 @@ internal abstract class InspectionHandlerTestSupport {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
-        val skippedWaitMs = java.util.concurrent.atomic.AtomicLong()
+        val skippedWaitMs = AtomicLong()
         handler.waitPollSleep = { pollMs -> skippedWaitMs.addAndGet(pollMs) }
         handler.currentTimeMs = { System.currentTimeMillis() + skippedWaitMs.get() }
         handler.trustProjectPath = {}

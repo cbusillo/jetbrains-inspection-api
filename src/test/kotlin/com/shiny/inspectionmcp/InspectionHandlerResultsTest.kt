@@ -1884,13 +1884,13 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         mockkStatic(LocalFileSystem::class)
         every { LocalFileSystem.getInstance() } returns localFileSystem
         every { localFileSystem.findFileByPath(any()) } returns null
-        val fileEditorManager = mockk<com.intellij.openapi.fileEditor.FileEditorManager>()
-        mockkStatic(com.intellij.openapi.fileEditor.FileEditorManager::class)
-        every { com.intellij.openapi.fileEditor.FileEditorManager.getInstance(mockProject) } returns fileEditorManager
+        val fileEditorManager = mockk<FileEditorManager>()
+        mockkStatic(FileEditorManager::class)
+        every { FileEditorManager.getInstance(mockProject) } returns fileEditorManager
         every { fileEditorManager.selectedFiles } returns emptyArray()
-        val projectFileIndex = mockk<com.intellij.openapi.roots.ProjectFileIndex>()
-        mockkStatic(com.intellij.openapi.roots.ProjectFileIndex::class)
-        every { com.intellij.openapi.roots.ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
+        val projectFileIndex = mockk<ProjectFileIndex>()
+        mockkStatic(ProjectFileIndex::class)
+        every { ProjectFileIndex.getInstance(mockProject) } returns projectFileIndex
 
         listOf(
             "/api/inspection/problems?scope=files&file=src/Missing.kt" to "files",
