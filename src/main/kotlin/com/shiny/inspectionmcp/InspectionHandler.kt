@@ -7545,25 +7545,6 @@ class InspectionHandler : HttpRequestHandler() {
 
                         val effectiveObservedNonEmptyInspectionTree = false
                         val finalObservedResultEvidence = resultSettlingEvidence(bestResults, settlingScopedProofFindings)
-                        if (
-                            !observedStableEmptyResultsWithoutInspectionView &&
-                            shouldTrustStableScopedEmptyResults(
-                                hasExecutionProofCleanEvidence = executionProofClean,
-                                executionProofMode = executionProofMode,
-                                modelVerdict = modelVerdict,
-                                hasScopedMatcher = scopeProblemMatcher != null,
-                                hasModelCleanEvidence = modelExtractionClean,
-                                extractionSucceeded = lastExtractionCycleSucceeded,
-                                scopedContextResultsEmpty = scopedContextResults.isEmpty(),
-                                bestResultsEmpty = finalObservedResultEvidence.isEmpty,
-                                observedNonEmptyInspectionTree = effectiveObservedNonEmptyInspectionTree,
-                                stableForMs = currentTimeMs() - lastChangeMs,
-                                pollingElapsedMs = captureTiming.pollingElapsedMs(currentTimeMs()),
-                                minPollingMs = settlingWindow.minCleanPollingMs,
-                            )
-                        ) {
-                            observedStableEmptyResultsWithoutInspectionView = true
-                        }
                         val finalStableForMs = currentTimeMs() - lastChangeMs
                         val finalPollingElapsedMs = captureTiming.pollingElapsedMs(currentTimeMs())
                         if (

@@ -631,6 +631,12 @@ proof time cannot substitute for the clean-result observation window or extend
 the total capture budget. Run these with `InspectionHandlerRunTest` for terminal
 outcome and frozen diagnostic coverage.
 
+`CaptureLoopExtractionPlatformTest` also covers an extraction that crosses the
+capture deadline using the handler's clock. The stable-empty observation remains
+false when polling never observed its settling window, while completed native
+proof plus a clean context model still confirms GREEN. The run retains its
+deadline exit and timed-out terminal outcome.
+
 These controls prove cooperative cancellation, not a forced stop of an arbitrary
 third-party inspection. For a real recurrence, preserve the exact scope/revision,
 `inspection_run_id`, `inspection_failure_diagnostic`, stage history, and owned
