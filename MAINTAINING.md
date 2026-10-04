@@ -13,11 +13,42 @@ production changes, or restarting another worker's active IDE session. Follow
 
 ## Local plugin rollout
 
-Do not use `scripts/test-automated.sh` for a shared IDE rollout: its current
-installer force-stops matching IDE processes, removes the plugin directory,
-and selects the newest local zip without rollback or provenance checks. Use the
-bounded, backed-up procedure below; the script hazards are recorded with
-[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+The default `scripts/test-automated.sh` inspects a local test project without
+installing or restarting. Within a separately authorized maintenance window,
+its explicit installer stages a verified exact-SHA archive, resolves the exact
+app/config pair from the bundle's data-directory selector (including Community editions), waits for helper quiescence,
+checks all visible target projects, refuses outstanding helper leases on the running target, and requests bounded normal quit. A cancelled
+quit or unresolved/unsaved-document modal aborts the operation; an ordinary exit
+confirmation can be handled through the IDE's normal quit UI. It never force-kills
+or discards documents.
+
+```bash
+./scripts/test-automated.sh --install \
+  --helper "$HELPER" --repo "$EXACT_SOURCE_WORKTREE" \
+  --archive "$EXACT_ARCHIVE" --source-sha "$LANDING_SHA" \
+  --ide-app "$EXACT_APP_BUNDLE" --artifact-root "$EXISTING_EVIDENCE_ROOT" \
+  --maintenance-window
+```
+
+The source checkout must be clean at the full SHA embedded in the archive.
+On Chris-Studio, `--repo` must name a host-created `work/*` linked worktree
+whose HEAD is published to origin; a primary checkout or unpublished task refuses
+installation. Push the source first, or use the supported manual procedure.
+`--maintenance-window` records that every helper, MCP and HTTP caller of this
+IDE has been paused for the whole operation; process checks alone cannot prove
+that coordination. The automated resolver supports the bundle's standard config path. For a
+custom `idea.config.path`, use the manual procedure below with the verified
+actual installed path. Stage builds separately using the Java 21 override described
+in TESTING.md. The installer uses the maintained helper's lifecycle and outcome
+routing locks, preserves the prior payload and complete byte manifests, and
+swaps only this plugin directory. A replacement failure restores the entire
+prior file set while stopped, including removal of candidate-only files by moving
+the failed directory aside. If the IDE restarts during replacement, both payloads
+remain and restoration waits for another stopped maintenance window. The receipt
+names the rollback and retained staging paths and marks runtime acceptance
+pending; complete the fingerprint/smoke checks below. An initially stopped IDE
+stays stopped; only an IDE this operation quit is relaunched. No installed state is
+accepted solely from an installation receipt.
 
 1. Resolve the PR's final merge SHA, then create a host-approved linked worktree
    at that exact commit. Its tracked and untracked state must be clean. Resolve
@@ -114,17 +145,15 @@ bounded, backed-up procedure below; the script hazards are recorded with
    unproven. Also check each smoke's retained native helper payload: read
    `.payload.route.ide.plugin_build_fingerprint` (or the retained
    `.payload.inspection_attribution.plugin_build_fingerprint` when present),
-   requiring available identity fields to agree. The current smoke wrapper's
-   `.identity.plugin_fingerprint` summary field is wrong and can be null; its
-   correction is tracked in #443. Do not use that summary as fingerprint proof. Run the product-specific
+   requiring available identity fields to agree. The smoke wrapper reports the native
+   `.identity.plugin_build_fingerprint`; require it to agree with the payload. Run the product-specific
    [red-lane dogfood](TESTING.md#red-lane-dogfood) once per target IDE, using an
    approved/trusted `SMOKE_ROOT`, an explicit `--helper "$HELPER"` selecting the
-   maintained skill, `--work-root`, `--keep-project`, and a separate
+   maintained skill, `--keep-project` (and `--work-root` on portable hosts), and a separate
    JSON evidence file for each product. Require the intended fingerprint,
    actionable `RED` with `agent_result.bucket=actionable_findings`, positive
    findings, exact fixture route, helper exit code at most 1, and cleanup `closed`.
-   Preserve a fixture and its lease if cleanup is unresolved; the smoke script's
-   legacy deletion behavior is tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+   Preserve a fixture and its lease if cleanup is unresolved; the smoke runner preserves unresolved projects and diagnostic evidence.
    A wrong runtime fingerprint or a decisive smoke regression fails rollout
    verification. By default, roll back every IDE targeted by that candidate,
    restoring the previously verified rollout set. Repeat step 3's quiescence
@@ -144,9 +173,20 @@ bounded, backed-up procedure below; the script hazards are recorded with
    Preserve the first result and any internal attempts. Do not add an
    outer retry loop or retry a terminal result. A terminal `UNKNOWN` or unresolved
    cleanup remains unproven acceptance, not a regression or a pass. After
-   acceptance evidence is retained and cleanup is proven closed, remove only
-   that run's owned fixture copy under the host's artifact-cleanup policy; keep
-   unresolved copies and leases.
+   acceptance evidence is retained and cleanup is proven closed, retire only
+   that run's owned worktree through `scripts/smoke-worktree.py retire`, using
+   its retained `worktree.json` receipt and native `payload.json`, `--helper`
+   and `--out` for the retirement result. The script retains dirty or unknown files, preserves known generated files
+   in the run evidence, and delegates SDK retirement/removal to the maintained helper;
+   mutations or unresolved leases keep the project and registration intact.
+   Declared successful preparation `.venv` state and known IDE project-model files
+   are archived and byte-verified first; private or unknown files remain holds.
+   On Chris-Studio the host retirement dry-run also requires a published HEAD and
+   no foreign working directory; it may conservatively retain an archived build
+   directory the host does not classify. Push source first or use `--keep-project`
+   / `--keep-worktrees` when that prerequisite cannot be satisfied.
+   On portable hosts, copy the retained evidence to durable storage before the
+   temporary directory is purged; the printed evidence path contains the receipt.
 8. Give the rollback directory a `.retain-until` review date about a week out,
    and use the owner's existing deployment-retention sweep after installation.
    That host workflow is not implemented by this repository. If it is unavailable,
@@ -205,3 +245,29 @@ retain their provenance, and distinguish trial evidence from landed-build data.
   not prove a preexisting alert is fixed. After merge, inspect the default-branch
   analysis for the exact landing and read the current alert state before closing
   the defect.
+
+## Smoke trust retirement
+
+Trust seeding persists beyond a smoke run. Leave shared trusted roots in place.
+For an empty **dedicated smoke parent** after all projects have been retired,
+preview removal of its exact Trusted Location and project-trust entries:
+
+```bash
+uv run scripts/retire-smoke-trust.py --helper "$HELPER" \
+  --ide-app "$EXACT_APP_BUNDLE" --smoke-root "$DEDICATED_SMOKE_PARENT"
+```
+
+For apply, pause all inspection clients and quit that exact IDE normally first,
+then add `--apply --maintenance-window --artifact-root "$EXISTING_EVIDENCE_ROOT"`.
+The command holds the maintained lifecycle/outcome locks, refuses outstanding
+leases, verifies the app is stopped and the dedicated root empty, backs up the
+settings, and removes only matching trust entries. Other roots and IDE opening
+preferences remain intact. It does not quit an IDE or grant trust. The backup
+path is returned; restore it only in another stopped maintenance window after
+checking that newer settings would be preserved. This exit path does not require
+editing or weakening the global helper trust policy.
+
+If installation fails after normal quit, leave the IDE stopped until the preserved
+prior/candidate state and receipt are reconciled; relaunch is automatic only on
+success. Staging directories carry the same retention-review date as the external
+rollback evidence. A retention date never authorizes deletion by itself.

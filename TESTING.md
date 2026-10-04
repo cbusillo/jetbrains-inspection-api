@@ -49,18 +49,16 @@ For local plugin rollout, rollback, and diagnosis techniques, see
 
 ## Automated IDE smoke test
 
-`./scripts/test-automated.sh` can install the plugin into a local IDE,
-start it with a test project, and hit a few API endpoints. Its current installer
-force-stops matching IDE processes and replaces the plugin without rollback or
-exact-build provenance checks. Do not use it for a shared IDE rollout; use the
-[maintainer procedure](MAINTAINING.md#local-plugin-rollout). The script hazards
-are recorded with [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
+`./scripts/test-automated.sh` runs the maintained helper against the configured
+local test project. It does not build, install or restart by default. For an
+explicitly authorized installation, see the exact-archive `--install` command in
+[Local plugin rollout](MAINTAINING.md#local-plugin-rollout).
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
-- The smoke verifies that the live IDE reports the version from
-  `gradle.properties`, selects one tracked source file, and runs `scope=files`
-  so a zero-finding result requires bounded execution proof. It does not use an
-  empty `whole_project` result as clean evidence.
+- Pass explicit helper selectors such as `--scope files --file src/example.py` for
+  a bounded source-file assessment. With no selectors, the helper owns scope and
+  route resolution. Installed version and exact build provenance are verified
+  separately through the maintainer rollout acceptance procedure.
 
 ### Installed-plugin smoke expectation
 
@@ -297,50 +295,65 @@ visible. A warm IDE red-lane run should normally be
 but must still end in a trustworthy RED with cleanup `closed`.
 
 ```bash
-SMOKE_ROOT="/path/to/host-approved/artifacts/red-lane-smoke"
+# On portable hosts, add --work-root /path/to/approved/smoke-parent.
+# Chris-Studio uses dev-worktree; omit the parent override.
 ./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
+  --helper "$HELPER" --keep-project \
   --product intellij \
   --ide "IntelliJ IDEA" \
   --ide-app "IntelliJ IDEA" \
   --json-out tmp/dogfood-red-lane.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
+  --helper "$HELPER" --keep-project \
   --product pycharm \
   --ide "PyCharm" \
   --ide-app "PyCharm" \
   --json-out tmp/dogfood-red-lane-pycharm.json
 
 ./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
+  --helper "$HELPER" --keep-project \
   --product webstorm \
   --ide "WebStorm" \
   --ide-app "WebStorm" \
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
-Set `HELPER` to the maintained skill path as above and `SMOKE_ROOT` to the
-host-approved artifact root (on Chris-Studio, under Developer-Artifacts).
-Keep the copied project until IDE cleanup is confirmed; the script's legacy
-default and unconditional deletion are tracked in
-[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
-The artifact root must also be trusted by the helper. For a dedicated smoke
-directory outside configured trusted roots, set
-`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$SMOKE_ROOT"` for the smoke
-command. After retaining the evidence and confirming cleanup `closed`, remove
-only that run's copied project; preserve unresolved copies and their leases.
-The script generates copy names, so this dedicated parent root is intentional;
-the helper also adds it to the IDE's persistent Trusted Locations.
+Set `HELPER` to the maintained skill path as above.
+The smoke checks out a linked worktree and opens only the selected fixture
+subproject. On Chris-Studio, omit `--work-root`: `dev-worktree` validates the
+Developer-Artifacts volume and chooses the canonical worktree path. Portable
+hosts must pass their approved parent with `--work-root`. Source helper lookup
+uses `codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py`; it never
+silently falls back to another installed revision. Set `JB_INSPECT_HELPER` or
+pass `--helper` to select a different maintained installation explicitly.
+
+The report records the exact project, worktree, helper command, evidence directory,
+native `plugin_build_fingerprint`, and `worktree_retirement`. Without
+`--keep-project`, retirement requires cleanup `closed`, the original branch/head,
+and an unchanged tracked/untracked state, verified preservation of known generated
+IDE/build state outside the project, and no unknown ignored changes, followed
+by the maintained helper's live SDK preview and apply. Unresolved lifecycle or
+SDK cleanup, dirty projects and interrupted runs preserve the worktree and
+registration. There is no force removal or directory-deletion fallback.
+Evidence remains outside the project; Chris-Studio evidence goes under
+Developer-Artifacts/task-evidence after validated worktree creation.
+
+For a dedicated smoke parent outside configured trusted roots, set
+`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that parent for the command.
+The helper persists that root in the selected IDE's Trusted Locations. After
+retiring every project, an empty dedicated parent can be removed from a normally
+stopped IDE's trust configuration using the preview/apply command in
+[Smoke trust retirement](MAINTAINING.md#smoke-trust-retirement). Leave shared
+trusted worktree roots in place.
 
 Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed
 application name even when channel and version selectors identify an EAP line.
 
-This is a live IDE smoke, not a normal CI unit test. The red-lane smoke-script contract remains local-only
-under `./scripts/test-all.sh` because the contract
-invokes the developer-facing helper through `uv run`, which is not part of the
-required CI toolchain. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
+This is a live IDE smoke, not a normal CI unit test. The red-lane/matrix shell contracts and Python lifecycle/installer tests run
+in CI using pinned uv setup; they also run under `./scripts/test-all.sh`.
+They stub live IDE operations and never install or restart an IDE. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
 and checks the IntelliJ, PyCharm, and WebStorm fixture contracts without
 requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change.
 
@@ -421,17 +434,18 @@ validation.
 `~/Developer/mediaforce` when present, and runs both preexisting-project and
 helper-opened worktree cases.
 
-The matrix's legacy creation/cleanup flow is tracked in
-[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443). Until
-that is fixed, use the manual [helper lifecycle smoke](TESTING_INSTRUCTIONS.md#helper-lifecycle-smoke)
-on a worktree created by the host-approved helper, preserving any unresolved
-IDE lease or dirty worktree. On Chris-Studio, task/review worktrees belong under
-`/Volumes/Developer-Artifacts/worktrees/<repo>/<task-slug>`.
+Helper-opened worktrees use `dev-worktree` on Chris-Studio and its validated
+Developer-Artifacts volume. Portable hosts pass an explicit `--worktree-root`.
+Each run prints its retained evidence directory. Cleanup checks the original
+branch/head and tracked/untracked state and archives byte-verified generated IDE/build state
+outside the worktree before delegating live SDK preview/apply
+and non-force removal to the maintained helper. Interrupted, changed or
+lifecycle-busy worktrees remain registered with their evidence.
 
 The preexisting case uses `--no-open` and expects cleanup `not_needed`; if the
 project is not already open it is reported as a skipped preexisting row. The
-legacy helper-opened case creates a disposable linked worktree under
-`~/.code/working/jetbrains-inspection-api/dogfood-smoke`, expects
+helper-opened case creates a disposable linked worktree through the approved
+host flow, expects
 `opened_by_helper=true`, and expects cleanup `closed`. Each row records the IDE
 identity, plugin version, cleanup status, result bucket, helper `agent_result`
 bucket/retry decision, and the issue bucket to check for failures such as

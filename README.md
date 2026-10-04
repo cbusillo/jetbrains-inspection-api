@@ -913,16 +913,18 @@ alone.
 
 ### Automated IDE Testing
 ```bash
-# Run complete automated test cycle
+# Run an inspection of the configured test project (no installation)
 ./scripts/test-automated.sh
 ```
 
-After reading `AGENTS.local.md`, the script builds the plugin, unconditionally
-stops processes whose command line matches `IDE_TYPE` (force-killing survivors
-after five seconds), installs it, opens the test project, and checks API
-reachability, plugin version, and one source-file inspection. It has no
-confirmation prompt or `--yes` option. Save your work before running it; this
-local install/lifecycle smoke changes the installed plugin and running IDE state.
+For an authorized shared IDE installation, use [Local plugin rollout](MAINTAINING.md#local-plugin-rollout). The explicit installer requires an exact clean source archive, an exact app bundle and a coordinated maintenance window.
+
+The default reads the exact project and IDE selectors from `AGENTS.local.md`
+and delegates lifecycle inspection, verdicts and bounded retry policy to the
+maintained helper. Pass its CLI selectors directly when no local file exists.
+The explicit `--install` entry point uses the exact archive/source/app and
+preserved rollback manifests described in MAINTAINING.md; it requires a
+separately authorized coordinated window and does not claim runtime acceptance.
 
 ### Unit Tests
 ```bash

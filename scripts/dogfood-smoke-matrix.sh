@@ -5,14 +5,8 @@ set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 1
 
-DEFAULT_HELPER_DEV="$HOME/Developer/codex-skills/jetbrains-inspection/scripts/jb-inspect.py"
-DEFAULT_HELPER_HOME="${CODE_HOME:-${CODEX_HOME:-$HOME/.code}}/skills/jetbrains-inspection/scripts/jb-inspect.py"
-
-if [ -x "$DEFAULT_HELPER_DEV" ]; then
-	HELPER="$DEFAULT_HELPER_DEV"
-else
-	HELPER="$DEFAULT_HELPER_HOME"
-fi
+HELPER="${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}"
+WORKTREE_TOOL="$ROOT/scripts/smoke-worktree.py"
 
 CASE_FILTER="all"
 SCOPE="changed_files"
@@ -42,7 +36,7 @@ Options:
   --scope SCOPE              Helper readiness inspection scope. Default: changed_files.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
-  --worktree-root PATH       Parent directory for disposable worktrees.
+  --worktree-root PATH       Portable hosts: explicit worktree parent; omit on Chris-Studio.
   --json-out PATH            Write the full JSON report to PATH.
   --keep-worktrees           Leave helper-opened worktrees on disk.
   --dry-run                  Print rows without running the helper.
@@ -174,33 +168,17 @@ if [ ${#IDES[@]} -eq 0 ]; then
 	IDES+=("IntelliJ IDEA" "PyCharm" "WebStorm")
 fi
 
-if [ -z "$WORKTREE_ROOT" ]; then
-	WORKTREE_ROOT="$HOME/.code/working/jetbrains-inspection-api/dogfood-smoke"
-fi
-
 if [ ! -x "$HELPER" ]; then
 	die "helper is not executable: $HELPER"
 fi
 
 TMP_DIR=$(mktemp -d)
+echo "Retained smoke evidence: $TMP_DIR" >&2
 ROW_INDEX=0
-CREATED_WORKTREE_REPOS=()
-CREATED_WORKTREE_PATHS=()
 LAST_WORKTREE=""
 
-# shellcheck disable=SC2329
-cleanup() {
-	if [ "$KEEP_WORKTREES" -eq 0 ]; then
-		local index repo worktree
-		for index in "${!CREATED_WORKTREE_PATHS[@]}"; do
-			repo=${CREATED_WORKTREE_REPOS[$index]}
-			worktree=${CREATED_WORKTREE_PATHS[$index]}
-			git -C "$repo" worktree remove --force "$worktree" >/dev/null 2>&1 || rm -rf "$worktree"
-		done
-	fi
-	rm -rf "$TMP_DIR"
-}
-trap cleanup EXIT
+# Interruption or an incomplete response leaves every created project intact.
+trap 'echo "Smoke evidence retained: $TMP_DIR" >&2' EXIT
 
 write_row() {
 	cat >"$TMP_DIR/row-$(date +%s)-$RANDOM-$RANDOM.json"
@@ -282,6 +260,10 @@ classify_payload() {
 		return
 	fi
 
+	if [ "$scenario" = "helper-opened" ] && jq -e '.worktree_retirement.status == "retained"' "$payload" >/dev/null; then
+		echo "cleanup_project_retained"
+		return
+	fi
 	if [ "$scenario" = "helper-opened" ] && [ "$cleanup_status" != "closed" ]; then
 		echo "cleanup_expected_closed"
 		return
@@ -330,13 +312,8 @@ build_row() {
 	local issue
 	issue=$(issue_for_bucket "$bucket")
 
-	local command_payload payload_json raw_payload stderr_payload
+	local command_payload raw_payload stderr_payload
 	command_payload=$(cat "$command")
-	if [ "$valid_json" = "true" ]; then
-		payload_json=$(cat "$payload_file")
-	else
-		payload_json='{}'
-	fi
 	raw_payload=$(head -c 4000 "$raw_file" 2>/dev/null || true)
 	stderr_payload=$(head -c 4000 "$stderr_file" 2>/dev/null || true)
 
@@ -350,10 +327,12 @@ build_row() {
 		--arg issue "$issue" \
 		--argjson exit_code "$exit_code" \
 		--argjson command "$command_payload" \
-		--argjson payload "$payload_json" \
+		--slurpfile payloads "$payload_file" \
+		--argjson valid_json "$valid_json" \
 		--arg raw_output "$raw_payload" \
 		--arg stderr "$stderr_payload" \
 		--arg worktree_path "$worktree_path" '
+      (if $valid_json then $payloads[0] else {} end) as $payload |
       def route:
         $payload.route
         // $payload.wait.route
@@ -392,7 +371,9 @@ build_row() {
           // $payload.wait.capture_diagnostic.exit_reason
           // null
         ),
+        plugin_build_fingerprint: (identity.plugin_build_fingerprint // null),
         cleanup: ($payload.cleanup // null),
+        worktree_retirement: ($payload.worktree_retirement // null),
         open_attempts: open_attempts,
         open_attempt_count: (open_attempts | length),
         open_methods: (open_attempts | map(.method) | unique),
@@ -417,6 +398,7 @@ build_row() {
           product_code: (identity.product_code // null),
           version: (identity.version // null),
           plugin_version: (identity.plugin_version // null),
+          plugin_build_fingerprint: (identity.plugin_build_fingerprint // null),
           pid: (identity.pid // null)
         },
         command: $command,
@@ -430,15 +412,21 @@ make_worktree() {
 	local source_repo=$1
 	local label=$2
 	local ide=$3
-	local parent
-	parent=$(abs_path "$WORKTREE_ROOT") || return 1
-	mkdir -p "$parent"
-	local worktree
-	worktree="$parent/$(slugify "$label")-$(slugify "$ide")-$(date +%Y%m%d%H%M%S)-$$"
-	git -C "$source_repo" worktree add --detach "$worktree" HEAD >/dev/null 2>&1 || return 1
-	CREATED_WORKTREE_REPOS+=("$source_repo")
-	CREATED_WORKTREE_PATHS+=("$worktree")
+	local slug receipt worktree
+	slug="smoke-$(slugify "$label")-$(slugify "$ide")-$(date +%Y%m%d%H%M%S)-$$-$ROW_INDEX"
+	receipt="$TMP_DIR/worktree-$ROW_INDEX.json"
+	local cmd=(uv run "$WORKTREE_TOOL" create --source "$source_repo" --slug "$slug" --receipt "$receipt")
+	[ -z "$WORKTREE_ROOT" ] || cmd+=(--parent "$WORKTREE_ROOT")
+	worktree=$("${cmd[@]}") || return 1
 	LAST_WORKTREE=$worktree
+	if [[ "$worktree" == /Volumes/Developer-Artifacts/worktrees/* ]] && [[ "$TMP_DIR" != /Volumes/Developer-Artifacts/* ]]; then
+		local evidence_parent="/Volumes/Developer-Artifacts/task-evidence/jetbrains-inspection-api/smoke"
+		mkdir -p "$evidence_parent"
+		local evidence
+		evidence="$evidence_parent/$(basename "$worktree")"
+		mv "$TMP_DIR" "$evidence"
+		TMP_DIR=$evidence
+	fi
 }
 
 write_static_row() {
@@ -461,7 +449,7 @@ write_static_row() {
 		'{status:"error", error:$message, error_message:$message, error_reason:$bucket}' >"$payload_file"
 	: >"$raw_file"
 	: >"$stderr_file"
-	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" 2 "$bucket" "$cmd_file" "$payload_file" true "$raw_file" "$stderr_file" "" | write_row
+	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" 2 "$bucket" "$cmd_file" "$payload_file" true "$raw_file" "$stderr_file" "" | write_row || exit 2
 	ROW_INDEX=$((ROW_INDEX + 1))
 }
 
@@ -515,7 +503,7 @@ run_case() {
 	else
 		"${cmd[@]}" >"$raw_file" 2>"$stderr_file"
 		exit_code=$?
-		if jq empty "$raw_file" >/dev/null 2>&1; then
+		if jq -se 'length == 1 and (.[0] | type == "object")' "$raw_file" >/dev/null 2>&1; then
 			cp "$raw_file" "$payload_file"
 		else
 			valid_json=false
@@ -523,9 +511,21 @@ run_case() {
 		fi
 	fi
 
+	if [ -n "$worktree_path" ] && [ "$DRY_RUN" -eq 0 ] && [ "$KEEP_WORKTREES" -eq 0 ]; then
+		uv run "$WORKTREE_TOOL" retire --receipt "$TMP_DIR/worktree-$ROW_INDEX.json" --payload "$payload_file" --helper "$HELPER" --out "$TMP_DIR/retirement-$ROW_INDEX.json" >&2 || true
+		local retirement_file="$TMP_DIR/retirement-$ROW_INDEX.json"
+		if ! jq -e 'type == "object" and (.status == "removed" or .status == "retained")' "$retirement_file" >/dev/null 2>&1; then
+			printf '%s\n' '{"status":"retained","reason":"retirement_result_unproven"}' >"$retirement_file"
+		fi
+		if jq --slurpfile retirement "$retirement_file" '. + {worktree_retirement: $retirement[0]}' "$payload_file" >"$payload_file.updated"; then
+			mv "$payload_file.updated" "$payload_file" || exit 2
+		else
+			exit 2
+		fi
+	fi
 	local bucket
 	bucket=$(classify_payload "$scenario" "$exit_code" "$payload_file" "$valid_json")
-	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" "$exit_code" "$bucket" "$cmd_file" "$payload_file" "$valid_json" "$raw_file" "$stderr_file" "$worktree_path" | write_row
+	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" "$exit_code" "$bucket" "$cmd_file" "$payload_file" "$valid_json" "$raw_file" "$stderr_file" "$worktree_path" | write_row || exit 2
 	ROW_INDEX=$((ROW_INDEX + 1))
 }
 
@@ -550,16 +550,16 @@ done
 
 ROWS_FILE="$TMP_DIR/rows.json"
 if compgen -G "$TMP_DIR/row-*.json" >/dev/null; then
-	jq -s '.' "$TMP_DIR"/row-*.json >"$ROWS_FILE"
+	jq -s '.' "$TMP_DIR"/row-*.json >"$ROWS_FILE" || exit 2
 else
-	echo '[]' >"$ROWS_FILE"
+	echo '[]' >"$ROWS_FILE" || exit 2
 fi
 
 STATUS=$(jq -r '
   def pass_bucket:
     . == "clean" or . == "dry_run" or . == "skipped_preexisting_not_open";
   if any(.[]; (.bucket | pass_bucket | not)) then "failed" else "ok" end
-' "$ROWS_FILE")
+' "$ROWS_FILE") || exit 2
 
 REPORT=$(
 	jq -n \
@@ -592,7 +592,7 @@ REPORT=$(
       },
       rows: $rows[0]
     }'
-)
+) || exit 2
 
 printf '%s\n' "$REPORT" | jq -r '
   "status=\(.status) rows=\(.summary.rows)",
@@ -600,8 +600,8 @@ printf '%s\n' "$REPORT" | jq -r '
 '
 
 if [ -n "$JSON_OUT" ]; then
-	mkdir -p "$(dirname "$JSON_OUT")"
-	printf '%s\n' "$REPORT" >"$JSON_OUT"
+	mkdir -p "$(dirname "$JSON_OUT")" || exit 2
+	printf '%s\n' "$REPORT" >"$JSON_OUT" || exit 2
 	echo "wrote $JSON_OUT" >&2
 fi
 
