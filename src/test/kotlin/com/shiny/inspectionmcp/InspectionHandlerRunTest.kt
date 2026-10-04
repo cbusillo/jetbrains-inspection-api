@@ -2656,8 +2656,9 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
     fun `test inspection refreshes only the selected project root`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
-        every { mockApplication.isDispatchThread } returns true
+        every { mockApplication.isDispatchThread } returns false
         mockInspectionPrerequisites(mockProject)
+        every { mockApplication.invokeAndWait(any<Runnable>()) } answers { firstArg<Runnable>().run() }
         val refreshedProjectRoots = mutableListOf<String>()
         handler.refreshProjectRoot = { path -> refreshedProjectRoots += path }
         val method = InspectionHandler::class.java.getDeclaredMethod("syncProjectState", Project::class.java)
@@ -2666,6 +2667,41 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         method.invoke(handler, mockProject)
 
         assertEquals(listOf("/tmp/TestProject"), refreshedProjectRoots)
+    }
+
+    @Test
+    fun `test inspection saves settings outside event thread before refreshing PSI`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        var onEventThread = false
+        val events = mutableListOf<String>()
+        every { mockApplication.isDispatchThread } answers { onEventThread }
+        mockInspectionPrerequisites(mockProject)
+        every { mockApplication.invokeAndWait(any<Runnable>()) } answers {
+            onEventThread = true
+            try {
+                firstArg<Runnable>().run()
+            } finally {
+                onEventThread = false
+            }
+        }
+        every { FileDocumentManager.getInstance().saveAllDocuments() } answers {
+            assertTrue(onEventThread)
+            events += "documents_saved"
+        }
+        every { mockProject.save() } answers {
+            assertFalse(onEventThread, "Saving settings on the event thread can block lifecycle opens behind modal progress")
+            events += "settings_saved"
+        }
+        handler.refreshProjectRoot = {
+            assertTrue(onEventThread)
+            events += "root_refreshed"
+        }
+        val method = InspectionHandler::class.java.getDeclaredMethod("syncProjectState", Project::class.java)
+        method.isAccessible = true
+
+        method.invoke(handler, mockProject)
+
+        assertEquals(listOf("settings_saved", "documents_saved", "root_refreshed"), events)
     }
 
     @Test

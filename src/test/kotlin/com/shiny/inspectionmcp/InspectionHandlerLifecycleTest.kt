@@ -33,6 +33,8 @@ import org.jetbrains.concurrency.rejectedPromise
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.awt.Dialog
+import java.awt.Window
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
@@ -2150,6 +2152,48 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"probe\": true"))
         assertTrue(body.contains("\"opening_scheduled\": false"))
         verify(exactly = 0) { mockApplication.invokeLater(any()) }
+    }
+
+    @Test
+    fun `test queued lifecycle open reports visible modals without exposing dialog text`() {
+        val tempDir = Files.createTempDirectory("inspection-open-modal")
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val dialog = mockk<Dialog>()
+        every { dialog.isShowing } returns true
+        every { dialog.isModal } returns true
+        mockkStatic(Window::class)
+        try {
+            every { Window.getWindows() } returns arrayOf(dialog)
+            val cases = mapOf(
+                "Trust Project /private/worktree" to "project_trust_dialog",
+                "Invalid Python SDK /private/interpreter" to "invalid_python_sdk_dialog",
+                "Cannot Load Project /private/missing" to "cannot_load_project_dialog",
+                "Saving Project /private/worktree" to "project_settings_save_dialog",
+                "Private dialog contents" to "modal_dialog",
+            )
+            processGetRequest(lifecycleOpenUri(tempDir))
+            for ((title, reason) in cases) {
+                every { dialog.title } returns title
+                val response = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+                val body = response.content().toString(Charsets.UTF_8)
+
+                assertEquals(HttpResponseStatus.OK, response.status())
+                assertTrue(body.contains("\"reason\": \"$reason\""), body)
+                assertTrue(body.contains("\"phase\": \"scheduled\""), body)
+                assertFalse(body.contains(title), body)
+            }
+            every { dialog.isShowing } returns false
+            val hiddenBody = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+                .content().toString(Charsets.UTF_8)
+            assertTrue(hiddenBody.contains("\"reason\": \"already_opening\""), hiddenBody)
+            every { dialog.isShowing } returns true
+            every { dialog.isModal } returns false
+            val nonModalBody = processGetRequest(lifecycleOpenUri(tempDir, probe = true))
+                .content().toString(Charsets.UTF_8)
+            assertTrue(nonModalBody.contains("\"reason\": \"already_opening\""), nonModalBody)
+        } finally {
+            unmockkStatic(Window::class)
+        }
     }
 
     @Test

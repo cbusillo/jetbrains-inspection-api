@@ -490,6 +490,14 @@ worktrees after readiness inspection.
 Agent-triggered inspections use a non-modal progress indicator. Long-running
 inspection work therefore remains cancellable without blocking lifecycle opens,
 closes, or the IDE built-in HTTP server event loop.
+Project settings are saved on the inspection worker before the event-thread
+document and PSI refresh. Saving settings inside that refresh can create modal
+progress while holding write intent, blocking a concurrent Python project save
+and leaving subsequent worktree opens queued.
+When an open is still queued, lifecycle probes name a visible blocking trust,
+invalid Python SDK, missing-project, or settings-save dialog in `reason`.
+Unrecognized modals report `modal_dialog`; their titles and contents are not
+returned. This observation never dismisses dialogs or grants project ownership.
 
 ### Helper-owned Python SDK retirement
 

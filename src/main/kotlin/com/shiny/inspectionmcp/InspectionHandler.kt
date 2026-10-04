@@ -90,6 +90,8 @@ import org.jdom.Element
 import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
 import java.awt.Container
+import java.awt.Dialog
+import java.awt.Window
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -3770,6 +3772,9 @@ class InspectionHandler : HttpRequestHandler() {
         cleanupLifecycleOpenDiagnostics(nowMs)
         if (lifecycleOpenDiagnosticsByTarget[targetKey] !== diagnostic) return this
         return toMutableMap().apply {
+            if (diagnostic.phase == "scheduled") {
+                lifecycleOpenModalBlocker()?.let { blocker -> put("reason", blocker) }
+            }
             put("lifecycle_open_diagnostic", mapOf(
                 "phase" to diagnostic.phase,
                 "reason" to diagnostic.reason,
@@ -3788,6 +3793,19 @@ class InspectionHandler : HttpRequestHandler() {
             ).filterValues { value -> value != null })
         }
     }
+
+    private fun lifecycleOpenModalBlocker(): String? = runCatching {
+        val dialogs = Window.getWindows().filterIsInstance<Dialog>().filter { it.isShowing && it.isModal }
+        dialogs.firstNotNullOfOrNull { dialog ->
+            when {
+                dialog.title.contains("trust project", ignoreCase = true) -> "project_trust_dialog"
+                dialog.title.contains("invalid python sdk", ignoreCase = true) -> "invalid_python_sdk_dialog"
+                dialog.title.contains("cannot load project", ignoreCase = true) -> "cannot_load_project_dialog"
+                dialog.title.contains("saving", ignoreCase = true) -> "project_settings_save_dialog"
+                else -> null
+            }
+        } ?: "modal_dialog".takeIf { dialogs.isNotEmpty() }
+    }.getOrNull()
 
     private fun cleanupLifecycleOpenDiagnostics(nowMs: Long) {
         val expirationMs = nowMs - lifecycleOpenDiagnosticTtlMs.coerceAtLeast(0)
@@ -8186,9 +8204,9 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun syncProjectState(project: Project) {
         val application = ApplicationManager.getApplication()
+        flushPendingProjectSettings(project)
         val refreshTask = Runnable {
             FileDocumentManager.getInstance().saveAllDocuments()
-            flushPendingProjectSettings(project)
             PsiDocumentManager.getInstance(project).commitAllDocuments()
             val projectRootPath = project.basePath
                 ?: project.projectFilePath?.let(::projectRootFromProjectFilePath)
