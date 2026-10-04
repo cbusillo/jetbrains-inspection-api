@@ -11,6 +11,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -75,28 +76,36 @@ def create(source, slug, parent, manager):
             commit,
         )
         managed = False
-    return {
-        "root": str(root),
-        "source": str(source),
-        "head": commit,
-        "branch": f"work/{slug}",
-        "managed": managed,
-        "manager": str(manager),
-        "root_device": root.stat().st_dev,
-        "root_inode": root.stat().st_ino,
-        "common_git_dir": run(
-            "git",
-            "-C",
-            str(root),
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ),
-        "manifest": manifest(root),
-    }
+    try:
+        return {
+            "root": str(root),
+            "source": str(source),
+            "head": commit,
+            "branch": f"work/{slug}",
+            "managed": managed,
+            "manager": str(manager),
+            "root_device": root.stat().st_dev,
+            "root_inode": root.stat().st_ino,
+            "common_git_dir": run(
+                "git",
+                "-C",
+                str(root),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ),
+            "manifest": manifest(root),
+        }
+
+    except BaseException:
+        print(
+            f"Created worktree retained without a complete receipt: {root}; branch work/{slug}; head {commit}",
+            file=sys.stderr,
+        )
+        raise
 
 
-def generated_path(relative):
+def generated_path(relative, prepared_roots=()):
     parts = Path(relative).parts
     if any(
         part.startswith(".env")
@@ -105,28 +114,63 @@ def generated_path(relative):
         for part in parts
     ):
         return False
+    if any(Path(relative).is_relative_to(path) for path in prepared_roots):
+        return True
     if ".idea" in parts:
         suffix = parts[parts.index(".idea") + 1 :]
-        return not suffix or suffix[0] in {
-            "workspace.xml",
-            "editor.xml",
-            ".name",
-            "kotlinc.xml",
-        }
+        return (
+            not suffix
+            or (len(suffix) == 1 and suffix[0].endswith(".iml"))
+            or suffix[0]
+            in {
+                "workspace.xml",
+                "editor.xml",
+                ".name",
+                "kotlinc.xml",
+                "misc.xml",
+                "modules.xml",
+                "vcs.xml",
+            }
+        )
     return bool(parts) and any(
         part in {".gradle", ".kotlin", "build", "out", ".intellijPlatform"}
         for part in parts
     )
 
 
-def preserve_generated_state(root, before, current, evidence):
+def prepared_generated_roots(payload, root):
+    state = (
+        payload.get("repository_preparation")
+        or payload.get("agent_result", {}).get("repository_preparation")
+        or payload.get("prepared", {}).get("repository_preparation")
+        or {}
+    )
+    if (
+        not isinstance(state, dict)
+        or state.get("configured") is not True
+        or state.get("execution_state") not in {"succeeded", "reused"}
+    ):
+        return []
+    target = state.get("target_worktree")
+    if not isinstance(target, str) or not Path(target).resolve().is_relative_to(
+        root.resolve()
+    ):
+        return []
+    return [
+        (Path(target).resolve() / name).relative_to(root.resolve())
+        for name in state.get("required_generated_state", [])
+        if name == ".venv"
+    ]
+
+
+def preserve_generated_state(root, before, current, evidence, prepared_roots=()):
     changed = [
         name
         for name in set(before) | set(current)
         if before.get(name) != current.get(name)
     ]
     # Unknown ignored data remains in the exact project. Only known generated files can be archived.
-    if any(not generated_path(name) for name in changed):
+    if any(not generated_path(name, prepared_roots) for name in changed):
         return None
     if evidence.resolve().is_relative_to(root.resolve()):
         raise ValueError("Preservation evidence must be outside the project.")
@@ -193,11 +237,21 @@ def retire(receipt, payload, helper, evidence):
     if run("git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"):
         return {"status": "retained", "reason": "project_changed"}
     current = manifest(root)
-    if any(value.get("protected") for value in current.values()):
+    tracked = set(run("git", "-C", str(root), "ls-files", "-z").split("\0"))
+    if any(
+        value.get("protected") and name not in tracked
+        for name, value in current.items()
+    ):
         return {"status": "retained", "reason": "private_configuration"}
     archive = None
     if current != receipt["manifest"]:
-        archive = preserve_generated_state(root, receipt["manifest"], current, evidence)
+        archive = preserve_generated_state(
+            root,
+            receipt["manifest"],
+            current,
+            evidence,
+            prepared_generated_roots(payload, root),
+        )
         if archive is None:
             return {"status": "retained", "reason": "project_changed"}
     gitdir = Path(run("git", "-C", str(root), "rev-parse", "--absolute-git-dir"))
@@ -282,19 +336,19 @@ def retire(receipt, payload, helper, evidence):
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     # No smoke commit was created; delete only the branch still at its original head.
     branch_cleanup = {"status": "not_needed"}
-    if (
-        run("git", "-C", receipt["source"], "rev-parse", receipt["branch"])
-        == receipt["head"]
-    ):
-        try:
+    try:
+        if (
+            run("git", "-C", receipt["source"], "rev-parse", receipt["branch"])
+            == receipt["head"]
+        ):
             run("git", "-C", receipt["source"], "branch", "-d", receipt["branch"])
             branch_cleanup = {"status": "removed"}
-        except subprocess.CalledProcessError as error:
-            branch_cleanup = {
-                "status": "retained",
-                "branch": receipt["branch"],
-                "error": str(error),
-            }
+    except subprocess.CalledProcessError as error:
+        branch_cleanup = {
+            "status": "unproven",
+            "branch": receipt["branch"],
+            "error": str(error),
+        }
     return {
         "status": "removed",
         "preview": preview,

@@ -31,6 +31,9 @@ or discards documents.
 ```
 
 The source checkout must be clean at the full SHA embedded in the archive.
+On Chris-Studio, `--repo` must name a host-created `work/*` linked worktree
+whose HEAD is published to origin; a primary checkout or unpublished task refuses
+installation. Push the source first, or use the supported manual procedure.
 `--maintenance-window` records that every helper, MCP and HTTP caller of this
 IDE has been paused for the whole operation; process checks alone cannot prove
 that coordination. The automated resolver supports the bundle's standard config path. For a
@@ -176,6 +179,14 @@ accepted solely from an installation receipt.
    and `--out` for the retirement result. The script retains dirty or unknown files, preserves known generated files
    in the run evidence, and delegates SDK retirement/removal to the maintained helper;
    mutations or unresolved leases keep the project and registration intact.
+   Declared successful preparation `.venv` state and known IDE project-model files
+   are archived and byte-verified first; private or unknown files remain holds.
+   On Chris-Studio the host retirement dry-run also requires a published HEAD and
+   no foreign working directory; it may conservatively retain an archived build
+   directory the host does not classify. Push source first or use `--keep-project`
+   / `--keep-worktrees` when that prerequisite cannot be satisfied.
+   On portable hosts, copy the retained evidence to durable storage before the
+   temporary directory is purged; the printed evidence path contains the receipt.
 8. Give the rollback directory a `.retain-until` review date about a week out,
    and use the owner's existing deployment-retention sweep after installation.
    That host workflow is not implemented by this repository. If it is unavailable,

@@ -164,6 +164,136 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertFalse(self.worktree.exists())
 
+    def test_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(
+        self,
+    ):
+        (self.source / ".git/info/exclude").write_text(".idea/\n.venv/\n")
+        (self.worktree / ".idea").mkdir()
+        (self.worktree / ".idea/misc.xml").write_bytes(b"prepared project model")
+        (self.worktree / ".venv/bin").mkdir(parents=True)
+        (self.worktree / ".venv/pyvenv.cfg").write_bytes(b"fixture interpreter config")
+        (self.worktree / ".venv/bin/python").symlink_to("/fixture/interpreter")
+        payload = {
+            "cleanup": {"status": "closed"},
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": "succeeded",
+                "target_worktree": str(self.worktree),
+                "required_generated_state": [".venv", ".idea"],
+            },
+        }
+        result = self.retire(payload)
+        self.assertEqual(result["status"], "removed")
+        archive = Path(result["generated_state_archive"])
+        self.assertEqual(
+            (archive / ".venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config"
+        )
+        self.assertEqual(
+            (archive / ".venv/bin/python").readlink(), Path("/fixture/interpreter")
+        )
+        self.assertEqual(
+            (archive / ".idea/misc.xml").read_bytes(), b"prepared project model"
+        )
+        self.assertTrue(any("--no-dry-run" in call for call in self.calls))
+
+    def test_unproven_preparation_keeps_interpreter(self):
+        (self.source / ".git/info/exclude").write_text(".venv/\n")
+        (self.worktree / ".venv").mkdir()
+        (self.worktree / ".venv/pyvenv.cfg").write_text("local interpreter")
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["status"], "retained")
+        self.assertEqual(self.calls, [])
+        self.assertTrue((self.worktree / ".venv/pyvenv.cfg").exists())
+
+    def test_tracked_environment_template_is_not_local_private_state(self):
+        sample = self.worktree / ".env.sample"
+        sample.write_text("PUBLIC_EXAMPLE=value\n")
+        subprocess.run(
+            ["git", "-C", str(self.worktree), "add", str(sample)], check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.worktree),
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-qm",
+                "template",
+            ],
+            check=True,
+        )
+        self.receipt["head"] = smoke.run(
+            "git", "-C", str(self.worktree), "rev-parse", "HEAD"
+        )
+        self.receipt["manifest"] = smoke.manifest(self.worktree)
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["status"], "removed")
+        self.assertFalse(self.worktree.exists())
+
+    def test_managed_apply_failure_restores_original_lock(self):
+        self.receipt["managed"] = True
+        reason = "fixture host lock"
+        smoke.run(
+            "git",
+            "-C",
+            str(self.source),
+            "worktree",
+            "lock",
+            "--reason",
+            reason,
+            str(self.worktree),
+        )
+        original = smoke.run
+        manager_calls = []
+
+        def guarded(*args):
+            if args[0] == self.receipt["manager"]:
+                manager_calls.append(args)
+                return "host preview accepted"
+            if args[0] == "uv" and "--no-dry-run" in args:
+                self.assertFalse(
+                    Path(
+                        original(
+                            "git",
+                            "-C",
+                            str(self.worktree),
+                            "rev-parse",
+                            "--absolute-git-dir",
+                        ),
+                        "locked",
+                    ).exists()
+                )
+                raise subprocess.CalledProcessError(3, args)
+            return self.helper_run(*args) if args[0] == "uv" else original(*args)
+
+        smoke.run_original = original
+        with (
+            patch.object(smoke, "run", side_effect=guarded),
+            self.assertRaises(subprocess.CalledProcessError),
+        ):
+            smoke.retire(
+                self.receipt,
+                {"cleanup": {"status": "closed"}},
+                Path("/maintained/jb-inspect.py"),
+                self.evidence,
+            )
+        lock = Path(
+            original(
+                "git", "-C", str(self.worktree), "rev-parse", "--absolute-git-dir"
+            ),
+            "locked",
+        )
+        self.assertEqual(lock.read_text().strip(), reason)
+        self.assertEqual(
+            manager_calls,
+            [(self.receipt["manager"], "retire", "--dry-run", str(self.worktree))],
+        )
+        self.assertTrue(self.worktree.exists())
+
     def test_fixture_workspace_is_ignored_while_source_changes_remain_dirty(self):
         fixtures = self.source / "test-fixtures"
         fixtures.mkdir()

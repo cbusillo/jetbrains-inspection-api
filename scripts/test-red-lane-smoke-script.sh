@@ -23,6 +23,7 @@ if "--profile" not in sys.argv:
     repo = sys.argv[sys.argv.index("--repo") + 1]
     cleanup = "not_needed" if "--no-open" in sys.argv else os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")
     print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": cleanup},
+                      "route": {"ide": {"plugin_build_fingerprint": "native-matrix-clean"}},
                       "prepared": {"lease": {"opened_by_helper": "--no-open" not in sys.argv}}}))
     sys.exit(0)
 repo = ""
@@ -237,7 +238,7 @@ retained_project=$(jq -r .project "$retained_report")
 test -f "$retained_project/src/main/java/com/example/redlane/DefinitelyRed.java"
 matrix_report="$TMP_DIR/matrix.json"
 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"
-jq -e '.status == "ok" and any(.rows[]; .scenario == "preexisting" and .cleanup.status == "not_needed") and any(.rows[]; .scenario == "helper-opened" and .worktree_retirement.status == "removed")' "$matrix_report" >/dev/null
+jq -e '.status == "ok" and all(.rows[]; .identity.plugin_build_fingerprint == .payload.route.ide.plugin_build_fingerprint and .plugin_build_fingerprint == .identity.plugin_build_fingerprint) and any(.rows[]; .scenario == "preexisting" and .cleanup.status == "not_needed") and any(.rows[]; .scenario == "helper-opened" and .worktree_retirement.status == "removed")' "$matrix_report" >/dev/null
 if JB_INSPECT_STUB_CLEANUP=deferred ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case helper-opened --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"; then
 	echo "expected deferred matrix lifecycle to fail" >&2
 	exit 1

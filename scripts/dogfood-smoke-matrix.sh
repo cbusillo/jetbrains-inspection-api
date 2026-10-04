@@ -374,7 +374,7 @@ build_row() {
           // $payload.wait.capture_diagnostic.exit_reason
           // null
         ),
-        plugin_build_fingerprint: ($payload.identity.plugin_build_fingerprint // null),
+        plugin_build_fingerprint: (identity.plugin_build_fingerprint // null),
         cleanup: ($payload.cleanup // null),
         worktree_retirement: ($payload.worktree_retirement // null),
         open_attempts: open_attempts,
@@ -401,6 +401,7 @@ build_row() {
           product_code: (identity.product_code // null),
           version: (identity.version // null),
           plugin_version: (identity.plugin_version // null),
+          plugin_build_fingerprint: (identity.plugin_build_fingerprint // null),
           pid: (identity.pid // null)
         },
         command: $command,

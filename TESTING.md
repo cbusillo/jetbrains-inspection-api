@@ -55,10 +55,10 @@ explicitly authorized installation, see the exact-archive `--install` command in
 [Local plugin rollout](MAINTAINING.md#local-plugin-rollout).
 
 - Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
-- The smoke verifies that the live IDE reports the version from
-  `gradle.properties`, selects one tracked source file, and runs `scope=files`
-  so a zero-finding result requires bounded execution proof. It does not use an
-  empty `whole_project` result as clean evidence.
+- Pass explicit helper selectors such as `--scope files --file src/example.py` for
+  a bounded source-file assessment. With no selectors, the helper owns scope and
+  route resolution. Installed version and exact build provenance are verified
+  separately through the maintainer rollout acceptance procedure.
 
 ### Installed-plugin smoke expectation
 
