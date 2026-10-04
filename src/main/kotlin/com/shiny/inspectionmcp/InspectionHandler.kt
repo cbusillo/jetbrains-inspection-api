@@ -91,6 +91,7 @@ import org.jetbrains.ide.HttpRequestHandler
 import java.awt.Component
 import java.awt.Container
 import java.io.File
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -5798,6 +5799,13 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         transitionInspectionRunStage(key, runId, InspectionRunStage.PUBLISH)
+        val diskFailure = inspectionScopeDiskFailure(project, snapshot.captureScope)
+        if (diskFailure != null) {
+            if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                resultsStore.setSnapshot(key, diskFailureSnapshot(snapshot, diskFailure))
+            }
+            return
+        }
 
         val stableInputValidationScope = supportsStableInputValidation(snapshot.captureScope)
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
@@ -6847,6 +6855,28 @@ class InspectionHandler : HttpRequestHandler() {
             )
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId == runId) state.copy(captureScope = effectiveCaptureScope) else state
+            }
+            val diskFailure = inspectionScopeDiskFailure(project, effectiveCaptureScope)
+            if (diskFailure != null) {
+                if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
+                    resultsStore.setSnapshot(
+                        key,
+                        diskFailureSnapshot(
+                            InspectionResultsSnapshot(
+                                problems = emptyList(),
+                                timestamp = currentTimeMs(),
+                                projectState = inspectionInputState,
+                                outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                                source = "inspection_input_validation",
+                                captureScope = effectiveCaptureScope,
+                                runId = runId,
+                                triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                            ),
+                            diskFailure,
+                        ),
+                    )
+                }
+                return
             }
             var profile = resolveInspectionProfile(profileManager, requestedProfileName)
             if (profile == null) {
@@ -8120,6 +8150,39 @@ class InspectionHandler : HttpRequestHandler() {
         }
         return diagnostic
     }
+
+    private data class InspectionDiskContentFailure(val path: String, val reason: String)
+
+    private fun inspectionScopeDiskFailure(project: Project, scope: InspectionCaptureScope?): InspectionDiskContentFailure? {
+        for (path in scope?.resolvedFiles.orEmpty()) {
+            val file = LocalFileSystem.getInstance().findFileByPath(path)
+                ?: return InspectionDiskContentFailure(path, "scoped_file_unavailable")
+            if (!file.isInLocalFileSystem || file.fileType.isBinary) continue
+            val psiText = ApplicationManager.getApplication().runReadAction<String?, Exception> {
+                PsiManager.getInstance(project).findFile(file)?.text
+            } ?: return InspectionDiskContentFailure(path, "scoped_psi_unavailable")
+            val diskText = try {
+                String(Files.readAllBytes(Paths.get(path)), file.charset)
+            } catch (_: IOException) {
+                return InspectionDiskContentFailure(path, "scoped_disk_read_failed")
+            }.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
+            if (psiText != diskText) return InspectionDiskContentFailure(path, "disk_psi_content_mismatch")
+        }
+        return null
+    }
+
+    private fun diskFailureSnapshot(snapshot: InspectionResultsSnapshot, failure: InspectionDiskContentFailure): InspectionResultsSnapshot =
+        snapshot.copy(
+            problems = emptyList(),
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "inspection_input_validation",
+            note = "Scoped file content could not be verified against disk. Resolve the file, save editor changes, and synchronize it before inspecting again.",
+            captureIncompleteReason = CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED,
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                "exit_reason" to failure.reason,
+                "disk_psi_unverified_file" to failure.path,
+            ),
+        )
 
     private fun syncProjectState(project: Project) {
         val application = ApplicationManager.getApplication()
