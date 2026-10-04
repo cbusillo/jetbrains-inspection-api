@@ -277,8 +277,8 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(result.fileResults.single().suppliedToolShortNames).containsExactly(tool.shortName)
         assertThat(result.fileResults.single().returnedDescriptorsByToolShortName[tool.shortName])
             .singleElement()
-            .extracting<String> { it.descriptionTemplate }
-            .isEqualTo("supported finding")
+            .extracting { it.descriptionTemplate }
+            .isEqualTo(SUPPORTED_FINDING)
         assertThat(visitCount(tool)).isEqualTo(1)
     }
 
@@ -440,7 +440,7 @@ class SupportedInspectionExecutorPlatformTest {
             }
 
             assertThat(findingDescriptors).singleElement().extracting { it.descriptionTemplate }
-                .isEqualTo("supported finding")
+                .isEqualTo(SUPPORTED_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
@@ -1222,7 +1222,7 @@ class SupportedInspectionExecutorPlatformTest {
     private open class RecordingInspection : LocalInspectionTool() {
         override fun getDisplayName(): String = shortName
 
-        override fun getGroupDisplayName(): String = "Supported Inspection Tests"
+        override fun getGroupDisplayName(): String = "Supported inspection tests"
 
         override fun buildVisitor(
             holder: ProblemsHolder,
@@ -1279,7 +1279,7 @@ class SupportedInspectionExecutorPlatformTest {
 
     private open class FindingInspection : RecordingInspection() {
         override fun inspect(holder: ProblemsHolder, file: PsiFile) {
-            holder.registerProblem(file, "supported finding")
+            holder.registerProblem(file, SUPPORTED_FINDING)
         }
     }
 
@@ -1351,7 +1351,7 @@ class SupportedInspectionExecutorPlatformTest {
     private open class TestGlobalInspection : GlobalInspectionTool() {
         override fun getDisplayName(): String = shortName
 
-        override fun getGroupDisplayName(): String = "Supported Inspection Tests"
+        override fun getGroupDisplayName(): String = "Supported inspection tests"
     }
 
     private class TestGlobalSimpleInspection : TestGlobalInspection() {
@@ -1367,7 +1367,7 @@ class SupportedInspectionExecutorPlatformTest {
             file: PsiFile,
             manager: InspectionManager,
             holder: ProblemsHolder,
-            context: com.intellij.codeInspection.GlobalInspectionContext,
+            context: GlobalInspectionContext,
             processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
         ) {
             holder.registerProblem(file, "Global simple finding")
@@ -1379,6 +1379,8 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     companion object {
+        private const val SUPPORTED_FINDING = "Supported finding"
+
         @JvmField
         @RegisterExtension
         @Order(0)

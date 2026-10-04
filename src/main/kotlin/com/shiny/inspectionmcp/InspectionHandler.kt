@@ -1418,8 +1418,7 @@ internal fun inspectionCaptureScopeCoversRequest(
 }
 
 internal fun inspectionCaptureScopeHasProof(captureScope: InspectionCaptureScope?): Boolean {
-    if (captureScope == null) return true
-    return when (captureScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }) {
+    return captureScope == null || when (captureScope.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }) {
         "whole_project", "all" -> true
         "files" -> captureScope.resolvedFiles?.isNotEmpty() == true
         "directory" -> !captureScope.resolvedDirectory.isNullOrBlank()
@@ -1687,7 +1686,7 @@ internal fun inspectionSourceComparisonDiagnostic(
             val identity = problemIdentityIgnoringSeverity(finding)
             identity !in nativeByIdentity && identity !in proofByIdentity
         }
-    val diagnostic = mutableMapOf<String, Any>(
+    val diagnostic = mutableMapOf(
         "source_comparison_native_context_unique_finding_count" to nativeByIdentity.size,
         "source_comparison_settle_only_unique_finding_count" to settledOnly.size,
         "source_comparison_settle_only_unmatched_location_count" to settledOnly.count { finding ->
@@ -2161,7 +2160,7 @@ class InspectionHandler : HttpRequestHandler() {
             payload["results_may_be_stale"] != true &&
             payload["capture_incomplete"] != true
         val proofFailures = (payload["proof_failures"] as? List<*>)
-            ?.mapNotNull { it as? String }
+            ?.filterIsInstance<String>()
             .orEmpty()
         val redCompatibleProofFailures = setOf(
             CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue,
@@ -3111,7 +3110,7 @@ class InspectionHandler : HttpRequestHandler() {
                 finishInspectionRunWithOutcome(key, runState.runId, InspectionRunTerminalOutcome.FAILED)
                 throw error
             }
-            val details = mutableMapOf<String, Any>(
+            val details = mutableMapOf(
                 "status" to "triggered",
                 "message" to "Inspection triggered. Wait 10-15 seconds then check status",
                 "run_id" to runState.runId,
@@ -3336,7 +3335,7 @@ class InspectionHandler : HttpRequestHandler() {
 
         val lifecycleReadiness = lifecycleContentRootReadinessForOwnership(
             resolved.project,
-            requireNotNull(exactOwnership).targetKey,
+            exactOwnership.targetKey,
         )
         val closeToken = UUID.randomUUID().toString()
         val lease = InspectionProjectLease(
@@ -5297,7 +5296,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
                 if (!inspectionCaptureScopeCoversRequest(snapshotCaptureScope, requestedCaptureScope)) {
-                    val response = mutableMapOf<String, Any?>(
+                    val response = mutableMapOf(
                         "status" to "scope_mismatch",
                         "project" to project.name,
                         "project_key" to key,
@@ -5326,7 +5325,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             snapshot = reconcileSnapshotWithLiveProblems(project, snapshot)
             if (snapshot != null && snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE) {
-                val response = mutableMapOf<String, Any?>(
+                val response = mutableMapOf(
                     "status" to "capture_incomplete",
                     "project" to project.name,
                     "project_key" to key,
@@ -5391,7 +5390,7 @@ class InspectionHandler : HttpRequestHandler() {
 
                 val page = paginateProblems(filteredProblems, limit, offset)
                 
-                val response = mutableMapOf<String, Any?>(
+                val response = mutableMapOf(
                     "status" to "results_available",
                     "project" to project.name,
                     "project_key" to key,
@@ -5427,7 +5426,7 @@ class InspectionHandler : HttpRequestHandler() {
                 
                 formatJsonManually(response.filterValues { it != null })
             } else {
-                val response = mutableMapOf<String, Any?>(
+                val response = mutableMapOf(
                     "status" to "no_results",
                     "project" to project.name,
                     "project_key" to key,
@@ -5468,7 +5467,7 @@ class InspectionHandler : HttpRequestHandler() {
         runState: InspectionRunState?,
         snapshot: InspectionResultsSnapshot?,
     ): String {
-        val response = mutableMapOf<String, Any>(
+        val response = mutableMapOf(
             "status" to "run_changed",
             "inspection_in_progress" to (runState?.inProgress == true),
             "expected_inspection_run_id" to expectedRunId,
@@ -5570,7 +5569,7 @@ class InspectionHandler : HttpRequestHandler() {
         val timeSinceLastTrigger = currentTime - lastInspectionTriggerTime
         status["inspection_triggered"] = lastInspectionTriggerTime > 0L
 
-        val dumbService = com.intellij.openapi.project.DumbService.getInstance(project)
+        val dumbService = DumbService.getInstance(project)
         val isIndexing = dumbService.isDumb
 
         // Use the same extractor as the /problems endpoint so status matches real availability
@@ -5598,13 +5597,10 @@ class InspectionHandler : HttpRequestHandler() {
             snapshot?.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE ||
                 (snapshot != null && !snapshotScopeHasProof)
             ) && !staleness.stale
-        val resultsAvailable = if (hasInspectionSnapshot) {
+        val resultsAvailable = hasInspectionSnapshot &&
             snapshot?.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
-                snapshotScopeHasProof &&
-                !staleness.stale
-        } else {
-            false
-        }
+            snapshotScopeHasProof &&
+            !staleness.stale
         if (hasInspectionSnapshot && staleness.stale) {
             status["cached_total_problems"] = problemsSnapshot.size
         } else {
@@ -5647,9 +5643,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         val inspectionInProgress = runState?.inProgress == true
-        val isLikelyStillRunning = inspectionInProgress
-
-        status["is_scanning"] = isIndexing || isLikelyStillRunning
+        status["is_scanning"] = isIndexing || inspectionInProgress
         status["has_inspection_results"] = resultsAvailable
         status["capture_incomplete"] = captureIncomplete
         status["inspection_in_progress"] = inspectionInProgress
@@ -5674,7 +5668,6 @@ class InspectionHandler : HttpRequestHandler() {
         // Clear indicator for a clean inspection (finished, confirmed, and not stale)
         val cleanInspection = (
             !isIndexing &&
-                !isLikelyStillRunning &&
                 !inspectionInProgress &&
                 snapshotScopeHasProof &&
                 snapshot?.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED &&
@@ -5849,8 +5842,8 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
 
-        val inputFingerprint = requireNotNull(inspectionInputFingerprint)
-        val contentTracker = requireNotNull(projectContentTracker)
+        val inputFingerprint = inspectionInputFingerprint
+        val contentTracker = projectContentTracker
 
         try {
             val nativeContextProblems = if (
@@ -6058,7 +6051,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "analysis_qualification_required" to true,
                 "analysis_qualification_previous_available" to (previous != null),
                 "analysis_qualification_environment_matched" to sameEnvironment,
-                "analysis_qualification_result_matched" to resultMatched,
+                "analysis_qualification_result_matched" to false,
                 "analysis_reason" to analysisReadiness.reason,
                 "python_file_count" to analysisReadiness.pythonFileCount,
                 "python_sdk_count" to analysisReadiness.pythonSdkCount,
@@ -6100,11 +6093,6 @@ class InspectionHandler : HttpRequestHandler() {
             ).toMap(),
             captureIncompleteReason = captureIncompleteReason,
         )
-    }
-
-    private fun isWholeProjectCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
-        val scope = captureScope?.scopeParam?.trim()?.lowercase().orEmpty().ifBlank { "whole_project" }
-        return scope == "whole_project" || scope == "all"
     }
 
     private fun isChangedFilesCaptureScope(captureScope: InspectionCaptureScope?): Boolean {
@@ -6989,7 +6977,7 @@ class InspectionHandler : HttpRequestHandler() {
                 ) {
                     projectContentTracker = tracker
                     inspectionInputFingerprint = confirmedFingerprint
-                    profile = requireNotNull(confirmedProfile)
+                    profile = confirmedProfile
                 } else {
                     val preflightFailureReason = if (
                         tracker != null &&
@@ -7124,15 +7112,6 @@ class InspectionHandler : HttpRequestHandler() {
             } catch (_: Exception) {
                 null
             }
-            val profileDiagnostic = mapOf(
-                "profile_requested" to requestedProfileName,
-                "profile_resolved_name" to resolvedProfileName,
-                "profile_missing" to false,
-                "profile_unverified" to false,
-                "profile_list_readable" to (profileNames != null),
-                "profile_available_names" to profileNames?.take(25),
-                "profile_source" to if (requestedProfileName != null) "request" else "current",
-            ).filterValues { it != null }
             val ideProductCode = safeInspectionIdentity()["ide_product_code"]?.toString()
             val targetToolShortNames = expectedProofToolShortNames(
                 ideProductCode = ideProductCode,
@@ -7191,7 +7170,6 @@ class InspectionHandler : HttpRequestHandler() {
             globalContext.configure(profile, scope)
             try {
                 transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
-                @Suppress("UnstableApiUsage")
                 globalContext.performInspectionsWithProgress(scope)
                 nativeProofCollector?.markCompletedNormally()
             } catch (error: Throwable) {
@@ -7646,7 +7624,6 @@ class InspectionHandler : HttpRequestHandler() {
                             InspectionExecutionProofMode.NONE -> null
                         }
                         val baseCaptureDiagnostic = if (bestResults.isEmpty()) {
-                            val lastObservation = lastViewObservation
                             val stableForMs = captureEndMs - lastChangeMs
                             val readableStableForMs = readableEmptyInspectionViewStableSince?.let { captureEndMs - it } ?: 0L
                             mapOf(
@@ -7696,11 +7673,11 @@ class InspectionHandler : HttpRequestHandler() {
                                 "scoped_context_results_empty" to scopedContextResults.isEmpty(),
                                 "readable_empty_inspection_view_stable_for_ms" to readableStableForMs,
                                 "last_view_observation" to mapOf(
-                                    "is_updating" to lastObservation?.isUpdating,
-                                    "has_problems" to lastObservation?.hasProblems,
-                                    "root_child_count" to lastObservation?.rootChildCount,
-                                    "update_state_readable" to lastObservation?.updateStateReadable,
-                                    "problem_state_readable" to lastObservation?.problemStateReadable,
+                                    "is_updating" to lastViewObservation?.isUpdating,
+                                    "has_problems" to lastViewObservation?.hasProblems,
+                                    "root_child_count" to lastViewObservation?.rootChildCount,
+                                    "update_state_readable" to lastViewObservation?.updateStateReadable,
+                                    "problem_state_readable" to lastViewObservation?.problemStateReadable,
                                 ).filterValues { it != null },
                             ) + scopeDiagnostics + stateDiagnostic + proofDiagnostic
                         } else {
@@ -7790,7 +7767,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 )
                             },
                         )
-                        } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+                        } catch (e: ProcessCanceledException) {
                             recordInspectionRunFailureDiagnostic(
                                 key = key,
                                 runId = runId,
@@ -7825,14 +7802,14 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                 }
                 captureScheduled = true
-            } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+            } catch (e: ProcessCanceledException) {
                 throw e
             } catch (error: Exception) {
                 logger.warn("Inspection setup or capture scheduling failed for ${project.name}", error)
                 publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
                 finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
             }
-        } catch (e: com.intellij.openapi.progress.ProcessCanceledException) {
+        } catch (e: ProcessCanceledException) {
             recordInspectionRunFailureDiagnostic(
                 key = key,
                 runId = runId,
@@ -7874,7 +7851,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun rethrowIfCanceled(e: Exception) {
-        if (e is com.intellij.openapi.progress.ProcessCanceledException) {
+        if (e is ProcessCanceledException) {
             throw e
         }
     }
@@ -7927,7 +7904,7 @@ class InspectionHandler : HttpRequestHandler() {
         ProgressManager.checkCanceled()
         val control = inspectionRunControlsByProject[key]
         if (control?.runId == runId && control.cancellationRequested.get()) {
-            throw com.intellij.openapi.progress.ProcessCanceledException()
+            throw ProcessCanceledException()
         }
     }
 
@@ -9733,13 +9710,6 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun extractProjectQueryParameter(
-        urlDecoder: QueryStringDecoder,
-        request: FullHttpRequest,
-    ): String? {
-        return extractProjectQueryParameterEntry(urlDecoder, request)?.second
-    }
-
     private fun extractProjectQueryParameterEntry(
         urlDecoder: QueryStringDecoder,
         request: FullHttpRequest,
@@ -9784,7 +9754,6 @@ class InspectionHandler : HttpRequestHandler() {
             .removePrefix(EXACT_WORKTREE_PATH_SELECTOR_PREFIX)
     }
 
-    @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContextSafe(
         globalContext: GlobalInspectionContextBoundary,
         project: Project,
@@ -9845,7 +9814,6 @@ class InspectionHandler : HttpRequestHandler() {
         )
     }
 
-    @Suppress("UnstableApiUsage")
     private fun extractProblemsFromContext(
         globalContext: GlobalInspectionContextBoundary,
         project: Project,
@@ -10381,7 +10349,6 @@ class InspectionHandler : HttpRequestHandler() {
         val errorExamples: List<Map<String, Any?>>,
     )
 
-    @Suppress("UnstableApiUsage")
     private fun resolveEnabledLocalToolShortNames(
         globalContext: GlobalInspectionContextBoundary,
         cancellationCheck: () -> Unit,
@@ -10477,7 +10444,6 @@ class InspectionHandler : HttpRequestHandler() {
         cleanupFailure?.let { throw it }
     }
 
-    @Suppress("UnstableApiUsage")
     internal fun runBoundedExecutionProof(
         enabledTools: EnabledLocalToolEnumeration,
         profile: InspectionProfileImpl,
