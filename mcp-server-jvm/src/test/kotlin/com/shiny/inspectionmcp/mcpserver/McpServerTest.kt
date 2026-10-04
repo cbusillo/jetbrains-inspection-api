@@ -1017,6 +1017,20 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusPreservesDiskSynchronizationRecoveryWithoutPluginVerdict() {
+        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"inspection_inputs_changed","capture_diagnostic":{"exit_reason":"disk_psi_content_mismatch"}}"""
+        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+            val text = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { })).firstText()
+            assertTrue(text.contains("VERDICT: UNKNOWN"))
+            assertTrue(text.contains("reason=inspection_inputs_changed"))
+            assertTrue(text.contains("Reload from Disk"))
+            assertTrue(text.contains("modification time"))
+        }
+    }
+
+    @Test
     fun inspectionGetStatusHandlesCaptureIncomplete() {
         val response = """{"capture_incomplete":true,"capture_incomplete_reason":"view_not_ready","has_inspection_results":false,"clean_inspection":false}"""
         MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->

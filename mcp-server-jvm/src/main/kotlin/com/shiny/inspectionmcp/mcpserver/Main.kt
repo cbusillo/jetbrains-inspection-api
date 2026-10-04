@@ -1267,7 +1267,7 @@ internal class ToolExecutor(
             safeReason == "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
             safeReason == "inspection_inputs_changed" ->
-                "Rerun inspection after project files, VCS state, and inspection settings finish changing."
+                "Resolve the scoped file and save intended editor changes. If disk/PSI validation failed, use Reload from Disk in the exact IDE project or rewrite the file with an updated modification time; retries alone cannot repair a timestamp-preserving mismatch. Inspect again after project files, VCS state, and inspection settings settle."
             safeReason == "language_sdk_missing" ->
                 "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
             safeReason == "project_analysis_not_ready" ->

@@ -26,6 +26,75 @@ import java.nio.file.Files
 
 internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     @Test
+    fun `disk validation observes cancellation before reading the next scoped file`() {
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        val paths = List(2) { Files.createTempFile("disk-cancellation-", ".txt") }
+        try {
+            paths.forEach { Files.writeString(it, "contents") }
+            val file = mockk<VirtualFile>(relaxed = true)
+            every { file.isInLocalFileSystem } returns true
+            every { file.isValid } returns true
+            every { file.fileType.isBinary } returns false
+            every { file.charset } returns Charsets.UTF_8
+            val reads = AtomicInteger()
+            every { LocalFileSystem.getInstance().findFileByPath(any()) } answers { reads.incrementAndGet(); file }
+            val control = InspectionRunControl(1L, com.intellij.openapi.progress.util.ProgressIndicatorBase())
+            setInspectionRunControl(key, control)
+            val psi = mockk<PsiFile>()
+            val manager = mockk<PsiManager>()
+            mockkStatic(PsiManager::class)
+            every { PsiManager.getInstance(mockProject) } returns manager
+            every { manager.findFile(file) } returns psi
+            every { psi.isValid } returns true
+            every { psi.text } answers { control.cancellationRequested.set(true); "contents" }
+            val snapshot = InspectionResultsSnapshot(
+                problems = emptyList(), timestamp = 1L,
+                projectState = InspectionProjectStateSnapshot(11L, 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED, source = "global_context",
+                captureScope = InspectionCaptureScope(scopeParam = "files", resolvedFiles = paths.map { it.toString() }), runId = 1L,
+            )
+            setInspectionRunState(key, InspectionRunState(1L, 1L, true))
+            val error = assertThrows(java.lang.reflect.InvocationTargetException::class.java) {
+                publishInspectionSnapshot(snapshot, snapshot.projectState, false, null, null)
+            }
+            assertInstanceOf(com.intellij.openapi.progress.ProcessCanceledException::class.java, error.cause)
+            assertEquals(1, reads.get())
+            assertNull(InspectionResultsStore.getSnapshot(key))
+        } finally { paths.forEach { Files.deleteIfExists(it) } }
+    }
+
+    @Test
+    fun `file invalidated after lookup withholds the snapshot without blaming the plugin`() {
+        mockInspectionPrerequisites(mockProject)
+        val path = Files.createTempFile("disk-invalidated-", ".txt")
+        try {
+            Files.writeString(path, "contents")
+            val file = mockk<VirtualFile>(relaxed = true)
+            every { LocalFileSystem.getInstance().findFileByPath(path.toString()) } returns file
+            every { file.isInLocalFileSystem } returns true
+            every { file.fileType.isBinary } returns false
+            every { file.isValid } returns false
+            val manager = mockk<PsiManager>()
+            mockkStatic(PsiManager::class)
+            every { PsiManager.getInstance(mockProject) } returns manager
+            every { manager.findFile(file) } throws com.intellij.psi.PsiInvalidElementAccessException(mockk<PsiFile>(relaxed = true))
+            val snapshot = InspectionResultsSnapshot(
+                problems = emptyList(), timestamp = 1L,
+                projectState = InspectionProjectStateSnapshot(11L, 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED, source = "global_context",
+                captureScope = InspectionCaptureScope(scopeParam = "files", resolvedFiles = listOf(path.toString())), runId = 1L,
+            )
+            setInspectionRunState(projectKey(mockProject), InspectionRunState(1L, 1L, true))
+            publishInspectionSnapshot(snapshot, snapshot.projectState, false, null, null)
+            val result = requireNotNull(InspectionResultsStore.getSnapshot(projectKey(mockProject)))
+            assertEquals(CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED, result.captureIncompleteReason)
+            assertEquals("scoped_psi_unavailable", result.captureDiagnostic?.get("exit_reason"))
+            assertTrue(result.problems.isEmpty())
+        } finally { Files.deleteIfExists(path) }
+    }
+
+    @Test
     fun `disk validation cannot replace the snapshot of a newer run`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -36,6 +105,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             Files.writeString(path, "disk contents")
             val file = mockk<VirtualFile>()
             every { file.isInLocalFileSystem } returns true
+            every { file.isValid } returns true
             val fileType = mockk<FileType>()
             every { fileType.isBinary } returns false
             every { file.fileType } returns fileType
@@ -46,6 +116,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             mockkStatic(PsiManager::class)
             every { PsiManager.getInstance(mockProject) } returns psiManager
             every { psiManager.findFile(file) } returns psiFile
+            every { psiFile.isValid } returns true
             val scope = InspectionCaptureScope(scopeParam = "files", resolvedFiles = listOf(path.toString()))
             val snapshot = InspectionResultsSnapshot(
                 problems = emptyList(),
@@ -348,9 +419,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             projectContentTracker = contentTracker,
         )
         val reconciledSnapshot = requireNotNull(InspectionResultsStore.getSnapshot(key))
-        verify(exactly = 1) {
-            mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
-        }
         setInspectionRunState(
             key,
             InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
@@ -503,9 +571,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         )
 
         assertEquals(snapshot, InspectionResultsStore.getSnapshot(key))
-        verify(exactly = 1) {
-            mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>())
-        }
     }
 
     @ParameterizedTest

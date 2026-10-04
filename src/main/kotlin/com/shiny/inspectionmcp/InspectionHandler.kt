@@ -2269,7 +2269,7 @@ class InspectionHandler : HttpRequestHandler() {
             "current_run_psi_churn" ->
                 "Save documents and rerun inspection after the IDE finishes updating PSI state."
             "inspection_inputs_changed" ->
-                "Rerun inspection after project files, VCS state, and inspection settings finish changing."
+                "Resolve the scoped file and save intended editor changes. If disk/PSI validation failed, use Reload from Disk in the exact IDE project or rewrite the file with an updated modification time; retries alone cannot repair a timestamp-preserving mismatch. Inspect again after project files, VCS state, and inspection settings settle."
             "language_sdk_missing" ->
                 "Configure the selected files' language SDK in the exact project/worktree, then rerun inspection."
             "project_analysis_not_ready" ->
@@ -5817,7 +5817,7 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         transitionInspectionRunStage(key, runId, InspectionRunStage.PUBLISH)
-        val diskFailure = inspectionScopeDiskFailure(project, snapshot.captureScope)
+        val diskFailure = inspectionScopeDiskFailure(project, snapshot.captureScope, key, runId)
         if (diskFailure != null) {
             if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                 resultsStore.setSnapshot(key, diskFailureSnapshot(snapshot, diskFailure))
@@ -6874,7 +6874,7 @@ class InspectionHandler : HttpRequestHandler() {
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId == runId) state.copy(captureScope = effectiveCaptureScope) else state
             }
-            val diskFailure = inspectionScopeDiskFailure(project, effectiveCaptureScope)
+            val diskFailure = inspectionScopeDiskFailure(project, effectiveCaptureScope, key, runId)
             if (diskFailure != null) {
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
                     resultsStore.setSnapshot(
@@ -8171,21 +8171,27 @@ class InspectionHandler : HttpRequestHandler() {
 
     private data class InspectionDiskContentFailure(val path: String, val reason: String)
 
-    private fun inspectionScopeDiskFailure(project: Project, scope: InspectionCaptureScope?): InspectionDiskContentFailure? {
+    private fun inspectionScopeDiskFailure(project: Project, scope: InspectionCaptureScope?, key: String, runId: Long): InspectionDiskContentFailure? {
         for (path in scope?.resolvedFiles.orEmpty()) {
+            checkInspectionRunCancellation(key, runId)
             val file = LocalFileSystem.getInstance().findFileByPath(path)
                 ?: return InspectionDiskContentFailure(path, "scoped_file_unavailable")
-            if (!file.isInLocalFileSystem || file.fileType.isBinary) continue
-            val psiText = ApplicationManager.getApplication().runReadAction<String?, Exception> {
-                PsiManager.getInstance(project).findFile(file)?.text
+            val input = ApplicationManager.getApplication().runReadAction<Pair<String?, java.nio.charset.Charset?>?, Exception> {
+                if (!file.isValid) return@runReadAction null
+                if (!file.isInLocalFileSystem || file.fileType.isBinary) return@runReadAction null to null
+                val psi = PsiManager.getInstance(project).findFile(file)?.takeIf { it.isValid }
+                    ?: return@runReadAction null
+                psi.text to file.charset
             } ?: return InspectionDiskContentFailure(path, "scoped_psi_unavailable")
+            val psiText = input.first ?: continue
             val diskText = try {
-                String(Files.readAllBytes(Paths.get(path)), file.charset)
+                String(Files.readAllBytes(Paths.get(path)), requireNotNull(input.second))
             } catch (_: IOException) {
                 return InspectionDiskContentFailure(path, "scoped_disk_read_failed")
             }.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
             if (psiText != diskText) return InspectionDiskContentFailure(path, "disk_psi_content_mismatch")
         }
+        checkInspectionRunCancellation(key, runId)
         return null
     }
 
