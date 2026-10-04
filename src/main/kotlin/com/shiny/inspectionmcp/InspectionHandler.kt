@@ -10590,7 +10590,7 @@ class InspectionHandler : HttpRequestHandler() {
                 )
             }
         }
-        val fileLanguages = mutableMapOf<com.intellij.psi.PsiFile, Set<com.intellij.lang.Language>>()
+        val fileLanguages = mutableMapOf<Pair<com.intellij.psi.PsiFile, Boolean>, Set<com.intellij.lang.Language>>()
         val currentProfile =
             com.intellij.profile.codeInspection.InspectionProjectProfileManager
                 .getInstance(project)
@@ -10648,16 +10648,42 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): Boolean = app.runReadAction<Boolean, Exception> {
-                val languages = fileLanguages.getOrPut(candidate.value) {
+                val inspectInjectedPsi = sourceWrapper.toolWrapper.tool !is com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
+                val languages = fileLanguages.getOrPut(candidate.value to inspectInjectedPsi) {
                     val collected = linkedSetOf<com.intellij.lang.Language>()
-                    collected += candidate.value.viewProvider.languages
-                    candidate.value.accept(object : com.intellij.psi.PsiRecursiveElementWalkingVisitor() {
+                    val injectionManager = com.intellij.lang.injection.InjectedLanguageManager.getInstance(project)
+                    val injectedFiles = linkedSetOf<com.intellij.psi.PsiFile>()
+                    val hostVisitor = object : com.intellij.psi.PsiRecursiveElementWalkingVisitor() {
+                        override fun visitElement(element: com.intellij.psi.PsiElement) {
+                            checkProofBudget()
+                            collected += element.language
+                            if (inspectInjectedPsi && element is com.intellij.psi.PsiLanguageInjectionHost) {
+                                injectionManager.getInjectedPsiFiles(element)?.forEach { fragment ->
+                                    checkProofBudget()
+                                    injectedFiles += fragment.first as com.intellij.psi.PsiFile
+                                }
+                            }
+                            super.visitElement(element)
+                        }
+                    }
+                    candidate.value.viewProvider.allFiles.forEach { root ->
+                        collected += root.viewProvider.languages
+                        root.accept(hostVisitor)
+                    }
+                    val injectedVisitor = object : com.intellij.psi.PsiRecursiveElementWalkingVisitor() {
                         override fun visitElement(element: com.intellij.psi.PsiElement) {
                             checkProofBudget()
                             collected += element.language
                             super.visitElement(element)
                         }
-                    })
+                    }
+                    injectedFiles.forEach { fragment ->
+                        fragment.viewProvider.allFiles.forEach { root ->
+                            checkProofBudget()
+                            collected += root.viewProvider.languages
+                            root.accept(injectedVisitor)
+                        }
+                    }
                     collected
                 }
                 languages.any(sourceWrapper.toolWrapper::isApplicable)
@@ -10824,7 +10850,7 @@ class InspectionHandler : HttpRequestHandler() {
                             ?.inspectionForBatchShortName
                     }.getOrNull()
                 val languageIds = runCatching {
-                    fileLanguages[candidate.value]
+                    fileLanguages[candidate.value to (sourceTool !is com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection)]
                         ?.map { it.id }
                         ?.sorted()
                         ?: candidate.value.viewProvider.languages.map { it.id }.sorted()

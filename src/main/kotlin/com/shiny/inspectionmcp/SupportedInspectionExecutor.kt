@@ -88,7 +88,7 @@ internal class SupportedInspectionExecutor {
             psiFile.textRange,
             psiFile.textRange,
             false,
-            false,
+            true,
             ignoreSuppressedElements,
             indicator,
             PairProcessor.alwaysTrue(),
