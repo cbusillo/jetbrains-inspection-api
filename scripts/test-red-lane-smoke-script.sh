@@ -148,6 +148,15 @@ export REAL_UV
 REAL_UV=$(command -v uv)
 export PATH="$TMP_DIR/bin:$PATH"
 
+export REAL_JQ
+REAL_JQ=$(command -v jq)
+cat >"$TMP_DIR/bin/jq" <<'JQ'
+#!/usr/bin/env bash
+if [ "${JB_JQ_STUB_MERGE_FAILURE:-}" = 1 ] && [ "${1:-}" = --slurpfile ]; then exit 5; fi
+exec "$REAL_JQ" "$@"
+JQ
+chmod +x "$TMP_DIR/bin/jq"
+
 run_case() {
 	local product=$1
 	local expected_ide=$2
@@ -255,6 +264,15 @@ if JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-red-lane-smoke.sh --helper "$HELPE
 	exit 1
 fi
 jq -e '.status == "failed" and .verdict == "RED" and .bucket == "red_confirmed_project_retained" and .worktree_retirement.reason == "retirement_result_unproven"' "$retained_report" >/dev/null
+if JB_JQ_STUB_MERGE_FAILURE=1 JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$TMP_DIR/jq-failure.json" 2>"$TMP_DIR/jq-failure.stderr"; then
+	echo "payload merge failure must abort the matrix" >&2
+	exit 1
+fi
+test ! -e "$TMP_DIR/jq-failure.json"
+merge_evidence=$(sed -n 's/^Smoke evidence retained: //p' "$TMP_DIR/jq-failure.stderr" | tail -n 1)
+merge_receipt=$(find "$merge_evidence" -maxdepth 1 -name 'worktree-*.json' -print -quit)
+test -f "$merge_receipt"
+test -d "$(jq -r .root "$merge_receipt")"
 # Stock macOS Bash must delegate when no local options are configured.
 mkdir "$TMP_DIR/plain-repo"
 git -C "$TMP_DIR/plain-repo" init -q

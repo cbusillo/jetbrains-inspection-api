@@ -19,7 +19,7 @@ HOST_ROOT = Path("/Volumes/Developer-Artifacts/worktrees")
 
 
 def run(*args):
-    return subprocess.check_output(args, text=True).strip()
+    return subprocess.check_output(args, text=True, stderr=subprocess.PIPE).strip()
 
 
 def manifest(root):
@@ -394,6 +394,20 @@ def main():
                     "reason": "retirement_failed",
                     "error": str(error),
                 }
+                if isinstance(error, subprocess.CalledProcessError):
+                    records = Path(
+                        tempfile.mkdtemp(
+                            prefix="retirement-failure-", dir=args.receipt.parent
+                        )
+                    )
+                    for name, content in [
+                        ("stdout", error.stdout),
+                        ("stderr", error.stderr),
+                    ]:
+                        record = records / (name + ".txt")
+                        record.write_text(content or "")
+                        record.chmod(0o600)
+                    result["failure_evidence"] = str(records)
             args.out.write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result))
             return 0 if result["status"] == "removed" else 1

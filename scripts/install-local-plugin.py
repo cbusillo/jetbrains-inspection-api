@@ -82,6 +82,34 @@ def require_idle_status(status):
         raise ValueError("An exact target project is busy or its idleness is unproven.")
 
 
+def require_no_target_leases(leases, identities, app):
+    sessions = {
+        identity.get("session_id")
+        for identity in identities
+        if identity.get("session_id")
+    }
+    pids = {identity.get("pid") for identity in identities if identity.get("pid")}
+    projects = {
+        project.get("base_path")
+        for identity in identities
+        for project in identity.get("open_projects") or []
+        if project.get("base_path")
+    }
+    for _, lease in leases:
+        route = lease.get("route") or {}
+        path = lease.get("lifecycle_target_path") or lease.get("worktree_root")
+        leased_app = lease.get("ide_app_path")
+        if (
+            lease.get("session_id") in sessions
+            or route.get("ide", {}).get("pid") in pids
+            or path in projects
+            or (leased_app and Path(leased_app).resolve() == app.resolve())
+        ):
+            raise ValueError(
+                "An exact target IDE helper lease remains; reconcile it through the maintained helper before installation."
+            )
+
+
 def inventory(root):
     result = {}
     if root.is_symlink() or not root.is_dir():
@@ -307,6 +335,8 @@ def replace_payload(candidate, target, evidence, executable):
         f"Preserved staging and rollback paths: {evidence / 'staging.json'}",
         file=sys.stderr,
     )
+    if (evidence / ".retain-until").is_file():
+        shutil.copy2(evidence / ".retain-until", sibling / ".retain-until")
     staged = sibling / PLUGIN
     previous = sibling / "previous"
     shutil.copytree(candidate, staged)
@@ -406,6 +436,7 @@ def install(args):
         targets = [identity for identity in identities if identity.get("pid") in pids]
         if pids and len(targets) != 1:
             raise ValueError("Cannot prove plugin identity for the exact running IDE.")
+        require_no_target_leases(helper.read_local_leases(), targets, app)
         for identity in targets:
             for project in identity.get("open_projects") or []:
                 if not project.get("base_path"):

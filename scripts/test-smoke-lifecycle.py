@@ -331,6 +331,52 @@ class SmokeLifecycle(unittest.TestCase):
             smoke.run("git", "-C", str(self.source), "status", "--porcelain"),
         )
 
+    def test_sdk_apply_failure_keeps_private_stdout_and_stderr_evidence(self):
+        receipt = self.evidence / "worktree.json"
+        payload = self.evidence / "payload.json"
+        output = self.evidence / "retirement.json"
+        receipt.write_text(json.dumps(self.receipt))
+        payload.write_text(json.dumps({"cleanup": {"status": "closed"}}))
+        native = json.dumps(
+            {
+                "status": "error",
+                "completed_sdk_cleanup": [{"removed": True}],
+                "sdk_remaining": [],
+            }
+        )
+        error = subprocess.CalledProcessError(
+            3,
+            ["uv", "run", "helper", "remove-worktree"],
+            output=native,
+            stderr="Git removal refused",
+        )
+        with (
+            patch.object(smoke, "retire", side_effect=error),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "smoke-worktree.py",
+                    "retire",
+                    "--receipt",
+                    str(receipt),
+                    "--payload",
+                    str(payload),
+                    "--helper",
+                    "/helper.py",
+                    "--out",
+                    str(output),
+                ],
+            ),
+        ):
+            self.assertEqual(smoke.main(), 1)
+        result = json.loads(output.read_text())
+        records = Path(result["failure_evidence"])
+        self.assertEqual((records / "stdout.txt").read_text(), native)
+        self.assertEqual((records / "stderr.txt").read_text(), "Git removal refused")
+        self.assertEqual((records / "stdout.txt").stat().st_mode & 0o777, 0o600)
+        self.assertTrue(self.worktree.exists())
+
     def test_preview_failure_keeps_worktree(self):
         original = smoke.run
 
@@ -524,6 +570,104 @@ class LocalInstaller(unittest.TestCase):
                 with patch.object(Path, "home", return_value=self.root):
                     actual = installer.app_config_dir(app, helper)
                 self.assertEqual(actual, expected)
+
+    def test_target_lease_matching_preserves_foreign_lease(self):
+        target = {
+            "session_id": "target-session",
+            "pid": 42,
+            "open_projects": [{"base_path": "/target/project"}],
+        }
+        for lease in [
+            {"session_id": "target-session"},
+            {"route": {"ide": {"pid": 42}}},
+            {"worktree_root": "/target/project"},
+        ]:
+            with (
+                self.subTest(lease=lease),
+                self.assertRaisesRegex(ValueError, "helper lease remains"),
+            ):
+                installer.require_no_target_leases(
+                    [(Path("/lease.json"), lease)], [target], Path("/IDE.app")
+                )
+        foreign = {
+            "session_id": "foreign-session",
+            "route": {"ide": {"pid": 73}},
+            "worktree_root": "/foreign/project",
+        }
+        installer.require_no_target_leases(
+            [(Path("/foreign.json"), foreign)], [target], Path("/IDE.app")
+        )
+
+    def test_installer_never_quits_an_idle_ide_with_an_outstanding_target_lease(self):
+        app = self.root / "IDE.app"
+        (app / "Contents/MacOS").mkdir(parents=True)
+        executable = app / "Contents/MacOS/idea"
+        executable.write_text("fixture launcher")
+        (app / "Contents/Info.plist").write_bytes(
+            plistlib.dumps({"CFBundleExecutable": "idea"})
+        )
+        target = {
+            "session_id": "held-session",
+            "pid": 42,
+            "open_projects": [{"base_path": "/held/project"}],
+        }
+        helper = SimpleNamespace(
+            InspectError=type("InspectError", (Exception,), {}),
+            outcome_routing_lock=lambda *_: nullcontext(),
+            lifecycle_lock=lambda *_: nullcontext(),
+            discover_identities=lambda *_: [target],
+            build_parser=lambda: None,
+            parse_cli_args=lambda *_: SimpleNamespace(),
+            build_context=lambda _: None,
+            command_status=lambda *_: {
+                "raw": {
+                    "indexing": False,
+                    "is_scanning": False,
+                    "inspection_in_progress": False,
+                }
+            },
+            read_local_leases=lambda: [
+                (Path("/lease.json"), {"session_id": "held-session"})
+            ],
+        )
+        args = SimpleNamespace(
+            ide_app=app,
+            helper=self.root,
+            plugin_dir=None,
+            artifact_root=self.evidence,
+            archive=self.root / "candidate.zip",
+            source_sha="a" * 40,
+            repo=self.root,
+            timeout=1,
+        )
+        with (
+            patch.object(installer.sys, "platform", "darwin"),
+            patch("platform.node", return_value="portable"),
+            patch.object(installer, "load_helper", return_value=helper),
+            patch.object(
+                installer, "app_config_dir", return_value=self.root / "config"
+            ),
+            patch.object(installer, "stage_archive", return_value=self.candidate),
+            patch.object(
+                installer.subprocess, "check_output", side_effect=[args.source_sha, ""]
+            ),
+            patch.object(
+                installer,
+                "process_inventory",
+                return_value=f"42 {executable.resolve()}\n",
+            ),
+            patch.object(installer, "wait_no_helpers"),
+            patch.object(installer, "quit_normally") as quit_ide,
+            patch.object(
+                installer, "replace_payload", return_value={"status": "installed"}
+            ) as replace,
+            patch.object(installer, "require_stopped"),
+            patch.object(installer.subprocess, "run"),
+            self.assertRaisesRegex(ValueError, "helper lease remains"),
+        ):
+            installer.install(args)
+        quit_ide.assert_not_called()
+        replace.assert_not_called()
 
     def test_idle_project_needs_no_previous_inspection_verdict(self):
         raw = {"indexing": False, "is_scanning": False, "inspection_in_progress": False}

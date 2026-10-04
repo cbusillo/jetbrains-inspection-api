@@ -452,7 +452,7 @@ write_static_row() {
 		'{status:"error", error:$message, error_message:$message, error_reason:$bucket}' >"$payload_file"
 	: >"$raw_file"
 	: >"$stderr_file"
-	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" 2 "$bucket" "$cmd_file" "$payload_file" true "$raw_file" "$stderr_file" "" | write_row
+	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" 2 "$bucket" "$cmd_file" "$payload_file" true "$raw_file" "$stderr_file" "" | write_row || exit 2
 	ROW_INDEX=$((ROW_INDEX + 1))
 }
 
@@ -521,14 +521,14 @@ run_case() {
 			printf '%s\n' '{"status":"retained","reason":"retirement_result_unproven"}' >"$retirement_file"
 		fi
 		if jq --slurpfile retirement "$retirement_file" '. + {worktree_retirement: $retirement[0]}' "$payload_file" >"$payload_file.updated"; then
-			mv "$payload_file.updated" "$payload_file"
+			mv "$payload_file.updated" "$payload_file" || exit 2
 		else
-			return 1
+			exit 2
 		fi
 	fi
 	local bucket
 	bucket=$(classify_payload "$scenario" "$exit_code" "$payload_file" "$valid_json")
-	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" "$exit_code" "$bucket" "$cmd_file" "$payload_file" "$valid_json" "$raw_file" "$stderr_file" "$worktree_path" | write_row
+	build_row "$label" "$source_repo" "$target_repo" "$ide" "$scenario" "$exit_code" "$bucket" "$cmd_file" "$payload_file" "$valid_json" "$raw_file" "$stderr_file" "$worktree_path" | write_row || exit 2
 	ROW_INDEX=$((ROW_INDEX + 1))
 }
 

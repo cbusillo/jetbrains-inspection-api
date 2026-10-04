@@ -17,7 +17,7 @@ The default `scripts/test-automated.sh` inspects a local test project without
 installing or restarting. Within a separately authorized maintenance window,
 its explicit installer stages a verified exact-SHA archive, resolves the exact
 app/config pair from the bundle's data-directory selector (including Community editions), waits for helper quiescence,
-checks all visible target projects and requests bounded normal quit. A cancelled
+checks all visible target projects, refuses outstanding target helper leases, and requests bounded normal quit. A cancelled
 quit or unresolved/unsaved-document modal aborts the operation; an ordinary exit
 confirmation can be handled through the IDE's normal quit UI. It never force-kills
 or discards documents.
@@ -266,3 +266,8 @@ preferences remain intact. It does not quit an IDE or grant trust. The backup
 path is returned; restore it only in another stopped maintenance window after
 checking that newer settings would be preserved. This exit path does not require
 editing or weakening the global helper trust policy.
+
+If installation fails after normal quit, leave the IDE stopped until the preserved
+prior/candidate state and receipt are reconciled; relaunch is automatic only on
+success. Staging directories carry the same retention-review date as the external
+rollback evidence. A retention date never authorizes deletion by itself.
