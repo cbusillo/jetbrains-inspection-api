@@ -632,10 +632,10 @@ the total capture budget. Run these with `InspectionHandlerRunTest` for terminal
 outcome and frozen diagnostic coverage.
 
 `CaptureLoopExtractionPlatformTest` also covers an extraction that crosses the
-capture deadline using the handler's clock. The stable-empty observation remains
-false when polling never observed its settling window, while completed native
-proof plus a clean context model still confirms GREEN. The run retains its
-deadline exit and timed-out terminal outcome.
+capture deadline using the handler's clock. Stable-empty records the in-loop
+observation and stays false in this control. The preserved final classification
+uses completed native proof plus a clean context model to confirm GREEN after
+the deadline. The run retains its deadline exit and timed-out terminal outcome.
 
 These controls prove cooperative cancellation, not a forced stop of an arbitrary
 third-party inspection. For a real recurrence, preserve the exact scope/revision,
