@@ -23,6 +23,7 @@ if "--profile" not in sys.argv:
     repo = sys.argv[sys.argv.index("--repo") + 1]
     cleanup = "not_needed" if "--no-open" in sys.argv else os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")
     print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": cleanup},
+                      "native_detail": "x" * int(os.environ.get("JB_INSPECT_STUB_SIZE", "0")),
                       "route": {"ide": {"plugin_build_fingerprint": "native-matrix-clean"}},
                       "prepared": {"lease": {"opened_by_helper": "--no-open" not in sys.argv}}}))
     sys.exit(0)
@@ -264,6 +265,9 @@ if JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-red-lane-smoke.sh --helper "$HELPE
 	exit 1
 fi
 jq -e '.status == "failed" and .verdict == "RED" and .bucket == "red_confirmed_project_retained" and .worktree_retirement.reason == "retirement_result_unproven"' "$retained_report" >/dev/null
+large_size=250000
+JB_INSPECT_STUB_SIZE="$large_size" ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case preexisting --json-out "$TMP_DIR/large-row.json"
+jq -e --argjson size "$large_size" '.status == "ok" and all(.rows[]; (.payload.native_detail | length) == $size)' "$TMP_DIR/large-row.json" >/dev/null
 if JB_JQ_STUB_MERGE_FAILURE=1 JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$TMP_DIR/jq-failure.json" 2>"$TMP_DIR/jq-failure.stderr"; then
 	echo "payload merge failure must abort the matrix" >&2
 	exit 1

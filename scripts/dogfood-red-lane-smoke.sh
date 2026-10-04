@@ -309,7 +309,7 @@ REPORT=$(
         payload: payload,
         stderr_excerpt: (if $stderr == "" then null else $stderr end)
       }'
-)
+) || exit 2
 
 printf '%s\n' "$REPORT" | jq -r '"status=\(.status) bucket=\(.bucket) verdict=\(.verdict) reason=\(.verdict_reason // .error_reason // "-") agent=\(.agent_result.bucket // "-") retry=\(.agent_result.retry_policy.retry // false) total=\(.total_problems // "-") cleanup=\(.cleanup.status // "-") attempts=\(.open_attempt_count) methods=\((.open_methods // []) | join(",")) plugin=\(.identity.plugin_version // "unknown")"'
 

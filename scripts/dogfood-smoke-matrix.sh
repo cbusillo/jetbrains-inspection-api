@@ -312,13 +312,8 @@ build_row() {
 	local issue
 	issue=$(issue_for_bucket "$bucket")
 
-	local command_payload payload_json raw_payload stderr_payload
+	local command_payload raw_payload stderr_payload
 	command_payload=$(cat "$command")
-	if [ "$valid_json" = "true" ]; then
-		payload_json=$(cat "$payload_file")
-	else
-		payload_json='{}'
-	fi
 	raw_payload=$(head -c 4000 "$raw_file" 2>/dev/null || true)
 	stderr_payload=$(head -c 4000 "$stderr_file" 2>/dev/null || true)
 
@@ -332,10 +327,12 @@ build_row() {
 		--arg issue "$issue" \
 		--argjson exit_code "$exit_code" \
 		--argjson command "$command_payload" \
-		--argjson payload "$payload_json" \
+		--slurpfile payloads "$payload_file" \
+		--argjson valid_json "$valid_json" \
 		--arg raw_output "$raw_payload" \
 		--arg stderr "$stderr_payload" \
 		--arg worktree_path "$worktree_path" '
+      (if $valid_json then $payloads[0] else {} end) as $payload |
       def route:
         $payload.route
         // $payload.wait.route

@@ -17,7 +17,7 @@ The default `scripts/test-automated.sh` inspects a local test project without
 installing or restarting. Within a separately authorized maintenance window,
 its explicit installer stages a verified exact-SHA archive, resolves the exact
 app/config pair from the bundle's data-directory selector (including Community editions), waits for helper quiescence,
-checks all visible target projects, refuses outstanding target helper leases, and requests bounded normal quit. A cancelled
+checks all visible target projects, refuses outstanding helper leases on the running target, and requests bounded normal quit. A cancelled
 quit or unresolved/unsaved-document modal aborts the operation; an ordinary exit
 confirmation can be handled through the IDE's normal quit UI. It never force-kills
 or discards documents.

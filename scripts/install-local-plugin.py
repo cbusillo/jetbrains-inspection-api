@@ -82,7 +82,7 @@ def require_idle_status(status):
         raise ValueError("An exact target project is busy or its idleness is unproven.")
 
 
-def require_no_target_leases(leases, identities, app):
+def require_no_target_leases(leases, identities):
     sessions = {
         identity.get("session_id")
         for identity in identities
@@ -90,7 +90,7 @@ def require_no_target_leases(leases, identities, app):
     }
     pids = {identity.get("pid") for identity in identities if identity.get("pid")}
     projects = {
-        project.get("base_path")
+        Path(project["base_path"]).resolve()
         for identity in identities
         for project in identity.get("open_projects") or []
         if project.get("base_path")
@@ -98,15 +98,13 @@ def require_no_target_leases(leases, identities, app):
     for _, lease in leases:
         route = lease.get("route") or {}
         path = lease.get("lifecycle_target_path") or lease.get("worktree_root")
-        leased_app = lease.get("ide_app_path")
         if (
             lease.get("session_id") in sessions
             or route.get("ide", {}).get("pid") in pids
-            or path in projects
-            or (leased_app and Path(leased_app).resolve() == app.resolve())
+            or (path and Path(path).resolve() in projects)
         ):
             raise ValueError(
-                "An exact target IDE helper lease remains; reconcile it through the maintained helper before installation."
+                "An exact target IDE helper lease remains; run cleanup-helper-leases through the maintained helper before installation."
             )
 
 
@@ -436,7 +434,7 @@ def install(args):
         targets = [identity for identity in identities if identity.get("pid") in pids]
         if pids and len(targets) != 1:
             raise ValueError("Cannot prove plugin identity for the exact running IDE.")
-        require_no_target_leases(helper.read_local_leases(), targets, app)
+        require_no_target_leases(helper.read_local_leases(), targets)
         for identity in targets:
             for project in identity.get("open_projects") or []:
                 if not project.get("base_path"):

@@ -203,6 +203,17 @@ def preserve_generated_state(root, before, current, evidence, prepared_roots=())
     return str(archive)
 
 
+def sdk_removal_result(helper, root, evidence, apply=False):
+    args = ["uv", "run", str(helper), "remove-worktree", "--json"]
+    if apply:
+        args.append("--no-dry-run")
+    output = run(*args, "--repo", str(root))
+    record = evidence / ("sdk-apply-stdout.txt" if apply else "sdk-preview-stdout.txt")
+    record.write_text(output)
+    record.chmod(0o600)
+    return json.loads(output)
+
+
 def retire(receipt, payload, helper, evidence):
     root = Path(receipt["root"])
     if not root.is_dir() or root.is_symlink():
@@ -262,9 +273,7 @@ def retire(receipt, payload, helper, evidence):
     elif lock_reason is not None:
         return {"status": "retained", "reason": "foreign_lock"}
     # The maintained helper proves live SDK/lease safety before non-force removal.
-    preview = json.loads(
-        run("uv", "run", str(helper), "remove-worktree", "--json", "--repo", str(root))
-    )
+    preview = sdk_removal_result(helper, root, evidence)
     if preview.get("status") != "ok" or preview.get("dry_run") is not True:
         return {
             "status": "retained",
@@ -291,18 +300,7 @@ def retire(receipt, payload, helper, evidence):
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         raise
     try:
-        applied = json.loads(
-            run(
-                "uv",
-                "run",
-                str(helper),
-                "remove-worktree",
-                "--json",
-                "--no-dry-run",
-                "--repo",
-                str(root),
-            )
-        )
+        applied = sdk_removal_result(helper, root, evidence, apply=True)
         if (
             applied.get("status") != "ok"
             or applied.get("worktree_removed") is not True
@@ -381,9 +379,11 @@ def main():
             args.receipt.write_text(json.dumps(receipt, indent=2) + "\n")
             print(receipt["root"])
         else:
+            receipt = None
             try:
+                receipt = json.loads(args.receipt.read_text())
                 result = retire(
-                    json.loads(args.receipt.read_text()),
+                    receipt,
                     json.loads(args.payload.read_text()),
                     args.helper,
                     args.receipt.parent,
@@ -393,6 +393,12 @@ def main():
                     "status": "retained",
                     "reason": "retirement_failed",
                     "error": str(error),
+                    "worktree_present": (
+                        Path(receipt["root"]).exists()
+                        if isinstance(receipt, dict)
+                        and isinstance(receipt.get("root"), str)
+                        else None
+                    ),
                 }
                 if isinstance(error, subprocess.CalledProcessError):
                     records = Path(

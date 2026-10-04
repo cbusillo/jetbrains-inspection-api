@@ -377,6 +377,55 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual((records / "stdout.txt").stat().st_mode & 0o777, 0o600)
         self.assertTrue(self.worktree.exists())
 
+    def test_malformed_successful_sdk_apply_keeps_stdout_and_reports_presence(self):
+        receipt = self.evidence / "worktree.json"
+        payload = self.evidence / "payload.json"
+        output = self.evidence / "retirement.json"
+        receipt.write_text(json.dumps(self.receipt))
+        payload.write_text(json.dumps({"cleanup": {"status": "closed"}}))
+        original = smoke.run
+        smoke.run_original = original
+
+        def malformed(*args):
+            if args[0] == "uv":
+                result = self.helper_run(*args)
+                return "malformed apply output" if "--no-dry-run" in args else result
+            return original(*args)
+
+        with (
+            patch.object(smoke, "run", side_effect=malformed),
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "smoke-worktree.py",
+                    "retire",
+                    "--receipt",
+                    str(receipt),
+                    "--payload",
+                    str(payload),
+                    "--helper",
+                    "/helper.py",
+                    "--out",
+                    str(output),
+                ],
+            ),
+        ):
+            self.assertEqual(smoke.main(), 1)
+        result = json.loads(output.read_text())
+        self.assertFalse(result["worktree_present"])
+        self.assertEqual(
+            (self.evidence / "sdk-apply-stdout.txt").read_text(),
+            "malformed apply output",
+        )
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(
+            smoke.run(
+                "git", "-C", str(self.source), "rev-parse", self.receipt["branch"]
+            ),
+            self.receipt["head"],
+        )
+
     def test_preview_failure_keeps_worktree(self):
         original = smoke.run
 
@@ -587,16 +636,28 @@ class LocalInstaller(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "helper lease remains"),
             ):
                 installer.require_no_target_leases(
-                    [(Path("/lease.json"), lease)], [target], Path("/IDE.app")
+                    [(Path("/lease.json"), lease)], [target]
                 )
         foreign = {
             "session_id": "foreign-session",
             "route": {"ide": {"pid": 73}},
             "worktree_root": "/foreign/project",
         }
-        installer.require_no_target_leases(
-            [(Path("/foreign.json"), foreign)], [target], Path("/IDE.app")
-        )
+        installer.require_no_target_leases([(Path("/foreign.json"), foreign)], [target])
+
+    def test_reopened_project_lease_matches_physical_path_alias(self):
+        project = self.root / "project"
+        project.mkdir()
+        alias = self.root / "alias"
+        alias.symlink_to(project, target_is_directory=True)
+        target = {
+            "session_id": "new-session",
+            "pid": 42,
+            "open_projects": [{"base_path": str(project)}],
+        }
+        lease = {"session_id": "old-session", "worktree_root": str(alias) + "/"}
+        with self.assertRaisesRegex(ValueError, "helper lease remains"):
+            installer.require_no_target_leases([(Path("/lease.json"), lease)], [target])
 
     def test_installer_never_quits_an_idle_ide_with_an_outstanding_target_lease(self):
         app = self.root / "IDE.app"
@@ -609,6 +670,7 @@ class LocalInstaller(unittest.TestCase):
         target = {
             "session_id": "held-session",
             "pid": 42,
+            "port": 12345,
             "open_projects": [{"base_path": "/held/project"}],
         }
         helper = SimpleNamespace(
