@@ -5798,6 +5798,11 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         transitionInspectionRunStage(key, runId, InspectionRunStage.PUBLISH)
+        val diskMismatch = inspectionScopeDiskMismatch(project, snapshot.captureScope)
+        if (diskMismatch != null) {
+            resultsStore.setSnapshot(key, diskMismatchSnapshot(snapshot, diskMismatch))
+            return
+        }
 
         val stableInputValidationScope = supportsStableInputValidation(snapshot.captureScope)
         val hasInputValidation = inspectionInputFingerprint != null && projectContentTracker != null
@@ -6847,6 +6852,26 @@ class InspectionHandler : HttpRequestHandler() {
             )
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId == runId) state.copy(captureScope = effectiveCaptureScope) else state
+            }
+            val diskMismatch = inspectionScopeDiskMismatch(project, effectiveCaptureScope)
+            if (diskMismatch != null) {
+                resultsStore.setSnapshot(
+                    key,
+                    diskMismatchSnapshot(
+                        InspectionResultsSnapshot(
+                            problems = emptyList(),
+                            timestamp = currentTimeMs(),
+                            projectState = inspectionInputState,
+                            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                            source = "inspection_input_validation",
+                            captureScope = effectiveCaptureScope,
+                            runId = runId,
+                            triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                        ),
+                        diskMismatch,
+                    ),
+                )
+                return
             }
             var profile = resolveInspectionProfile(profileManager, requestedProfileName)
             if (profile == null) {
@@ -8120,6 +8145,35 @@ class InspectionHandler : HttpRequestHandler() {
         }
         return diagnostic
     }
+
+    private fun inspectionScopeDiskMismatch(project: Project, scope: InspectionCaptureScope?): String? {
+        for (path in scope?.resolvedFiles.orEmpty()) {
+            val file = LocalFileSystem.getInstance().findFileByPath(path) ?: return path
+            if (!file.isInLocalFileSystem || file.fileType.isBinary) continue
+            val psiText = ApplicationManager.getApplication().runReadAction<String?, Exception> {
+                PsiManager.getInstance(project).findFile(file)?.text
+            } ?: return path
+            val diskText = Files.readString(Paths.get(path), file.charset)
+                .removePrefix("\uFEFF")
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+            if (psiText != diskText) return path
+        }
+        return null
+    }
+
+    private fun diskMismatchSnapshot(snapshot: InspectionResultsSnapshot, path: String): InspectionResultsSnapshot =
+        snapshot.copy(
+            problems = emptyList(),
+            outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "inspection_input_validation",
+            note = "Scoped PSI does not match the file on disk. Synchronize the file before inspecting again.",
+            captureIncompleteReason = CaptureIncompleteReason.INSPECTION_INPUTS_CHANGED,
+            captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                "exit_reason" to "disk_psi_content_mismatch",
+                "disk_psi_mismatch_file" to path,
+            ),
+        )
 
     private fun syncProjectState(project: Project) {
         val application = ApplicationManager.getApplication()
