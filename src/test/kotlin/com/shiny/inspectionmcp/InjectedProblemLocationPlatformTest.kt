@@ -48,6 +48,7 @@ import org.assertj.core.api.Assertions.assertThatThrownBy
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.extension.RegisterExtension
 
 class InjectedProblemLocationPlatformTest {
@@ -163,6 +164,7 @@ class InjectedProblemLocationPlatformTest {
     }
 
     @Test
+    @Timeout(20)
     fun `proof deadline cancels slow injected work and keeps proof incomplete`() {
         withInjectedHost { hostFile ->
             injectedSlowVisitorStarted.set(false)
@@ -270,9 +272,8 @@ class InjectedProblemLocationPlatformTest {
             object : PsiElementVisitor() {
                 override fun visitFile(file: PsiFile) {
                     injectedSlowVisitorStarted.set(true)
-                    val finishAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
                     try {
-                        while (System.nanoTime() < finishAt) {
+                        while (true) {
                             ProgressManager.checkCanceled()
                             Thread.sleep(5)
                         }
