@@ -9,6 +9,8 @@ import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+import com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool
+import com.intellij.codeInspection.ex.UnfairLocalInspectionTool
 import com.intellij.codeInspection.InspectionManager
 import com.intellij.codeInspection.LocalQuickFix
 import com.intellij.codeInspection.ProblemHighlightType
@@ -43,6 +45,8 @@ import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 
@@ -106,6 +110,8 @@ class InjectedProblemLocationPlatformTest {
     @Test
     fun `injected proof respects selected profile disablement and host suppression`() {
         withInjectedHost { hostFile ->
+            val enabled = runProof(hostFile, InjectedFindingInspection())
+            assertThat(enabled.proofProblems).hasSize(2)
             val disabled = runProof(hostFile, InjectedFindingInspection(), enabled = false)
             assertThat(disabled.profileDisabledObligationCount).isEqualTo(1)
             assertThat(disabled.executedToolCount).isZero()
@@ -124,6 +130,48 @@ class InjectedProblemLocationPlatformTest {
             val proof = runProof(hostFile, InjectedBatchAnnotatorInspection())
             assertThat(proof.languageNonApplicableObligationCount).isEqualTo(1)
             assertThat(proof.executedToolCount).isZero()
+            assertThat(proof.proofEstablished).isFalse()
+            assertThat(proof.proofProblems).isEmpty()
+        }
+    }
+
+    @Test
+    fun `paired host-only batch wrappers do not claim injected execution`() {
+        withInjectedHost { hostFile ->
+            val proof = runProof(
+                hostFile, PairedInjectedInspection(), batchTools = listOf(InjectedBatchAnnotatorInspection()),
+            )
+            assertThat(proof.languageNonApplicableObligationCount).isEqualTo(1)
+            assertThat(proof.executedToolCount).isZero()
+            assertThat(proof.proofEstablished).isFalse()
+            assertThat(proof.proofProblems).isEmpty()
+        }
+    }
+
+    @Test
+    fun `unavailable injected batch wrappers stay applicable and unproven`() {
+        withInjectedHost { hostFile ->
+            val unpaired = runProof(hostFile, UnpairedInjectedInspection())
+            assertThat(unpaired.nonBatchExcludedObligationCount).isEqualTo(1)
+            assertThat(unpaired.missingScopeExecutionCoverageCount).isEqualTo(1)
+            assertThat(unpaired.proofEstablished).isFalse()
+
+            val missingCounterpart = runProof(hostFile, PairedInjectedInspection())
+            assertThat(missingCounterpart.missingWrapperCount).isEqualTo(1)
+            assertThat(missingCounterpart.proofEstablished).isFalse()
+        }
+    }
+
+    @Test
+    fun `proof deadline cancels slow injected work and keeps proof incomplete`() {
+        withInjectedHost { hostFile ->
+            injectedSlowVisitorStarted.set(false)
+            injectedSlowVisitorCancelled.set(false)
+            val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 500 }
+            val proof = runProof(hostFile, InjectedSlowInspection(), handler = handler)
+            assertThat(injectedSlowVisitorStarted.get()).isTrue()
+            assertThat(injectedSlowVisitorCancelled.get()).isTrue()
+            assertThat(proof.hitTimeLimit).describedAs(proof.toString()).isTrue()
             assertThat(proof.proofEstablished).isFalse()
             assertThat(proof.proofProblems).isEmpty()
         }
@@ -166,11 +214,17 @@ class InjectedProblemLocationPlatformTest {
         }
     }
 
-    private fun runProof(hostFile: PsiFile, tool: LocalInspectionTool, enabled: Boolean = true): BoundedExecutionProofResult {
+    private fun runProof(
+        hostFile: PsiFile,
+        tool: LocalInspectionTool,
+        enabled: Boolean = true,
+        batchTools: List<LocalInspectionTool> = emptyList(),
+        handler: InspectionHandler = InspectionHandler(),
+    ): BoundedExecutionProofResult {
         val project = projectExtension.project
-        val wrapper = LocalInspectionToolWrapper(tool)
-        HighlightDisplayKey.findOrRegister(wrapper.shortName, wrapper.displayName)
-        val supplier = InspectionToolsSupplier.Simple(listOf(wrapper as InspectionToolWrapper<*, *>))
+        val wrappers = (listOf(tool) + batchTools).map(::LocalInspectionToolWrapper)
+        wrappers.forEach { HighlightDisplayKey.findOrRegister(it.shortName, it.displayName) }
+        val supplier = InspectionToolsSupplier.Simple(wrappers.map { it as InspectionToolWrapper<*, *> })
         val manager = InspectionProfileManager.getInstance() as BaseInspectionProfileManager
         val profile = InspectionProfileImpl("injected-proof-${System.nanoTime()}", supplier, manager)
         val previousInit = InspectionProfileImpl.INIT_INSPECTIONS
@@ -181,7 +235,7 @@ class InjectedProblemLocationPlatformTest {
             InspectionProfileImpl.INIT_INSPECTIONS = previousInit
         }
         profile.setToolEnabled(tool.shortName, enabled, project)
-        return InspectionHandler().runBoundedExecutionProof(
+        return handler.runBoundedExecutionProof(
             enabledTools = InspectionHandler.EnabledLocalToolEnumeration(setOf(tool.shortName), 0, emptyList()),
             profile = profile,
             project = project,
@@ -204,6 +258,31 @@ class InjectedProblemLocationPlatformTest {
     }
 
     private class InjectedBatchAnnotatorInspection : InjectedFindingInspection(), ExternalAnnotatorBatchInspection
+
+    private class UnpairedInjectedInspection : InjectedFindingInspection(), UnfairLocalInspectionTool
+
+    private class PairedInjectedInspection : InjectedFindingInspection(), PairedUnfairLocalInspectionTool {
+        override fun getInspectionForBatchShortName(): String = InjectedBatchAnnotatorInspection().shortName
+    }
+
+    private class InjectedSlowInspection : InjectedFindingInspection() {
+        override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean, session: LocalInspectionToolSession): PsiElementVisitor =
+            object : PsiElementVisitor() {
+                override fun visitFile(file: PsiFile) {
+                    injectedSlowVisitorStarted.set(true)
+                    val finishAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+                    try {
+                        while (System.nanoTime() < finishAt) {
+                            ProgressManager.checkCanceled()
+                            Thread.sleep(5)
+                        }
+                    } catch (error: ProcessCanceledException) {
+                        injectedSlowVisitorCancelled.set(true)
+                        throw error
+                    }
+                }
+            }
+    }
 
     private class HostSuppressedInjectedInspection : InjectedFindingInspection() {
         override fun isSuppressedFor(element: PsiElement): Boolean = element is XmlAttributeValue
@@ -246,6 +325,9 @@ class InjectedProblemLocationPlatformTest {
     }
 
     companion object {
+        private val injectedSlowVisitorStarted = AtomicBoolean()
+        private val injectedSlowVisitorCancelled = AtomicBoolean()
+
         @JvmField
         @RegisterExtension
         val projectExtension = ProjectExtension()

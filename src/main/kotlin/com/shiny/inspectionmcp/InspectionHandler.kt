@@ -10648,7 +10648,14 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): Boolean = app.runReadAction<Boolean, Exception> {
-                val inspectInjectedPsi = sourceWrapper.toolWrapper.tool !is com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
+                val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                sourceWrapper.resolvedBatchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                    project,
+                    candidate.value,
+                    profile,
+                    localWrapper,
+                )
+                val inspectInjectedPsi = sourceWrapper.resolvedBatchWrapper?.let(::canInspectInjectedPsi) ?: true
                 val languages = fileLanguages.getOrPut(candidate.value to inspectInjectedPsi) {
                     val collected = linkedSetOf<com.intellij.lang.Language>()
                     val injectionManager = com.intellij.lang.injection.InjectedLanguageManager.getInstance(project)
@@ -10700,13 +10707,7 @@ class InspectionHandler : HttpRequestHandler() {
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): ExactFileProofBatchCapability = app.runReadAction<ExactFileProofBatchCapability, Exception> {
                 val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                    project,
-                    candidate.value,
-                    profile,
-                    localWrapper,
-                )
-                sourceWrapper.resolvedBatchWrapper = batchWrapper
+                val batchWrapper = sourceWrapper.resolvedBatchWrapper
                 if (batchWrapper != null) {
                     ExactFileProofBatchCapability.BATCH_RUNNABLE
                 } else {
@@ -10850,7 +10851,7 @@ class InspectionHandler : HttpRequestHandler() {
                             ?.inspectionForBatchShortName
                     }.getOrNull()
                 val languageIds = runCatching {
-                    fileLanguages[candidate.value to (sourceTool !is com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection)]
+                    fileLanguages[candidate.value to (sourceWrapper?.resolvedBatchWrapper?.let(::canInspectInjectedPsi) ?: true)]
                         ?.map { it.id }
                         ?.sorted()
                         ?: candidate.value.viewProvider.languages.map { it.id }.sorted()
