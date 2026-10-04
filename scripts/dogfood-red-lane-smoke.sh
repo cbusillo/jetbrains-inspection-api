@@ -211,6 +211,10 @@ else
 	printf '%s\n' '{"status":"retained","reason":"keep_requested"}' >"$RETIREMENT"
 fi
 
+if ! jq -e 'type == "object" and (.status == "removed" or .status == "retained")' "$RETIREMENT" >/dev/null 2>&1; then
+	printf '%s\n' '{"status":"retained","reason":"retirement_result_unproven"}' >"$RETIREMENT"
+fi
+
 RETIREMENT_STATUS=$(jq -r .status "$RETIREMENT")
 VERDICT=$(jq -r '.verdict // .inspection_verdict // ""' "$PAYLOAD_FILE")
 TOTAL=$(jq -r '.total_problems // 0' "$PAYLOAD_FILE")
@@ -229,6 +233,8 @@ else
 		else
 			BUCKET="red_unknown_terminal:$AGENT_BUCKET"
 		fi
+	elif [ "$VERDICT" = "RED" ] && [ "$TOTAL" != "0" ] && [ "$TOTAL" != "null" ]; then
+		BUCKET="red_confirmed_project_retained"
 	else
 		BUCKET="red_not_confirmed"
 	fi

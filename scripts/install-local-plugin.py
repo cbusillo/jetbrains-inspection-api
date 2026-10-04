@@ -11,6 +11,7 @@ import importlib.util
 import json
 import plistlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -144,10 +145,21 @@ def process_inventory():
 
 
 def active_helpers(processes):
-    return any(
-        re.search(r"^\s*\d+\s+(?:\S*/)?(?:uv|python[0-9.]*)\s+.*jb-inspect\.py", row)
-        for row in processes.splitlines()
-    )
+    for row in processes.splitlines():
+        fields = row.strip().split(None, 1)
+        if len(fields) != 2:
+            continue
+        try:
+            args = shlex.split(fields[1])
+        except ValueError:
+            return True
+        if not args or not re.fullmatch(r"(?:uv|python[0-9.]*)", Path(args[0]).name):
+            continue
+        # The first script belongs to the interpreter; later --helper arguments do not.
+        scripts = [arg for arg in args[1:] if arg.endswith(".py")]
+        if scripts and Path(scripts[0]).name == "jb-inspect.py":
+            return True
+    return False
 
 
 def main_processes(processes, executable):
@@ -170,59 +182,90 @@ def wait_no_helpers(timeout):
         time.sleep(1)
 
 
+def running_apps():
+    script = """ObjC.import('AppKit');
+var apps = $.NSWorkspace.sharedWorkspace.runningApplications, rows = [];
+for (var i = 0; i < apps.count; i++) {
+    var app = apps.objectAtIndex(i), path = ObjC.unwrap(app.bundleURL.path);
+    if (path) rows.push({pid: Number(app.processIdentifier), path: path});
+}
+JSON.stringify(rows);"""
+    rows = json.loads(
+        subprocess.check_output(
+            ["osascript", "-l", "JavaScript", "-e", script], text=True, timeout=10
+        )
+    )
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict)
+        or not isinstance(row.get("pid"), int)
+        or not isinstance(row.get("path"), str)
+        for row in rows
+    ):
+        raise ValueError("Native running-app inventory is unproven.")
+    return rows
+
+
 def app_is_running(app):
-    result = subprocess.check_output(
-        [
-            "osascript",
-            "-e",
-            "on run argv",
-            "-e",
-            "return application (item 1 of argv) is running",
-            "-e",
-            "end run",
-            str(app),
-        ],
-        text=True,
-        timeout=10,
-    ).strip()
-    if result not in {"true", "false"}:
-        raise ValueError("Native app-running state is unproven.")
-    return result == "true"
+    return any(Path(row["path"]).resolve() == app.resolve() for row in running_apps())
+
+
+def require_no_config_peer(app):
+    metadata_path = app / "Contents/Resources/product-info.json"
+    if not metadata_path.is_file():
+        raise ValueError("Target bundle config selector is unproven.")
+    selector = json.loads(metadata_path.read_text()).get("dataDirectoryName")
+    if not selector:
+        raise ValueError("Target bundle config selector is unproven.")
+    for row in running_apps():
+        peer = Path(row["path"]).resolve()
+        if peer == app.resolve():
+            continue
+        metadata = peer / "Contents/Resources/product-info.json"
+        if (
+            metadata.is_file()
+            and json.loads(metadata.read_text()).get("dataDirectoryName") == selector
+        ):
+            raise ValueError(
+                f"Another running IDE shares the target config; quit it normally first: {peer}"
+            )
 
 
 def require_stopped(executable):
-    if main_processes(process_inventory(), executable) or app_is_running(
-        executable.parents[2]
-    ):
+    if main_processes(process_inventory(), executable):
         raise ValueError("Exact target IDE is still running; payload retained.")
+    app = executable.parents[2]
+    if app_is_running(app):
+        raise ValueError("Exact target IDE is still running; payload retained.")
+    require_no_config_peer(app)
 
 
 def quit_normally(app, executable, timeout):
+    require_no_config_peer(app)
     pids = main_processes(process_inventory(), executable)
-    if len(pids) > 1:
-        raise ValueError("Multiple target IDE processes; do not quit foreign sessions.")
+    native = [
+        row["pid"]
+        for row in running_apps()
+        if Path(row["path"]).resolve() == app.resolve()
+    ]
+    if len(pids) > 1 or pids != native:
+        raise ValueError(
+            "Exact target process and native bundle identity disagree; quit normally by hand."
+        )
     if not pids:
-        if app_is_running(app):
-            raise ValueError(
-                "The app is running through an unverified executable identity; quit it normally before installation."
-            )
         return
+    script = """ObjC.import('AppKit');
+function run(argv) {
+    var app = $.NSRunningApplication.runningApplicationWithProcessIdentifier(Number(argv[0]));
+    if (!app || ObjC.unwrap(app.bundleURL.path) !== argv[1]) throw Error('Target PID or bundle changed');
+    if (!app.terminate) throw Error('Normal quit request was refused');
+}"""
     subprocess.run(
-        [
-            "osascript",
-            "-e",
-            "on run argv",
-            "-e",
-            "tell application (item 1 of argv) to quit",
-            "-e",
-            "end run",
-            str(app),
-        ],
+        ["osascript", "-l", "JavaScript", "-e", script, str(pids[0]), str(app)],
         check=True,
         timeout=timeout,
     )
     deadline = time.monotonic() + timeout
-    while main_processes(process_inventory(), executable):
+    while main_processes(process_inventory(), executable) or app_is_running(app):
         if time.monotonic() >= deadline:
             raise ValueError(
                 "Normal quit unresolved (possibly unsaved documents or a modal); install aborted."
@@ -248,6 +291,21 @@ def replace_payload(candidate, target, evidence, executable):
     target.parent.mkdir(parents=True, exist_ok=True)
     sibling = Path(
         tempfile.mkdtemp(prefix=".inspection-candidate-", dir=target.parent.parent)
+    )
+    (evidence / "staging.json").write_text(
+        json.dumps(
+            {
+                "staging": str(sibling),
+                "previous": str(sibling / "previous"),
+                "target": str(target),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
+    print(
+        f"Preserved staging and rollback paths: {evidence / 'staging.json'}",
+        file=sys.stderr,
     )
     staged = sibling / PLUGIN
     previous = sibling / "previous"

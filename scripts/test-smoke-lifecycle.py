@@ -350,7 +350,12 @@ class LocalInstaller(unittest.TestCase):
             installer.require_stopped(executable)
         with (
             patch.object(installer, "process_inventory", return_value=""),
-            patch.object(installer, "app_is_running", return_value=True),
+            patch.object(installer, "require_no_config_peer"),
+            patch.object(
+                installer,
+                "running_apps",
+                return_value=[{"pid": 42, "path": "/IDE.app"}],
+            ),
             self.assertRaises(ValueError),
         ):
             installer.quit_normally(Path("/IDE.app"), executable, 1)
@@ -418,6 +423,57 @@ class LocalInstaller(unittest.TestCase):
             installer.active_helpers("4 /bin/uv uv run /skills/jb-inspect.py inspect\n")
         )
 
+    def test_installer_helper_argument_does_not_block_its_own_window(self):
+        for script in ["install-local-plugin.py", "retire-smoke-trust.py"]:
+            for interpreter in ["/bin/uv run", "/bin/python3"]:
+                with self.subTest(script=script, interpreter=interpreter):
+                    self.assertFalse(
+                        installer.active_helpers(
+                            f"4 {interpreter} /repo/scripts/{script} --helper /skills/jb-inspect.py\n"
+                        )
+                    )
+        self.assertTrue(
+            installer.active_helpers(
+                "5 /bin/python3 /skills/jb-inspect.py get-status --json\n"
+            )
+        )
+
+    def test_running_peer_with_shared_config_blocks_cold_bundle(self):
+        app = self.root / "stable.app"
+        peer = self.root / "eap.app"
+        metadata = {"dataDirectoryName": "FixtureSelector"}
+        for bundle in [app, peer]:
+            resources = bundle / "Contents/Resources"
+            resources.mkdir(parents=True)
+            (resources / "product-info.json").write_text(json.dumps(metadata))
+        with patch.object(
+            installer, "running_apps", return_value=[{"pid": 73, "path": str(peer)}]
+        ):
+            with self.assertRaisesRegex(ValueError, "shares the target config"):
+                installer.require_no_config_peer(app)
+            metadata["dataDirectoryName"] = "OtherSelector"
+            (peer / "Contents/Resources/product-info.json").write_text(
+                json.dumps(metadata)
+            )
+            installer.require_no_config_peer(app)
+
+    def test_normal_quit_refuses_pid_bundle_disagreement(self):
+        with (
+            patch.object(installer, "require_no_config_peer"),
+            patch.object(
+                installer, "process_inventory", return_value="42 /IDE/launcher\n"
+            ),
+            patch.object(
+                installer,
+                "running_apps",
+                return_value=[{"pid": 73, "path": "/IDE.app"}],
+            ),
+            patch.object(installer.subprocess, "run") as command,
+            self.assertRaisesRegex(ValueError, "identity disagree"),
+        ):
+            installer.quit_normally(Path("/IDE.app"), Path("/IDE/launcher"), 1)
+        command.assert_not_called()
+
     def test_helper_wait_expires_without_quitting(self):
         with (
             patch.object(
@@ -437,13 +493,19 @@ class LocalInstaller(unittest.TestCase):
                 "process_inventory",
                 return_value="42 /IDE/launcher /IDE/launcher\n",
             ),
+            patch.object(installer, "require_no_config_peer"),
+            patch.object(
+                installer,
+                "running_apps",
+                return_value=[{"pid": 42, "path": "/IDE.app"}],
+            ),
             patch.object(installer.subprocess, "run") as command,
             patch.object(installer.time, "monotonic", side_effect=[0, 2]),
             self.assertRaisesRegex(ValueError, "Normal quit unresolved"),
         ):
             installer.quit_normally(Path("/IDE.app"), Path("/IDE/launcher"), 1)
         self.assertEqual(command.call_count, 1)
-        self.assertEqual(command.call_args.args[0][0], "osascript")
+        self.assertEqual(command.call_args.args[0][-2:], ["42", "/IDE.app"])
 
     def test_trust_retirement_preserves_other_roots_and_preferences(self):
         from xml.etree import ElementTree

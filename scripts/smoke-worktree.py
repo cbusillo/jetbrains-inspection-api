@@ -9,6 +9,7 @@ import hashlib
 import json
 import platform
 import shutil
+import signal
 import subprocess
 import tempfile
 from pathlib import Path
@@ -225,8 +226,16 @@ def retire(receipt, payload, helper, evidence):
             "reason": "project_changed_during_preview",
             "preview": preview,
         }
-    if lock_reason is not None:
-        run("git", "-C", receipt["source"], "worktree", "unlock", str(root))
+    # Defer ordinary termination until removal settles and the original lock is restored.
+    previous_mask = signal.pthread_sigmask(
+        signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT}
+    )
+    try:
+        if lock_reason is not None:
+            run("git", "-C", receipt["source"], "worktree", "unlock", str(root))
+    except BaseException:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+        raise
     try:
         applied = json.loads(
             run(
@@ -252,22 +261,25 @@ def retire(receipt, payload, helper, evidence):
                 "apply": applied,
             }
     finally:
-        if (
-            lock_reason is not None
-            and root.exists()
-            and gitdir.exists()
-            and not lock.exists()
-        ):
-            run(
-                "git",
-                "-C",
-                receipt["source"],
-                "worktree",
-                "lock",
-                "--reason",
-                lock_reason,
-                str(root),
-            )
+        try:
+            if (
+                lock_reason is not None
+                and root.exists()
+                and gitdir.exists()
+                and not lock.exists()
+            ):
+                run(
+                    "git",
+                    "-C",
+                    receipt["source"],
+                    "worktree",
+                    "lock",
+                    "--reason",
+                    lock_reason,
+                    str(root),
+                )
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
     # No smoke commit was created; delete only the branch still at its original head.
     branch_cleanup = {"status": "not_needed"}
     if (

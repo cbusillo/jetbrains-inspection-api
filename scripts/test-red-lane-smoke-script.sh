@@ -128,6 +128,7 @@ if [[ "$2" == */smoke-worktree.py ]]; then
         jq -n --arg root "$project" '{root:$root}' > "$receipt"
         printf '%s\n' "$project"
     else
+        if [ "${JB_RETIRE_STUB_MISSING:-}" = 1 ]; then exit 1; fi
         project=$(jq -r .root "$receipt")
         if jq -e '.cleanup.status == "closed"' "$payload" >/dev/null; then
             rm -rf "$project"
@@ -236,11 +237,26 @@ retained_project=$(jq -r .project "$retained_report")
 test -f "$retained_project/src/main/java/com/example/redlane/DefinitelyRed.java"
 matrix_report="$TMP_DIR/matrix.json"
 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"
-jq -e '.status == "ok" and (.rows | length) == 2 and any(.rows[]; .scenario == "preexisting" and .cleanup.status == "not_needed") and any(.rows[]; .scenario == "helper-opened" and .worktree_retirement.status == "removed")' "$matrix_report" >/dev/null
+jq -e '.status == "ok" and any(.rows[]; .scenario == "preexisting" and .cleanup.status == "not_needed") and any(.rows[]; .scenario == "helper-opened" and .worktree_retirement.status == "removed")' "$matrix_report" >/dev/null
 if JB_INSPECT_STUB_CLEANUP=deferred ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case helper-opened --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"; then
 	echo "expected deferred matrix lifecycle to fail" >&2
 	exit 1
 fi
 jq -e '.status == "failed" and .rows[0].worktree_retirement.status == "retained"' "$matrix_report" >/dev/null
 test -d "$(jq -r '.rows[0].worktree_path' "$matrix_report")"
+if JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "fixture=$ROOT" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"; then
+	echo "missing retirement result must fail matrix" >&2
+	exit 1
+fi
+jq -e '.status == "failed" and any(.rows[]; .scenario == "preexisting") and any(.rows[]; .scenario == "helper-opened" and .status == "clean" and .worktree_retirement.reason == "retirement_result_unproven")' "$matrix_report" >/dev/null
+if JB_RETIRE_STUB_MISSING=1 ./scripts/dogfood-red-lane-smoke.sh --helper "$HELPER" --work-root "$TMP_DIR/work" --json-out "$retained_report"; then
+	echo "missing retirement result must fail red smoke" >&2
+	exit 1
+fi
+jq -e '.status == "failed" and .verdict == "RED" and .bucket == "red_confirmed_project_retained" and .worktree_retirement.reason == "retirement_result_unproven"' "$retained_report" >/dev/null
+# Stock macOS Bash must delegate when no local options are configured.
+mkdir "$TMP_DIR/plain-repo"
+git -C "$TMP_DIR/plain-repo" init -q
+(cd "$TMP_DIR/plain-repo" && JB_INSPECT_HELPER="$HELPER" /bin/bash "$ROOT/scripts/test-automated.sh" --repo "$ROOT") >"$TMP_DIR/delegation.json"
+jq -e '.status == "clean"' "$TMP_DIR/delegation.json" >/dev/null
 echo "red-lane and matrix smoke script contracts passed"

@@ -374,6 +374,7 @@ build_row() {
           // $payload.wait.capture_diagnostic.exit_reason
           // null
         ),
+        plugin_build_fingerprint: ($payload.identity.plugin_build_fingerprint // null),
         cleanup: ($payload.cleanup // null),
         worktree_retirement: ($payload.worktree_retirement // null),
         open_attempts: open_attempts,
@@ -514,8 +515,15 @@ run_case() {
 
 	if [ -n "$worktree_path" ] && [ "$DRY_RUN" -eq 0 ] && [ "$KEEP_WORKTREES" -eq 0 ]; then
 		uv run "$WORKTREE_TOOL" retire --receipt "$TMP_DIR/worktree-$ROW_INDEX.json" --payload "$payload_file" --helper "$HELPER" --out "$TMP_DIR/retirement-$ROW_INDEX.json" >&2 || true
-		jq --slurpfile retirement "$TMP_DIR/retirement-$ROW_INDEX.json" '. + {worktree_retirement: $retirement[0]}' "$payload_file" >"$payload_file.updated"
-		mv "$payload_file.updated" "$payload_file"
+		local retirement_file="$TMP_DIR/retirement-$ROW_INDEX.json"
+		if ! jq -e 'type == "object" and (.status == "removed" or .status == "retained")' "$retirement_file" >/dev/null 2>&1; then
+			printf '%s\n' '{"status":"retained","reason":"retirement_result_unproven"}' >"$retirement_file"
+		fi
+		if jq --slurpfile retirement "$retirement_file" '. + {worktree_retirement: $retirement[0]}' "$payload_file" >"$payload_file.updated"; then
+			mv "$payload_file.updated" "$payload_file"
+		else
+			return 1
+		fi
 	fi
 	local bucket
 	bucket=$(classify_payload "$scenario" "$exit_code" "$payload_file" "$valid_json")

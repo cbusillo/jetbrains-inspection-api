@@ -30,4 +30,4 @@ OPTIONS=()
 [ -z "$TEST_PROJECT_PATH" ] || OPTIONS+=(--repo "$TEST_PROJECT_PATH")
 [ -z "$IDE_TYPE" ] || OPTIONS+=(--ide "$IDE_TYPE")
 [ -z "$IDE_VERSION" ] || OPTIONS+=(--ide-version "$IDE_VERSION")
-exec uv run "$HELPER" inspect-closeout --json "${OPTIONS[@]}" "$@"
+exec uv run "$HELPER" inspect-closeout --json ${OPTIONS[@]+"${OPTIONS[@]}"} "$@"
