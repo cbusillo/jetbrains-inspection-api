@@ -78,11 +78,15 @@ class BackgroundDiskFreshnessPlatformTest {
         assertThat(tool.visits.get()).isZero()
 
         runInEdtAndGet {
-            Files.writeString(Path.of(path), "\uFEFF<root>\r\n\r\n<new/></root>\r\n")
+            val bytes = "\uFEFF<root>\r\n\r\n<new/><!-- ".toByteArray() + byteArrayOf(0xff.toByte()) + " --></root>\r\n".toByteArray()
+            Files.write(Path.of(path), bytes)
             Files.setLastModifiedTime(Path.of(path), FileTime.fromMillis(Files.getLastModifiedTime(Path.of(path)).toMillis() + 2000))
             val file = requireNotNull(LocalFileSystem.getInstance().findFileByPath(path))
             VfsUtil.markDirtyAndRefresh(false, false, false, file)
             PsiDocumentManager.getInstance(project).commitAllDocuments()
+            assertThat(file.charset).isEqualTo(Charsets.UTF_8)
+            assertThat(ReadAction.compute<String, RuntimeException> { requireNotNull(PsiManager.getInstance(project).findFile(file)).text })
+                .contains("\uFFFD")
         }
         val fresh = inspect(handler, uri, project)
         assertThat(fresh).describedAs(fresh).contains("\"inspection_verdict\": \"RED\"")
@@ -91,10 +95,18 @@ class BackgroundDiskFreshnessPlatformTest {
         assertThat(problems).doesNotContain("disk finding old")
         assertThat(tool.visits.get()).isPositive()
 
+        val synchronizedBytes = Files.readAllBytes(Path.of(path))
         tool.replaceDuringInspection = true
         val changedDuringRun = inspect(handler, uri, project)
         assertThat(changedDuringRun).describedAs(changedDuringRun)
             .contains("\"inspection_verdict\": \"UNKNOWN\"", "disk_psi_content_mismatch", "inspection_inputs_changed")
+
+        Files.write(Path.of(path), synchronizedBytes)
+        tool.replaceDuringInspection = false
+        tool.deleteDuringInspection = true
+        val deletedDuringRun = inspect(handler, uri, project)
+        assertThat(deletedDuringRun).describedAs(deletedDuringRun)
+            .contains("\"inspection_verdict\": \"UNKNOWN\"", "scoped_disk_read_failed", "inspection_inputs_changed")
     }
 
     private fun inspect(handler: InspectionHandler, uri: String, project: Project): String {
@@ -150,6 +162,7 @@ class BackgroundDiskFreshnessPlatformTest {
     private class DiskFindingInspection : LocalInspectionTool() {
         val visits = AtomicInteger()
         var replaceDuringInspection = false
+        var deleteDuringInspection = false
         override fun getDisplayName(): String = shortName
         override fun getGroupDisplayName(): String = "Disk freshness tests"
         override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean, session: LocalInspectionToolSession): PsiElementVisitor =
@@ -161,9 +174,12 @@ class BackgroundDiskFreshnessPlatformTest {
                     if (replaceDuringInspection) {
                         val path = Path.of(file.virtualFile.path)
                         val timestamp = Files.getLastModifiedTime(path)
-                        Files.writeString(path, Files.readString(path).replace("<new/>", "<old/>"))
+                        val bytes = String(Files.readAllBytes(path), Charsets.ISO_8859_1)
+                            .replace("<new/>", "<old/>").toByteArray(Charsets.ISO_8859_1)
+                        Files.write(path, bytes)
                         Files.setLastModifiedTime(path, timestamp)
                     }
+                    if (deleteDuringInspection) Files.deleteIfExists(Path.of(file.virtualFile.path))
                 }
             }
     }

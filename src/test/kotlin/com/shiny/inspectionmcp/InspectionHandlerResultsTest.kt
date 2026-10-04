@@ -22,8 +22,56 @@ import com.intellij.openapi.fileEditor.FileDocumentManager
 import io.netty.handler.codec.http.HttpResponseStatus
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.nio.file.Files
 
 internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
+    @Test
+    fun `disk validation cannot replace the snapshot of a newer run`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val key = projectKey(mockProject)
+        val path = Files.createTempFile("publication-disk-race-", ".txt")
+        try {
+            Files.writeString(path, "disk contents")
+            val file = mockk<VirtualFile>()
+            every { file.isInLocalFileSystem } returns true
+            val fileType = mockk<FileType>()
+            every { fileType.isBinary } returns false
+            every { file.fileType } returns fileType
+            every { file.charset } returns Charsets.UTF_8
+            every { LocalFileSystem.getInstance().findFileByPath(path.toString()) } returns file
+            val psiFile = mockk<PsiFile>()
+            val psiManager = mockk<PsiManager>()
+            mockkStatic(PsiManager::class)
+            every { PsiManager.getInstance(mockProject) } returns psiManager
+            every { psiManager.findFile(file) } returns psiFile
+            val scope = InspectionCaptureScope(scopeParam = "files", resolvedFiles = listOf(path.toString()))
+            val snapshot = InspectionResultsSnapshot(
+                problems = emptyList(),
+                timestamp = System.currentTimeMillis(),
+                projectState = InspectionProjectStateSnapshot(11L, 0),
+                outcome = InspectionSnapshotOutcome.CLEAN_CONFIRMED,
+                source = "global_context",
+                captureScope = scope,
+                runId = 1L,
+            )
+            val newerSnapshot = snapshot.copy(runId = 2L, source = "newer_run")
+            setInspectionRunState(key, InspectionRunState(requireNotNull(snapshot.runId), snapshot.timestamp, true))
+            every { psiFile.text } answers {
+                setInspectionRunState(key, InspectionRunState(requireNotNull(newerSnapshot.runId), snapshot.timestamp, false))
+                InspectionResultsStore.setSnapshot(key, newerSnapshot)
+                "stale PSI"
+            }
+
+            publishInspectionSnapshot(snapshot, snapshot.projectState, false, null, null)
+
+            assertEquals(newerSnapshot, InspectionResultsStore.getSnapshot(key))
+        } finally {
+            Files.deleteIfExists(path)
+        }
+    }
+
     @Test
     fun `test problems endpoint accepts grammar and typo severity filters`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
