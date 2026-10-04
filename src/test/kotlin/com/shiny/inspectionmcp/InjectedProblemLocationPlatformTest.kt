@@ -172,7 +172,7 @@ class InjectedProblemLocationPlatformTest {
             val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 500 }
             val proof = runProof(hostFile, InjectedSlowInspection(), handler = handler)
             assertThat(injectedSlowVisitorStarted.get()).isTrue()
-            assertThat(injectedSlowVisitorCancelled.get()).isTrue()
+            assertThat(injectedSlowVisitorCancelled.get()).describedAs(proof.toString()).isTrue()
             assertThat(proof.hitTimeLimit).describedAs(proof.toString()).isTrue()
             assertThat(proof.proofEstablished).isFalse()
             assertThat(proof.proofProblems).isEmpty()
@@ -272,10 +272,11 @@ class InjectedProblemLocationPlatformTest {
             object : PsiElementVisitor() {
                 override fun visitFile(file: PsiFile) {
                     injectedSlowVisitorStarted.set(true)
+                    val finishAt = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
                     try {
-                        while (true) {
+                        while (System.nanoTime() < finishAt) {
                             ProgressManager.checkCanceled()
-                            Thread.sleep(5)
+                            Thread.yield()
                         }
                     } catch (error: ProcessCanceledException) {
                         injectedSlowVisitorCancelled.set(true)
