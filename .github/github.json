@@ -18,7 +18,8 @@
     "commitGate": "scripts/commit-gate.sh",
     "changedFileLanes": "scripts/changed-file-lanes.sh",
     "release": "README.md#releases",
-    "releaseCompatibility": "TESTING.md#20262-compatibility-release-gates"
+    "releaseCompatibility": "TESTING.md#20262-compatibility-release-gates",
+    "releaseScript": "scripts/release.sh"
   },
   "qualityGate": {
     "test": {
@@ -146,7 +147,7 @@
   "release": {
     "instructions": "README.md#releases",
     "stopBoundaries": "DIRECTION.md#stop-boundaries",
-    "publishStableArtifact": "PUBLISH_TOKEN=$PUBLISH_TOKEN ./scripts/publish-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
-    "stablePublishEnvironment": "stable-marketplace"
+    "stablePublishEnvironment": "stable-marketplace",
+    "publicationTrigger": "v* tag push"
   }
 }
