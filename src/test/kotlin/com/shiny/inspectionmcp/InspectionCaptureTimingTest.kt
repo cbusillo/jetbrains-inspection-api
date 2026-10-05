@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test
 
 class InspectionCaptureTimingTest {
     @Test
-    fun `slow proof does not substitute for clean observation or extend capture budget`() {
+    fun `capture deadline remains anchored while polling starts after proof`() {
         val captureStartedMs = 1_000L
         val deadline = InspectionCaptureTiming(captureStartedMs, captureStartedMs).deadlineMs
         val pollingDurationMs = 5L

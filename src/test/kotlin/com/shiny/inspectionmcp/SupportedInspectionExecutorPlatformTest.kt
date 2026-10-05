@@ -1035,16 +1035,15 @@ class SupportedInspectionExecutorPlatformTest {
         val project = projectExtension.project
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
         val context = GlobalInspectionContextBoundary.create(inspectionManager)
-        val indicator = runInEdtAndGet {
-            ProgressWindow(false, true, project).apply { setDelayInMillis(Int.MAX_VALUE) }
-        }
+        val handler = InspectionHandler()
+        val indicator = runInEdtAndGet { handler.inspectionIndicatorFactory(project) }
         val scope = AnalysisScope(file)
         val profile = profileWith(tool)
         try {
             context.configure(profile, scope)
             ApplicationManager.getApplication().executeOnPooledThread<Unit> {
-                ProgressManager.getInstance().runProcess(
-                    { context.performInspectionsWithProgress(scope) },
+                handler.inspectionProcessRunner(
+                    Runnable { context.performInspectionsWithProgress(scope) },
                     indicator,
                 )
             }.get(5, TimeUnit.SECONDS)

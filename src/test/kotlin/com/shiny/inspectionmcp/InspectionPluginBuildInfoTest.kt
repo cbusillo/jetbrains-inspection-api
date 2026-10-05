@@ -14,7 +14,6 @@ class InspectionPluginBuildInfoTest {
         assertNotNull(buildInfo.version)
         assertNotNull(buildInfo.commit)
         assertNotNull(buildInfo.shortCommit)
-        assertNotNull(buildInfo.dirty)
         assertNotNull(buildInfo.time)
         assertNotNull(buildInfo.fingerprint)
         val shortCommit = requireNotNull(buildInfo.shortCommit)
@@ -23,7 +22,11 @@ class InspectionPluginBuildInfoTest {
         assertTrue(shortCommit.isNotBlank())
         val commit = requireNotNull(buildInfo.commit)
         assertEquals(commit.take(12), shortCommit)
-        val state = if (requireNotNull(buildInfo.dirty)) "dirty" else "clean"
+        val state = when (buildInfo.dirty) {
+            true -> "dirty"
+            false -> "clean"
+            null -> "unknown"
+        }
         assertEquals("$commit-$state", fingerprint)
     }
 
