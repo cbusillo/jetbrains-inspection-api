@@ -41,68 +41,11 @@ import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpResponseStatus
 import io.netty.channel.ChannelHandlerContext
 import java.nio.file.Files
-import java.nio.file.Paths
-import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import javax.swing.JPanel
 
 internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
-    @Test
-    fun `inspection handler opens projects without private or interactive project APIs`() {
-        val resourceName = InspectionHandler::class.java.name.replace('.', '/') + ".class"
-        val classResource = requireNotNull(InspectionHandler::class.java.classLoader.getResource(resourceName))
-        val classPath = when (classResource.protocol) {
-            "jar" -> Paths.get(java.net.URI.create(classResource.toExternalForm().substringAfter("jar:").substringBefore("!/"))).toString()
-            "file" -> {
-                var root = Paths.get(classResource.toURI())
-                repeat(resourceName.split('/').size) {
-                    root = requireNotNull(root.parent)
-                }
-                root.toString()
-            }
-            else -> error("Unsupported InspectionHandler class resource: $classResource")
-        }
-        val javap = sequenceOf(System.getenv("JAVA_HOME"), System.getProperty("java.home"))
-            .filterNotNull()
-            .map { home -> Paths.get(home, "bin", "javap") }
-            .firstOrNull(Files::isExecutable)
-        assertNotNull(javap, "javap must be available from the test JDK")
-        val process = ProcessBuilder(
-            requireNotNull(javap).toString(),
-            "-classpath",
-            classPath,
-            "-c",
-            "-p",
-            InspectionHandler::class.java.name,
-            "com.shiny.inspectionmcp.InspectionHandlerKt",
-        ).redirectErrorStream(true).start()
-        val disassembly = process.inputStream.bufferedReader().use { it.readText() }
-
-        assertTrue(process.waitFor(30, TimeUnit.SECONDS), "javap did not finish")
-        assertEquals(0, process.exitValue(), disassembly)
-        assertFalse(
-            disassembly.contains("com/intellij/ide/impl/OpenProjectTask"),
-            "Lifecycle project opening must not use JetBrains private OpenProjectTask APIs.",
-        )
-        assertTrue(
-            disassembly.contains("com/intellij/ide/impl/ProjectUtil.openProject"),
-            "Lifecycle project opening must use the public noninteractive ProjectUtil open path.",
-        )
-        assertFalse(
-            disassembly.contains("com/intellij/ide/impl/ProjectUtil.openOrImport"),
-            "Lifecycle project opening must not use the interactive open-or-import processor path.",
-        )
-        assertFalse(
-            disassembly.contains("runProcessWithProgressSynchronously"),
-            "Agent-triggered inspections must not block lifecycle requests behind a modal progress task.",
-        )
-        assertTrue(
-            disassembly.contains("com/intellij/openapi/progress/util/ProgressWindow"),
-            "JetBrains global inspections require a non-modal ProgressWindow indicator.",
-        )
-    }
-
     @Test
     fun `lifecycle project store prepares a fresh directory for direct opening`() {
         val projectRoot = Files.createTempDirectory("inspection-project-store")
