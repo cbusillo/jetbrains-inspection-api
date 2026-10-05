@@ -39,8 +39,6 @@
       "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
       "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
       "verifyStableArtifact": "./scripts/verify-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --source-sha <40-character-source-sha>",
-      "publishStableArtifact": "PUBLISH_TOKEN=$PUBLISH_TOKEN ./scripts/publish-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
-      "stablePublishEnvironment": "stable-marketplace",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
@@ -144,5 +142,11 @@
     "expected": {
       "deleteBranchOnMerge": true
     }
+  },
+  "release": {
+    "instructions": "README.md#releases",
+    "stopBoundaries": "DIRECTION.md#stop-boundaries",
+    "publishStableArtifact": "PUBLISH_TOKEN=$PUBLISH_TOKEN ./scripts/publish-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
+    "stablePublishEnvironment": "stable-marketplace"
   }
 }
