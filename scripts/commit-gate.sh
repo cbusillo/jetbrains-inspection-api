@@ -82,6 +82,9 @@ for variable in $(git rev-parse --local-env-vars); do
 done
 
 if lane_selected contracts; then
+    uv run scripts/lint-workflow-action-pins.py .github/workflows
+    uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt
+    ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
     ./scripts/test-changed-file-lanes.sh
     ./scripts/test-release-contracts.sh
 else

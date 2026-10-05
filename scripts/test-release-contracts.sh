@@ -25,37 +25,33 @@ assert_not_contains() {
 }
 
 test_version_validator() {
-  ./scripts/validate-release-version.sh --tag "v$(sed -n 's/^pluginVersion=//p' gradle.properties)" >/dev/null
-
-  if ./scripts/validate-release-version.sh --tag v0.0.0 >/dev/null 2>&1; then
-    fail "version validator accepted a mismatched tag"
-  fi
-  if ./scripts/validate-release-version.sh --tag 1.2.3 >/dev/null 2>&1; then
-    fail "version validator accepted a malformed tag"
-  fi
-  if ./scripts/validate-release-version.sh --tag v1.2.3-beta.1 >/dev/null 2>&1; then
-    fail "Stable version validator accepted a prerelease version"
-  fi
-  if ./scripts/validate-release-version.sh --tag preview/v1.2.3-beta.1 >/dev/null 2>&1; then
-    fail "Stable version validator accepted a prerelease tag namespace"
-  fi
-
-  local temp_dir
+  local temp_dir version tag actual
   temp_dir=$(mktemp -d)
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/src/main/resources/META-INF" "$temp_dir/scripts"
   cp scripts/validate-release-version.sh "$temp_dir/scripts/"
-  printf 'pluginVersion=1.2.3\n' > "$temp_dir/gradle.properties"
-  printf '<idea-plugin><version>1.2.4</version></idea-plugin>\n' > "$temp_dir/src/main/resources/META-INF/plugin.xml"
-  if (cd "$temp_dir" && ./scripts/validate-release-version.sh --tag v1.2.3 >/dev/null 2>&1); then
-    fail "version validator accepted a plugin.xml mismatch"
-  fi
+
+  for version in 1.2.3 8.7.6; do
+    printf 'pluginVersion=%s\n' "$version" > "$temp_dir/gradle.properties"
+    printf '<idea-plugin><version>%s</version></idea-plugin>\n' "$version" > "$temp_dir/src/main/resources/META-INF/plugin.xml"
+    actual=$(cd "$temp_dir" && ./scripts/validate-release-version.sh --tag "v$version")
+    [ "$actual" = "$version" ] || fail "version validator returned the wrong normalized version"
+    for tag in v0.0.0 1.2.3 v1.2.3-beta.1 preview/v1.2.3-beta.1; do
+      if (cd "$temp_dir" && ./scripts/validate-release-version.sh --tag "$tag" >/dev/null 2>&1); then
+        fail "version validator accepted invalid or mismatched tag $tag"
+      fi
+    done
+    printf '<idea-plugin><version>0.0.0</version></idea-plugin>\n' > "$temp_dir/src/main/resources/META-INF/plugin.xml"
+    if (cd "$temp_dir" && ./scripts/validate-release-version.sh --tag "v$version" >/dev/null 2>&1); then
+      fail "version validator accepted a plugin.xml mismatch"
+    fi
+  done
   rm -rf "$temp_dir"
   trap - RETURN
 }
 
 test_stable_artifact_publication() {
-  local temp_dir fake_bin curl_log archive archive_sha256 invalid_id_archive invalid_version_archive invalid_range_archive dirty_archive wrong_source_archive missing_jar_archive source_sha
+  local temp_dir fake_bin curl_log archive archive_sha256 invalid_sha256 expected invalid_id_archive invalid_version_archive invalid_range_archive dirty_archive wrong_source_archive missing_jar_archive source_sha
   temp_dir=$(mktemp -d)
   fake_bin="$temp_dir/bin"
   curl_log="$temp_dir/curl.log"
@@ -94,13 +90,20 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import zipfile
+import re
+import xml.etree.ElementTree as ET
+
+build = Path("build.gradle.kts").read_text()
+since = re.search(r'sinceBuild = "([^\"]+)"', build).group(1)
+until = re.search(r'untilBuild = "([^\"]+)"', build).group(1)
+plugin_id = ET.parse("src/main/resources/META-INF/plugin.xml").getroot().findtext("id").strip()
 
 def write_archive(
     path: Path,
     plugin_id: str,
     version: str,
-    since_build: str = "251",
-    until_build: str = "262.*",
+    since_build: str = since,
+    until_build: str = until,
     build_commit: str = "0123456789abcdef0123456789abcdef01234567",
     build_dirty: bool = False,
 ) -> None:
@@ -132,19 +135,67 @@ def write_archive(
             plugin_jar.getvalue(),
         )
 
-write_archive(Path(sys.argv[1]), "com.shiny.inspection.api", "1.2.3")
+write_archive(Path(sys.argv[1]), plugin_id, "1.2.3")
 write_archive(Path(sys.argv[2]), "different.plugin.id", "1.2.3")
-write_archive(Path(sys.argv[3]), "com.shiny.inspection.api", "1.2.4")
-write_archive(Path(sys.argv[4]), "com.shiny.inspection.api", "1.2.3", since_build="262")
-write_archive(Path(sys.argv[5]), "com.shiny.inspection.api", "1.2.3", build_dirty=True)
+write_archive(Path(sys.argv[3]), plugin_id, "1.2.4")
+write_archive(Path(sys.argv[4]), plugin_id, "1.2.3", since_build=since + ".999999")
+write_archive(Path(sys.argv[5]), plugin_id, "1.2.3", build_dirty=True)
 write_archive(
     Path(sys.argv[6]),
-    "com.shiny.inspection.api",
+    plugin_id,
     "1.2.3",
     build_commit="89abcdef0123456789abcdef0123456789abcdef",
 )
 with zipfile.ZipFile(Path(sys.argv[7]), "w") as plugin_zip:
     plugin_zip.writestr("unexpected.txt", "missing plugin jar")
+
+valid = Path(sys.argv[1])
+jar_path = "jetbrains-inspection-api/lib/jetbrains-inspection-api-1.2.3.jar"
+build_path = "com/shiny/inspectionmcp/inspection-build.properties"
+with zipfile.ZipFile(valid) as archive:
+    original_jar = archive.read(jar_path)
+with zipfile.ZipFile(BytesIO(original_jar)) as jar:
+    entries = {name: jar.read(name) for name in jar.namelist()}
+cases = {
+    "missing-descriptor": ("META-INF/plugin.xml", None),
+    "malformed-descriptor": ("META-INF/plugin.xml", b"<idea-plugin>"),
+    "missing-provenance": (build_path, None),
+    "malformed-provenance": (build_path, b"not-a-property"),
+    "wrong-short-commit": (build_path, entries[build_path].replace(b"plugin.build.short_commit=0123456789ab", b"plugin.build.short_commit=incorrect")),
+    "wrong-fingerprint": (build_path, entries[build_path].replace(b"-clean", b"-incorrect")),
+}
+for case, (target, replacement) in cases.items():
+    content = dict(entries)
+    if replacement is None:
+        del content[target]
+    else:
+        content[target] = replacement
+    mutated_jar = BytesIO()
+    with zipfile.ZipFile(mutated_jar, "w") as jar:
+        for name, data in content.items():
+            jar.writestr(name, data)
+    path = valid.parent / case / valid.name
+    path.parent.mkdir()
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(jar_path, mutated_jar.getvalue())
+
+for case, duplicate in (
+    ("duplicate-descriptor", "META-INF/plugin.xml"),
+    ("duplicate-provenance", build_path),
+    ("duplicate-plugin-jar", None),
+):
+    mutated_jar = BytesIO()
+    with zipfile.ZipFile(mutated_jar, "w") as jar:
+        for name, data in entries.items():
+            jar.writestr(name, data)
+        if duplicate:
+            jar.writestr(duplicate, entries[duplicate])
+    path = valid.parent / case / valid.name
+    path.parent.mkdir()
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr(jar_path, mutated_jar.getvalue())
+        if duplicate is None:
+            archive.writestr(jar_path, mutated_jar.getvalue())
 PY
   archive_sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
   cat > "$fake_bin/curl" <<'CURL'
@@ -163,18 +214,35 @@ CURL
   fi
   [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for a prerelease tag"
 
-  for invalid_archive in \
-    "$invalid_id_archive" \
-    "$invalid_version_archive" \
-    "$invalid_range_archive" \
-    "$dirty_archive" \
-    "$wrong_source_archive" \
-    "$missing_jar_archive"; do
-    if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$invalid_archive" --tag v1.2.3 >/dev/null 2>&1); then
+  for invalid_archive in "$temp_dir"/*/jetbrains-inspection-api-1.2.3.zip; do
+    invalid_sha256=$(shasum -a 256 "$invalid_archive" | awk '{print $1}')
+    if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$invalid_archive" --tag v1.2.3 --expected-sha256 "$invalid_sha256" >"$temp_dir/refusal.txt" 2>&1); then
       fail "Stable artifact publisher accepted invalid artifact $invalid_archive"
     fi
+    case "$(basename "$(dirname "$invalid_archive")")" in
+      invalid-id) expected="does not preserve plugin ID";;
+      invalid-version) expected="does not match tag version";;
+      invalid-range) expected="does not match trusted range";;
+      dirty) expected="plugin.build.dirty";;
+      wrong-source) expected="plugin.build.commit";;
+      missing-jar|duplicate-plugin-jar) expected="must contain exactly one jetbrains-inspection-api/lib/";;
+      missing-descriptor|duplicate-descriptor) expected="must contain exactly one META-INF/plugin.xml";;
+      malformed-descriptor) expected="plugin.xml is not valid XML";;
+      missing-provenance|duplicate-provenance) expected="must contain exactly one com/shiny/inspectionmcp/inspection-build.properties";;
+      malformed-provenance) expected="build provenance is malformed";;
+      wrong-short-commit) expected="plugin.build.short_commit";;
+      wrong-fingerprint) expected="plugin.build.fingerprint";;
+      *) fail "Unknown invalid artifact fixture $invalid_archive";;
+    esac
+    assert_contains "$temp_dir/refusal.txt" "$expected"
     [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for invalid artifact $invalid_archive"
   done
+
+  if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 >"$temp_dir/missing-digest.txt" 2>&1); then
+    fail "Stable artifact publisher accepted an absent verified digest"
+  fi
+  assert_contains "$temp_dir/missing-digest.txt" "--expected-sha256"
+  [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl without a verified digest"
 
   if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN='' ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 --expected-sha256 "$archive_sha256" >/dev/null 2>&1); then
     fail "Stable artifact publisher accepted an absent token"
@@ -187,7 +255,13 @@ CURL
   [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for an unverified artifact digest"
 
   (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$archive" --tag v1.2.3 --expected-sha256 "$archive_sha256" >/dev/null)
-  assert_contains "$curl_log" "xmlId=com.shiny.inspection.api"
+  local plugin_id
+  plugin_id=$(python3 - <<'PYID'
+import xml.etree.ElementTree as ET
+print(ET.parse("src/main/resources/META-INF/plugin.xml").getroot().findtext("id").strip())
+PYID
+)
+  assert_contains "$curl_log" "xmlId=$plugin_id"
   assert_contains "$curl_log" "file=@$archive"
   assert_not_contains "$curl_log" "channel="
 
@@ -366,103 +440,69 @@ GH
   trap - RETURN
 }
 
-test_static_contracts() {
-  ./scripts/verify-internal-api-allowlist.py \
-    --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
-
-  python3 - <<'PY'
-from pathlib import Path
-
-boundary = Path("src/main/kotlin/com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt")
-implementation_name = "GlobalInspectionContextImpl"
-violations = []
-for source in Path("src/main/kotlin").rglob("*.kt"):
-    if source == boundary:
-        continue
-    if implementation_name in source.read_text(encoding="utf-8"):
-        violations.append(str(source))
-if violations:
-    raise SystemExit(
-        "GlobalInspectionContextImpl must remain confined to "
-        f"{boundary}: {', '.join(sorted(violations))}"
-    )
-
-stable_entries = {
-    line.strip()
-    for line in Path("config/plugin-verifier/stable-internal-api-allowlist.txt")
-        .read_text(encoding="utf-8")
-        .splitlines()
-    if line.strip() and not line.lstrip().startswith("#")
+test_workflow_action_pins() {
+  local temp_dir action reference
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf "$temp_dir"' RETURN
+  action=actions/example
+  for reference in \
+    "$action@0123456789abcdef0123456789abcdef01234567 # v6.0.0" \
+    "$action@0123456789abcdef0123456789abcdef01234567"; do
+    printf 'steps:\n  - uses: %s\n' "$reference" > "$temp_dir/workflow.yml"
+    uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >/dev/null
+  done
+  for reference in \
+    '' '#@0123456789abcdef0123456789abcdef01234567' \
+    "$action@0123456789abcdef0123456789abcdef0123456 # short" \
+    "$action@0123456789abcdef0123456789abcdef0123456g # nonhex" \
+    "$action@v6 # floating" \
+    "$action@0123456789abcdef0123456789abcdef012345678 # long" \
+    "$action@0123456789abcdef0123456789abcdef01234567 trailing"; do
+    printf 'steps:\n  - uses: %s\n' "$reference" > "$temp_dir/workflow.yml"
+    if uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >"$temp_dir/output" 2>&1; then
+      fail "action-pin linter accepted invalid reference $reference"
+    fi
+    assert_contains "$temp_dir/output" "$temp_dir/workflow.yml:2:"
+  done
+  printf 'steps:\n  - uses: actions/example@v6\n' > "$temp_dir/floating.yaml"
+  printf 'steps:\n  - uses: actions/example@0123456789abcdef0123456789abcdef01234567\n' > "$temp_dir/workflow.yml"
+  if uv run scripts/lint-workflow-action-pins.py "$temp_dir" >"$temp_dir/output" 2>&1; then
+    fail "action-pin linter ignored a YAML workflow in a directory input"
+  fi
+  assert_contains "$temp_dir/output" "$temp_dir/floating.yaml:2:"
+  rm -rf "$temp_dir"
+  trap - RETURN
 }
-misattributed = sorted(
-    entry
-    for entry in stable_entries
-    if implementation_name in entry
-    and "com.shiny.inspectionmcp.GlobalInspectionContextBoundary" not in entry
-    and "com.shiny.inspectionmcp.NativeAttestedGlobalInspectionContext" not in entry
-)
-if misattributed:
-    raise SystemExit(
-        "Stable GlobalInspectionContextImpl findings escaped the named boundary:\n"
-        + "\n".join(misattributed)
-    )
-PY
 
-  python3 - <<'PY'
-from pathlib import Path
-import re
-
-workflow_uses = re.compile(r"^(?:-\s+)?uses:")
-pinned_workflow_action = re.compile(
-    r"^(?:-\s+)?uses:\s+[^@#\s]+@[0-9a-f]{40}(?:\s+#.*)?$"
-)
-
-def is_unpinned_workflow_action(line: str) -> bool:
-    return bool(workflow_uses.match(line)) and not bool(pinned_workflow_action.fullmatch(line))
-
-valid_pinned_actions = (
-    "uses: actions/example@0123456789abcdef0123456789abcdef01234567 # v6.0.0",
-    "- uses: actions/example@0123456789abcdef0123456789abcdef01234567 # arbitrary note",
-    "uses: actions/example@0123456789abcdef0123456789abcdef01234567",
-)
-invalid_pinned_actions = (
-    "uses:",
-    "- uses:",
-    "uses: #@0123456789abcdef0123456789abcdef01234567",
-    "uses: actions/example@0123456789abcdef0123456789abcdef0123456 # short",
-    "uses: actions/example@0123456789abcdef0123456789abcdef0123456g # nonhex",
-    "uses: actions/example@v6 # floating",
-    "uses: actions/example@0123456789abcdef0123456789abcdef012345678 # long",
-    "uses: actions/example@0123456789abcdef0123456789abcdef01234567 trailing",
-)
-if any(is_unpinned_workflow_action(line) for line in valid_pinned_actions):
-    raise SystemExit("workflow action pin regression fixture unexpectedly rejected")
-if not all(is_unpinned_workflow_action(line) for line in invalid_pinned_actions):
-    raise SystemExit("workflow action pin regression fixture unexpectedly accepted")
-
-workflow_paths = sorted(
-    (*Path(".github/workflows").glob("*.yml"), *Path(".github/workflows").glob("*.yaml")),
-)
-for workflow_path in workflow_paths:
-    for line in workflow_path.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if is_unpinned_workflow_action(stripped):
-            raise SystemExit(
-                f"workflow action is not pinned to a full commit SHA in {workflow_path}: {stripped}"
-            )
-
-build = Path("build.gradle.kts").read_text(encoding="utf-8")
-stable_validator = Path("scripts/validate-stable-artifact.sh").read_text(encoding="utf-8")
-build_since = re.search(r'sinceBuild = "([^"]+)"', build)
-build_until = re.search(r'untilBuild = "([^"]+)"', build)
-stable_since = re.search(r'EXPECTED_SINCE_BUILD="([^"]+)"', stable_validator)
-stable_until = re.search(r'EXPECTED_UNTIL_BUILD="([^"]+)"', stable_validator)
-if not all((build_since, build_until, stable_since, stable_until)):
-    raise SystemExit("trusted compatibility policy could not be resolved")
-if stable_since.group(1) != build_since.group(1) or stable_until.group(1) != build_until.group(1):
-    raise SystemExit("Stable artifact compatibility policy must match Gradle")
-
-PY
+test_inspection_boundary_linter() {
+  local temp_dir sources manifest boundary escaped owner
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf "$temp_dir"' RETURN
+  sources="$temp_dir/src"
+  manifest="$temp_dir/allowlist.txt"
+  boundary="$sources/com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt"
+  escaped="$sources/com/shiny/inspectionmcp/Escaped.kt"
+  mkdir -p "$(dirname "$boundary")"
+  printf 'val context: GlobalInspectionContextImpl\n' > "$boundary"
+  for owner in GlobalInspectionContextBoundary NativeAttestedGlobalInspectionContext; do
+    printf 'com.shiny.inspectionmcp.%s uses GlobalInspectionContextImpl\n' "$owner" > "$manifest"
+    uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >/dev/null
+  done
+  printf 'val context: GlobalInspectionContextImpl\n' > "$escaped"
+  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+    fail "boundary linter accepted an escaped source reference"
+  fi
+  assert_contains "$temp_dir/output" "$escaped:1:"
+  rm "$escaped"
+  printf 'com.shiny.inspectionmcp.Escaped uses GlobalInspectionContextImpl\n' > "$manifest"
+  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+    fail "boundary linter accepted a misattributed manifest finding"
+  fi
+  assert_contains "$temp_dir/output" "$manifest:1:"
+  printf '# GlobalInspectionContextImpl comment\n\n' > "$manifest"
+  uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >/dev/null
+  rm -rf "$temp_dir"
+  trap - RETURN
 }
 
 test_version_validator
@@ -470,6 +510,7 @@ test_stable_artifact_publication
 test_marketplace_publication_policy
 test_internal_api_allowlist
 test_release_script_flow
-test_static_contracts
+test_workflow_action_pins
+test_inspection_boundary_linter
 
 echo "Release contract tests passed."
