@@ -214,7 +214,7 @@ CURL
   fi
   [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for a prerelease tag"
 
-  local invalid_case
+  local invalid_case invalid_archive
   for invalid_case in \
     invalid-id invalid-version invalid-range dirty wrong-source missing-jar \
     missing-descriptor malformed-descriptor missing-provenance malformed-provenance \

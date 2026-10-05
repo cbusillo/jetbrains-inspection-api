@@ -32,7 +32,8 @@
       "core": "./gradlew :inspection-core:test",
       "mcpServer": "./gradlew :mcp-server-jvm:test",
       "smokeLifecycle": "uv run scripts/test-smoke-lifecycle.py && ./scripts/test-red-lane-smoke-script.sh",
-      "inspectionBoundaryLint": "uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt"
+      "inspectionBoundaryLint": "uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
+      "internalApiManifest": "./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt"
     },
     "build": {
       "buildPlugin": "./gradlew buildPlugin",

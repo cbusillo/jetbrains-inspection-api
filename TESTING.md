@@ -556,7 +556,7 @@ verified digests, unexpected internal APIs, and the release PR/tag flow. Invalid
 artifact fixtures supply their actual digest and require the intended validator
 refusal before fake upload. Action-pin and boundary linter tests use disposable
 workflow, source and manifest fixtures; the linters enforce the rules on actual
-repository inputs in the commit gate.
+repository inputs in both the commit gate and `test-all.sh`.
 
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal
