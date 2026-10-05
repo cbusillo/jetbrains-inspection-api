@@ -139,6 +139,9 @@ write_archive(Path(sys.argv[1]), plugin_id, "1.2.3")
 write_archive(Path(sys.argv[2]), "different.plugin.id", "1.2.3")
 write_archive(Path(sys.argv[3]), plugin_id, "1.2.4")
 write_archive(Path(sys.argv[4]), plugin_id, "1.2.3", since_build=since + ".999999")
+invalid_until = Path(sys.argv[1]).parent / "invalid-until-range" / Path(sys.argv[1]).name
+invalid_until.parent.mkdir()
+write_archive(invalid_until, plugin_id, "1.2.3", until_build=until + "x")
 write_archive(Path(sys.argv[5]), plugin_id, "1.2.3", build_dirty=True)
 write_archive(
     Path(sys.argv[6]),
@@ -216,7 +219,7 @@ CURL
 
   local invalid_case invalid_archive
   for invalid_case in \
-    invalid-id invalid-version invalid-range dirty wrong-source missing-jar \
+    invalid-id invalid-version invalid-range invalid-until-range dirty wrong-source missing-jar \
     missing-descriptor malformed-descriptor missing-provenance malformed-provenance \
     wrong-short-commit wrong-fingerprint duplicate-descriptor duplicate-provenance duplicate-plugin-jar; do
     invalid_archive="$temp_dir/$invalid_case/jetbrains-inspection-api-1.2.3.zip"
@@ -228,7 +231,7 @@ CURL
     case "$(basename "$(dirname "$invalid_archive")")" in
       invalid-id) expected="does not preserve plugin ID";;
       invalid-version) expected="does not match tag version";;
-      invalid-range) expected="does not match trusted range";;
+      invalid-range|invalid-until-range) expected="does not match trusted range";;
       dirty) expected="plugin.build.dirty";;
       wrong-source) expected="plugin.build.commit";;
       missing-jar|duplicate-plugin-jar) expected="must contain exactly one jetbrains-inspection-api/lib/";;
