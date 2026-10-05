@@ -950,6 +950,7 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 Before release preparation or publication, read [DIRECTION.md](DIRECTION.md)
 for the current release direction and stop boundaries. The commands below
 describe the release mechanics; Marketplace publication requires the Director's decision.
+Pushing a release tag starts the publication workflow described below.
 
 Release notes live on GitHub Releases:
 
