@@ -4,6 +4,10 @@ A plugin that exposes JetBrains IDE inspection results via HTTP API for automate
 It bundles an MCP server so AI clients can call the IDE's classic inspection pipeline and enabled batch-capable tools,
 including IDE-only batch inspections such as PyCharm's Odoo plugin checks.
 
+Project priorities and contribution boundaries live in [DIRECTION.md](DIRECTION.md),
+under the Director's [overall direction](https://github.com/cbusillo/direction/blob/main/DIRECTION.md).
+Agents follow [AGENTS.md](AGENTS.md); setup and API usage are documented here.
+
 ## Features
 
 - **Real-time HTTP API access** to inspection results
@@ -943,6 +947,11 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 
 ## Releases
 
+Before release preparation or publication, read [DIRECTION.md](DIRECTION.md)
+for the current release direction and stop boundaries. The commands below
+describe the release mechanics; Marketplace publication requires the Director's decision.
+Pushing a release tag starts the publication workflow described below.
+
 Release notes live on GitHub Releases:
 
 - https://github.com/cbusillo/jetbrains-inspection-api/releases
@@ -1038,7 +1047,8 @@ Shortcut:
 Prepare mode never commits or pushes directly to `main` and never creates a
 tag. Use `--no-push` to keep the release branch local. It runs the comprehensive
 test suite, automated IDE test, commit gate, and release compatibility gate; the
-IDE test prompts before stopping your IDE unless you pass `--yes`. Tag mode
+release script prompts before the inspection-only IDE test unless you pass
+`--yes`; that test does not install the plugin or restart the IDE. Tag mode
 requires a clean local default branch that exactly matches the remote default
 branch and refuses existing or version-mismatched tags.
 
