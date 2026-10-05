@@ -8,6 +8,10 @@ set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
+uv run scripts/lint-workflow-action-pins.py .github/workflows
+uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt
+./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
+
 echo "JetBrains Inspection API - Comprehensive Test Suite"
 echo "===================================================="
 echo ""

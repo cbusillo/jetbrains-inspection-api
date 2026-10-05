@@ -9,6 +9,8 @@ This project has three test surfaces:
 ## Prerequisites
 
 - Java 21 for Gradle builds and artifact verification.
+- `uv` for the commit-gate linters and their behavioral fixture tests. CI and
+  the release test job install it before running the gate.
 
 If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts.
@@ -476,7 +478,9 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 - `./scripts/commit-gate.sh --ci`
 
 The commit gate sync-checks `plugin.xml` against `gradle.properties`, runs the
-fast release/workflow contract tests, requires Java 21, then runs plugin tests,
+action-pin and inspection-boundary linters, the exact internal-API manifest
+validator, and fixture-based release contract tests. It requires Java 21, then
+runs plugin tests,
 the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
 verification task depends on its module's tests and report, so tests are not run
 twice. The plugin's own 0% JaCoCo minimum remains report-only and is not required
@@ -534,8 +538,9 @@ build. This replaces broad class-name substring acceptance.
 
 All production `GlobalInspectionContextImpl` source references must stay in
 `GlobalInspectionContextBoundary.kt` (including its private attested subclass),
-and the release-contract suite rejects source or Stable allowlist references
-that escape that named boundary. The boundary exists only for synchronous native
+and `scripts/lint-inspection-boundary.py` rejects source or Stable allowlist
+references that escape that named boundary on the commit gate execution path.
+The boundary exists only for synchronous native
 execution, direct presentation access, lifecycle cleanup, and native
 attestation that the supported bounded `inspectEx` path cannot provide.
 
@@ -547,7 +552,11 @@ class-name pattern to make a report pass.
 
 The release contract tests run the Stable release scripts against fakes and
 cover version and channel rejection, artifact identity, source provenance,
-verified digests, unexpected internal APIs, and the release PR/tag flow.
+verified digests, unexpected internal APIs, and the release PR/tag flow. Invalid
+artifact fixtures supply their actual digest and require the intended validator
+refusal before fake upload. Action-pin and boundary linter tests use disposable
+workflow, source and manifest fixtures; the linters enforce the rules on actual
+repository inputs in both the commit gate and `test-all.sh`.
 
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal
