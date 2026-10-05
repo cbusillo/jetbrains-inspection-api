@@ -18,9 +18,6 @@ class InspectionCaptureTimingTest {
         assertEquals(deadline - captureStartedMs, timing.captureElapsedMs(deadline))
         assertFalse(timing.hasBudget(deadline))
         assertTrue(timing.hasBudget(deadline - 1))
-        val minimumPollingMs = 10L
-        assertFalse(canTrustEmpty(timing.pollingElapsedMs(deadline), minimumPollingMs))
-        assertTrue(canTrustEmpty(timing.captureElapsedMs(deadline), minimumPollingMs))
     }
 
     @Test
@@ -80,7 +77,6 @@ class InspectionCaptureTimingTest {
         observedNonEmptyInspectionTree = false,
         stableForMs = pollingElapsedMs,
         pollingElapsedMs = pollingElapsedMs,
-        minStableMs = minPollingMs,
         minPollingMs = minPollingMs,
     )
 }

@@ -19,7 +19,7 @@ import java.nio.file.Paths
 
 class LifecycleProjectOpeningPlatformTest {
     @Test
-    fun `default opener returns the exact raw project without a dialog`() {
+    fun `default opener registers the exact raw project and notifies its callback`() {
         val root = Files.createTempDirectory("default-project-open").toRealPath()
         VfsRootAccess.allowRootAccess(projectExtension.project, root.toString())
         val handler = InspectionHandler()

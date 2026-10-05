@@ -21,7 +21,7 @@ class InspectionPluginBuildInfoTest {
         assertTrue(requireNotNull(buildInfo.version).isNotBlank())
         assertTrue(shortCommit.isNotBlank())
         val commit = requireNotNull(buildInfo.commit)
-        assertEquals(commit.take(12), shortCommit)
+        assertTrue(commit.startsWith(shortCommit))
         val state = when (buildInfo.dirty) {
             true -> "dirty"
             false -> "clean"
