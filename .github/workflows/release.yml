@@ -51,6 +51,9 @@ jobs:
           java-version: "21"
           distribution: "temurin"
 
+      - name: Set up uv for the commit gate
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
       - name: Run commit gate
         run: ./scripts/commit-gate.sh --ci
 

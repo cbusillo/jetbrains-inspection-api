@@ -15,6 +15,12 @@ def main() -> int:
     args = parser.parse_args()
     implementation = "GlobalInspectionContextImpl"
     boundary = args.sources / "com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt"
+    if not args.sources.is_dir():
+        print(f"{args.sources}: source directory does not exist", file=sys.stderr)
+        return 1
+    if not boundary.is_file():
+        print(f"{boundary}: boundary source is missing", file=sys.stderr)
+        return 1
     failures = []
     for source in sorted(args.sources.rglob("*.kt")):
         if source == boundary:

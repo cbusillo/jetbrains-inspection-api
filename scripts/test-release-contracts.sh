@@ -214,7 +214,13 @@ CURL
   fi
   [ ! -e "$curl_log" ] || fail "Stable artifact publisher invoked curl for a prerelease tag"
 
-  for invalid_archive in "$temp_dir"/*/jetbrains-inspection-api-1.2.3.zip; do
+  local invalid_case
+  for invalid_case in \
+    invalid-id invalid-version invalid-range dirty wrong-source missing-jar \
+    missing-descriptor malformed-descriptor missing-provenance malformed-provenance \
+    wrong-short-commit wrong-fingerprint duplicate-descriptor duplicate-provenance duplicate-plugin-jar; do
+    invalid_archive="$temp_dir/$invalid_case/jetbrains-inspection-api-1.2.3.zip"
+    [ -f "$invalid_archive" ] || fail "Missing invalid artifact fixture $invalid_case"
     invalid_sha256=$(shasum -a 256 "$invalid_archive" | awk '{print $1}')
     if (cd "$temp_dir" && PATH="$fake_bin:$PATH" CURL_LOG="$curl_log" PUBLISH_TOKEN=test ./scripts/publish-stable-artifact.sh --archive "$invalid_archive" --tag v1.2.3 --expected-sha256 "$invalid_sha256" >"$temp_dir/refusal.txt" 2>&1); then
       fail "Stable artifact publisher accepted invalid artifact $invalid_archive"
@@ -464,6 +470,13 @@ test_workflow_action_pins() {
     fi
     assert_contains "$temp_dir/output" "$temp_dir/workflow.yml:2:"
   done
+  printf 'steps:\n  - name: fixture\n    uses: %s\n' "$action@0123456789abcdef0123456789abcdef01234567" > "$temp_dir/workflow.yml"
+  uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >/dev/null
+  printf 'steps:\n  - name: fixture\n    uses: %s\n' "$action@v6" > "$temp_dir/workflow.yml"
+  if uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >"$temp_dir/output" 2>&1; then
+    fail "action-pin linter accepted a floating bare uses line"
+  fi
+  assert_contains "$temp_dir/output" "$temp_dir/workflow.yml:3:"
   printf 'steps:\n  - uses: actions/example@v6\n' > "$temp_dir/floating.yaml"
   printf 'steps:\n  - uses: actions/example@0123456789abcdef0123456789abcdef01234567\n' > "$temp_dir/workflow.yml"
   if uv run scripts/lint-workflow-action-pins.py "$temp_dir" >"$temp_dir/output" 2>&1; then
@@ -488,6 +501,16 @@ test_inspection_boundary_linter() {
     printf 'com.shiny.inspectionmcp.%s uses GlobalInspectionContextImpl\n' "$owner" > "$manifest"
     uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >/dev/null
   done
+  if uv run scripts/lint-inspection-boundary.py --sources "$temp_dir/missing" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+    fail "boundary linter accepted a missing source directory"
+  fi
+  assert_contains "$temp_dir/output" "source directory does not exist"
+  mv "$boundary" "$temp_dir/boundary.kt"
+  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+    fail "boundary linter accepted a missing boundary source"
+  fi
+  assert_contains "$temp_dir/output" "boundary source is missing"
+  mv "$temp_dir/boundary.kt" "$boundary"
   printf 'val context: GlobalInspectionContextImpl\n' > "$escaped"
   if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
     fail "boundary linter accepted an escaped source reference"

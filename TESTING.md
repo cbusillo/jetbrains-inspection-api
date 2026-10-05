@@ -9,6 +9,8 @@ This project has three test surfaces:
 ## Prerequisites
 
 - Java 21 for Gradle builds and artifact verification.
+- `uv` for the commit-gate linters and their behavioral fixture tests. CI and
+  the release test job install it before running the gate.
 
 If `/usr/libexec/java_home -v 21` fails on macOS, set `JAVA_HOME_21` to your
 JDK 21 path before running the scripts.
