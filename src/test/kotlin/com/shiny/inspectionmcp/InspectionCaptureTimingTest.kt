@@ -25,7 +25,7 @@ class InspectionCaptureTimingTest {
         val settlingStartedMs = 2_000L
         val timing = InspectionCaptureTiming(captureStartedMs = 1_000L, settlingStartedMs = settlingStartedMs)
         val minimumPollingMs = resultSettlingWindow(
-            "directory", exactProofEstablished = false, contextExtractionComplete = true,
+            "directory", exactProofEstablished = true, contextExtractionComplete = true,
         ).minCleanPollingMs
         val readyAtMs = settlingStartedMs + minimumPollingMs
 
@@ -42,6 +42,7 @@ class InspectionCaptureTimingTest {
             resultSettlingWindow("changed_files", exactProofEstablished = true, contextExtractionComplete = false),
             resultSettlingWindow("current_file", exactProofEstablished = true, contextExtractionComplete = true),
             resultSettlingWindow("whole_project", exactProofEstablished = true, contextExtractionComplete = true),
+            resultSettlingWindow("directory", exactProofEstablished = true, contextExtractionComplete = true),
         )
         val elapsedMs = proven.minResultsWaitMs
 
