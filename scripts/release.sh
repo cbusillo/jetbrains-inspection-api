@@ -282,7 +282,7 @@ run_release_validation() {
 
   if [ "$ASSUME_YES" -ne 1 ]; then
     echo ""
-    echo "This will stop any running IDE instance for the automated test."
+    echo "This will inspect the configured test project without installing or restarting the IDE."
     read -r -p "Continue with ./scripts/test-automated.sh? [y/N] " reply
     case "$reply" in
       [Yy]*) ;;
