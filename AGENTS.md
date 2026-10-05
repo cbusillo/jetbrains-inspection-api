@@ -2,6 +2,15 @@
 
 This repo contains the Inspection API plugin and its bundled MCP server.
 
+Read the Director's [overall direction](https://github.com/cbusillo/direction/blob/main/DIRECTION.md)
+first, then this repository's [DIRECTION.md](DIRECTION.md), for priorities,
+stop boundaries, and retired work. Use the maintained skills' [executing loop](https://github.com/cbusillo/codex-skills/blob/main/skills/references/executing-loop.md)
+for issue claims, isolated worktrees, bot commits, validation, and landing.
+This repository uses a normal merge commit after green CI and any required
+other-model review; weigh findings under [reviews by another model](https://github.com/cbusillo/codex-skills/blob/main/skills/references/model-review.md).
+AGENTS.md is the agent-instruction file; local configuration below supplies
+machine-specific values, not a separate instruction set.
+
 User-facing setup, API usage, and release details live in [README.md](README.md).
 Testing details live in [TESTING.md](TESTING.md) and manual IDE smoke recipes
 live in [TESTING_INSTRUCTIONS.md](TESTING_INSTRUCTIONS.md).
@@ -13,7 +22,7 @@ workflows, and cleanup policy.
 ## Tooling
 
 - Plugin: Kotlin/Gradle, requires Java 21. Supported IDE builds are configured
-  in `build.gradle.kts` (currently 251–262.*).
+  in `build.gradle.kts`.
 - MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
 - Agent inspection helper: the external `jetbrains-inspection` skill's
   `scripts/jb-inspect.py` is the primary LLM-facing path for this plugin; keep
