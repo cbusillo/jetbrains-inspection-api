@@ -9,26 +9,21 @@
     "agentSmoke": "TESTING.md#agent-smoke-acceptance",
     "buildManifest": "build.gradle.kts",
     "settings": "settings.gradle.kts",
-    "version": "gradle.properties"
-  },
-  "env": {
-    "example": ".env.example",
-    "local": ".env",
-    "ciSecrets": {
-      "PUBLISH_TOKEN": "environment:stable-marketplace"
-    }
+    "version": "gradle.properties",
+    "agentInstructions": "AGENTS.md",
+    "direction": "DIRECTION.md",
+    "envExample": ".env.example",
+    "ciWorkflow": ".github/workflows/ci.yml",
+    "releaseWorkflow": ".github/workflows/release.yml",
+    "commitGate": "scripts/commit-gate.sh",
+    "changedFileLanes": "scripts/changed-file-lanes.sh",
+    "release": "README.md#releases",
+    "releaseCompatibility": "TESTING.md#20262-compatibility-release-gates",
+    "releaseScript": "scripts/release.sh"
   },
   "qualityGate": {
     "test": {
       "commitGate": "./scripts/commit-gate.sh --ci",
-      "commitGateIncludes": [
-        "./gradlew :test",
-        "./gradlew :inspection-core:jacocoTestCoverageVerification",
-        "./gradlew :mcp-server-jvm:jacocoTestCoverageVerification",
-        "./scripts/test-changed-file-lanes.sh",
-        "./scripts/test-release-contracts.sh",
-        "./gradlew buildPlugin"
-      ],
       "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml",
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
@@ -40,24 +35,16 @@
     },
     "build": {
       "buildPlugin": "./gradlew buildPlugin",
-      "plugin": "./gradlew buildPlugin",
       "verifyPluginStructure": "./gradlew verifyPluginStructure",
       "verifyPluginCompatibility": "./gradlew verifyPlugin",
       "releaseCompatibilityGate": "./scripts/release-compatibility-gate.sh",
       "validateReleaseVersion": "./scripts/validate-release-version.sh --tag vX.Y.Z",
       "verifyStableArtifact": "./scripts/verify-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --source-sha <40-character-source-sha>",
-      "publishStableArtifact": "PUBLISH_TOKEN=$PUBLISH_TOKEN ./scripts/publish-stable-artifact.sh --archive /path/to/jetbrains-inspection-api-X.Y.Z.zip --tag vX.Y.Z --expected-sha256 <verified-sha256> --source-sha <40-character-source-sha>",
-      "stablePublishEnvironment": "stable-marketplace",
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
-      "tool": "jetbrains",
       "ide": "IntelliJ IDEA",
-      "scopePreference": [
-        "changed_files",
-        "directory",
-        "whole_project"
-      ]
+      "scopePreference": "changed_files"
     },
     "manualSmoke": {
       "automatedIde": "JB_INSPECT_HELPER=\"${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}\" ./scripts/test-automated.sh",
@@ -66,21 +53,6 @@
       "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000 --helper \"${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}\"",
       "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide \"PyCharm\" --ide-app \"PyCharm\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000 --helper \"${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}\"",
       "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000 --helper \"${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}\""
-    },
-    "releaseCompatibility": {
-      "jetbrainsBuildRange": "251-262.*",
-      "automatedTagGate": [
-        "qualityGate.test.commitGate",
-        "qualityGate.build.buildPlugin",
-        "qualityGate.build.verifyPluginStructure",
-        "qualityGate.build.verifyStableArtifact"
-      ],
-      "manualEvidenceFor262": [
-        "qualityGate.manualSmoke.redLaneDogfoodIntelliJ",
-        "qualityGate.manualSmoke.redLaneDogfoodPyCharm",
-        "qualityGate.manualSmoke.redLaneDogfoodWebStorm",
-        "docs.agentSmoke"
-      ]
     },
     "docsRequiredWhen": [
       "behavior changes",
@@ -99,16 +71,6 @@
     "Dependency Graph",
     "Release"
   ],
-  "requiredStatusChecks": [
-    "commit-gate"
-  ],
-  "codeScanningMergeProtection": {
-    "ruleset": "Require code scanning results",
-    "tool": "CodeQL",
-    "alertsThreshold": "errors",
-    "securityAlertsThreshold": "high_or_higher",
-    "dependabotDefaultSetupException": true
-  },
   "qaLabels": [],
   "deployLabels": [],
   "healthUrls": [],
@@ -120,9 +82,10 @@
     },
     "capabilities": {
       "codeScanning": "available",
-      "secretScanning": "available",
+      "secretScanning": "unavailable",
       "dependabotAlerts": "available",
-      "securityAdvisories": "available"
+      "securityAdvisories": "available",
+      "dependencyGraph": "available"
     },
     "refreshWhen": [
       "repo visibility changes",
@@ -153,7 +116,38 @@
       "cleanup policy changes",
       "release workflow changes",
       "plugin endpoint or MCP contract changes",
-      "Java or Gradle version requirements change"
+      "Java or Gradle version requirements change",
+      "direction or agent instructions change",
+      "branch protection or rulesets change",
+      "merge path changes"
     ]
+  },
+  "prWorkflow": {
+    "mergeMethod": "merge",
+    "watchSkill": "babysit-pr",
+    "requiredStatusChecks": [
+      "commit-gate"
+    ],
+    "codeScanningMergeProtection": {
+      "ruleset": "Require code scanning results",
+      "tool": "CodeQL",
+      "alertsThreshold": "errors",
+      "securityAlertsThreshold": "high_or_higher"
+    },
+    "codeQualityMergeProtection": {
+      "ruleset": "Require code scanning results",
+      "severity": "errors"
+    }
+  },
+  "githubSettings": {
+    "expected": {
+      "deleteBranchOnMerge": true
+    }
+  },
+  "release": {
+    "instructions": "README.md#releases",
+    "stopBoundaries": "DIRECTION.md#stop-boundaries",
+    "stablePublishEnvironment": "stable-marketplace",
+    "publicationTrigger": "v* tag push"
   }
 }
