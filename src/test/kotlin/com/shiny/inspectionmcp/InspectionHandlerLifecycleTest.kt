@@ -1135,7 +1135,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"ownership_proven\": true"))
         assertTrue(body.contains("\"close_token\""))
         assertTrue(body.contains("\"lease_id\": \"test-lease\""))
-        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
+        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"$LIFECYCLE_OWNERSHIP_PROTOCOL\""))
     }
 
     @Test
@@ -1411,7 +1411,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"phase\": \"ready\""))
         assertTrue(body.contains("\"ownership_registered\": true"))
         assertTrue(body.contains("\"project_instance_id\""))
-        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"lease_bound_v1\""))
+        assertTrue(body.contains("\"lifecycle_ownership_protocol\": \"$LIFECYCLE_OWNERSHIP_PROTOCOL\""))
         assertTrue(body.contains(tempDir.toString()))
         assertEquals(tempDir.toAbsolutePath().normalize(), openedPath)
     }

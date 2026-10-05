@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -7,7 +8,7 @@ import org.junit.jupiter.api.Test
 class InspectionPluginBuildInfoTest {
 
     @Test
-    fun generatedBuildInfoResourceIsReadable() {
+    fun packagedBuildInfoHasConsistentSourceProvenance() {
         val buildInfo = loadInspectionPluginBuildInfo()
 
         assertNotNull(buildInfo.version)
@@ -20,7 +21,10 @@ class InspectionPluginBuildInfoTest {
         val fingerprint = requireNotNull(buildInfo.fingerprint)
         assertTrue(requireNotNull(buildInfo.version).isNotBlank())
         assertTrue(shortCommit.isNotBlank())
-        assertTrue(fingerprint.startsWith(requireNotNull(buildInfo.commit)))
+        val commit = requireNotNull(buildInfo.commit)
+        assertEquals(commit.take(12), shortCommit)
+        val state = if (requireNotNull(buildInfo.dirty)) "dirty" else "clean"
+        assertEquals("$commit-$state", fingerprint)
     }
 
     @Test

@@ -8,21 +8,33 @@ import org.junit.jupiter.api.Test
 class InspectionCaptureTimingTest {
     @Test
     fun `slow proof does not substitute for clean observation or extend capture budget`() {
-        val timing = InspectionCaptureTiming(captureStartedMs = 1_000L, settlingStartedMs = 56_000L)
-        assertEquals(61_000L, timing.deadlineMs)
-        assertEquals(5_000L, timing.pollingElapsedMs(61_000L))
-        assertEquals(60_000L, timing.captureElapsedMs(61_000L))
-        assertFalse(timing.hasBudget(61_000L))
-        assertFalse(canTrustEmpty(timing.pollingElapsedMs(61_000L)))
-        assertTrue(canTrustEmpty(timing.captureElapsedMs(61_000L)))
+        val captureStartedMs = 1_000L
+        val deadline = InspectionCaptureTiming(captureStartedMs, captureStartedMs).deadlineMs
+        val pollingDurationMs = 5L
+        val timing = InspectionCaptureTiming(captureStartedMs, deadline - pollingDurationMs)
+
+        assertEquals(deadline, timing.deadlineMs)
+        assertEquals(pollingDurationMs, timing.pollingElapsedMs(deadline))
+        assertEquals(deadline - captureStartedMs, timing.captureElapsedMs(deadline))
+        assertFalse(timing.hasBudget(deadline))
+        assertTrue(timing.hasBudget(deadline - 1))
+        val minimumPollingMs = 10L
+        assertFalse(canTrustEmpty(timing.pollingElapsedMs(deadline), minimumPollingMs))
+        assertTrue(canTrustEmpty(timing.captureElapsedMs(deadline), minimumPollingMs))
     }
 
     @Test
     fun `fast proof retains full observation gate within original budget`() {
-        val timing = InspectionCaptureTiming(captureStartedMs = 1_000L, settlingStartedMs = 2_000L)
-        assertTrue(timing.hasBudget(32_000L))
-        assertFalse(canTrustEmpty(timing.pollingElapsedMs(31_999L)))
-        assertTrue(canTrustEmpty(timing.pollingElapsedMs(32_000L)))
+        val settlingStartedMs = 2_000L
+        val timing = InspectionCaptureTiming(captureStartedMs = 1_000L, settlingStartedMs = settlingStartedMs)
+        val minimumPollingMs = resultSettlingWindow(
+            "directory", exactProofEstablished = false, contextExtractionComplete = true,
+        ).minCleanPollingMs
+        val readyAtMs = settlingStartedMs + minimumPollingMs
+
+        assertTrue(timing.hasBudget(readyAtMs))
+        assertFalse(canTrustEmpty(timing.pollingElapsedMs(readyAtMs - 1), minimumPollingMs))
+        assertTrue(canTrustEmpty(timing.pollingElapsedMs(readyAtMs), minimumPollingMs))
     }
 
     @Test
@@ -58,18 +70,6 @@ class InspectionCaptureTimingTest {
         minResultsWaitMs = window.minResultsWaitMs,
     )
 
-    private fun canTrustEmpty(pollingElapsedMs: Long): Boolean = shouldTrustStableScopedEmptyResults(
-        hasExecutionProofCleanEvidence = true,
-        executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
-        modelVerdict = InspectionModelVerdict.CLEAN,
-        hasScopedMatcher = true,
-        scopedContextResultsEmpty = true,
-        bestResultsEmpty = true,
-        observedNonEmptyInspectionTree = false,
-        stableForMs = 5_000L,
-        pollingElapsedMs = pollingElapsedMs,
-    )
-
     private fun canTrustEmpty(pollingElapsedMs: Long, minPollingMs: Long): Boolean = shouldTrustStableScopedEmptyResults(
         hasExecutionProofCleanEvidence = true,
         executionProofMode = InspectionExecutionProofMode.EXACT_BOUNDED,
@@ -80,6 +80,7 @@ class InspectionCaptureTimingTest {
         observedNonEmptyInspectionTree = false,
         stableForMs = pollingElapsedMs,
         pollingElapsedMs = pollingElapsedMs,
+        minStableMs = minPollingMs,
         minPollingMs = minPollingMs,
     )
 }
