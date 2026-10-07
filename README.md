@@ -429,6 +429,8 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   A successful version 1 response has one unique registered and assigned local
   SDK, `project_sdk_assigned: true`, and an
   `assigned_python_module_count` equal to `python_module_count`.
+  New SDKs are registered before assigning module root models, so the IDE can
+  resolve their SDK dependencies when those models commit.
   Preparation evidence does not imply an inspection verdict; clients must run
   and assess an independent inspection. The generic local SDK has no claimed
   uv-association metadata. Failures use a
