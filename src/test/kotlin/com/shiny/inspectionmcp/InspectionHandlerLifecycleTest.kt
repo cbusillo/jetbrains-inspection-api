@@ -919,6 +919,8 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, deadlineFailed.status())
         assertTrue(deadlineBody.contains("\"stage\": \"readback\""), deadlineBody)
         assertTrue(deadlineBody.contains("\"worker_thread\": \"${Thread.currentThread().name}\""), deadlineBody)
+        assertFalse(deadlineBody.contains("\"worker_state\""), deadlineBody)
+        assertTrue(deadlineBody.contains("\"worker_stack\": []"), deadlineBody)
     }
 
     @Test
@@ -1126,6 +1128,42 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             releaseSetup.countDown()
             worker.get()?.join(10_000)
         }
+    }
+
+    @Test
+    fun `test SDK timeout winning after worker cleanup reports no preparation in progress`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        val diagnosticClock = AtomicLong(1_000)
+        handler.pythonSdkPreparationNow = diagnosticClock::get
+        handler.pythonSdkPreparationExecutor = { task -> task.run() }
+        handler.pythonSdkPreparationRunner = { request ->
+            request.progress.enterStage("readback")
+            PythonSdkPreparationResult(true, "python_sdk_preparation_prepared", operation = "reused")
+        }
+        handler.schedulePythonSdkPreparationTimeout = { task, delayMs ->
+            val cancel: () -> Unit = {
+                diagnosticClock.addAndGet(delayMs)
+                task.run()
+            }
+            cancel
+        }
+
+        val responses = processRequestResponses(pythonSdkPreparationUri(instanceId, token), HttpMethod.POST)
+
+        assertEquals(1, responses.size)
+        val response = responses.single()
+        val body = response.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, response.status())
+        assertTrue(body.contains("\"python_sdk_preparation_in_progress\": false"), body)
+        assertTrue(body.contains("\"stage\": \"readback\""), body)
+        assertFalse(body.contains("\"worker_thread\""), body)
     }
 
     @Test

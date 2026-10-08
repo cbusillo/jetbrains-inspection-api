@@ -299,6 +299,7 @@ class PythonSdkPreparationServiceTest {
         assertFalse(result.prepared)
         assertEquals("python_sdk_preparation_existing_sdk_incomplete", result.reason)
         assertEquals(listOf("readback"), platform.mutationEvents)
+        assertTrue(requireNotNull(result.detail).contains("deadline"))
     }
 
     @Test

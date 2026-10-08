@@ -420,7 +420,8 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   populating its version and class roots, preparation observes that same SDK
   for up to ten seconds without mutating it; identity or registration-count
   changes fail closed, and an SDK that remains incomplete returns HTTP 409.
-  Its `detail` names the last observed missing setup requirement. Observations
+  Its `detail` names the last observed missing setup requirement or the exceeded
+  observation deadline. Observations
   that finish after the setup or request deadline cannot establish readiness.
   The endpoint does not create Python modules. A helper-owned project that has
   no `PYTHON_MODULE` after its files are prepared must be closed and reopened
@@ -441,11 +442,14 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   `python_sdk_preparation_setup_incomplete`; `detail` identifies the first failed
   requirement: matching interpreter home, nonblank Python version, or populated
   `CLASSES` roots. The 60-second limit
-  bounds the HTTP response and requests cancellation. Both the scheduled deadline
-  and a deadline detected by the worker return HTTP 408. On timeout,
+  bounds the HTTP response and requests cancellation. The scheduled timeout and
+  worker results with `python_sdk_preparation_timeout` return HTTP 408;
+  ownership and concurrency refusals remain HTTP 409. On timeout,
   `python_sdk_preparation_diagnostic` records the stage,
-  stage and total elapsed milliseconds, and the active worker's name, state and
-  bounded stack before cancellation. A worker that has not started reports
+  stage and total elapsed milliseconds, and the active worker's name. A separate
+  deadline observer also captures its state and bounded stack before cancellation.
+  A returned worker omits state and stack evidence of a stall.
+  A worker that has not started reports
   `stage: "queued"` without worker identity. These are preparation diagnostics,
   separate from native inspection stage and execution proof.
   If platform SDK setup

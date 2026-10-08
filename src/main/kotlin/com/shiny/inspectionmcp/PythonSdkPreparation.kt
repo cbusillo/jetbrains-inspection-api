@@ -39,7 +39,7 @@ internal data class PythonSdkPreparationRequest(
     val deadlineMs: Long,
     val indicator: ProgressIndicator,
     val ownershipIsCurrent: () -> Boolean,
-    val progress: PythonSdkPreparationProgress = PythonSdkPreparationProgress(),
+    val progress: PythonSdkPreparationProgress,
 )
 
 internal data class PythonSdkPreparationResult(

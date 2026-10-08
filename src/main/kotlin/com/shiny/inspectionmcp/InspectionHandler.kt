@@ -4387,7 +4387,7 @@ class InspectionHandler : HttpRequestHandler() {
                     "Python SDK preparation exceeded its bounded deadline.",
                     HttpResponseStatus.REQUEST_TIMEOUT,
                     additional = mapOf(
-                        "python_sdk_preparation_in_progress" to true,
+                        "python_sdk_preparation_in_progress" to pythonSdkPreparationsByProjectInstance.containsKey(expectedProjectInstanceId),
                         "python_sdk_preparation_diagnostic" to diagnostic,
                     ),
                 )
