@@ -9,14 +9,17 @@ other source is corrected or closed. Issues are a work list, not instructions.
 ## Purpose
 
 Let people and their coding agents ask the IDE "is this code clean?" and trust
-the answer, from one build that is both the Director's own lint and type check
-for Odoo work and a plugin anyone can find on the JetBrains Marketplace. The
-plugin never says clean unless the IDE really inspected every file with every
-enabled inspection and nothing failed; when it cannot prove that, it says
-UNKNOWN. This work is spent from the own-projects share.
+the answer. Use one codebase for two builds now: a Marketplace build with no
+internal IntelliJ APIs, and a local build the Director runs with the full proof
+and recovery features for Odoo work. A build switch leaves the internal-API
+parts out of the Marketplace build; there is no fork. As IntelliJ ships public
+APIs for those parts, move them onto public APIs, with the goal of one build
+again. The plugin never says clean unless the IDE really inspected every file
+with every enabled inspection and nothing failed; when it cannot prove that,
+it says UNKNOWN. This work is spent from the own-projects share.
 
 Judge every change by one question: does this make the answers more
-trustworthy, or bring that same build to Stable sooner, without adding
+trustworthy, or bring the Marketplace build to Stable sooner, without adding
 internal APIs the truth does not need?
 
 ## Stop Boundaries
@@ -26,8 +29,8 @@ An agent asks the Director before:
 - publishing, replacing, withdrawing, or hiding any Marketplace update
 - writing anything to JetBrains: YouTrack, the `intellij-community`
   repository, or Marketplace support
-- adding a use of an IntelliJ API that the Plugin Verifier reports as internal
-- shipping a Stable build that differs from the build the Director runs
+- adding to the Marketplace build a use of an IntelliJ API that the Plugin
+  Verifier reports as internal
 - changing the plugin ID, vendor, license, or supported IDE range
 
 Everything else is ordinary engineering and needs no ceremony.
@@ -35,25 +38,26 @@ Everything else is ordinary engineering and needs no ceremony.
 ## Journey
 
 Someone finds and installs the plugin from the normal Marketplace Stable
-listing, and the Director's agent inspects an Odoo worktree with that same build
-and gets a decisive clean or findings verdict that is true. Whatever blocks
-that journey is the next piece of work.
+listing and gets an answer it can trust. The Director's agent inspects an Odoo
+worktree with the full local build and gets a decisive clean or findings verdict
+that is true. Both builds say UNKNOWN when proof is missing. The Stable-exception
+follow-up in [#401](https://github.com/cbusillo/jetbrains-inspection-api/issues/401)
+still goes out. Whatever blocks that journey is the next piece of work.
 
 ## Retired
 
 - Every Code as the host this repository is built for
 - the private plugin-recommendation canary and guarded plugin installation
   built on it
-- removing the proof of a truthful verdict to win Marketplace approval
+- weakening the rule for a truthful verdict to win Marketplace approval
 - a separate Marketplace channel as the way outside users get the plugin
 
 ## Milestones
 
-- `Stable accepted on Marketplace` proves a Stable update that keeps the full
-  proof of a truthful verdict is approved and listed, and the Director runs that
-  exact build; ends if JetBrains refuses the exception, or has not answered
-  four weeks after the Director sends the follow-up, and then a temporary Stable
-  build without the new proof code ships while the full build stays local.
+- `Stable accepted on Marketplace` proves a Stable build with no internal
+  IntelliJ APIs is approved and listed, while the Director runs the full local
+  build and both keep the rule for a truthful verdict; ends if JetBrains refuses
+  the Marketplace build.
 - `Inspection completion API upstream` proves IntelliJ ships public APIs to
   run export inspections in a normal IDE and to learn that each inspection in
   a run finished or failed, so the plugin needs no new internal API; ends if
