@@ -101,8 +101,6 @@ internal interface PythonSdkPreparationPlatform {
     fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk
     fun setupSdkPaths(type: SdkType, sdk: Sdk, indicator: ProgressIndicator)
     fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String?
-    fun isSetupComplete(sdk: Sdk, interpreterHome: String): Boolean =
-        setupIncompleteDetail(sdk, interpreterHome) == null
     fun commit(
         project: Project,
         expectedModules: List<Module>,

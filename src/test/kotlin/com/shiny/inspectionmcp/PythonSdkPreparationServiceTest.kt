@@ -333,21 +333,17 @@ class PythonSdkPreparationServiceTest {
         val platform = JetBrainsPythonSdkPreparationPlatform()
         every { sdk.homePath } returns projectRoot.resolve("other/python").toString()
         assertEquals("SDK interpreter home does not match the worktree interpreter.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.homePath } returns home
         every { sdk.versionString } returns " "
         assertEquals("SDK Python version is missing after path setup.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.versionString } returns "Python 3.13"
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns emptyArray()
         assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns arrayOf(mockk<VirtualFile>())
         assertNull(platform.setupIncompleteDetail(sdk, home))
-        assertTrue(platform.isSetupComplete(sdk, home))
     }
 
     @Test
