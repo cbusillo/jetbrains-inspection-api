@@ -29,7 +29,7 @@ builds become one, without adding internal APIs those features do not need?
 
 An agent asks the Director before:
 
-- publishing, replacing, withdrawing, or hiding any Marketplace update
+- publishing, replacing, withdrawing, or hiding any Marketplace Stable update
 - writing anything to JetBrains: YouTrack, the `intellij-community`
   repository, or Marketplace support
 - adding to Stable an API use that the Plugin Verifier reports as internal
