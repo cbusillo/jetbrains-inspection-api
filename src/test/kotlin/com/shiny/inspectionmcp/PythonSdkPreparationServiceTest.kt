@@ -68,6 +68,19 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `path setup exposes its active preparation stage`() {
+        createVenv()
+        val progress = PythonSdkPreparationProgress(clock::now)
+        var observed: Map<String, Any?>? = null
+        platform.onPathSetup = { observed = progress.diagnostic() }
+
+        val result = prepare(progress = progress)
+
+        assertTrue(result.prepared)
+        assertEquals("candidate_setup", requireNotNull(observed)["stage"])
+    }
+
+    @Test
     fun `reuses the one registered worktree SDK without creating or setting up another`() {
         val interpreter = createVenv()
         val existing = sdk("existing", interpreter.toString())
@@ -252,6 +265,7 @@ class PythonSdkPreparationServiceTest {
 
         assertFalse(result.prepared)
         assertEquals("python_sdk_preparation_existing_sdk_incomplete", result.reason)
+        assertEquals("SDK CLASSES roots are missing after path setup.", result.detail)
         assertEquals(1, result.registeredLocalPythonSdkCount)
         assertEquals(0, result.assignedLocalPythonSdkCount)
         assertEquals(listOf("readback"), platform.mutationEvents)
@@ -275,27 +289,62 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `complete existing SDK observation after its settle deadline cannot commit`() {
+        val interpreter = createVenv()
+        platform.registered += sdk("late", interpreter.toString())
+        platform.onSetupObservation = { clock.timeMs += 10_000 }
+
+        val result = prepare(deadlineMs = 20_000)
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_existing_sdk_incomplete", result.reason)
+        assertEquals(listOf("readback"), platform.mutationEvents)
+        assertTrue(requireNotNull(result.detail).contains("deadline"))
+    }
+
+    @Test
+    fun `complete existing SDK observation after the request deadline cannot commit`() {
+        val interpreter = createVenv()
+        platform.registered += sdk("late", interpreter.toString())
+        platform.onSetupObservation = { clock.timeMs = 5_000 }
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_timeout", result.reason)
+        assertTrue(platform.mutationEvents.isEmpty())
+    }
+
+    @Test
+    fun `complete assignment readback after the request deadline cannot report prepared`() {
+        createVenv()
+        platform.onReadback = { clock.timeMs = 5_000 }
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals("python_sdk_preparation_timeout", result.reason)
+        assertEquals(listOf("create", "setup", "commit", "persist", "readback"), platform.mutationEvents)
+    }
+
+    @Test
     fun `setup diagnostic identifies each failed requirement and accepts complete SDK`() {
         val sdk = mockk<Sdk>()
         val home = projectRoot.resolve(".venv/bin/python").toString()
         val platform = JetBrainsPythonSdkPreparationPlatform()
         every { sdk.homePath } returns projectRoot.resolve("other/python").toString()
         assertEquals("SDK interpreter home does not match the worktree interpreter.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.homePath } returns home
         every { sdk.versionString } returns " "
         assertEquals("SDK Python version is missing after path setup.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.versionString } returns "Python 3.13"
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns emptyArray()
         assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(sdk, home))
-        assertFalse(platform.isSetupComplete(sdk, home))
 
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns arrayOf(mockk<VirtualFile>())
         assertNull(platform.setupIncompleteDetail(sdk, home))
-        assertTrue(platform.isSetupComplete(sdk, home))
     }
 
     @Test
@@ -486,10 +535,9 @@ class PythonSdkPreparationServiceTest {
     fun `deadline after detached setup prevents registration and assignment`() {
         createVenv()
         val deadline = 5_000L
+        platform.onPathSetup = { clock.timeMs = deadline }
 
-        val result = prepare(deadlineMs = deadline) { checkCount ->
-            if (checkCount == 6) clock.timeMs = deadline
-        }
+        val result = prepare(deadlineMs = deadline)
 
         assertEquals("python_sdk_preparation_timeout", result.reason)
         assertEquals(listOf("create", "setup"), platform.mutationEvents)
@@ -638,6 +686,7 @@ class PythonSdkPreparationServiceTest {
 
     private fun prepare(
         deadlineMs: Long = 5_000,
+        progress: PythonSdkPreparationProgress = PythonSdkPreparationProgress(clock::now),
         onCancellationCheck: (Int) -> Unit = {},
     ): PythonSdkPreparationResult {
         var checks = 0
@@ -658,6 +707,7 @@ class PythonSdkPreparationServiceTest {
                 deadlineMs = deadlineMs,
                 indicator = indicator,
                 ownershipIsCurrent = { true },
+                progress = progress,
             ),
         )
     }
@@ -748,6 +798,9 @@ class PythonSdkPreparationServiceTest {
         var commitQueries = 0
         var readbackQueries = 0
         var setupCompleteQueries = 0
+        var onSetupObservation: () -> Unit = {}
+        var onPathSetup: () -> Unit = {}
+        var onReadback: () -> Unit = {}
 
         override fun isProjectTrusted(project: Project): Boolean {
             assertSame(this.project, project)
@@ -794,12 +847,14 @@ class PythonSdkPreparationServiceTest {
             assertSame(pythonType, type)
             assertSame(detachedSdk, sdk)
             mutationEvents += "setup"
+            onPathSetup()
             setupFailure?.let { throw it }
         }
 
         override fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String? {
             assertEquals(interpreterHome, homes[sdk])
             setupCompleteQueries += 1
+            onSetupObservation()
             val results = setupCompleteResults
             val complete = if (results == null) setupComplete else if (results.size > 1) results.removeFirst() else results.first()
             return if (complete) null else "SDK CLASSES roots are missing after path setup."
@@ -857,6 +912,7 @@ class PythonSdkPreparationServiceTest {
             assertSame(this.project, project)
             readbackQueries += 1
             mutationEvents += "readback"
+            onReadback()
             readbackFailure?.let { throw it }
             return forcedReadback ?: PythonSdkReadback(
                 registeredCount = registered.count { sdk ->
