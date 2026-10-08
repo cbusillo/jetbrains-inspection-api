@@ -1866,6 +1866,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private data class PythonSdkPreparationControl(
         val indicator: ProgressIndicator,
+        val progress: PythonSdkPreparationProgress,
         val responseSent: AtomicBoolean = AtomicBoolean(false),
     )
 
@@ -4347,7 +4348,7 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
 
-        val control = PythonSdkPreparationControl(ProgressIndicatorBase())
+        val control = PythonSdkPreparationControl(ProgressIndicatorBase(), PythonSdkPreparationProgress(pythonSdkPreparationNow))
         if (pythonSdkPreparationsByProjectInstance.putIfAbsent(expectedProjectInstanceId, control) != null) {
             sendPythonSdkPreparationFailure(
                 context,
@@ -4375,6 +4376,7 @@ class InspectionHandler : HttpRequestHandler() {
                 !isInspectionInProgress(lease.project)
         }
         val timeoutTask = Runnable {
+            val diagnostic = control.progress.diagnostic()
             control.indicator.cancel()
             if (control.responseSent.compareAndSet(false, true)) {
                 sendPythonSdkPreparationFailure(
@@ -4384,7 +4386,10 @@ class InspectionHandler : HttpRequestHandler() {
                     "python_sdk_preparation_timeout",
                     "Python SDK preparation exceeded its bounded deadline.",
                     HttpResponseStatus.REQUEST_TIMEOUT,
-                    additional = mapOf("python_sdk_preparation_in_progress" to true),
+                    additional = mapOf(
+                        "python_sdk_preparation_in_progress" to true,
+                        "python_sdk_preparation_diagnostic" to diagnostic,
+                    ),
                 )
             }
         }
@@ -4403,8 +4408,10 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         val worker = Runnable {
+            control.progress.startWorker()
+            var deadlineDiagnostic: Map<String, Any?>? = null
             val result = try {
-                if (!ownershipIsCurrent()) {
+                val prepared = if (!ownershipIsCurrent()) {
                     PythonSdkPreparationResult(false, "python_sdk_preparation_ownership_changed")
                 } else {
                     pythonSdkPreparationRunner(
@@ -4414,9 +4421,14 @@ class InspectionHandler : HttpRequestHandler() {
                             deadlineMs = deadlineMs,
                             indicator = control.indicator,
                             ownershipIsCurrent = ownershipIsCurrent,
+                            progress = control.progress,
                         )
                     )
                 }
+                if (prepared.reason == "python_sdk_preparation_timeout") {
+                    deadlineDiagnostic = control.progress.diagnostic()
+                }
+                prepared
             } catch (error: Throwable) {
                 PythonSdkPreparationResult(
                     prepared = false,
@@ -4424,11 +4436,12 @@ class InspectionHandler : HttpRequestHandler() {
                     detail = error.message ?: error::class.java.simpleName,
                 )
             } finally {
+                control.progress.finishWorker()
                 pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
                 runCatching { cancelTimeout() }
             }
             if (control.responseSent.compareAndSet(false, true)) {
-                sendPythonSdkPreparationResult(context, parameters, requestAttribution, result)
+                sendPythonSdkPreparationResult(context, parameters, requestAttribution, result, deadlineDiagnostic)
             }
         }
         try {
@@ -4472,6 +4485,7 @@ class InspectionHandler : HttpRequestHandler() {
         parameters: Map<String, List<String>>,
         requestAttribution: InspectionRequestAttribution,
         result: PythonSdkPreparationResult,
+        deadlineDiagnostic: Map<String, Any?>?,
     ) {
         val response = mutableMapOf<String, Any?>(
             "status" to if (result.prepared) "prepared" else "error",
@@ -4494,6 +4508,7 @@ class InspectionHandler : HttpRequestHandler() {
             "project_sdk_assigned" to result.projectSdkAssigned
                 .takeIf { result.prepared || result.readbackObserved },
             "detail" to result.detail,
+            "python_sdk_preparation_diagnostic" to deadlineDiagnostic,
         )
         val status = if (result.prepared) HttpResponseStatus.OK else pythonSdkPreparationFailureStatus(result.reason)
         if (!result.prepared) {
@@ -4527,6 +4542,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun pythonSdkPreparationFailureStatus(reason: String): HttpResponseStatus = when {
+        reason == "python_sdk_preparation_timeout" -> HttpResponseStatus.REQUEST_TIMEOUT
         reason.endsWith("_unsupported") -> HttpResponseStatus.UNPROCESSABLE_ENTITY
         reason.endsWith("_venv_configuration_missing") || reason.endsWith("_interpreter_missing") ->
             HttpResponseStatus.UNPROCESSABLE_ENTITY

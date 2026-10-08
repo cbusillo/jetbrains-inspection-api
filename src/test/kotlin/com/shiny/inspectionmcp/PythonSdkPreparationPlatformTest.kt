@@ -18,6 +18,8 @@ import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.runInEdtAndGet
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -27,6 +29,59 @@ import java.nio.file.Files
 import java.nio.file.Paths
 
 class PythonSdkPreparationPlatformTest {
+    @Test
+    fun `incomplete or duplicate exact-home registrations cannot assign a detached replacement`() {
+        val project = projectExtension.project
+        val root = Paths.get(requireNotNull(project.basePath))
+        val home = root.resolve(".venv/bin/python").toString()
+        val table = ProjectJdkTable.getInstance()
+        val type = FixturePythonSdkType()
+        val existing = table.createSdk(helperSdkName(), type)
+        val replacement = table.createSdk(helperSdkName(), type)
+        val previousProjectSdk = ProjectRootManager.getInstance(project).projectSdk
+        val module = runInEdtAndGet {
+            ApplicationManager.getApplication().runWriteAction<com.intellij.openapi.module.Module> {
+                listOf(existing, replacement).forEach { sdk ->
+                    sdk.sdkModificator.apply {
+                        homePath = home
+                        versionString = "Python fixture"
+                        commitChanges()
+                    }
+                }
+                table.addJdk(existing)
+                ProjectRootManager.getInstance(project).projectSdk = null
+                ModuleManager.getInstance(project).newModule(root.resolve("incomplete.iml"), "PYTHON_MODULE")
+            }
+        }
+        val platform = JetBrainsPythonSdkPreparationPlatform()
+        try {
+            val incomplete = platform.commit(project, listOf(module), home, replacement, { true }, EmptyProgressIndicator())
+            assertFalse(incomplete.succeeded)
+            assertEquals("python_sdk_preparation_existing_sdk_incomplete", incomplete.reason)
+            assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(existing, home))
+            assertEquals(platform.setupIncompleteDetail(existing, home), incomplete.detail)
+            assertSame(existing, table.allJdks.single { it.homePath == home })
+            assertNull(ProjectRootManager.getInstance(project).projectSdk)
+            assertNull(ModuleRootManager.getInstance(module).sdk)
+
+            runInEdtAndGet { ApplicationManager.getApplication().runWriteAction { table.addJdk(replacement) } }
+            val duplicate = platform.commit(project, listOf(module), home, null, { true }, EmptyProgressIndicator())
+            assertFalse(duplicate.succeeded)
+            assertEquals("python_sdk_preparation_ambiguous_registered_sdk", duplicate.reason)
+            assertEquals(setOf(existing, replacement), table.allJdks.filter { it.homePath == home }.toSet())
+            assertNull(ProjectRootManager.getInstance(project).projectSdk)
+            assertNull(ModuleRootManager.getInstance(module).sdk)
+        } finally {
+            runInEdtAndGet {
+                ApplicationManager.getApplication().runWriteAction {
+                    ProjectRootManager.getInstance(project).projectSdk = previousProjectSdk
+                    ModuleManager.getInstance(project).disposeModule(module)
+                    listOf(existing, replacement).forEach { sdk -> if (table.allJdks.any { it === sdk }) table.removeJdk(sdk) }
+                }
+            }
+        }
+    }
+
     @Test
     fun `new SDK remains assigned to real modules after registration and repeated preparation`() {
         val project = projectExtension.project

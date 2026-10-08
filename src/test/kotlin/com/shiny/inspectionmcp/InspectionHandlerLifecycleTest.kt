@@ -39,6 +39,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import javax.swing.JFrame
 
@@ -908,6 +909,16 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         val persistenceFailedBody = persistenceFailed.content().toString(Charsets.UTF_8)
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, persistenceFailed.status())
         assertTrue(persistenceFailedBody.contains("\"classification\": \"tool_caused\""), persistenceFailedBody)
+
+        handler.pythonSdkPreparationRunner = { request ->
+            request.progress.enterStage("readback")
+            PythonSdkPreparationResult(false, "python_sdk_preparation_timeout")
+        }
+        val deadlineFailed = processRequest(uri, HttpMethod.POST)
+        val deadlineBody = deadlineFailed.content().toString(Charsets.UTF_8)
+        assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, deadlineFailed.status())
+        assertTrue(deadlineBody.contains("\"stage\": \"readback\""), deadlineBody)
+        assertTrue(deadlineBody.contains("\"worker_thread\": \"${Thread.currentThread().name}\""), deadlineBody)
     }
 
     @Test
@@ -1031,6 +1042,10 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         requireNotNull(timeout.get()).run()
         assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, firstResponses.single().status())
         assertTrue(firstResponses.single().content().toString(Charsets.UTF_8).contains("python_sdk_preparation_timeout"))
+        val queuedBody = firstResponses.single().content().toString(Charsets.UTF_8)
+        assertTrue(queuedBody.contains("\"python_sdk_preparation_diagnostic\""), queuedBody)
+        assertTrue(queuedBody.contains("\"stage\": \"queued\""), queuedBody)
+        assertFalse(queuedBody.contains("\"worker_thread\""), queuedBody)
         handler.pythonSdkPreparationRunner = { request ->
             assertTrue(request.indicator.isCanceled)
             PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
@@ -1045,6 +1060,72 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         handler.schedulePythonSdkPreparationTimeout = { _, _ -> {} }
         val retry = processRequest(uri, HttpMethod.POST)
         assertEquals(HttpResponseStatus.OK, retry.status())
+    }
+
+    @Test
+    fun `test SDK timeout captures the active worker stage before cancellation and keeps close blocked`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        val timeout = AtomicReference<Runnable?>()
+        val worker = AtomicReference<Thread?>()
+        val setupStarted = CountDownLatch(1)
+        val releaseSetup = CountDownLatch(1)
+        val diagnosticClock = AtomicLong(1_000)
+        handler.pythonSdkPreparationNow = diagnosticClock::get
+        handler.schedulePythonSdkPreparationTimeout = { task, _ ->
+            timeout.set(task)
+            val cancel: () -> Unit = {}
+            cancel
+        }
+        handler.pythonSdkPreparationExecutor = { task ->
+            Thread(task, "sdk-preparation-fixture").also { worker.set(it); it.start() }
+        }
+        handler.pythonSdkPreparationRunner = { request ->
+            request.progress.enterStage("candidate_setup")
+            setupStarted.countDown()
+            check(releaseSetup.await(10, TimeUnit.SECONDS))
+            assertTrue(request.indicator.isCanceled)
+            PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
+        }
+        try {
+            val responses = processRequestResponses(pythonSdkPreparationUri(instanceId, token), HttpMethod.POST)
+            assertTrue(setupStarted.await(10, TimeUnit.SECONDS))
+            val setupWorker = requireNotNull(worker.get())
+            val waitDeadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+            while (setupWorker.state != Thread.State.TIMED_WAITING && System.nanoTime() < waitDeadline) {
+                Thread.sleep(1)
+            }
+            assertEquals(Thread.State.TIMED_WAITING, setupWorker.state)
+            diagnosticClock.addAndGet(1_500)
+            requireNotNull(timeout.get()).run()
+
+            val response = responses.single()
+            val body = response.content().toString(Charsets.UTF_8)
+            assertEquals(HttpResponseStatus.REQUEST_TIMEOUT, response.status())
+            assertTrue(body.contains("\"stage\": \"candidate_setup\""), body)
+            assertTrue(body.contains("\"worker_thread\": \"${requireNotNull(worker.get()).name}\""), body)
+            assertTrue(body.contains("CountDownLatch.await"), body)
+            assertTrue(body.contains("\"stage_elapsed_ms\": 1500"), body)
+            assertTrue(body.contains("\"elapsed_ms\": 1500"), body)
+            val close = processGetRequest(
+                "/api/inspection/lifecycle/close?project_instance_id=$instanceId&close_token=$token&lease_id=test-lease"
+            )
+            assertEquals(HttpResponseStatus.CONFLICT, close.status())
+            assertTrue(close.content().toString(Charsets.UTF_8).contains("\"python_sdk_preparation_in_progress\": true"))
+            releaseSetup.countDown()
+            requireNotNull(worker.get()).join(10_000)
+            assertFalse(requireNotNull(worker.get()).isAlive)
+            assertEquals(1, responses.size)
+        } finally {
+            releaseSetup.countDown()
+            worker.get()?.join(10_000)
+        }
     }
 
     @Test

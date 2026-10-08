@@ -39,6 +39,7 @@ internal data class PythonSdkPreparationRequest(
     val deadlineMs: Long,
     val indicator: ProgressIndicator,
     val ownershipIsCurrent: () -> Boolean,
+    val progress: PythonSdkPreparationProgress = PythonSdkPreparationProgress(),
 )
 
 internal data class PythonSdkPreparationResult(
@@ -144,6 +145,7 @@ internal class PythonSdkPreparationService(
         }
 
         return try {
+            request.progress.enterStage("module_settle")
             val snapshot = awaitStablePythonModules(request)
                 ?: return failure("python_sdk_preparation_no_python_modules", interpreterHome)
             request.checkCurrent()
@@ -156,6 +158,7 @@ internal class PythonSdkPreparationService(
                 )
             }
 
+            request.progress.enterStage("registry_lookup")
             val matches = matchingSdks(interpreterHome)
             if (matches.size > 1) {
                 return failureWithReadback(
@@ -167,21 +170,26 @@ internal class PythonSdkPreparationService(
             }
             val existing = matches.singleOrNull()
             if (existing != null) {
-                awaitExistingSdkSetup(request, existing, interpreterHome)?.let { reason ->
+                request.progress.enterStage("existing_sdk_setup")
+                awaitExistingSdkSetup(request, existing, interpreterHome)?.let { failure ->
                     return failureWithReadback(
-                        reason = reason,
+                        reason = failure.reason,
                         request = request,
                         expectedModules = snapshot.modules,
                         interpreterHome = interpreterHome,
+                        detail = failure.detail,
                     )
                 }
             }
             val detached = if (existing == null) {
                 request.checkCurrent()
+                request.progress.enterStage("candidate_creation")
                 val candidate = platform.createDetachedSdk(platform.registeredSdks(), interpreterHome, type)
                 request.checkCurrent()
+                request.progress.enterStage("candidate_setup")
                 platform.setupSdkPaths(type, candidate, request.indicator)
                 request.checkCurrent()
+                request.progress.enterStage("candidate_validation")
                 val setupDetail = platform.setupIncompleteDetail(candidate, interpreterHome)
                 if (setupDetail != null) {
                     return failure(
@@ -196,6 +204,7 @@ internal class PythonSdkPreparationService(
                 null
             }
 
+            request.progress.enterStage("commit")
             val commit = platform.commit(
                 project = request.project,
                 expectedModules = snapshot.modules,
@@ -223,6 +232,7 @@ internal class PythonSdkPreparationService(
                 )
             }
             request.checkCurrent()
+            request.progress.enterStage("persistence")
             val persistence = platform.persistSdkRegistry()
             if (!persistence.succeeded) {
                 return failureWithReadback(
@@ -234,7 +244,9 @@ internal class PythonSdkPreparationService(
                 )
             }
             request.checkCurrent()
+            request.progress.enterStage("readback")
             val readback = platform.readback(request.project, snapshot.modules, interpreterHome)
+            request.checkCurrent()
             val completeReadback = readback.registeredCount == 1 &&
                 readback.assignedLocalSdkCount == 1 &&
                 readback.projectSdkAssigned &&
@@ -306,29 +318,42 @@ internal class PythonSdkPreparationService(
         return null
     }
 
+    private data class ExistingSdkSetupFailure(val reason: String, val detail: String? = null)
+
     private fun awaitExistingSdkSetup(
         request: PythonSdkPreparationRequest,
         expectedSdk: Sdk,
         interpreterHome: String,
-    ): String? {
+    ): ExistingSdkSetupFailure? {
         request.checkCurrent()
         val settleDeadline = minOf(request.deadlineMs, now() + EXISTING_PYTHON_SDK_SETTLE_TIMEOUT_MS)
+        var lastIncompleteDetail: String? = null
         while (now() < settleDeadline) {
             request.checkCurrent()
             val matches = matchingSdks(interpreterHome)
+            request.checkCurrent()
             if (matches.size > 1) {
-                return "python_sdk_preparation_ambiguous_registered_sdk"
+                return ExistingSdkSetupFailure("python_sdk_preparation_ambiguous_registered_sdk")
             }
             if (matches.singleOrNull() !== expectedSdk) {
-                return "python_sdk_preparation_existing_sdk_changed"
+                return ExistingSdkSetupFailure("python_sdk_preparation_existing_sdk_changed")
             }
-            if (platform.isSetupComplete(expectedSdk, interpreterHome)) {
+            val incompleteDetail = platform.setupIncompleteDetail(expectedSdk, interpreterHome)
+            request.checkCurrent()
+            if (now() >= settleDeadline) {
+                return ExistingSdkSetupFailure(
+                    "python_sdk_preparation_existing_sdk_incomplete",
+                    incompleteDetail ?: "SDK setup observation finished after the bounded settle deadline.",
+                )
+            }
+            lastIncompleteDetail = incompleteDetail
+            if (incompleteDetail == null) {
                 return null
             }
             sleep(minOf(EXISTING_PYTHON_SDK_SETTLE_POLL_MS, (settleDeadline - now()).coerceAtLeast(1)))
         }
         request.checkCurrent()
-        return "python_sdk_preparation_existing_sdk_incomplete"
+        return ExistingSdkSetupFailure("python_sdk_preparation_existing_sdk_incomplete", lastIncompleteDetail)
     }
 
     private fun conflict(snapshot: PythonSdkModelSnapshot, interpreterHome: String): Sdk? {
@@ -369,6 +394,7 @@ internal class PythonSdkPreparationService(
         expectedModules: List<Module>,
         interpreterHome: String,
     ): PythonSdkReadback? = try {
+        request.progress.enterStage("readback")
         platform.readback(request.project, expectedModules, interpreterHome)
     } catch (error: ProcessCanceledException) {
         throw error
@@ -544,8 +570,10 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         }
         val sdk = matching.singleOrNull() ?: detachedSdk
             ?: return PythonSdkCommitResult(false, "python_sdk_preparation_candidate_missing")
-        if (matching.isNotEmpty() && !isSetupComplete(sdk, interpreterHome)) {
-            return PythonSdkCommitResult(false, "python_sdk_preparation_existing_sdk_incomplete")
+        if (matching.isNotEmpty()) {
+            setupIncompleteDetail(sdk, interpreterHome)?.let { detail ->
+                return PythonSdkCommitResult(false, "python_sdk_preparation_existing_sdk_incomplete", detail = detail)
+            }
         }
         val alreadyAssigned = matching.singleOrNull() != null &&
             currentAssignments.filterNotNull().all { assigned -> assigned === sdk } &&
