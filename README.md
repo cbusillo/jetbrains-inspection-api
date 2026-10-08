@@ -449,8 +449,9 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   stage and total elapsed milliseconds, and the active worker's name. A separate
   deadline observer also captures its state and bounded stack before cancellation.
   A returned worker omits state and reports an empty stack rather than evidence
-  of a stall. `python_sdk_preparation_in_progress` reports current preparation
-  activity for the project instance, matching the lifecycle close guard; it can
+  of a stall. The scheduled timeout's `python_sdk_preparation_in_progress`
+  reports current preparation activity for the project instance, matching the
+  lifecycle close guard; it can
   be `false` when the timeout response wins after worker cleanup. It can reflect
   a successor preparation for that same instance, rather than the timed-out worker.
   A worker that has not started reports
