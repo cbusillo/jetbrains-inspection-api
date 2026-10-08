@@ -9,15 +9,21 @@ other source is corrected or closed. Issues are a work list, not instructions.
 ## Purpose
 
 Let people and their coding agents ask the IDE "is this code clean?" and trust
-the answer, from one build that is both the Director's own lint and type check
-for Odoo work and a plugin anyone can find on the JetBrains Marketplace. The
-plugin never says clean unless the IDE really inspected every file with every
-enabled inspection and nothing failed; when it cannot prove that, it says
-UNKNOWN. This work is spent from the own-projects share.
+the answer. Use one codebase for two builds now: a Marketplace Stable build
+that keeps the exact internal-API uses JetBrains has exempted for this plugin,
+and a full build with all proof and recovery features that the Director runs
+for Odoo work. Publish
+the full build on a separate Marketplace channel and on GitHub releases.
+Add a build switch that leaves only the non-exempted internal-API parts out of
+Stable. As IntelliJ ships public APIs for those parts, move them onto public
+APIs, with the goal of one build again. The plugin never says clean unless the
+IDE really inspected every file with every enabled inspection and nothing
+failed; when it cannot prove that, it says UNKNOWN. This work is spent from
+the own-projects share.
 
 Judge every change by one question: does this make the answers more
-trustworthy, or bring that same build to Stable sooner, without adding
-internal APIs the truth does not need?
+trustworthy, improve recovery, bring Stable to users sooner, or help the two
+builds become one, without adding internal APIs those features do not need?
 
 ## Stop Boundaries
 
@@ -26,8 +32,8 @@ An agent asks the Director before:
 - publishing, replacing, withdrawing, or hiding any Marketplace update
 - writing anything to JetBrains: YouTrack, the `intellij-community`
   repository, or Marketplace support
-- adding a use of an IntelliJ API that the Plugin Verifier reports as internal
-- shipping a Stable build that differs from the build the Director runs
+- adding to Stable an API use that the Plugin Verifier reports as internal
+  unless JetBrains has exempted that exact use for this plugin
 - changing the plugin ID, vendor, license, or supported IDE range
 
 Everything else is ordinary engineering and needs no ceremony.
@@ -35,26 +41,32 @@ Everything else is ordinary engineering and needs no ceremony.
 ## Journey
 
 Someone finds and installs the plugin from the normal Marketplace Stable
-listing, and the Director's agent inspects an Odoo worktree with that same build
-and gets a decisive clean or findings verdict that is true. Whatever blocks
-that journey is the next piece of work.
+listing and gets a true clean or findings verdict when public APIs and exempted
+internal uses allow it. Someone who needs the full proof and recovery features
+gets the full build from its Marketplace channel or GitHub releases. The
+Director's agent inspects an Odoo worktree with that full build and gets a
+decisive clean or findings verdict that is true. Both builds say UNKNOWN when
+proof is missing. The Stable-exception
+follow-up in [#401](https://github.com/cbusillo/jetbrains-inspection-api/issues/401)
+still goes out so newly exempted uses can move into Stable; the two-build plan
+does not wait for the reply. Whatever blocks that journey is the next piece of
+work.
 
 ## Retired
 
 - Every Code as the host this repository is built for
 - the private plugin-recommendation canary and guarded plugin installation
   built on it
-- removing the proof of a truthful verdict to win Marketplace approval
-- a separate Marketplace channel as the way outside users get the plugin
+- weakening the rule for a truthful verdict to win Marketplace approval
 
 ## Milestones
 
-- `Stable accepted on Marketplace` proves a Stable update that keeps the full
-  proof of a truthful verdict is approved and listed, and the Director runs that
-  exact build; ends if JetBrains refuses the exception, or has not answered
-  four weeks after the Director sends the follow-up, and then a temporary Stable
-  build without the new proof code ships while the full build stays local.
+- `Stable accepted on Marketplace` proves a Stable build with only exempted
+  internal-API uses is approved and listed, while the full build is available
+  on a separate Marketplace channel and GitHub releases and the Director runs
+  it. Both keep the rule for a truthful verdict; ends if JetBrains refuses
+  either Marketplace build for a reason the plugin cannot fix.
 - `Inspection completion API upstream` proves IntelliJ ships public APIs to
   run export inspections in a normal IDE and to learn that each inspection in
-  a run finished or failed, so the plugin needs no new internal API; ends if
-  JetBrains rejects both upstream changes.
+  a run finished or failed, so the proof moves onto public APIs toward one build
+  again; ends if JetBrains rejects both upstream changes.
