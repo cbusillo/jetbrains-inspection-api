@@ -1048,10 +1048,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(queuedBody.contains("\"python_sdk_preparation_diagnostic\""), queuedBody)
         assertTrue(queuedBody.contains("\"stage\": \"queued\""), queuedBody)
         assertFalse(queuedBody.contains("\"worker_thread\""), queuedBody)
-        handler.pythonSdkPreparationRunner = { request ->
-            assertTrue(request.indicator.isCanceled)
-            PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
-        }
         requireNotNull(worker.get()).run()
         assertEquals(1, firstResponses.size)
 
@@ -1076,6 +1072,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
         val timeout = AtomicReference<Runnable?>()
         val worker = AtomicReference<Thread?>()
+        val indicator = AtomicReference<ProgressIndicator?>()
         val setupStarted = CountDownLatch(1)
         val releaseSetup = CountDownLatch(1)
         val diagnosticClock = AtomicLong(1_000)
@@ -1089,10 +1086,10 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             Thread(task, "sdk-preparation-fixture").also { worker.set(it); it.start() }
         }
         handler.pythonSdkPreparationRunner = { request ->
+            indicator.set(request.indicator)
             request.progress.enterStage("candidate_setup")
             setupStarted.countDown()
             check(releaseSetup.await(10, TimeUnit.SECONDS))
-            assertTrue(request.indicator.isCanceled)
             PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
         }
         try {
@@ -1106,6 +1103,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             assertEquals(Thread.State.TIMED_WAITING, setupWorker.state)
             diagnosticClock.addAndGet(1_500)
             requireNotNull(timeout.get()).run()
+            assertTrue(requireNotNull(indicator.get()).isCanceled)
 
             val response = responses.single()
             val body = response.content().toString(Charsets.UTF_8)

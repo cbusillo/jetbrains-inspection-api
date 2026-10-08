@@ -1,7 +1,7 @@
 package com.shiny.inspectionmcp
 
 internal class PythonSdkPreparationProgress(
-    private val now: () -> Long = { System.currentTimeMillis() },
+    private val now: () -> Long,
 ) {
     private val startedAtMs = now()
     private var stage = "queued"
