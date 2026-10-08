@@ -580,29 +580,12 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             }
         }
 
-        val models = mutableListOf<com.intellij.openapi.roots.ModifiableRootModel>()
-        try {
-            currentModules.forEach { module ->
-                val model = ModuleRootManager.getInstance(module).modifiableModel
-                models += model
-                model.sdk = sdk
-            }
-        } catch (error: Throwable) {
-            models.forEach { model -> runCatching { model.dispose() } }
-            return PythonSdkCommitResult(
-                false,
-                "python_sdk_preparation_assignment_failed",
-                detail = error.message ?: error::class.java.simpleName,
-            )
-        }
-
         if (matching.isEmpty()) {
             try {
                 ProjectJdkTable.getInstance().addJdk(sdk)
                 ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
                     .recordAddedSdk(sdk, worktreeRoot)
             } catch (error: Throwable) {
-                models.forEach { model -> runCatching { model.dispose() } }
                 return PythonSdkCommitResult(
                     false,
                     "python_sdk_preparation_registration_failed",
@@ -610,7 +593,13 @@ internal class JetBrainsPythonSdkPreparationPlatform(
                 )
             }
         }
+        val models = mutableListOf<com.intellij.openapi.roots.ModifiableRootModel>()
         try {
+            currentModules.forEach { module ->
+                val model = ModuleRootManager.getInstance(module).modifiableModel
+                models += model
+                model.sdk = sdk
+            }
             models.toList().forEach { model ->
                 model.commit()
                 models.remove(model)
