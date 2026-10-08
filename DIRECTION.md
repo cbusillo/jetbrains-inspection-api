@@ -10,8 +10,9 @@ other source is corrected or closed. Issues are a work list, not instructions.
 
 Let people and their coding agents ask the IDE "is this code clean?" and trust
 the answer. Use one codebase for two builds now: a Marketplace Stable build
-that keeps the internal-API uses JetBrains has exempted, and a full build with
-all proof and recovery features that the Director runs for Odoo work. Publish
+that keeps the exact internal-API uses JetBrains has exempted for this plugin,
+and a full build with all proof and recovery features that the Director runs
+for Odoo work. Publish
 the full build on a separate Marketplace channel and on GitHub releases.
 Add a build switch that leaves only the non-exempted internal-API parts out of
 Stable. As IntelliJ ships public APIs for those parts, move them onto public
@@ -21,8 +22,8 @@ failed; when it cannot prove that, it says UNKNOWN. This work is spent from
 the own-projects share.
 
 Judge every change by one question: does this make the answers more
-trustworthy, improve recovery, or bring Stable or one build again closer,
-without adding internal APIs those features do not need?
+trustworthy, improve recovery, bring Stable to users sooner, or help the two
+builds become one, without adding internal APIs those features do not need?
 
 ## Stop Boundaries
 
@@ -31,8 +32,8 @@ An agent asks the Director before:
 - publishing, replacing, withdrawing, or hiding any Marketplace update
 - writing anything to JetBrains: YouTrack, the `intellij-community`
   repository, or Marketplace support
-- adding to Stable a use of an IntelliJ API that the Plugin Verifier reports
-  as internal and JetBrains has not exempted
+- adding to Stable an API use that the Plugin Verifier reports as internal
+  unless JetBrains has exempted that exact use for this plugin
 - changing the plugin ID, vendor, license, or supported IDE range
 
 Everything else is ordinary engineering and needs no ceremony.
@@ -63,8 +64,8 @@ work.
 - `Stable accepted on Marketplace` proves a Stable build with only exempted
   internal-API uses is approved and listed, while the full build is available
   on a separate Marketplace channel and GitHub releases and the Director runs
-  it. Both keep the rule for a truthful verdict; ends if JetBrains refuses the
-  Stable build for a reason the plugin cannot fix.
+  it. Both keep the rule for a truthful verdict; ends if JetBrains refuses
+  either Marketplace build for a reason the plugin cannot fix.
 - `Inspection completion API upstream` proves IntelliJ ships public APIs to
   run export inspections in a normal IDE and to learn that each inspection in
   a run finished or failed, so the proof moves onto public APIs toward one build
