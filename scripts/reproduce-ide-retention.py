@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
 import zipfile
@@ -66,7 +67,30 @@ def histogram_counts(histogram: str) -> dict[str, int]:
     return counts
 
 
+def run_helper(command: list[str], *, env: dict[str, str], stdout, stderr) -> None:
+    with subprocess.Popen(command, env=env, stdout=stdout, stderr=stderr, text=True,
+                          start_new_session=True) as process:
+        try:
+            process.wait(timeout=300)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait(timeout=10)
+            raise
+
+
 def run(args: argparse.Namespace) -> list[dict[str, object]]:
+    if not hasattr(os, "killpg"):
+        raise ValueError("Use a POSIX host for isolated helper process-group control")
     root = args.instance_root.resolve(strict=True)
     output = args.output.resolve()
     if output == root or not output.is_relative_to(root):
@@ -139,6 +163,8 @@ def run(args: argparse.Namespace) -> list[dict[str, object]]:
         ).stdout
         (output / f"cycle-{cycle:02d}.histo").write_text(histogram)
         row: dict[str, object] = {"cycle": cycle, **histogram_counts(histogram)}
+        if cycle == 0 and row["projects"] < 1:
+            raise ValueError("The open startup project is missing from the histogram; project counts are unqualified")
         rows.append(row)
         (output / "measurements.json").write_text(json.dumps({
             "session_id": session,
@@ -166,7 +192,7 @@ def run(args: argparse.Namespace) -> list[dict[str, object]]:
         ]
         stdout_path = output / f"cycle-{cycle:02d}.json"
         with stdout_path.open("w") as stdout, (output / f"cycle-{cycle:02d}.stderr").open("w") as stderr:
-            subprocess.run(command, env=environment, stdout=stdout, stderr=stderr, text=True, timeout=300)
+            run_helper(command, env=environment, stdout=stdout, stderr=stderr)
         payload = json.loads(stdout_path.read_text())
         cleanup = payload.get("cleanup") or {}
         attempts = cleanup.get("close_attempts") or []

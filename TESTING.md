@@ -159,7 +159,15 @@ uv run scripts/reproduce-ide-retention.py \
 
 The output directory must be new. Each cycle must finish with a native GREEN
 or RED verdict and verified disposal; UNKNOWN or unresolved cleanup stops the
-batch and preserves its evidence. Compare retained project, native context,
+batch and preserves its evidence.
+
+The runner requires POSIX process-group support (macOS or Linux). A helper
+timeout stops its own launcher and Python process group, preserving partial
+stdout/stderr and its lease evidence for supported cleanup after IDE activity
+settles. The initial full-GC histogram must contain the open startup project;
+a missing platform class cannot silently qualify zero project retention.
+
+Compare retained project, native context,
 progress-window, snapshot, and qualification counts before and after the batch.
 Histograms describe shallow object bytes and counts, not dominator sizes.
 Use a private heap dump for retaining-root analysis. XML exercises the common
@@ -174,6 +182,8 @@ authority, then verify the new session identity before inspecting again. Never
 clear an OOM diagnostic to manufacture a clean result. This reproducer neither
 restarts an IDE nor changes an installed plugin; use the maintainer procedure
 for source-to-runtime recovery.
+
+### Running the helper
 
 Run the helper from the
 installed or checked-out skill when validating behavior the agents rely on:

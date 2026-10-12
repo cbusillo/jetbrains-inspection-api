@@ -11,6 +11,9 @@ import tempfile
 import unittest
 import sys
 import zipfile
+import os
+import signal
+import time
 from unittest.mock import patch
 from argparse import Namespace
 
@@ -24,14 +27,14 @@ spec.loader.exec_module(reproduction)
 class RetentionReproductionTest(unittest.TestCase):
     def exercise(self, root: Path, properties: str, *, memory_reason=None, reported_pid=123,
                  registry=None, port=12345, timeout=False, verdict="GREEN", disposed=True,
-                 missing_class=False):
+                 missing_class=False, project_instances=1):
         helper = root / "helper.py"
         helper.write_text(f'''
 from argparse import Namespace
 class InspectError(Exception):
     def __init__(self, reason):
         self.payload = {{"error_reason": reason}}
-DEFAULT_PORT_RANGE = range(63340, 63350)
+DEFAULT_PORT_RANGE = range(10000, 10010)
 def build_parser():
     return Namespace(parse_args=lambda args: Namespace())
 def identity_for_port(port):
@@ -54,7 +57,10 @@ def ide_memory_failure(identity):
         native = {"agent_result": {"verdict": verdict},
                   "cleanup": {"status": "closed", "close_attempts": [{"project_disposed": disposed}]}}
         snapshot_class = next(name for name, key in reproduction.COUNTED_CLASSES.items() if key == "snapshots")
-        histogram = f" 1: 2 128 {snapshot_class}\nTotal 2 128\n"
+        project_class = next(name for name, key in reproduction.COUNTED_CLASSES.items() if key == "projects")
+        project_bytes = project_instances * 32
+        histogram = (f" 1: 2 128 {snapshot_class}\n 2: {project_instances} {project_bytes} {project_class}\n"
+                     f"Total {2 + project_instances} {128 + project_bytes}\n")
 
         def command(argv, **kwargs):
             if "VM.system_properties" in argv:
@@ -77,7 +83,8 @@ def ide_memory_failure(identity):
                     raise subprocess.TimeoutExpired(argv, 300)
             return subprocess.CompletedProcess(argv, 0, stdout=text, stderr="")
 
-        with patch.object(reproduction.subprocess, "run", side_effect=command):
+        with (patch.object(reproduction.subprocess, "run", side_effect=command),
+              patch.object(reproduction, "run_helper", side_effect=command)):
             return reproduction.run(args)
 
     def test_foreign_or_partially_isolated_ide_is_refused_before_open(self):
@@ -117,7 +124,7 @@ def ide_memory_failure(identity):
             saved = json.loads((root / "measurements/measurements.json").read_text())
             self.assertEqual(saved["rows"], rows)
             self.assertEqual(rows[-1]["snapshots"], 2)
-            self.assertEqual(rows[-1]["heap_object_bytes"], 128)
+            self.assertEqual(rows[-1]["heap_object_bytes"], 160)
             payload = json.loads((root / "measurements/cycle-01.json").read_text())
             self.assertEqual(payload["cleanup"]["status"], "closed")
 
@@ -132,7 +139,7 @@ def ide_memory_failure(identity):
                          (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins")))
 
     def test_shared_registry_discovery_port_or_missing_classes_prevents_open(self):
-        for kwargs in ({"registry": Path("/shared/registry")}, {"port": 63345}, {"missing_class": True}):
+        for kwargs in ({"registry": Path("/shared/registry")}, {"port": 10005}, {"missing_class": True}):
             with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
                 with self.assertRaises(ValueError):
@@ -162,6 +169,64 @@ def ide_memory_failure(identity):
         name, key = next(iter(reproduction.COUNTED_CLASSES.items()))
         counts = reproduction.histogram_counts(f"1: 2 32 {name}\n2: 3 48 {name}\nTotal 5 80\n")
         self.assertEqual(counts[key], 5)
+
+    def test_missing_platform_project_class_stops_before_helper_open(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with self.assertRaises(ValueError):
+                self.exercise(root, self.properties(root), project_instances=0)
+            self.assertTrue((root / "measurements/cycle-00.histo").is_file())
+            self.assertFalse((root / "measurements/fixtures").exists())
+
+    @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process groups")
+    def test_helper_timeout_terminates_the_real_child_beneath_its_launcher(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            ready = root / "ready"
+            terminated = root / "terminated"
+            child_code = (
+                "import os,signal,sys,time; from pathlib import Path; "
+                f"signal.signal(signal.SIGTERM,lambda *args:(Path({str(terminated)!r}).write_text('done'),sys.exit(0))); "
+                "print('partial diagnostic',flush=True); "
+                f"Path({str(ready)!r}).write_text(str(os.getppid())); "
+                "time.sleep(60)"
+            )
+            launcher_code = (
+                "import os,subprocess,sys,time; from pathlib import Path; "
+                f"p=subprocess.Popen([sys.executable,'-c',{child_code!r}]); "
+                "time.sleep(60)"
+            )
+            original_wait = subprocess.Popen.wait
+            forced_timeout = False
+
+            def expired(process, timeout=None):
+                nonlocal forced_timeout
+                if not forced_timeout:
+                    forced_timeout = True
+                    deadline = time.monotonic() + 5
+                    while not ready.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(ready.exists())
+                    raise subprocess.TimeoutExpired(process.args, timeout)
+                return original_wait(process, timeout)
+
+            try:
+                with (root / "stdout").open("w") as stdout, (root / "stderr").open("w") as stderr:
+                    with patch.object(subprocess.Popen, "wait", expired):
+                        with self.assertRaises(subprocess.TimeoutExpired):
+                            reproduction.run_helper([sys.executable, "-c", launcher_code],
+                                                    env=dict(os.environ), stdout=stdout, stderr=stderr)
+                deadline = time.monotonic() + 5
+                while not terminated.exists() and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(terminated.exists())
+                self.assertEqual((root / "stdout").read_text(), "partial diagnostic\n")
+            finally:
+                if ready.exists() and not terminated.exists():
+                    try:
+                        os.killpg(int(ready.read_text()), signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
 
 
 if __name__ == "__main__":
