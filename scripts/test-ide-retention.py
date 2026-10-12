@@ -53,7 +53,8 @@ def ide_memory_failure(identity):
                          jcmd=Path("fixture-jcmd"), pid=123, port=port, cycles=1, ide="Fixture IDE")
         native = {"agent_result": {"verdict": verdict},
                   "cleanup": {"status": "closed", "close_attempts": [{"project_disposed": disposed}]}}
-        histogram = " 1: 2 128 com.shiny.inspectionmcp.InspectionResultsSnapshot\nTotal 2 128\n"
+        snapshot_class = next(name for name, key in reproduction.COUNTED_CLASSES.items() if key == "snapshots")
+        histogram = f" 1: 2 128 {snapshot_class}\nTotal 2 128\n"
 
         def command(argv, **kwargs):
             if "VM.system_properties" in argv:
