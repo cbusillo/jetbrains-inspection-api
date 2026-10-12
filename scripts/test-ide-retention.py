@@ -6,6 +6,7 @@
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 import json
+import hashlib
 import subprocess
 import tempfile
 import unittest
@@ -27,16 +28,20 @@ spec.loader.exec_module(reproduction)
 class RetentionReproductionTest(unittest.TestCase):
     def exercise(self, root: Path, properties: str, *, memory_reason=None, reported_pid=123,
                  registry=None, port=12345, timeout=False, verdict="GREEN", disposed=True,
-                 missing_class=False, project_instances=1):
+                 missing_class=False, project_instances=1, older_helper=False):
         helper = root / "helper.py"
         helper.write_text(f'''
-from argparse import Namespace
+from argparse import ArgumentParser, Namespace
 class InspectError(Exception):
     def __init__(self, reason):
         self.payload = {{"error_reason": reason}}
 DEFAULT_PORT_RANGE = range(10000, 10010)
 def build_parser():
-    return Namespace(parse_args=lambda args: Namespace())
+    parser = ArgumentParser()
+    command = parser.add_subparsers().add_parser("inspect-closeout")
+    if not {older_helper!r}:
+        command.add_argument("--no-ide-launch", action="store_true")
+    return parser
 def identity_for_port(port):
     return {{"pid": {reported_pid}, "session_id": "fixture", "plugin_build_fingerprint": "fixture-build",
              "open_projects": [{{"base_path": {str(root / "startup")!r}, "project_key": "startup"}}]}}
@@ -177,6 +182,26 @@ def ide_memory_failure(identity):
                 self.exercise(root, self.properties(root), project_instances=0)
             self.assertTrue((root / "measurements/cycle-00.histo").is_file())
             self.assertFalse((root / "measurements/fixtures").exists())
+
+    def test_older_helper_is_refused_before_measurements_or_fixtures_are_created(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            with self.assertRaises(ValueError):
+                self.exercise(root, self.properties(root), older_helper=True)
+            self.assertFalse((root / "measurements").exists())
+
+    def test_artifact_bytes_distinguish_builds_with_the_same_fingerprint(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            self.exercise(root, self.properties(root))
+            saved = json.loads((root / "measurements/measurements.json").read_text())
+            jar = root / "plugins/plugin.jar"
+            digests = saved["plugin_artifacts_sha256"]
+            self.assertEqual(digests["plugin.jar"], hashlib.sha256(jar.read_bytes()).hexdigest())
+            with zipfile.ZipFile(jar, "a") as archive:
+                archive.writestr("changed-artifact.txt", "different build with the same metadata")
+            changed = reproduction.verify_installed_classes(root, saved["plugin_build_fingerprint"])
+            self.assertNotEqual(changed, digests)
 
     @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process groups")
     def test_helper_timeout_terminates_the_real_child_beneath_its_launcher(self):

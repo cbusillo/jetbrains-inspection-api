@@ -147,6 +147,10 @@ The runner verifies live registry metadata, refuses foreign open projects, and
 checks its counted plugin classes against the installed jars and live build
 fingerprint. It sets the helper's private config override as well as its cache
 and registry paths, and disables application launch fallback.
+Each measurement records SHA-256 digests of the exact installed jar bytes
+checked at batch start. Dirty builds remain usable for experiments; their commit
+fingerprint alone cannot distinguish different uncommitted builds. Match the
+recorded digests to the candidate artifacts when attributing a comparison.
 
 ```bash
 uv run scripts/reproduce-ide-retention.py \
@@ -166,6 +170,19 @@ timeout stops its own launcher and Python process group, preserving partial
 stdout/stderr and its lease evidence for supported cleanup after IDE activity
 settles. The initial full-GC histogram must contain the open startup project;
 a missing platform class cannot silently qualify zero project retention.
+
+For a retained timeout lease, use its exact UUID and the same private cache and
+registry. Preview with:
+
+```bash
+JETBRAINS_INSPECTION_CACHE_DIR="$DISPOSABLE_INSTANCE_ROOT/helper-cache" \
+JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry" \
+  uv run "$HELPER" --json cleanup-helper-leases --lease-id "$LEASE_ID" --dry-run
+```
+
+After the exact route is verified and IDE activity has settled, replace
+`--dry-run` with `--no-dry-run` for supported lease-bound cleanup. Keep unresolved
+ownership or session evidence; never edit a lease or close a project by path.
 
 Compare retained project, native context,
 progress-window, snapshot, and qualification counts before and after the batch.

@@ -8,6 +8,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -28,11 +30,14 @@ COUNTED_CLASSES = {
 }
 
 
-def verify_installed_classes(root: Path, fingerprint: str | None) -> None:
+def verify_installed_classes(root: Path, fingerprint: str | None) -> dict[str, str]:
     entries: set[str] = set()
     fingerprints: set[str] = set()
+    digests: dict[str, str] = {}
     for path in (root / "plugins").rglob("*.jar"):
-        with zipfile.ZipFile(path) as archive:
+        data = path.read_bytes()
+        digests[str(path.relative_to(root / "plugins"))] = hashlib.sha256(data).hexdigest()
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
             entries.update(archive.namelist())
             resource = "com/shiny/inspectionmcp/inspection-build.properties"
             if resource in archive.namelist():
@@ -43,6 +48,7 @@ def verify_installed_classes(root: Path, fingerprint: str | None) -> None:
                 if name.startswith("com.shiny.")}
     if not fingerprint or fingerprints != {fingerprint} or not expected.issubset(entries):
         raise ValueError("Installed plugin provenance or counted classes cannot be verified")
+    return digests
 
 
 def isolated_properties(properties: str, root: Path) -> bool:
@@ -141,7 +147,7 @@ def run(args: argparse.Namespace) -> list[dict[str, object]]:
     if identity.get("pid") != args.pid:
         raise ValueError("The inspection port belongs to a different IDE process")
     session = identity["session_id"]
-    verify_installed_classes(root, identity.get("plugin_build_fingerprint"))
+    artifact_digests = verify_installed_classes(root, identity.get("plugin_build_fingerprint"))
     output.mkdir(parents=True, exist_ok=False)
     environment = dict(os.environ)
     environment.update(
@@ -169,6 +175,7 @@ def run(args: argparse.Namespace) -> list[dict[str, object]]:
         (output / "measurements.json").write_text(json.dumps({
             "session_id": session,
             "plugin_build_fingerprint": identity.get("plugin_build_fingerprint"),
+            "plugin_artifacts_sha256": artifact_digests,
             "rows": rows,
         }, indent=2) + "\n")
         print(json.dumps(row), flush=True)

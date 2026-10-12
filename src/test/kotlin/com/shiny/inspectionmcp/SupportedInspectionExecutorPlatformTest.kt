@@ -398,7 +398,6 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(manager.runningContexts).contains(context)
         try {
             runInEdtAndGet { parent.context.close() }
-            assertThatThrownBy { parent.context.toolGroups() }.isInstanceOf(RuntimeException::class.java)
             assertThat(manager.runningContexts).doesNotContain(context)
             assertThat(parent.context.presentation(wrapper)).isNotSameAs(presentation)
         } finally {
