@@ -824,6 +824,20 @@ class LocalInstaller(unittest.TestCase):
             )
         )
 
+    def test_non_interpreter_prompt_quotes_do_not_block_helper_quiescence(self):
+        processes = '4 codex --remote unix:// -C /repo --prompt "owner\'s request\n'
+        with patch.object(installer, "process_inventory", return_value=processes):
+            installer.wait_no_helpers(1)
+
+    def test_unparseable_interpreter_arguments_still_block_installation(self):
+        for interpreter in ["/bin/uv run", "/bin/python3"]:
+            with self.subTest(interpreter=interpreter):
+                self.assertTrue(
+                    installer.active_helpers(
+                        f'5 {interpreter} /skills/jb-inspect.py --repo "/work/project\n'
+                    )
+                )
+
     def test_running_peer_with_shared_config_blocks_cold_bundle(self):
         app = self.root / "stable.app"
         peer = self.root / "eap.app"

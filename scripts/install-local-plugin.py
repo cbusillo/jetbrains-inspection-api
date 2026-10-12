@@ -179,14 +179,20 @@ def active_helpers(processes):
         fields = row.strip().split(None, 1)
         if len(fields) != 2:
             continue
+        tokens = shlex.shlex(fields[1], posix=True)
+        tokens.whitespace_split = True
+        tokens.commenters = ""
         try:
-            args = shlex.split(fields[1])
+            executable = next(tokens, None)
+            if not executable or not re.fullmatch(
+                r"(?:uv|python[0-9.]*)", Path(executable).name
+            ):
+                continue
+            args = list(tokens)
         except ValueError:
             return True
-        if not args or not re.fullmatch(r"(?:uv|python[0-9.]*)", Path(args[0]).name):
-            continue
         # The first script belongs to the interpreter; later --helper arguments do not.
-        scripts = [arg for arg in args[1:] if arg.endswith(".py")]
+        scripts = [arg for arg in args if arg.endswith(".py")]
         if scripts and Path(scripts[0]).name == "jb-inspect.py":
             return True
     return False
