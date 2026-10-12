@@ -113,6 +113,10 @@ evidence.
 
 ## Agent inspection helper
 
+The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
+primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
+workflows while MCP remains supported).
+
 ### Project-retention reproduction
 
 `scripts/reproduce-ide-retention.py` runs distinct XML file inspections through
@@ -121,8 +125,9 @@ It requires an already running disposable IDE whose config, system, plugins,
 and logs live in `config/`, `system/`, `plugins/`, and `logs/` under one private
 instance root. It verifies those JVM paths and the plugin's PID before acting;
 the normal installed IDE is refused. Use a private helper cache and a pinned
-port, as the script does, so the experiment does not share lifecycle leases
-with normal clients.
+port outside the helper's default discovery range, so ordinary discovery does
+not select the experiment. The maintained helper must support `--no-ide-launch`
+(codex-skills#1725); the runner refuses an older helper before opening projects.
 
 Launch the disposable IDE with a separate VM-options file, selected only for
 that child process through the product's VM-options environment variable. Keep
@@ -130,12 +135,24 @@ the original options and append the four `-Didea.*.path` overrides, a bounded
 heap, and a private heap-dump path. Extract the exact candidate plugin archive
 into that instance's `plugins/`. Never edit the owner's VM-options file or copy
 their credentials into the disposable configuration. Verify the actual bound
-port from the disposable log before measuring.
+port from the disposable log before measuring. Set
+`JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry"` in the
+IDE child environment as well as the helper environment. Configure the private
+built-in server's primary port with `-Drpc.port=<private-port>` in the child
+VM options, then check it is outside the selected helper's
+`DEFAULT_PORT_RANGE`. Open a harmless startup project inside the instance root.
+Changing the web-server setting alone creates a secondary listener and leaves
+the primary discovery port active; it does not isolate the inspection API.
+The runner verifies live registry metadata, refuses foreign open projects, and
+checks its counted plugin classes against the installed jars and live build
+fingerprint. It sets the helper's private config override as well as its cache
+and registry paths, and disables application launch fallback.
 
 ```bash
 uv run scripts/reproduce-ide-retention.py \
   --instance-root "$DISPOSABLE_INSTANCE_ROOT" --pid "$DISPOSABLE_IDE_PID" \
   --port "$DISPOSABLE_IDE_PORT" --jcmd "$IDE_JAVA_HOME/bin/jcmd" \
+  --ide "$DISPOSABLE_IDE_NAME" \
   --helper "$HELPER" --output "$DISPOSABLE_INSTANCE_ROOT/measurements" \
   --cycles 20
 ```
@@ -158,9 +175,7 @@ clear an OOM diagnostic to manufacture a clean result. This reproducer neither
 restarts an IDE nor changes an installed plugin; use the maintainer procedure
 for source-to-runtime recovery.
 
-The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
-primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
-workflows while MCP remains supported). Run it from the
+Run the helper from the
 installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash

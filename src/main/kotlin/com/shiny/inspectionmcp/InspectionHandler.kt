@@ -7135,12 +7135,10 @@ class InspectionHandler : HttpRequestHandler() {
                 GlobalInspectionContextBoundary.create(inspectionManager)
             } else {
                 try {
-                    val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                     nativeProofConnection = project.messageBus.connect().apply {
                         subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
                     }
-                    ownedGlobalContext = context
-                    context
+                    nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
@@ -7844,7 +7842,6 @@ class InspectionHandler : HttpRequestHandler() {
         val instanceId = projectInstanceId(project)
         synchronized(retainedProjectStateLock) {
             if (retainedProjectInstancesByKey[key] == instanceId) return
-            retainedProjectInstancesByKey[key] = instanceId
             Disposer.register(project) {
                 synchronized(retainedProjectStateLock) {
                     analysisQualificationsByProject.keys.removeIf { it.startsWith("$instanceId\u0001") }
@@ -7855,6 +7852,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
             }
+            retainedProjectInstancesByKey[key] = instanceId
         }
     }
 
