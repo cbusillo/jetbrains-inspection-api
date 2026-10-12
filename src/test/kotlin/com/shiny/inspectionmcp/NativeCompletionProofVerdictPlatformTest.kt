@@ -10,6 +10,8 @@ import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
 import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.codeInspection.ex.InspectionManagerEx
+import com.intellij.testFramework.PlatformTestUtil
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
@@ -67,7 +69,17 @@ class NativeCompletionProofVerdictPlatformTest {
         fun javaStatus(tool: LocalInspectionTool, current: Boolean = true): String {
             val root = createLocalContentRoot("Checked.java", "class Checked {}\n")
             val profile = registerProfile(project, CleanInspection(), tool, current = current)
-            return runFiles(project, Path.of(root, "Checked.java").toString(), profile)
+            val manager = InspectionManager.getInstance(project) as InspectionManagerEx
+            val contextsBefore = manager.runningContexts.toSet()
+            val status = runFiles(project, Path.of(root, "Checked.java").toString(), profile)
+            runInEdtAndGet {
+                PlatformTestUtil.waitWithEventsDispatching(
+                    "The completed file inspection retained a native context",
+                    { manager.runningContexts.all { it in contextsBefore } },
+                    10,
+                )
+            }
+            return status
         }
         val pairing = Disposer.newDisposable("recording-batch-annotator")
         try {

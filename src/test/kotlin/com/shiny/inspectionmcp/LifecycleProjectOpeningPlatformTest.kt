@@ -10,6 +10,7 @@ import com.intellij.openapi.vfs.newvfs.impl.VfsRootAccess
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertNotNull
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.fail
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -42,6 +43,39 @@ class LifecycleProjectOpeningPlatformTest {
                     assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false))
                 }
             }
+        }
+    }
+
+    @Test
+    fun `closed helper projects release their inspection snapshots across cycles`() {
+        val handler = InspectionHandler()
+        val begin = InspectionHandler::class.java.getDeclaredMethod(
+            "beginInspectionRunInternal", Project::class.java, InspectionCaptureScope::class.java,
+        ).apply { isAccessible = true }
+        val states = InspectionHandler::class.java.getDeclaredField("inspectionRunStatesByProject")
+            .apply { isAccessible = true }
+        val roots = List(3) { Files.createTempDirectory("retention-cycle").toRealPath() }
+        roots.forEach { root ->
+            VfsRootAccess.allowRootAccess(projectExtension.project, root.toString())
+            val project = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
+            val key = projectKey(project)
+            try {
+                val run = begin.invoke(handler, project, InspectionCaptureScope(scopeParam = "whole_project")) as InspectionRunState
+                InspectionResultsStore.setSnapshot(key, InspectionResultsSnapshot(
+                    problems = listOf(mapOf("description" to "retained fixture finding")),
+                    timestamp = run.triggerTimeMs,
+                    projectState = InspectionProjectStateSnapshot(0, 0),
+                    outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
+                    source = "retention_fixture",
+                    runId = run.runId,
+                ))
+                assertNotNull(InspectionResultsStore.getSnapshot(key))
+            } finally {
+                runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false)) }
+            }
+            assertTrue(project.isDisposed)
+            assertNull(InspectionResultsStore.getSnapshot(key), "Closed-project findings must not accumulate")
+            assertTrue((states.get(handler) as Map<*, *>).keys.none { it == key }, "Closed-project run state must be released")
         }
     }
 

@@ -113,6 +113,51 @@ evidence.
 
 ## Agent inspection helper
 
+### Project-retention reproduction
+
+`scripts/reproduce-ide-retention.py` runs distinct XML file inspections through
+the maintained helper and collects full-GC class histograms after each close.
+It requires an already running disposable IDE whose config, system, plugins,
+and logs live in `config/`, `system/`, `plugins/`, and `logs/` under one private
+instance root. It verifies those JVM paths and the plugin's PID before acting;
+the normal installed IDE is refused. Use a private helper cache and a pinned
+port, as the script does, so the experiment does not share lifecycle leases
+with normal clients.
+
+Launch the disposable IDE with a separate VM-options file, selected only for
+that child process through the product's VM-options environment variable. Keep
+the original options and append the four `-Didea.*.path` overrides, a bounded
+heap, and a private heap-dump path. Extract the exact candidate plugin archive
+into that instance's `plugins/`. Never edit the owner's VM-options file or copy
+their credentials into the disposable configuration. Verify the actual bound
+port from the disposable log before measuring.
+
+```bash
+uv run scripts/reproduce-ide-retention.py \
+  --instance-root "$DISPOSABLE_INSTANCE_ROOT" --pid "$DISPOSABLE_IDE_PID" \
+  --port "$DISPOSABLE_IDE_PORT" --jcmd "$IDE_JAVA_HOME/bin/jcmd" \
+  --helper "$HELPER" --output "$DISPOSABLE_INSTANCE_ROOT/measurements" \
+  --cycles 20
+```
+
+The output directory must be new. Each cycle must finish with a native GREEN
+or RED verdict and verified disposal; UNKNOWN or unresolved cleanup stops the
+batch and preserves its evidence. Compare retained project, native context,
+progress-window, snapshot, and qualification counts before and after the batch.
+Histograms describe shallow object bytes and counts, not dominator sizes.
+Use a private heap dump for retaining-root analysis. XML exercises the common
+native inspection and lifecycle path; it does not qualify Python SDK churn or
+a representative Odoo workload.
+
+For an exhausted shared IDE, stop submitting inspections. The existing memory
+diagnostic remains sticky for that IDE session, even if a GC releases space.
+Use the coordinated, quiescent normal-quit procedure in
+[MAINTAINING.md](MAINTAINING.md#local-plugin-rollout) within the task's restart
+authority, then verify the new session identity before inspecting again. Never
+clear an OOM diagnostic to manufacture a clean result. This reproducer neither
+restarts an IDE nor changes an installed plugin; use the maintainer procedure
+for source-to-runtime recovery.
+
 The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
 primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
 workflows while MCP remains supported). Run it from the

@@ -86,6 +86,7 @@ if lane_selected contracts; then
     uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt
     ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
     ./scripts/test-changed-file-lanes.sh
+    uv run scripts/test-ide-retention.py
     ./scripts/test-release-contracts.sh
 else
     echo "Commit gate: only documentation changed; skipping contract tests."
