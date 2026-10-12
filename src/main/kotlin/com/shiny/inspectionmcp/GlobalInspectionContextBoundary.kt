@@ -34,8 +34,8 @@ internal class GlobalInspectionContextBoundary private constructor(
 
     fun publicContext(): GlobalInspectionContext = context
 
-    fun close(save: Boolean) {
-        context.close(save)
+    fun close() {
+        context.close(true)
     }
 
     fun cleanup() {

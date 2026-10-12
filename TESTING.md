@@ -115,7 +115,94 @@ evidence.
 
 The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
 primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
-workflows while MCP remains supported). Run it from the
+workflows while MCP remains supported).
+
+### Project-retention reproduction
+
+`scripts/reproduce-ide-retention.py` runs distinct XML file inspections through
+the maintained helper and collects full-GC class histograms after each close.
+It requires an already running disposable IDE whose config, system, plugins,
+and logs live in `config/`, `system/`, `plugins/`, and `logs/` under one private
+instance root. It verifies those JVM paths and the plugin's PID before acting;
+the normal installed IDE is refused. Use a private helper cache and a pinned
+port outside the helper's default discovery range, so ordinary discovery does
+not select the experiment. The maintained helper must support `--no-ide-launch`
+(codex-skills#1725); the runner refuses an older helper before opening projects.
+
+Launch the disposable IDE with a separate VM-options file, selected only for
+that child process through the product's VM-options environment variable. Keep
+the original options and append the four `-Didea.*.path` overrides, a bounded
+heap, and a private heap-dump path. Extract the exact candidate plugin archive
+into that instance's `plugins/`. Never edit the owner's VM-options file or copy
+their credentials into the disposable configuration. Verify the actual bound
+port from the disposable log before measuring. Set
+`JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry"` in the
+IDE child environment as well as the helper environment. Configure the private
+built-in server's primary port with `-Drpc.port=<private-port>` in the child
+VM options, then check it is outside the selected helper's
+`DEFAULT_PORT_RANGE`. Open a harmless startup project inside the instance root.
+Changing the web-server setting alone creates a secondary listener and leaves
+the primary discovery port active; it does not isolate the inspection API.
+The runner verifies live registry metadata, refuses foreign open projects, and
+checks its counted plugin classes against the installed jars and live build
+fingerprint. It sets the helper's private config override as well as its cache
+and registry paths, and disables application launch fallback.
+Each measurement records SHA-256 digests of the exact installed jar bytes
+checked at batch start. Dirty builds remain usable for experiments; their commit
+fingerprint alone cannot distinguish different uncommitted builds. Match the
+recorded digests to the candidate artifacts when attributing a comparison.
+
+```bash
+uv run scripts/reproduce-ide-retention.py \
+  --instance-root "$DISPOSABLE_INSTANCE_ROOT" --pid "$DISPOSABLE_IDE_PID" \
+  --port "$DISPOSABLE_IDE_PORT" --jcmd "$IDE_JAVA_HOME/bin/jcmd" \
+  --ide "$DISPOSABLE_IDE_NAME" \
+  --helper "$HELPER" --output "$DISPOSABLE_INSTANCE_ROOT/measurements" \
+  --cycles 20
+```
+
+The output directory must be new. Each cycle must finish with a native GREEN
+or RED verdict and verified disposal; UNKNOWN or unresolved cleanup stops the
+batch and preserves its evidence.
+
+The runner requires POSIX process-group support (macOS or Linux). A helper
+timeout stops its own launcher and Python process group, preserving partial
+stdout/stderr and its lease evidence for supported cleanup after IDE activity
+settles. The initial full-GC histogram must contain the open startup project;
+a missing platform class cannot silently qualify zero project retention.
+
+For a retained timeout lease, use its exact UUID and the same private cache and
+registry. Preview with:
+
+```bash
+JETBRAINS_INSPECTION_CACHE_DIR="$DISPOSABLE_INSTANCE_ROOT/helper-cache" \
+JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry" \
+  uv run "$HELPER" --json cleanup-helper-leases --lease-id "$LEASE_ID" --dry-run
+```
+
+After the exact route is verified and IDE activity has settled, replace
+`--dry-run` with `--no-dry-run` for supported lease-bound cleanup. Keep unresolved
+ownership or session evidence; never edit a lease or close a project by path.
+
+Compare retained project, native context,
+progress-window, snapshot, and qualification counts before and after the batch.
+Histograms describe shallow object bytes and counts, not dominator sizes.
+Use a private heap dump for retaining-root analysis. XML exercises the common
+native inspection and lifecycle path; it does not qualify Python SDK churn or
+a representative Odoo workload.
+
+For an exhausted shared IDE, stop submitting inspections. The existing memory
+diagnostic remains sticky for that IDE session, even if a GC releases space.
+Use the coordinated, quiescent normal-quit procedure in
+[MAINTAINING.md](MAINTAINING.md#local-plugin-rollout) within the task's restart
+authority, then verify the new session identity before inspecting again. Never
+clear an OOM diagnostic to manufacture a clean result. This reproducer neither
+restarts an IDE nor changes an installed plugin; use the maintainer procedure
+for source-to-runtime recovery.
+
+### Running the helper
+
+Run the helper from the
 installed or checked-out skill when validating behavior the agents rely on:
 
 ```bash

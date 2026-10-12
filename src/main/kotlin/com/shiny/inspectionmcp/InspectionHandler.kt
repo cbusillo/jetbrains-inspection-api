@@ -27,7 +27,6 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.ProgressIndicatorBase
-import com.intellij.openapi.progress.util.ProgressWindow
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.util.JDOMUtil
 import com.intellij.openapi.util.Computable
@@ -1940,6 +1939,8 @@ class InspectionHandler : HttpRequestHandler() {
         data class Refused(val refusal: LifecycleCloseGuardRefusal) : LifecycleCloseInvocation
     }
     
+    private val retainedProjectInstancesByKey = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val retainedProjectStateLock = Any()
     private val runIdSequence = AtomicLong()
     private val inspectionRunStatesByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunState>()
     private val inspectionRunControlsByProject = java.util.concurrent.ConcurrentHashMap<String, InspectionRunControl>()
@@ -1991,10 +1992,8 @@ class InspectionHandler : HttpRequestHandler() {
     internal var inspectionProcessRunner: (Runnable, ProgressIndicator) -> Unit = { task, indicator ->
         ProgressManager.getInstance().runProcess(task, indicator)
     }
-    internal var inspectionIndicatorFactory: (Project) -> ProgressIndicator = { project ->
-        ProgressWindow(false, true, project).apply {
-            setDelayInMillis(Int.MAX_VALUE)
-        }
+    internal var inspectionIndicatorFactory: (Project) -> ProgressIndicator = {
+        InspectionProgressIndicator()
     }
     internal var projectInputsFingerprintProvider:
         (Project, String?) -> InspectionProjectInputsFingerprint? = { project, profileName ->
@@ -4184,6 +4183,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun registerLifecycleOpenOwnership(project: Project, leaseId: String, targetKey: String) {
+        retainProjectStateUntilDisposal(project)
         val instanceId = projectInstanceId(project)
         val ownership = LifecycleOpenOwnership(
             leaseId = leaseId,
@@ -6738,7 +6738,7 @@ class InspectionHandler : HttpRequestHandler() {
         var captureScheduled = false
         var projectContentTracker: InspectionProjectContentTracker? = null
         var inspectionInputFingerprint: InspectionProjectInputsFingerprint? = null
-        var nativeGlobalContext: GlobalInspectionContextBoundary? = null
+        var ownedGlobalContext: GlobalInspectionContextBoundary? = null
         var nativeProofConnection: MessageBusConnection? = null
         try {
             if (!isCurrentInspectionRun(key, runId)) {
@@ -7135,12 +7135,10 @@ class InspectionHandler : HttpRequestHandler() {
                 GlobalInspectionContextBoundary.create(inspectionManager)
             } else {
                 try {
-                    val context = nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                     nativeProofConnection = project.messageBus.connect().apply {
                         subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
                     }
-                    nativeGlobalContext = context
-                    context
+                    nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
@@ -7149,6 +7147,7 @@ class InspectionHandler : HttpRequestHandler() {
                     GlobalInspectionContextBoundary.create(inspectionManager)
                 }
             }
+            ownedGlobalContext = globalContext
             globalContext.configure(profile, scope)
             try {
                 transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
@@ -7807,9 +7806,9 @@ class InspectionHandler : HttpRequestHandler() {
         } finally {
             runCatching { nativeProofConnection?.disconnect() }
                 .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
-            nativeGlobalContext?.let { context ->
+            ownedGlobalContext?.let { context ->
                 val closeSucceeded = runCatching {
-                    val closeAction = Runnable { context.close(false) }
+                    val closeAction = Runnable { context.close() }
                     val application = ApplicationManager.getApplication()
                     if (application.isDispatchThread) {
                         closeAction.run()
@@ -7838,11 +7837,31 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
+    private fun retainProjectStateUntilDisposal(project: Project) {
+        val key = projectKey(project)
+        val instanceId = projectInstanceId(project)
+        synchronized(retainedProjectStateLock) {
+            if (retainedProjectInstancesByKey[key] == instanceId) return
+            Disposer.register(project) {
+                synchronized(retainedProjectStateLock) {
+                    analysisQualificationsByProject.keys.removeIf { it.startsWith("$instanceId\u0001") }
+                    if (retainedProjectInstancesByKey.remove(key, instanceId)) {
+                        inspectionRunControlsByProject.remove(key)?.indicator?.cancel()
+                        inspectionRunStatesByProject.remove(key)
+                        resultsStore.clear(key)
+                    }
+                }
+            }
+            retainedProjectInstancesByKey[key] = instanceId
+        }
+    }
+
     private fun beginInspectionRun(project: Project, captureScope: InspectionCaptureScope): InspectionRunState {
         return beginInspectionRunInternal(project, captureScope)
     }
 
     private fun beginInspectionRunInternal(project: Project, captureScope: InspectionCaptureScope?): InspectionRunState {
+        retainProjectStateUntilDisposal(project)
         val key = projectKey(project)
         val now = currentTimeMs()
         val nowNanos = currentInspectionRunNanos()

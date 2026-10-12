@@ -372,7 +372,7 @@ class SupportedInspectionExecutorPlatformTest {
             val boundary = GlobalInspectionContextBoundary.create(inspectionManager)
             try {
                 assertThat(invokeNonHeadlessShouldProcess(boundary.contextForTest(), file)).isNotNull()
-                runInEdtAndGet { boundary.close(save = true) }
+                runInEdtAndGet { boundary.close() }
                 assertThatThrownBy { invokeNonHeadlessShouldProcess(boundary.contextForTest(), file) }
                     .isInstanceOf(ProcessCanceledException::class.java)
             } finally {
@@ -382,6 +382,26 @@ class SupportedInspectionExecutorPlatformTest {
         } finally {
             ordinaryContext.cleanup()
             inspectionManager.runningContexts.remove(ordinaryContext)
+        }
+    }
+
+    @Test
+    fun `closing a viewless native context releases its presentations and tools`() {
+        val file = createPhysicalFile()
+        val tool = CleanInspection()
+        val parent = createCompletedParentInspectionContext(file, tool)
+        val manager = InspectionManager.getInstance(projectExtension.project) as InspectionManagerEx
+        val context = parent.context.contextForTest()
+        val wrapper = LocalInspectionToolWrapper(tool)
+        val presentation = parent.context.presentation(wrapper)
+        assertThat(parent.context.toolGroups()).isNotEmpty()
+        assertThat(manager.runningContexts).contains(context)
+        try {
+            runInEdtAndGet { parent.context.close() }
+            assertThat(manager.runningContexts).doesNotContain(context)
+            assertThat(parent.context.presentation(wrapper)).isNotSameAs(presentation)
+        } finally {
+            closeParentInspectionContext(parent)
         }
     }
 
@@ -1059,7 +1079,7 @@ class SupportedInspectionExecutorPlatformTest {
 
     private fun closeParentInspectionContext(context: ParentInspectionContext) {
         try {
-            runInEdtAndGet { context.context.close(save = true) }
+            runInEdtAndGet { context.context.close() }
         } finally {
             context.context.removeFromRunningContextsSynchronously()
         }
