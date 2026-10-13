@@ -2034,6 +2034,13 @@ class InspectionHandler : HttpRequestHandler() {
     internal var helperSdkUnregisterRunner: (Path?, Boolean) -> Map<String, Any?> = { root, dryRun ->
         HelperPythonSdkLifecycle().unregister(root, dryRun)
     }
+    internal var helperProjectCacheRetireRunner: (Path, Boolean) -> Map<String, Any?> = { root, dryRun ->
+        HelperProjectCacheLifecycle().retire(root, dryRun)
+    }
+    internal var recordClosedHelperProjectCaches: (Project, Path) -> Unit = { project, root ->
+        ApplicationManager.getApplication().getService(HelperProjectCacheRegistry::class.java)
+            .recordClosedProject(project, root)
+    }
 
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
         ApplicationManager.getApplication().executeOnPooledThread(task)
@@ -2704,7 +2711,7 @@ class InspectionHandler : HttpRequestHandler() {
     override fun isSupported(request: FullHttpRequest): Boolean {
         val path = runCatching { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
         return when {
-            path in setOf("/api/inspection/lifecycle/prepare-python-sdk", "/api/inspection/lifecycle/unregister-python-sdk") -> request.method() == HttpMethod.POST
+            path in setOf("/api/inspection/lifecycle/prepare-python-sdk", "/api/inspection/lifecycle/unregister-python-sdk", "/api/inspection/lifecycle/retire-project-caches") -> request.method() == HttpMethod.POST
             path.startsWith("/api/inspection") -> request.method() == HttpMethod.GET
             else -> false
         }
@@ -2780,6 +2787,28 @@ class InspectionHandler : HttpRequestHandler() {
                     if (schedulingFailure != null) {
                         sendInternalServerError(context, requestAttribution, parameters, schedulingFailure)
                     }
+                }
+                "/api/inspection/lifecycle/retire-project-caches" -> {
+                    val session = parameters["session_id"]?.singleOrNull()
+                    val dryRun = parameters["dry_run"]?.singleOrNull()?.toBooleanStrictOrNull()
+                    val worktree = parameters["worktree_path"]?.singleOrNull()
+                    if (request.method() != HttpMethod.POST || request.content().isReadable ||
+                        session != InspectionIdeSession.sessionId || dryRun == null || worktree == null ||
+                        !Paths.get(worktree).isAbsolute || parameters.values.any { it.size != 1 } ||
+                        parameters.keys.any { it !in setOf("session_id", "dry_run", "worktree_path", "client_run_id") }) {
+                        sendJsonResponse(context, formatJsonManually(mapOf("status" to "error",
+                            "reason" to "project_cache_invalid_request")), HttpResponseStatus.BAD_REQUEST)
+                        return true
+                    }
+                    lifecycleCloseExecutor(Runnable {
+                        try {
+                            val result = helperProjectCacheRetireRunner(Paths.get(worktree), dryRun)
+                            sendJsonResponse(context, formatJsonManually(result + ("session_id" to session)),
+                                if (result["status"] == "ok") HttpResponseStatus.OK else HttpResponseStatus.CONFLICT)
+                        } catch (error: Throwable) {
+                            sendInternalServerError(context, requestAttribution, parameters, error)
+                        }
+                    })
                 }
                 "/api/inspection/lifecycle/unregister-python-sdk" -> {
                     if (request.method() != HttpMethod.POST || request.content().isReadable) {
@@ -3892,7 +3921,12 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val module = moduleManager.newNonPersistentModule(moduleName, EmptyModuleType.EMPTY_MODULE)
             try {
-                ModuleRootModificationUtil.addContentRoot(module, targetRoot)
+                ModuleRootModificationUtil.updateModel(module) { model ->
+                    val content = model.addContentEntry(targetRoot)
+                    for (name in listOf(".git", ".venv", "node_modules", ".gradle")) {
+                        content.addExcludeFolder("${targetRoot.url}/$name")
+                    }
+                }
                 created = true
             } catch (error: Exception) {
                 moduleManager.disposeModule(module)
@@ -4742,6 +4776,7 @@ class InspectionHandler : HttpRequestHandler() {
                     closeAttempts,
                 )
             }
+            recordClosedHelperProjectCaches(project, helperWorktreeRoot(Paths.get(lease.basePath)))
             removeLifecycleOpenOwnership(expectedProjectInstanceId, lease.project)
             return mapOf(
                 "status" to "closed",
@@ -5034,6 +5069,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
                 "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
                 "helper_sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,
+                "helper_project_cache_lifecycle_version" to HELPER_PROJECT_CACHE_LIFECYCLE_VERSION,
                 "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }

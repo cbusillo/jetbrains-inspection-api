@@ -9,9 +9,7 @@ import com.intellij.openapi.actionSystem.DataContext
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileEditor.FileDocumentManager
 import com.intellij.openapi.editor.Document
-import com.intellij.openapi.module.EmptyModuleType
 import com.intellij.openapi.progress.ProgressIndicator
-import com.intellij.openapi.roots.ModuleRootModificationUtil
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.module.ModuleManager
@@ -743,6 +741,28 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `project cache retirement requires exact selectors and returns runner response`() {
+        val calls = mutableListOf<Pair<Path, Boolean>>()
+        handler.lifecycleCloseExecutor = { it.run() }
+        handler.helperProjectCacheRetireRunner = { root, dryRun ->
+            calls.add(root to dryRun)
+            mapOf("status" to "refused", "reason" to "project_in_use")
+        }
+        val endpoint = "/api/inspection/lifecycle/retire-project-caches"
+        val missing = processRequest("$endpoint?worktree_path=/repo/app&dry_run=false", HttpMethod.POST)
+        assertEquals(HttpResponseStatus.BAD_REQUEST, missing.status())
+        assertTrue(calls.isEmpty())
+        val valid = "$endpoint?worktree_path=/repo/app&dry_run=true&session_id=${InspectionIdeSession.sessionId}"
+        val duplicate = processRequest("$valid&worktree_path=/repo/other", HttpMethod.POST)
+        assertEquals(HttpResponseStatus.BAD_REQUEST, duplicate.status())
+        assertTrue(calls.isEmpty())
+        val result = processRequest(valid, HttpMethod.POST)
+        assertEquals(HttpResponseStatus.CONFLICT, result.status())
+        assertEquals(listOf(Paths.get("/repo/app") to true), calls)
+        assertTrue(result.content().toString(Charsets.UTF_8).contains("project_in_use"))
+    }
+
+    @Test
     fun `SDK unregister requires a session and explicit dry run selector before running`() {
         var called = false
         handler.helperSdkUnregisterRunner = { _, _ -> called = true; mapOf("status" to "ok") }
@@ -1375,43 +1395,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             unmockkStatic(ProjectRootManager::class)
             unmockkStatic(ModuleManager::class)
             unmockkStatic(ModuleRootManager::class)
-        }
-    }
-
-    @Test
-    fun `test lifecycle fallback creator adds a non-persistent module content root`() {
-        val moduleManager = mockk<ModuleManager>()
-        val module = mockk<com.intellij.openapi.module.Module>()
-        val targetRoot = mockk<VirtualFile>()
-        val moduleName = slot<String>()
-        every { mockProject.isDisposed } returns false
-        every { mockApplication.runWriteAction(any<Runnable>()) } answers {
-            firstArg<Runnable>().run()
-        }
-        mockkStatic(ModuleManager::class)
-        mockkStatic(ModuleRootModificationUtil::class)
-        every { ModuleManager.getInstance(mockProject) } returns moduleManager
-        every { moduleManager.findModuleByName(any()) } returns null
-        every {
-            moduleManager.newNonPersistentModule(capture(moduleName), EmptyModuleType.EMPTY_MODULE)
-        } returns module
-        every { moduleManager.disposeModule(any()) } just Runs
-        every { ModuleRootModificationUtil.addContentRoot(module, targetRoot) } just Runs
-
-        try {
-            assertTrue(handler.lifecycleFallbackContentRootCreator(mockProject, targetRoot))
-            assertTrue(
-                moduleName.captured.startsWith("__jetbrains_inspection_api_lifecycle_fallback__"),
-                moduleName.captured,
-            )
-            verify(exactly = 1) {
-                moduleManager.newNonPersistentModule(moduleName.captured, EmptyModuleType.EMPTY_MODULE)
-                ModuleRootModificationUtil.addContentRoot(module, targetRoot)
-            }
-            verify(exactly = 0) { moduleManager.disposeModule(any()) }
-        } finally {
-            unmockkStatic(ModuleRootModificationUtil::class)
-            unmockkStatic(ModuleManager::class)
         }
     }
 

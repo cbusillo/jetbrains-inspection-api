@@ -84,6 +84,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "inspection_execution_proof_version" to INSPECTION_EXECUTION_PROOF_VERSION,
         "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
         "helper_sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,
+        "helper_project_cache_lifecycle_version" to HELPER_PROJECT_CACHE_LIFECYCLE_VERSION,
         "lifecycle_ownership_protocol" to LIFECYCLE_OWNERSHIP_PROTOCOL,
         "lifecycle_open_diagnostic_version" to LIFECYCLE_OPEN_DIAGNOSTIC_VERSION,
         "ide_memory_diagnostic_version" to 1,

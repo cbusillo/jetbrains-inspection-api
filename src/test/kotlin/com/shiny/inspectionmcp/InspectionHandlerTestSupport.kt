@@ -71,6 +71,7 @@ internal abstract class InspectionHandlerTestSupport {
     @BeforeEach
     fun setup() {
         handler = InspectionHandler()
+        handler.recordClosedHelperProjectCaches = { _, _ -> }
         val skippedWaitMs = AtomicLong()
         handler.waitPollSleep = { pollMs -> skippedWaitMs.addAndGet(pollMs) }
         handler.currentTimeMs = { System.currentTimeMillis() + skippedWaitMs.get() }

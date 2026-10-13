@@ -523,6 +523,24 @@ invalid Python SDK, missing-project, or settings-save dialog in `reason`.
 Unrecognized modals report `modal_dialog`; their titles and contents are not
 returned. This observation never dismisses dialogs or grants project ownership.
 
+### Helper-owned project cache retirement
+
+`POST /api/inspection/lifecycle/retire-project-caches` requires the current
+`session_id`, one absolute `worktree_path`, and an explicit `dry_run=true|false`.
+IDE identity advertises `helper_project_cache_lifecycle_version`. The plugin
+records ownership only after an exact helper-owned project is verified disposed.
+Preview lists its project-specific cache directories and byte sizes. Apply
+checks active projects on EDT, atomically moves the owned directory aside, and
+deletes its contents off EDT. A refused or failed removal preserves its ownership
+record and any quarantine path for recovery. The maintained helper performs this
+retirement before removing the worktree from Git.
+
+Shared file/SDK indexes and caches without an ownership record remain intact.
+Closing a project and retiring its private cache do not shrink the IDE's shared
+index files. Older plugins preserve their caches and report unavailable cache
+retirement support. This operation neither closes foreign projects nor prunes
+legacy SDK registrations; SDK retirement remains separate below.
+
 ### Helper-owned Python SDK retirement
 
 `POST /api/inspection/lifecycle/unregister-python-sdk` accepts the current
