@@ -133,6 +133,43 @@ class HelperProjectCacheLifecycleTest {
         assertFalse(Files.exists(proof.finalizationMarker))
     }
 
+    @Test fun `unreadable unrelated ownership does not block retirement of another worktree`() {
+        val root = Files.createDirectory(directory.resolve("task")).toRealPath()
+        val foreign = Files.createDirectory(directory.resolve("foreign")).toRealPath()
+        val registry = HelperProjectCacheRegistry()
+        val cache = record(registry, root)
+        val foreignCache = record(registry, foreign)
+        val marker = foreignCache.resolve(HELPER_PROJECT_CACHE_MARKER)
+        assumeTrue(Files.getFileStore(marker).supportsFileAttributeView("posix"))
+        val permissions = Files.getPosixFilePermissions(marker)
+        try {
+            Files.setPosixFilePermissions(marker, emptySet())
+            assertEquals("removed", caches(lifecycle(registry).retire(root, false)).single()["status"])
+            assertFalse(Files.exists(cache))
+            assertEquals("project-only index fixture", Files.readString(foreignCache.resolve("index.data")))
+        } finally { Files.setPosixFilePermissions(marker, permissions) }
+        assertEquals("removed", caches(lifecycle().retire(foreign, false)).single()["status"])
+    }
+
+    @Test fun `different worktrees retire concurrently while markers move and disappear`() {
+        val registry = HelperProjectCacheRegistry()
+        val executor = java.util.concurrent.Executors.newFixedThreadPool(2)
+        try {
+            repeat(12) { iteration ->
+                val roots = List(2) { Files.createDirectory(directory.resolve("task-$iteration-$it")).toRealPath() }
+                val caches = roots.map { record(registry, it) }
+                val start = java.util.concurrent.CountDownLatch(1)
+                val futures = roots.map { root -> executor.submit<Map<String, Any?>> {
+                    check(start.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    lifecycle(registry).retire(root, false)
+                } }
+                start.countDown()
+                futures.forEach { assertEquals("ok", it.get(10, java.util.concurrent.TimeUnit.SECONDS)["status"]) }
+                assertTrue(caches.none(Files::exists))
+            }
+        } finally { executor.shutdownNow() }
+    }
+
     @Test fun `an in-flight retirement reservation refuses another request and releases for recovery`() {
         val root = Files.createDirectory(directory.resolve("task")).toRealPath()
         val registry = HelperProjectCacheRegistry()

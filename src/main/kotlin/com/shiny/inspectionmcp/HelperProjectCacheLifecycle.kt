@@ -84,9 +84,8 @@ class HelperProjectCacheRegistry {
         val finalizing = path.fileName.toString().startsWith(FINALIZING_CACHE_PREFIX)
         val marker = if (finalizing) path else path.resolve(HELPER_PROJECT_CACHE_MARKER)
         if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) return null
-        val content = Files.readString(marker)
         return runCatching {
-            val json = JsonParser.parseString(content).asJsonObject
+            val json = JsonParser.parseString(Files.readString(marker)).asJsonObject
             val ownershipId = UUID.fromString(json.get("ownership_id").asString).toString()
             val directory = if (finalizing) path.parent.resolve("$SEALED_CACHE_PREFIX$ownershipId") else path
             HelperProjectCacheRecord(directory, marker, json.get("worktree_path").asString,
