@@ -542,8 +542,9 @@ retirement targets. A cache-sealing failure preserves the directory and appears
 as `cache_recording_status: "unavailable"` in the close attempt.
 Unreadable or corrupt sealed ownership records are preserved and reported as
 `ownership_unavailable`, even when their worktree cannot be determined. Readable
-records still retire independently. Restore the recorded file's permissions or
-recover its original contents before retrying; never infer ownership from its name.
+records still retire independently. Inaccessible cache contents refuse that cache
+with an unknown byte count while readable peers proceed. Restore permissions or
+recover the original marker contents before retrying; never infer ownership from its name.
 The maintained helper retires sealed caches before Git worktree removal.
 
 Shared file/SDK indexes and caches without an ownership record remain intact.

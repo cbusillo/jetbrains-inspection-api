@@ -17,11 +17,12 @@ class HelperProjectCacheLifecycleTest {
 
     private fun record(registry: HelperProjectCacheRegistry, root: Path): Path {
         val projects = directory.resolve("system/projects")
+        val existing = registry.records(projects, root).records.map { it.directory }.toSet()
         val original = projects.resolve(getProjectCacheFileName(root))
         Files.createDirectories(original)
         Files.writeString(original.resolve("index.data"), "project-only index fixture")
         registry.sealClosedCache(original, root, root.toString())
-        return registry.records(projects, root).records.single().directory
+        return registry.records(projects, root).records.single { it.directory !in existing }.directory
     }
 
     private fun lifecycle(registry: HelperProjectCacheRegistry = HelperProjectCacheRegistry()) =
@@ -175,6 +176,33 @@ class HelperProjectCacheLifecycleTest {
         assertTrue(Files.exists(cache.resolve("index.data")))
         Files.writeString(marker, original)
         assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
+    }
+
+    @Test fun `inaccessible cache contents refuse that record while readable caches retire`() {
+        val root = Files.createDirectory(directory.resolve("task")).toRealPath()
+        val registry = HelperProjectCacheRegistry()
+        val blockedCache = record(registry, root)
+        val healthyCache = record(registry, root)
+        val blockedDirectory = Files.createDirectory(blockedCache.resolve("locked"))
+        Files.move(blockedCache.resolve("index.data"), blockedDirectory.resolve("index.data"))
+        assumeTrue(Files.getFileStore(blockedDirectory).supportsFileAttributeView("posix"))
+        val permissions = Files.getPosixFilePermissions(blockedDirectory)
+        try {
+            Files.setPosixFilePermissions(blockedDirectory, emptySet())
+            for (dryRun in listOf(true, false)) {
+                val result = lifecycle().retire(root, dryRun)
+                assertEquals("refused", result["status"])
+                val refused = caches(result).single { it["quarantine_path"] == blockedCache.toString() }
+                assertEquals("cache_removal_failed", refused["reason"])
+                assertEquals(null, refused["bytes"])
+                assertTrue(Files.exists(blockedCache.resolve(HELPER_PROJECT_CACHE_MARKER)))
+                assertEquals(if (dryRun) "would_remove" else "removed",
+                    caches(result).single { it["quarantine_path"] == healthyCache.toString() }["status"])
+            }
+            assertFalse(Files.exists(healthyCache))
+        } finally { Files.setPosixFilePermissions(blockedDirectory, permissions) }
+        assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
+        assertFalse(Files.exists(blockedCache))
     }
 
     @Test fun `different worktrees retire concurrently while markers move and disappear`() {

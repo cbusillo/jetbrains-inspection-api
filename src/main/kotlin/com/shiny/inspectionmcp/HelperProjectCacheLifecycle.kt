@@ -152,10 +152,18 @@ internal class HelperProjectCacheLifecycle(
             else -> null
         }
         val bytes = if (reason == null) {
-            val contents = if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) Files.walk(target).use { files ->
-                files.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.mapToLong { Files.size(it) }.sum()
-            } else 0L
-            contents + if (record.marker.parent != target) Files.size(record.marker) else 0L
+            try {
+                val contents = if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) Files.walk(target).use { files ->
+                    files.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.mapToLong { Files.size(it) }.sum()
+                } else 0L
+                contents + if (record.marker.parent != target) Files.size(record.marker) else 0L
+            } catch (_: IOException) {
+                reason = "cache_removal_failed"
+                null
+            } catch (_: UncheckedIOException) {
+                reason = "cache_removal_failed"
+                null
+            }
         } else 0L
         var marker = record.marker
         if (reason == null && !dryRun) {
