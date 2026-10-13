@@ -160,6 +160,7 @@ dependencies {
     
     intellijPlatform {
         intellijIdea("2025.1.1")
+        bundledPlugin("JavaScript")
         pluginVerifier()
         zipSigner()
         testFramework(TestFrameworkType.Platform)

@@ -1,0 +1,5 @@
+<idea-plugin>
+    <extensions defaultExtensionNs="com.shiny.inspection.api">
+        <batchInspectionPrerequisite implementation="com.shiny.inspectionmcp.TypeScriptBatchInspectionPrerequisite"/>
+    </extensions>
+</idea-plugin>

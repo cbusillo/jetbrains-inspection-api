@@ -2249,6 +2249,12 @@ class InspectionHandler : HttpRequestHandler() {
             (reason == "inspection_proof_failed" && executionProofReason in setOf("write_action_preempted", "time_limit"))
         ) {
             return when (executionProofReason) {
+                "batch_inspection_delegated_to_editor_service" -> {
+                    val blockers = (diagnostic?.get("batch_inspection_delegations") as? List<*>).orEmpty()
+                        .filterIsInstance<Map<*, *>>()
+                        .joinToString("; ") { "${it["tool"]} on ${it["file"]}" }
+                    "The enabled TypeScript unresolved-reference inspection delegates diagnostics to the editor language service. Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in this exact project's settings and request a fresh API inspection. Keep the inspection enabled; no findings or clean result are proven by this run. Blocking: $blockers"
+                }
                 "write_action_preempted" ->
                     "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
                 "time_limit" ->
@@ -2474,7 +2480,7 @@ class InspectionHandler : HttpRequestHandler() {
         val attribution = mapOf(
             "schema_version" to INSPECTION_ATTRIBUTION_SCHEMA_VERSION,
             "source" to "plugin",
-            "classification" to attributionClassification(code),
+            "classification" to attributionClassification(code, target),
             "code" to code,
             "phase" to request.phase,
             "endpoint" to request.endpoint,
@@ -2496,7 +2502,13 @@ class InspectionHandler : HttpRequestHandler() {
         target["inspection_attribution"] = attribution
     }
 
-    private fun attributionClassification(code: String): String {
+    private fun attributionClassification(code: String, payload: Map<String, Any?>): String {
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *>
+        if (code == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue &&
+            diagnostic?.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+        ) {
+            return "configuration_blocked"
+        }
         if (code.startsWith("python_sdk_preparation_")) {
             return when (code) {
                 "python_sdk_preparation_venv_configuration_missing",
@@ -2676,11 +2688,16 @@ class InspectionHandler : HttpRequestHandler() {
             "RED" -> "findings"
             else -> "unattributed_unknown"
         }
+        val captureDiagnostic = payload["capture_diagnostic"] as? JsonObject
         val responseContext = mutableMapOf<String, Any?>(
             "session_id" to stringField("session_id"),
             "project_instance_id" to stringField("project_instance_id"),
             "project_key" to stringField("project_key"),
             "inspection_run_id" to (payload["inspection_run_id"] as? JsonPrimitive)?.longOrNull,
+            "capture_diagnostic" to mapOf(
+                "execution_proof_block_reason" to
+                    (captureDiagnostic?.get("execution_proof_block_reason") as? JsonPrimitive)?.contentOrNull,
+            ),
         )
         addInspectionAttribution(
             target = responseContext,
@@ -7193,6 +7210,36 @@ class InspectionHandler : HttpRequestHandler() {
             }
             ownedGlobalContext = globalContext
             globalContext.configure(profile, scope)
+            fun captureBatchInspectionDelegation(): Boolean {
+                val delegatedInspections = ApplicationManager.getApplication().runReadAction<List<Map<String, String>>, Exception> {
+                    findBatchInspectionDelegations(profile, SupportedInspectionExecutor().collectScopeFiles(scope))
+                }
+                if (delegatedInspections.isEmpty()) return false
+                resultsStore.setSnapshot(
+                    key,
+                    InspectionResultsSnapshot(
+                        problems = emptyList(),
+                        timestamp = currentTimeMs(),
+                        projectState = inspectionInputState,
+                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+                        source = "batch_inspection_prerequisite",
+                        note = "Enabled batch inspection delegates findings to an editor service outside this run.",
+                        captureScope = effectiveCaptureScope,
+                        captureDiagnostic = analysisReadinessDiagnostic + mapOf(
+                            "execution_proof_block_reason" to "batch_inspection_delegated_to_editor_service",
+                            "batch_inspection_delegation_count" to delegatedInspections.size,
+                            "batch_inspection_delegations" to delegatedInspections.take(MAX_EXACT_FILE_PROOF_EXAMPLES),
+                            "batch_inspection_delegations_omitted_count" to
+                                (delegatedInspections.size - MAX_EXACT_FILE_PROOF_EXAMPLES).coerceAtLeast(0),
+                        ),
+                        captureIncompleteReason = CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
+                        runId = runId,
+                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
+                    ),
+                )
+                return true
+            }
+            if (captureBatchInspectionDelegation()) return
             try {
                 transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
                 globalContext.performInspectionsWithProgress(scope)
@@ -7773,6 +7820,9 @@ class InspectionHandler : HttpRequestHandler() {
                             analysisReadiness = analysisReadiness,
                             inputFingerprint = inspectionInputFingerprint,
                         )
+                        if (qualifiedSnapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
+                            captureBatchInspectionDelegation()
+                        ) return
                         publishInspectionSnapshot(
                             project = project,
                             runId = runId,

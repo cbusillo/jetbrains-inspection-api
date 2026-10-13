@@ -101,6 +101,14 @@
     
     <depends>com.intellij.modules.platform</depends>
     
+    <depends optional="true" config-file="inspection-javascript.xml">JavaScript</depends>
+
+    <extensionPoints>
+        <extensionPoint name="batchInspectionPrerequisite"
+                        interface="com.shiny.inspectionmcp.BatchInspectionPrerequisite"
+                        area="IDEA_PROJECT" dynamic="true"/>
+    </extensionPoints>
+
     <extensions defaultExtensionNs="com.intellij">
         <applicationService serviceImplementation="com.shiny.inspectionmcp.InspectionIdeMemory"/>
         <httpRequestHandler implementation="com.shiny.inspectionmcp.InspectionHandler"/>
