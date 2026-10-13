@@ -59,7 +59,7 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew \
   -PpythonSdkTestIdePath=/path/to/PyCharm.app pythonUvSdkTest
 ```
 
-These controls use `uv` to create disposable environments. They verify exact
+These macOS/Linux controls use `uv` to create disposable environments. They verify exact
 helper/uv object reuse, project/module assignment, interrupted setup and
 cancellation. They do not change the installed IDE's SDK table or establish
 installed-runtime acceptance. The normal development runtime has no Python

@@ -17,6 +17,7 @@ import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.util.io.FileUtil
 import org.jdom.Element
 import java.nio.file.Files
 import java.nio.file.Path
@@ -477,7 +478,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             val root = requireNotNull(environment.parent).toString()
             additional.setAttribute("IS_UV", "true")
             additional.setAttribute("UV_WORKING_DIR", root)
-            additional.setAttribute("ASSOCIATED_PROJECT_PATH", root)
+            additional.setAttribute("ASSOCIATED_PROJECT_PATH", FileUtil.toSystemIndependentName(root))
             additional.setAttribute("UV_VENV_PATH", interpreter.toString())
         }
         val additionalData = type.loadAdditionalData(sdk, additional)

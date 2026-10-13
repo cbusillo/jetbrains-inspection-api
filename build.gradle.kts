@@ -4,6 +4,7 @@ import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.api.provider.Provider
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -183,7 +184,7 @@ val platformTest by intellijPlatformTesting.testIde.registering {
     }
 }
 
-val pythonSdkTestIdePath: org.gradle.api.provider.Provider<String> = providers.gradleProperty("pythonSdkTestIdePath")
+val pythonSdkTestIdePath: Provider<String> = providers.gradleProperty("pythonSdkTestIdePath")
 if (pythonSdkTestIdePath.isPresent) {
     intellijPlatformTesting.testIde.register("pythonUvSdkTest") {
         localPath.set(file(pythonSdkTestIdePath.get()))
