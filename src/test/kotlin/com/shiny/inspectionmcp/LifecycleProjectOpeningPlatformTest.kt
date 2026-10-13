@@ -60,11 +60,11 @@ class LifecycleProjectOpeningPlatformTest {
         Files.createDirectories(cache)
         Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
         runInEdtAndGet { registry.recordClosedProject(project, root) }
-        val sealed = registry.records(cache.parent, root).single().directory
+        val sealed = registry.records(cache.parent, root).records.single().directory
         val result = HelperProjectCacheLifecycle(registry).retire(root, false)
         assertEquals("ok", result["status"], result.toString())
         assertFalse(Files.exists(sealed))
-        assertTrue(registry.records(cache.parent, root).isEmpty())
+        assertTrue(registry.records(cache.parent, root).records.isEmpty())
     }
 
     @Test
@@ -83,7 +83,7 @@ class LifecycleProjectOpeningPlatformTest {
             registry.recordClosedProject(project, root)
         }
         assertFalse(Files.exists(cache))
-        val sealed = registry.records(cache.parent, root).single().directory
+        val sealed = registry.records(cache.parent, root).records.single().directory
         val reopened = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
         try {
             Files.createDirectories(cache)

@@ -34,6 +34,11 @@ internal data class HelperProjectCacheRecord(
     val finalizationMarker: Path get() = directory.parent.resolve("$FINALIZING_CACHE_PREFIX$ownershipId.json")
 }
 
+internal data class HelperProjectCacheDiscovery(
+    val records: List<HelperProjectCacheRecord>,
+    val unresolved: List<Path>,
+)
+
 @Service(Service.Level.APP)
 class HelperProjectCacheRegistry {
     private val retiring = ConcurrentHashMap.newKeySet<Path>()
@@ -70,14 +75,23 @@ class HelperProjectCacheRegistry {
         } finally { Files.deleteIfExists(temporary) }
     }
 
-    internal fun records(projects: Path, root: Path): List<HelperProjectCacheRecord> {
-        if (!Files.isDirectory(projects, LinkOption.NOFOLLOW_LINKS)) return emptyList()
-        return Files.list(projects).use { paths ->
+    internal fun records(projects: Path, root: Path): HelperProjectCacheDiscovery {
+        if (!Files.isDirectory(projects, LinkOption.NOFOLLOW_LINKS)) return HelperProjectCacheDiscovery(emptyList(), emptyList())
+        val records = linkedMapOf<Path, HelperProjectCacheRecord>()
+        val unresolved = mutableListOf<Path>()
+        Files.list(projects).use { paths ->
             paths.filter { it.fileName.toString().startsWith(SEALED_CACHE_PREFIX) ||
-                it.fileName.toString().startsWith(FINALIZING_CACHE_PREFIX) }
-                .map(::readRecord).filter { it != null && it.worktreePath == root.toString() }
-                .map { requireNotNull(it) }.toList()
+                it.fileName.toString().startsWith(FINALIZING_CACHE_PREFIX) }.forEach { path ->
+                val record = readRecord(path) ?: if (path.fileName.toString().startsWith(SEALED_CACHE_PREFIX)) {
+                    readRecord(path.resolveSibling("$FINALIZING_CACHE_PREFIX${path.fileName.toString().removePrefix(SEALED_CACHE_PREFIX)}.json"))
+                        ?.takeIf { it.directory == path }
+                } else null
+                if (record != null) {
+                    if (record.worktreePath == root.toString()) records[record.directory] = record
+                } else if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) unresolved.add(path)
+            }
         }
+        return HelperProjectCacheDiscovery(records.values.toList(), unresolved)
     }
 
     internal fun readRecord(path: Path): HelperProjectCacheRecord? {
@@ -110,7 +124,13 @@ internal class HelperProjectCacheLifecycle(
         try {
             val projects = systemDirectory.toAbsolutePath().normalize().resolve("projects")
             if (Files.isSymbolicLink(projects)) reason = "cache_path_symlink"
-            else registry.records(projects, root).forEach { results.add(retireRecord(it, root, projects, dryRun)) }
+            else {
+                val discovery = registry.records(projects, root)
+                discovery.records.forEach { results.add(retireRecord(it, root, projects, dryRun)) }
+                discovery.unresolved.forEach { results.add(mapOf(
+                    "quarantine_path" to it.toString(), "status" to "refused", "reason" to "ownership_unavailable",
+                )) }
+            }
         } catch (_: IOException) { reason = "cache_removal_failed"
         } catch (_: UncheckedIOException) { reason = "cache_removal_failed"
         } finally { registry.end(root) }

@@ -21,7 +21,7 @@ class HelperProjectCacheLifecycleTest {
         Files.createDirectories(original)
         Files.writeString(original.resolve("index.data"), "project-only index fixture")
         registry.sealClosedCache(original, root, root.toString())
-        return registry.records(projects, root).single().directory
+        return registry.records(projects, root).records.single().directory
     }
 
     private fun lifecycle(registry: HelperProjectCacheRegistry = HelperProjectCacheRegistry()) =
@@ -125,7 +125,7 @@ class HelperProjectCacheLifecycleTest {
             assertEquals("cache_removal_failed", caches(lifecycle().retire(root, false)).single()["reason"])
             assertTrue(Files.exists(cache.resolve(HELPER_PROJECT_CACHE_MARKER)))
         } finally { Files.setPosixFilePermissions(projects, permissions) }
-        val proof = registry.records(projects, root).single()
+        val proof = registry.records(projects, root).records.single()
         Files.move(proof.marker, proof.finalizationMarker)
         assertEquals("would_remove", caches(lifecycle().retire(root, true)).single()["status"])
         assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
@@ -144,11 +144,37 @@ class HelperProjectCacheLifecycleTest {
         val permissions = Files.getPosixFilePermissions(marker)
         try {
             Files.setPosixFilePermissions(marker, emptySet())
-            assertEquals("removed", caches(lifecycle(registry).retire(root, false)).single()["status"])
+            val result = lifecycle(registry).retire(root, false)
+            assertEquals("refused", result["status"])
+            assertEquals("removed", caches(result).single { it["status"] == "removed" }["status"])
+            assertEquals("ownership_unavailable", caches(result).single { it["status"] == "refused" }["reason"])
             assertFalse(Files.exists(cache))
             assertEquals("project-only index fixture", Files.readString(foreignCache.resolve("index.data")))
         } finally { Files.setPosixFilePermissions(marker, permissions) }
         assertEquals("removed", caches(lifecycle().retire(foreign, false)).single()["status"])
+    }
+
+    @Test fun `unreadable and corrupt requested ownership refuses preview and apply until repaired`() {
+        val root = Files.createDirectory(directory.resolve("task")).toRealPath()
+        val cache = record(HelperProjectCacheRegistry(), root)
+        val marker = cache.resolve(HELPER_PROJECT_CACHE_MARKER)
+        val original = Files.readString(marker)
+        assumeTrue(Files.getFileStore(marker).supportsFileAttributeView("posix"))
+        val permissions = Files.getPosixFilePermissions(marker)
+        try {
+            Files.setPosixFilePermissions(marker, emptySet())
+            for (dryRun in listOf(true, false)) {
+                val result = lifecycle().retire(root, dryRun)
+                assertEquals("refused", result["status"])
+                assertEquals("ownership_unavailable", caches(result).single()["reason"])
+                assertTrue(Files.exists(cache.resolve("index.data")))
+            }
+        } finally { Files.setPosixFilePermissions(marker, permissions) }
+        Files.writeString(marker, "invalid JSON")
+        assertEquals("refused", lifecycle().retire(root, false)["status"])
+        assertTrue(Files.exists(cache.resolve("index.data")))
+        Files.writeString(marker, original)
+        assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
     }
 
     @Test fun `different worktrees retire concurrently while markers move and disappear`() {
@@ -164,7 +190,10 @@ class HelperProjectCacheLifecycleTest {
                     lifecycle(registry).retire(root, false)
                 } }
                 start.countDown()
-                futures.forEach { assertEquals("ok", it.get(10, java.util.concurrent.TimeUnit.SECONDS)["status"]) }
+                futures.zip(roots).forEach { (future, root) ->
+                    val result = future.get(10, java.util.concurrent.TimeUnit.SECONDS)
+                    assertEquals("removed", caches(result).single { it["worktree_path"] == root.toString() }["status"])
+                }
                 assertTrue(caches.none(Files::exists))
             }
         } finally { executor.shutdownNow() }

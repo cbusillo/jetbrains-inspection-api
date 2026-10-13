@@ -540,6 +540,10 @@ single ownership marker to the parent, removing that marker only after the
 directory is gone. Partial failure and IDE restart remain recoverable. Unsealed directories are never
 retirement targets. A cache-sealing failure preserves the directory and appears
 as `cache_recording_status: "unavailable"` in the close attempt.
+Unreadable or corrupt sealed ownership records are preserved and reported as
+`ownership_unavailable`, even when their worktree cannot be determined. Readable
+records still retire independently. Restore the recorded file's permissions or
+recover its original contents before retrying; never infer ownership from its name.
 The maintained helper retires sealed caches before Git worktree removal.
 
 Shared file/SDK indexes and caches without an ownership record remain intact.
