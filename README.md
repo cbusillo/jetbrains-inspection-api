@@ -438,7 +438,7 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   and assess an independent inspection. For a uv-created `.venv`, new detached
   SDKs load uv association data through the SDK type's serialization API before
   path setup. The association must survive serialization readback; unsupported
-  providers fail closed before registration. Existing SDKs are never converted
+  providers return `python_sdk_preparation_unsupported` before registration. Existing SDKs are never converted
   or repaired implicitly. Failures use a
   `python_sdk_preparation_*` reason and remain fail-closed. A newly configured
   SDK that fails setup returns HTTP 500 with

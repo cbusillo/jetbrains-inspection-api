@@ -392,6 +392,23 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `unsupported uv association reports the SDK capability refusal`() {
+        createVenv()
+        platform.pythonType = null
+        val unavailable = prepare()
+        platform.pythonType = mockk<SdkType> { every { name } returns "Python SDK" }
+        platform.creationFailure = PythonSdkUvAssociationUnsupportedException("uv association unavailable")
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals(unavailable.reason, result.reason)
+        assertEquals(platform.creationFailure?.message, result.detail)
+        assertTrue(platform.registered.isEmpty())
+        assertEquals(0, platform.commitQueries)
+    }
+
+    @Test
     fun `cancels while waiting for an existing SDK setup without committing`() {
         val interpreter = createVenv()
         platform.registered += sdk("starting", interpreter.toString())
@@ -827,6 +844,7 @@ class PythonSdkPreparationServiceTest {
         var onSetupObservation: () -> Unit = {}
         var onPathSetup: () -> Unit = {}
         var onReadback: () -> Unit = {}
+        var creationFailure: Throwable? = null
 
         override fun isProjectTrusted(project: Project): Boolean {
             assertSame(this.project, project)
@@ -865,6 +883,7 @@ class PythonSdkPreparationServiceTest {
             assertSame(pythonType, type)
             mutationEvents += "create"
             createdHome = interpreterHome
+            creationFailure?.let { throw it }
             homes[detachedSdk] = interpreterHome
             return detachedSdk
         }

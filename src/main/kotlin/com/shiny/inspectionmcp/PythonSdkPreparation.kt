@@ -33,6 +33,7 @@ private const val EXISTING_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val REQUIRED_STABLE_MODULE_OBSERVATIONS = 2
 
 private class PythonSdkPreparationDeadlineExceededException : RuntimeException()
+internal class PythonSdkUvAssociationUnsupportedException(message: String) : IllegalStateException(message)
 
 internal data class PythonSdkPreparationRequest(
     val project: Project,
@@ -285,6 +286,8 @@ internal class PythonSdkPreparationService(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             failure("python_sdk_preparation_cancelled", interpreterHome)
+        } catch (error: PythonSdkUvAssociationUnsupportedException) {
+            failure("python_sdk_preparation_unsupported", interpreterHome, detail = error.message)
         } catch (error: Throwable) {
             failure(
                 "python_sdk_preparation_failed",
@@ -486,11 +489,14 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         if (uvEnvironment) {
             val saved = Element("additional")
             type.saveAdditionalData(additionalData, saved)
-            check(saved.getAttributeValue("IS_UV") == "true" &&
+            val retained = saved.getAttributeValue("IS_UV") == "true" &&
                 saved.getAttributeValue("UV_WORKING_DIR") == additional.getAttributeValue("UV_WORKING_DIR") &&
                 saved.getAttributeValue("ASSOCIATED_PROJECT_PATH") == additional.getAttributeValue("ASSOCIATED_PROJECT_PATH") &&
-                saved.getAttributeValue("UV_VENV_PATH") == additional.getAttributeValue("UV_VENV_PATH")) {
-                "The Python SDK type cannot retain the uv environment association."
+                saved.getAttributeValue("UV_VENV_PATH") == additional.getAttributeValue("UV_VENV_PATH")
+            if (!retained) {
+                throw PythonSdkUvAssociationUnsupportedException(
+                    "The Python SDK type cannot retain the uv environment association.",
+                )
             }
         }
         runSdkWriteAction {
