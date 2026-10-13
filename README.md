@@ -435,8 +435,11 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   New SDKs are registered before assigning module root models, so the IDE can
   resolve their SDK dependencies when those models commit.
   Preparation evidence does not imply an inspection verdict; clients must run
-  and assess an independent inspection. The generic local SDK has no claimed
-  uv-association metadata. Failures use a
+  and assess an independent inspection. For a uv-created `.venv`, new detached
+  SDKs load uv association data through the SDK type's serialization API before
+  path setup. The association must survive serialization readback; unsupported
+  providers fail closed before registration. Existing SDKs are never converted
+  or repaired implicitly. Failures use a
   `python_sdk_preparation_*` reason and remain fail-closed. A newly configured
   SDK that fails setup returns HTTP 500 with
   `python_sdk_preparation_setup_incomplete`; `detail` identifies the first failed

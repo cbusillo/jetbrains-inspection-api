@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -354,6 +355,7 @@ class PythonSdkPreparationServiceTest {
         val additionalData = mockk<SdkAdditionalData>()
         val modificator = mockk<SdkModificator>(relaxed = true)
         val assignedData = slot<SdkAdditionalData>()
+        every { sdk.homePath } returns null
         every { type.loadAdditionalData(sdk, match { element -> element.name == "additional" }) } returns additionalData
         every { sdk.sdkModificator } returns modificator
         every { sdk.sdkAdditionalData } returns additionalData
@@ -363,6 +365,30 @@ class PythonSdkPreparationServiceTest {
             .initializeDetachedSdkAdditionalData(type, sdk)
 
         assertSame(additionalData, assignedData.captured)
+    }
+
+    @Test
+    fun `uv provider without association roundtrip cannot initialize a candidate`() {
+        val interpreter = createVenv()
+        Files.writeString(projectRoot.resolve(".venv/pyvenv.cfg"), "uv = fixture\n")
+        val type = mockk<SdkType>()
+        val sdk = mockk<Sdk>()
+        every { sdk.homePath } returns interpreter.toString()
+        val data = mockk<SdkAdditionalData>()
+        every { type.loadAdditionalData(sdk, any()) } returns data
+        every { type.saveAdditionalData(any(), any()) } just Runs
+        every { sdk.sdkModificator } returns mockk<SdkModificator>(relaxed = true)
+        every { sdk.sdkAdditionalData } returns data
+        var writeAttempted = false
+        val sdkPlatform = JetBrainsPythonSdkPreparationPlatform(runSdkWriteAction = { action ->
+            writeAttempted = true
+            action()
+        })
+
+        assertThrows(IllegalStateException::class.java) {
+            sdkPlatform.initializeDetachedSdkAdditionalData(type, sdk)
+        }
+        assertFalse(writeAttempted)
     }
 
     @Test

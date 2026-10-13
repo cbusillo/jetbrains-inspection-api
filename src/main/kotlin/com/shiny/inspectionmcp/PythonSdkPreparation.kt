@@ -463,8 +463,34 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     }
 
     internal fun initializeDetachedSdkAdditionalData(type: SdkType, sdk: Sdk) {
-        val additionalData = type.loadAdditionalData(sdk, Element("additional"))
+        val additional = Element("additional")
+        val interpreter = sdk.homePath?.let(Path::of)
+        val environment = interpreter?.parent?.parent
+        val configuration = environment?.resolve("pyvenv.cfg")
+        val uvEnvironment = environment?.fileName?.toString() == ".venv" &&
+            configuration != null && Files.isRegularFile(configuration) &&
+            Files.readAllLines(configuration).any { line ->
+                val entry = line.split('=', limit = 2)
+                entry.size == 2 && entry[0].trim() == "uv" && entry[1].isNotBlank()
+            }
+        if (uvEnvironment) {
+            val root = requireNotNull(environment.parent).toString()
+            additional.setAttribute("IS_UV", "true")
+            additional.setAttribute("UV_WORKING_DIR", root)
+            additional.setAttribute("ASSOCIATED_PROJECT_PATH", root)
+            additional.setAttribute("UV_VENV_PATH", interpreter.toString())
+        }
+        val additionalData = type.loadAdditionalData(sdk, additional)
             ?: error("The Python SDK type did not provide required additional data.")
+        if (uvEnvironment) {
+            val saved = Element("additional")
+            type.saveAdditionalData(additionalData, saved)
+            check(saved.getAttributeValue("IS_UV") == "true" &&
+                saved.getAttributeValue("UV_WORKING_DIR") == additional.getAttributeValue("UV_WORKING_DIR") &&
+                saved.getAttributeValue("ASSOCIATED_PROJECT_PATH") == additional.getAttributeValue("ASSOCIATED_PROJECT_PATH")) {
+                "The Python SDK type cannot retain the uv environment association."
+            }
+        }
         runSdkWriteAction {
             sdk.sdkModificator.apply {
                 sdkAdditionalData = additionalData

@@ -49,6 +49,22 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platform
 For local plugin rollout, rollback, and diagnosis techniques, see
 [the maintainer guide](MAINTAINING.md).
 
+## Isolated Python/uv SDK controls
+
+Run the real Python SDK and uv configurator controls against a local PyCharm
+installation in Gradle's separate test JVM and worktree-local sandbox:
+
+```bash
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew \
+  -PpythonSdkTestIdePath=/path/to/PyCharm.app pythonUvSdkTest
+```
+
+These controls use `uv` to create disposable environments. They verify exact
+helper/uv object reuse, project/module assignment, interrupted setup and
+cancellation. They do not change the installed IDE's SDK table or establish
+installed-runtime acceptance. The normal development runtime has no Python
+plugin, so this separate task requires the explicit PyCharm path.
+
 ## Automated IDE smoke test
 
 `./scripts/test-automated.sh` runs the maintained helper against the configured
