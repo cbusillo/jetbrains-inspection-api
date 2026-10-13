@@ -17,6 +17,7 @@ import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.util.io.FileUtil
 import org.jdom.Element
 import java.nio.file.Files
 import java.nio.file.Path
@@ -32,6 +33,7 @@ private const val EXISTING_PYTHON_SDK_SETTLE_POLL_MS = 200L
 private const val REQUIRED_STABLE_MODULE_OBSERVATIONS = 2
 
 private class PythonSdkPreparationDeadlineExceededException : RuntimeException()
+internal class PythonSdkUvAssociationUnsupportedException(message: String) : IllegalStateException(message)
 
 internal data class PythonSdkPreparationRequest(
     val project: Project,
@@ -284,6 +286,8 @@ internal class PythonSdkPreparationService(
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
             failure("python_sdk_preparation_cancelled", interpreterHome)
+        } catch (error: PythonSdkUvAssociationUnsupportedException) {
+            failure("python_sdk_preparation_unsupported", interpreterHome, detail = error.message)
         } catch (error: Throwable) {
             failure(
                 "python_sdk_preparation_failed",
@@ -463,8 +467,38 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     }
 
     internal fun initializeDetachedSdkAdditionalData(type: SdkType, sdk: Sdk) {
-        val additionalData = type.loadAdditionalData(sdk, Element("additional"))
+        val additional = Element("additional")
+        val interpreter = sdk.homePath?.let(Path::of)
+        val environment = interpreter?.parent?.parent
+        val configuration = environment?.resolve("pyvenv.cfg")
+        val uvEnvironment = environment?.fileName?.toString() == ".venv" &&
+            configuration != null && Files.isRegularFile(configuration) &&
+            Files.readAllLines(configuration).any { line ->
+                val entry = line.split('=', limit = 2)
+                entry.size == 2 && entry[0].trim() == "uv" && entry[1].isNotBlank()
+            }
+        if (uvEnvironment) {
+            val root = requireNotNull(environment.parent).toString()
+            additional.setAttribute("IS_UV", "true")
+            additional.setAttribute("UV_WORKING_DIR", root)
+            additional.setAttribute("ASSOCIATED_PROJECT_PATH", FileUtil.toSystemIndependentName(root))
+            additional.setAttribute("UV_VENV_PATH", environment.toString())
+        }
+        val additionalData = type.loadAdditionalData(sdk, additional)
             ?: error("The Python SDK type did not provide required additional data.")
+        if (uvEnvironment) {
+            val saved = Element("additional")
+            type.saveAdditionalData(additionalData, saved)
+            val retained = saved.getAttributeValue("IS_UV") == "true" &&
+                saved.getAttributeValue("UV_WORKING_DIR") == additional.getAttributeValue("UV_WORKING_DIR") &&
+                saved.getAttributeValue("ASSOCIATED_PROJECT_PATH") == additional.getAttributeValue("ASSOCIATED_PROJECT_PATH") &&
+                saved.getAttributeValue("UV_VENV_PATH") == additional.getAttributeValue("UV_VENV_PATH")
+            if (!retained) {
+                throw PythonSdkUvAssociationUnsupportedException(
+                    "The Python SDK type cannot retain the uv environment association.",
+                )
+            }
+        }
         runSdkWriteAction {
             sdk.sdkModificator.apply {
                 sdkAdditionalData = additionalData
