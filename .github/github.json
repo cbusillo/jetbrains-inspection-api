@@ -28,6 +28,7 @@
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=\"${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}\" ./gradlew test",
+      "pythonUvSdk": "JAVA_HOME=\"${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}\" ./gradlew -PpythonSdkTestIdePath=/path/to/PyCharm.app pythonUvSdkTest",
       "supportedInspectionExecutor": "JAVA_HOME=\"${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}\" ./gradlew :platformTest --tests '*.SupportedInspectionExecutorPlatformTest'",
       "core": "./gradlew :inspection-core:test",
       "mcpServer": "./gradlew :mcp-server-jvm:test",

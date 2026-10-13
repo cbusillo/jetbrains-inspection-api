@@ -3,6 +3,8 @@ import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.GradleException
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
+import org.gradle.testing.jacoco.plugins.JacocoTaskExtension
+import org.gradle.api.provider.Provider
 import org.gradle.api.DefaultTask
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.file.RegularFileProperty
@@ -182,6 +184,28 @@ val platformTest by intellijPlatformTesting.testIde.registering {
     }
 }
 
+val pythonSdkTestIdePath: Provider<String> = providers.gradleProperty("pythonSdkTestIdePath")
+if (pythonSdkTestIdePath.isPresent) {
+    intellijPlatformTesting.testIde.register("pythonUvSdkTest") {
+        localPath.set(file(pythonSdkTestIdePath.get()))
+        testFramework(TestFrameworkType.Platform)
+        testFramework(TestFrameworkType.JUnit5)
+        task {
+            extensions.configure<JacocoTaskExtension> { isEnabled = false }
+            useJUnitPlatform()
+            filter { includeTestsMatching("*PythonUvSdkRecoveryTest") }
+            systemProperty("java.awt.headless", "true")
+            systemProperty("idea.is.unit.test", "true")
+            systemProperty("jia.control.root", layout.buildDirectory.dir("python-uv-controls").get().asFile.absolutePath)
+            testLogging {
+                events("passed", "failed")
+                exceptionFormat = TestExceptionFormat.FULL
+            }
+        }
+    }
+    tasks.named("jacocoTestReport") { mustRunAfter("pythonUvSdkTest") }
+}
+
 tasks {
     processResources {
         dependsOn(generateInspectionBuildInfo)
@@ -286,6 +310,7 @@ tasks {
         useJUnitPlatform()
         maxParallelForks = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)
         filter { excludeTestsMatching("*PlatformTest") }
+        filter { excludeTestsMatching("*PythonUvSdkRecoveryTest") }
         dependsOn(platformTest)
         systemProperty("java.awt.headless", "true")
         testLogging {

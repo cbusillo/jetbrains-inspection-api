@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -354,6 +355,7 @@ class PythonSdkPreparationServiceTest {
         val additionalData = mockk<SdkAdditionalData>()
         val modificator = mockk<SdkModificator>(relaxed = true)
         val assignedData = slot<SdkAdditionalData>()
+        every { sdk.homePath } returns null
         every { type.loadAdditionalData(sdk, match { element -> element.name == "additional" }) } returns additionalData
         every { sdk.sdkModificator } returns modificator
         every { sdk.sdkAdditionalData } returns additionalData
@@ -363,6 +365,47 @@ class PythonSdkPreparationServiceTest {
             .initializeDetachedSdkAdditionalData(type, sdk)
 
         assertSame(additionalData, assignedData.captured)
+    }
+
+    @Test
+    fun `uv provider without association roundtrip cannot initialize a candidate`() {
+        val interpreter = createVenv()
+        Files.writeString(projectRoot.resolve(".venv/pyvenv.cfg"), "uv = fixture\n")
+        val type = mockk<SdkType>()
+        val sdk = mockk<Sdk>()
+        every { sdk.homePath } returns interpreter.toString()
+        val data = mockk<SdkAdditionalData>()
+        every { type.loadAdditionalData(sdk, any()) } returns data
+        every { type.saveAdditionalData(any(), any()) } just Runs
+        every { sdk.sdkModificator } returns mockk<SdkModificator>(relaxed = true)
+        every { sdk.sdkAdditionalData } returns data
+        var writeAttempted = false
+        val sdkPlatform = JetBrainsPythonSdkPreparationPlatform(runSdkWriteAction = { action ->
+            writeAttempted = true
+            action()
+        })
+
+        assertThrows(IllegalStateException::class.java) {
+            sdkPlatform.initializeDetachedSdkAdditionalData(type, sdk)
+        }
+        assertFalse(writeAttempted)
+    }
+
+    @Test
+    fun `unsupported uv association reports the SDK capability refusal`() {
+        createVenv()
+        platform.pythonType = null
+        val unavailable = prepare()
+        platform.pythonType = mockk<SdkType> { every { name } returns "Python SDK" }
+        platform.creationFailure = PythonSdkUvAssociationUnsupportedException("uv association unavailable")
+
+        val result = prepare()
+
+        assertFalse(result.prepared)
+        assertEquals(unavailable.reason, result.reason)
+        assertEquals(platform.creationFailure?.message, result.detail)
+        assertTrue(platform.registered.isEmpty())
+        assertEquals(0, platform.commitQueries)
     }
 
     @Test
@@ -801,6 +844,7 @@ class PythonSdkPreparationServiceTest {
         var onSetupObservation: () -> Unit = {}
         var onPathSetup: () -> Unit = {}
         var onReadback: () -> Unit = {}
+        var creationFailure: Throwable? = null
 
         override fun isProjectTrusted(project: Project): Boolean {
             assertSame(this.project, project)
@@ -839,6 +883,7 @@ class PythonSdkPreparationServiceTest {
             assertSame(pythonType, type)
             mutationEvents += "create"
             createdHome = interpreterHome
+            creationFailure?.let { throw it }
             homes[detachedSdk] = interpreterHome
             return detachedSdk
         }
