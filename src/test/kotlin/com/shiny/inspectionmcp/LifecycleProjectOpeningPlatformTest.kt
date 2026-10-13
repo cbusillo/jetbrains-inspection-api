@@ -34,12 +34,9 @@ class LifecycleProjectOpeningPlatformTest {
         val handler = InspectionHandler()
         val project = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
         try {
-            val method = InspectionHandler::class.java.getDeclaredMethod(
-                "createLifecycleFallbackContentRoot", Project::class.java, com.intellij.openapi.vfs.VirtualFile::class.java,
-            ).apply { isAccessible = true }
             runInEdtAndGet {
                 val vfs = LocalFileSystem.getInstance()
-                assertEquals(true, method.invoke(handler, project, vfs.refreshAndFindFileByNioFile(root)))
+                assertTrue(handler.lifecycleFallbackContentRootCreator(project, requireNotNull(vfs.refreshAndFindFileByNioFile(root))))
                 val index = ProjectFileIndex.getInstance(project)
                 assertTrue(index.isInContent(requireNotNull(vfs.refreshAndFindFileByNioFile(source))))
                 assertTrue(index.isExcluded(requireNotNull(vfs.refreshAndFindFileByNioFile(dependency))))
@@ -62,38 +59,41 @@ class LifecycleProjectOpeningPlatformTest {
         assertTrue(project.isDisposed)
         Files.createDirectories(cache)
         Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
-        registry.recordClosedProject(project, root)
-        assertFalse(helperProjectCacheInUse(ProjectManager.getInstance().defaultProject, registry.records(cache.parent, root).single()))
+        runInEdtAndGet { registry.recordClosedProject(project, root) }
+        val sealed = registry.records(cache.parent, root).single().directory
         val result = HelperProjectCacheLifecycle(registry).retire(root, false)
         assertEquals("ok", result["status"], result.toString())
-        assertFalse(Files.exists(cache))
+        assertFalse(Files.exists(sealed))
         assertTrue(registry.records(cache.parent, root).isEmpty())
     }
 
     @Test
-    fun `reusing a closed helper project invalidates its previous cache ownership`() {
+    fun `reopening a helper project uses fresh caches while sealed caches retire safely`() {
         val fixtureParent = Paths.get(requireNotNull(projectExtension.project.basePath)).parent
         val root = Files.createTempDirectory(fixtureParent, "reused-project-cache").toRealPath()
         VfsRootAccess.allowRootAccess(projectExtension.project, root.toString())
         val handler = InspectionHandler()
         val registry = HelperProjectCacheRegistry()
-        registry.ensureObserving()
-        try {
-            val project = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
-            val cache = project.getProjectDataPath("inspection-retirement").parent
-            runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false)) }
-            Files.createDirectories(cache)
-            Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
+        val project = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
+        val cache = project.getProjectDataPath("inspection-retirement").parent
+        Files.createDirectories(cache)
+        Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
+        runInEdtAndGet {
+            assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false))
             registry.recordClosedProject(project, root)
-            val reopened = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
-            try {
-                assertEquals("refused", HelperProjectCacheLifecycle(registry).retire(root, false)["status"])
-            } finally {
-                runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(reopened, false)) }
-            }
-            assertTrue(registry.records(cache.parent, root).isEmpty())
-            assertTrue(Files.exists(cache.resolve("owned-index.data")))
-        } finally { com.intellij.openapi.util.Disposer.dispose(registry) }
+        }
+        assertFalse(Files.exists(cache))
+        val sealed = registry.records(cache.parent, root).single().directory
+        val reopened = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
+        try {
+            Files.createDirectories(cache)
+            Files.writeString(cache.resolve("new-index.data"), "new instance data")
+            assertEquals("ok", HelperProjectCacheLifecycle(HelperProjectCacheRegistry()).retire(root, false)["status"])
+            assertFalse(Files.exists(sealed))
+            assertEquals("new instance data", Files.readString(cache.resolve("new-index.data")))
+        } finally {
+            runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(reopened, false)) }
+        }
     }
 
     @Test

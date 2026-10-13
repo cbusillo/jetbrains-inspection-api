@@ -1918,6 +1918,7 @@ class InspectionHandler : HttpRequestHandler() {
         val forceCloseReturned: Boolean,
         val closedVerified: Boolean,
         val projectDisposed: Boolean,
+        val cacheRecordingStatus: String?,
     )
 
     internal data class LifecycleCloseGuardRefusal(
@@ -1935,7 +1936,7 @@ class InspectionHandler : HttpRequestHandler() {
     )
 
     private sealed interface LifecycleCloseInvocation {
-        data class Attempted(val forceCloseReturned: Boolean) : LifecycleCloseInvocation
+        data class Attempted(val forceCloseReturned: Boolean, val cacheRecordingStatus: String?) : LifecycleCloseInvocation
         data class Refused(val refusal: LifecycleCloseGuardRefusal) : LifecycleCloseInvocation
     }
     
@@ -2039,7 +2040,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
     internal var recordClosedHelperProjectCaches: (Project, Path) -> Unit = { project, root ->
         ApplicationManager.getApplication().getService(HelperProjectCacheRegistry::class.java)
-            .also { it.ensureObserving() }.recordClosedProject(project, root)
+            .recordClosedProject(project, root)
     }
 
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->
@@ -4776,7 +4777,6 @@ class InspectionHandler : HttpRequestHandler() {
                     closeAttempts,
                 )
             }
-            recordClosedHelperProjectCaches(project, helperWorktreeRoot(Paths.get(lease.basePath)))
             removeLifecycleOpenOwnership(expectedProjectInstanceId, lease.project)
             return mapOf(
                 "status" to "closed",
@@ -4816,6 +4816,7 @@ class InspectionHandler : HttpRequestHandler() {
                     forceCloseReturned = forceCloseReturned,
                     closedVerified = closedVerified,
                     projectDisposed = project.isDisposed,
+                    cacheRecordingStatus = invocation.cacheRecordingStatus,
                 )
             )
             if (closedVerified) {
@@ -4851,9 +4852,15 @@ class InspectionHandler : HttpRequestHandler() {
         return if (refusal != null) {
             LifecycleCloseInvocation.Refused(refusal)
         } else {
-            LifecycleCloseInvocation.Attempted(
-                runCatching { forceCloseProject(project, false) }.getOrDefault(false)
-            )
+            val closed = runCatching { forceCloseProject(project, false) }.getOrDefault(false)
+            val cacheRecordingStatus = if (project.isDisposed) {
+                runCatching { recordClosedHelperProjectCaches(project, helperWorktreeRoot(worktreeRoot)) }
+                    .fold({ "completed" }, { error ->
+                        logger.warn("Closed helper cache could not be sealed; preserving it", error)
+                        "unavailable"
+                    })
+            } else null
+            LifecycleCloseInvocation.Attempted(closed, cacheRecordingStatus)
         }
     }
 
@@ -4951,6 +4958,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "force_close_returned" to attempt.forceCloseReturned,
                 "closed_verified" to attempt.closedVerified,
                 "project_disposed" to attempt.projectDisposed,
+                "cache_recording_status" to attempt.cacheRecordingStatus,
             )
         }
     }

@@ -3691,6 +3691,48 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `verified close records caches in the EDT invocation and reports recording failures separately`() {
+        for (recordingFails in listOf(false, true)) {
+            every { mockProject.isDisposed } returns false
+            every { mockProject.basePath } returns "/repo/app"
+            every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+            every { mockProjectManager.openProjects } returns arrayOf(mockProject)
+            val instanceId = projectInstanceId(mockProject)
+            registerLifecycleOpenOwnership(mockProject)
+            val claim = processGetRequest(
+                "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+            ).content().toString(Charsets.UTF_8)
+            val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+            var onEdt = false
+            var recorded = false
+            every { mockApplication.isDispatchThread } returns false
+            every { mockApplication.invokeAndWait(any()) } answers {
+                onEdt = true
+                try { firstArg<Runnable>().run() } finally { onEdt = false }
+            }
+            handler.forceCloseProject = { _, _ ->
+                every { mockProject.isDisposed } returns true
+                every { mockProjectManager.openProjects } returns emptyArray()
+                true
+            }
+            handler.recordClosedHelperProjectCaches = { project, _ ->
+                assertTrue(onEdt)
+                assertTrue(project.isDisposed)
+                recorded = true
+                if (recordingFails) throw java.io.IOException("locked project cache")
+            }
+            val response = processGetRequest(
+                "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
+            )
+            val body = response.content().toString(Charsets.UTF_8)
+            assertEquals(HttpResponseStatus.OK, response.status())
+            assertTrue(recorded)
+            assertTrue(body.contains("\"status\": \"closed\""))
+            assertTrue(body.contains("\"cache_recording_status\": \"${if (recordingFails) "unavailable" else "completed"}\""))
+        }
+    }
+
+    @Test
     fun `test lifecycle close waits beyond short fixed window for slow verified close`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"

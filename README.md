@@ -528,14 +528,15 @@ returned. This observation never dismisses dialogs or grants project ownership.
 `POST /api/inspection/lifecycle/retire-project-caches` requires the current
 `session_id`, one absolute `worktree_path`, and an explicit `dry_run=true|false`.
 IDE identity advertises `helper_project_cache_lifecycle_version`. The plugin
-records ownership only after an exact helper-owned project is verified disposed.
-Preview lists its project-specific cache directories and byte sizes. Apply
-checks active projects on EDT, atomically moves the owned directory aside, and
-deletes its contents off EDT. A refused or failed removal preserves its ownership
-marker inside the renamed directory for recovery across IDE restarts. The marker
-is deleted last; opening and subsequently closing the project again invalidates
-the old ownership. The maintained helper performs this
-retirement before removing the worktree from Git.
+seals private cache directories immediately after verified helper-owned disposal,
+on the same EDT close invocation, before another open can reuse them. A future
+open uses a fresh project-cache directory; shared file and SDK indexes stay warm.
+Preview lists sealed directories and byte sizes. Apply deletes their contents
+off EDT, preserving the ownership marker until the last deletion so partial
+failure and IDE restart remain recoverable. Unsealed directories are never
+retirement targets. A cache-sealing failure preserves the directory and appears
+as `cache_recording_status: "unavailable"` in the close attempt.
+The maintained helper retires sealed caches before Git worktree removal.
 
 Shared file/SDK indexes and caches without an ownership record remain intact.
 Closing a project and retiring its private cache do not shrink the IDE's shared
