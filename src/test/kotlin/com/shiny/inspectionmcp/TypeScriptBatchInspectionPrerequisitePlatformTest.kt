@@ -31,6 +31,8 @@ import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.extension.RegisterExtension
 import io.netty.buffer.ByteBuf
 import io.netty.channel.ChannelInboundHandlerAdapter
@@ -106,11 +108,12 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         }
     }
 
-    @Test
-    fun `delegated unresolved reference cannot establish batch coverage and native recovery retains the finding`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["ts", "tsx"])
+    fun `delegated unresolved reference cannot establish batch coverage and native recovery retains the finding`(extension: String) {
         val project = projectExtension.project
-        val brokenFile = createFile("broken.ts", "export const value = missingBatchSymbol;").virtualFile
-        val correctFile = createFile("correct.ts", "export const value = 42;").virtualFile
+        val brokenFile = createFile("broken.$extension", "export const value = missingBatchSymbol;").virtualFile
+        val correctFile = createFile("correct.$extension", "export const value = 42;").virtualFile
         val tool = TypeScriptUnresolvedReferenceInspection()
         val wrapper = LocalInspectionToolWrapper(tool)
         val profile = createProfile(wrapper)

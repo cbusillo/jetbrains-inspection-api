@@ -8,7 +8,7 @@ import com.intellij.psi.PsiFile
 
 internal class TypeScriptBatchInspectionPrerequisite : BatchInspectionPrerequisite {
     override fun delegatedInspection(file: PsiFile, profile: InspectionProfile): String? {
-        if (file.language.id != "TypeScript") return null
+        if (!file.language.isKindOf("TypeScript")) return null
         val shortName = TypeScriptUnresolvedReferenceInspection().shortName
         val key = HighlightDisplayKey.find(shortName) ?: return null
         if (!profile.isToolEnabled(key, file)) return null
