@@ -192,6 +192,11 @@ case "$1" in -V|--version) exec '$$real' "$@";; *) exit 42;; esac
             val result = createUv()
             println("CONTROL interpreter_failure outcome=$result registered=${ProjectJdkTable.getInstance().allJdks.count { it.homePath == home }}")
             val sdk = result.javaClass.getMethod("getResult").invoke(result) as Sdk
+            val nativeData = org.jdom.Element("additional")
+            val helperData = org.jdom.Element("additional")
+            type.saveAdditionalData(requireNotNull(sdk.sdkAdditionalData), nativeData)
+            type.saveAdditionalData(requireNotNull(detached.sdkAdditionalData), helperData)
+            check(nativeData.getAttributeValue("UV_VENV_PATH") == helperData.getAttributeValue("UV_VENV_PATH"))
             check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
             println("CONTROL interpreter_failure roots=${sdk.rootProvider.getFiles(OrderRootType.CLASSES).size} version=${sdk.versionString} detail=${JetBrainsPythonSdkPreparationPlatform().setupIncompleteDetail(sdk,home)}")
             Files.delete(interpreter)
