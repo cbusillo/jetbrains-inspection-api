@@ -20,14 +20,19 @@ import java.util.concurrent.ConcurrentHashMap
 
 internal const val HELPER_PROJECT_CACHE_LIFECYCLE_VERSION = 1
 internal const val HELPER_PROJECT_CACHE_MARKER = ".inspection-helper-owned.json"
+private const val SEALED_CACHE_PREFIX = ".inspection-retired-"
+private const val FINALIZING_CACHE_PREFIX = ".inspection-finalizing-"
 
 internal data class HelperProjectCacheRecord(
     val directory: Path,
+    val marker: Path,
     val worktreePath: String,
     val projectPath: String,
     val cacheName: String,
     val ownershipId: String,
-)
+) {
+    val finalizationMarker: Path get() = directory.parent.resolve("$FINALIZING_CACHE_PREFIX$ownershipId.json")
+}
 
 @Service(Service.Level.APP)
 class HelperProjectCacheRegistry {
@@ -57,7 +62,7 @@ class HelperProjectCacheRegistry {
             )))
             Files.move(temporary, marker, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
             try {
-                Files.move(directory, directory.resolveSibling(".inspection-retired-$ownershipId"), StandardCopyOption.ATOMIC_MOVE)
+                Files.move(directory, directory.resolveSibling("$SEALED_CACHE_PREFIX$ownershipId"), StandardCopyOption.ATOMIC_MOVE)
             } catch (error: IOException) {
                 Files.deleteIfExists(marker)
                 throw error
@@ -68,21 +73,24 @@ class HelperProjectCacheRegistry {
     internal fun records(projects: Path, root: Path): List<HelperProjectCacheRecord> {
         if (!Files.isDirectory(projects, LinkOption.NOFOLLOW_LINKS)) return emptyList()
         return Files.list(projects).use { paths ->
-            paths.filter { it.fileName.toString().startsWith(".inspection-retired-") }
+            paths.filter { it.fileName.toString().startsWith(SEALED_CACHE_PREFIX) ||
+                it.fileName.toString().startsWith(FINALIZING_CACHE_PREFIX) }
                 .map(::readRecord).filter { it != null && it.worktreePath == root.toString() }
                 .map { requireNotNull(it) }.toList()
         }
     }
 
-    internal fun readRecord(directory: Path): HelperProjectCacheRecord? {
-        val marker = directory.resolve(HELPER_PROJECT_CACHE_MARKER)
+    internal fun readRecord(path: Path): HelperProjectCacheRecord? {
+        val finalizing = path.fileName.toString().startsWith(FINALIZING_CACHE_PREFIX)
+        val marker = if (finalizing) path else path.resolve(HELPER_PROJECT_CACHE_MARKER)
         if (!Files.isRegularFile(marker, LinkOption.NOFOLLOW_LINKS)) return null
         val content = Files.readString(marker)
         return runCatching {
             val json = JsonParser.parseString(content).asJsonObject
-            HelperProjectCacheRecord(directory, json.get("worktree_path").asString,
-                json.get("project_path").asString, json.get("cache_name").asString,
-                UUID.fromString(json.get("ownership_id").asString).toString())
+            val ownershipId = UUID.fromString(json.get("ownership_id").asString).toString()
+            val directory = if (finalizing) path.parent.resolve("$SEALED_CACHE_PREFIX$ownershipId") else path
+            HelperProjectCacheRecord(directory, marker, json.get("worktree_path").asString,
+                json.get("project_path").asString, json.get("cache_name").asString, ownershipId)
         }.getOrNull()
     }
 
@@ -118,27 +126,37 @@ internal class HelperProjectCacheLifecycle(
             !canonicalWorktree(Path.of(record.projectPath)).startsWith(root) ||
                 record.cacheName != getProjectCacheFileName(Path.of(record.projectPath)) ||
                 original.parent != projects || target.parent != projects ||
-                target.fileName.toString() != ".inspection-retired-${record.ownershipId}" -> "ownership_mismatch"
+                target.fileName.toString() != "$SEALED_CACHE_PREFIX${record.ownershipId}" ||
+                (record.marker != target.resolve(HELPER_PROJECT_CACHE_MARKER) && record.marker != record.finalizationMarker) -> "ownership_mismatch"
             Files.isSymbolicLink(target) -> "cache_path_symlink"
-            registry.readRecord(target) != record -> "ownership_changed"
+            registry.readRecord(if (record.marker == record.finalizationMarker) record.marker else target) != record -> "ownership_changed"
             else -> null
         }
-        val bytes = if (reason == null) Files.walk(target).use { files ->
-            files.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.mapToLong { Files.size(it) }.sum()
+        val bytes = if (reason == null) {
+            val contents = if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) Files.walk(target).use { files ->
+                files.filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }.mapToLong { Files.size(it) }.sum()
+            } else 0L
+            contents + if (record.marker.parent != target) Files.size(record.marker) else 0L
         } else 0L
+        var marker = record.marker
         if (reason == null && !dryRun) {
             try {
-                val marker = target.resolve(HELPER_PROJECT_CACHE_MARKER)
-                Files.walk(target).use { files ->
-                    files.filter { it != target && it != marker }.sorted(Comparator.reverseOrder()).forEach(Files::delete)
+                if (Files.exists(target, LinkOption.NOFOLLOW_LINKS)) {
+                    Files.walk(target).use { files ->
+                        files.filter { it != target && it != marker }.sorted(Comparator.reverseOrder()).forEach(Files::delete)
+                    }
+                    if (marker.parent == target) {
+                        Files.move(marker, record.finalizationMarker, StandardCopyOption.ATOMIC_MOVE)
+                        marker = record.finalizationMarker
+                    }
+                    Files.delete(target)
                 }
                 Files.delete(marker)
-                Files.delete(target)
             } catch (_: IOException) { reason = "cache_removal_failed"
             } catch (_: UncheckedIOException) { reason = "cache_removal_failed" }
         }
         return mapOf("project_path" to record.projectPath, "worktree_path" to root.toString(),
-            "cache_path" to original.toString(), "quarantine_path" to target.toString(),
+            "cache_path" to original.toString(), "quarantine_path" to target.toString(), "ownership_path" to marker.toString(),
             "bytes" to bytes, "status" to when {
                 reason != null -> "refused"
                 dryRun -> "would_remove"

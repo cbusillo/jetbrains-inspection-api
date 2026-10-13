@@ -113,6 +113,26 @@ class HelperProjectCacheLifecycleTest {
         assertEquals("new instance data", Files.readString(reopened.resolve("new")))
     }
 
+    @Test fun `non-writable parent and restart during finalization preserve recoverable ownership`() {
+        val root = Files.createDirectory(directory.resolve("task")).toRealPath()
+        val registry = HelperProjectCacheRegistry()
+        val cache = record(registry, root)
+        assumeTrue(Files.getFileStore(cache).supportsFileAttributeView("posix"))
+        val projects = cache.parent
+        val permissions = Files.getPosixFilePermissions(projects)
+        try {
+            Files.setPosixFilePermissions(projects, PosixFilePermissions.fromString("r-x------"))
+            assertEquals("cache_removal_failed", caches(lifecycle().retire(root, false)).single()["reason"])
+            assertTrue(Files.exists(cache.resolve(HELPER_PROJECT_CACHE_MARKER)))
+        } finally { Files.setPosixFilePermissions(projects, permissions) }
+        val proof = registry.records(projects, root).single()
+        Files.move(proof.marker, proof.finalizationMarker)
+        assertEquals("would_remove", caches(lifecycle().retire(root, true)).single()["status"])
+        assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
+        assertFalse(Files.exists(cache))
+        assertFalse(Files.exists(proof.finalizationMarker))
+    }
+
     @Test fun `an in-flight retirement reservation refuses another request and releases for recovery`() {
         val root = Files.createDirectory(directory.resolve("task")).toRealPath()
         val registry = HelperProjectCacheRegistry()

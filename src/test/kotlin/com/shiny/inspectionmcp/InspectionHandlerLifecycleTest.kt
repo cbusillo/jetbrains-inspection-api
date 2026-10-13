@@ -3724,11 +3724,12 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             val response = processGetRequest(
                 "/api/inspection/lifecycle/close?worktree_path=/repo/app&project_instance_id=$instanceId&close_token=$token"
             )
-            val body = response.content().toString(Charsets.UTF_8)
+            val body = com.google.gson.JsonParser.parseString(response.content().toString(Charsets.UTF_8)).asJsonObject
             assertEquals(HttpResponseStatus.OK, response.status())
             assertTrue(recorded)
-            assertTrue(body.contains("\"status\": \"closed\""))
-            assertTrue(body.contains("\"cache_recording_status\": \"${if (recordingFails) "unavailable" else "completed"}\""))
+            assertEquals("closed", body.get("status").asString)
+            assertEquals(if (recordingFails) "unavailable" else "completed",
+                body.getAsJsonArray("close_attempts").first().asJsonObject.get("cache_recording_status").asString)
         }
     }
 

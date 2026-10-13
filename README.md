@@ -532,8 +532,9 @@ seals private cache directories immediately after verified helper-owned disposal
 on the same EDT close invocation, before another open can reuse them. A future
 open uses a fresh project-cache directory; shared file and SDK indexes stay warm.
 Preview lists sealed directories and byte sizes. Apply deletes their contents
-off EDT, preserving the ownership marker until the last deletion so partial
-failure and IDE restart remain recoverable. Unsealed directories are never
+off EDT. Before removing the final empty directory, it atomically moves the
+single ownership marker to the parent, removing that marker only after the
+directory is gone. Partial failure and IDE restart remain recoverable. Unsealed directories are never
 retirement targets. A cache-sealing failure preserves the directory and appears
 as `cache_recording_status: "unavailable"` in the close attempt.
 The maintained helper retires sealed caches before Git worktree removal.
