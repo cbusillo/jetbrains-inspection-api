@@ -2039,7 +2039,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
     internal var recordClosedHelperProjectCaches: (Project, Path) -> Unit = { project, root ->
         ApplicationManager.getApplication().getService(HelperProjectCacheRegistry::class.java)
-            .recordClosedProject(project, root)
+            .also { it.ensureObserving() }.recordClosedProject(project, root)
     }
 
     internal var lifecycleCloseExecutor: (Runnable) -> Unit = { task ->

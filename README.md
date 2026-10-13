@@ -532,7 +532,9 @@ records ownership only after an exact helper-owned project is verified disposed.
 Preview lists its project-specific cache directories and byte sizes. Apply
 checks active projects on EDT, atomically moves the owned directory aside, and
 deletes its contents off EDT. A refused or failed removal preserves its ownership
-record and any quarantine path for recovery. The maintained helper performs this
+marker inside the renamed directory for recovery across IDE restarts. The marker
+is deleted last; opening and subsequently closing the project again invalidates
+the old ownership. The maintained helper performs this
 retirement before removing the worktree from Git.
 
 Shared file/SDK indexes and caches without an ownership record remain intact.

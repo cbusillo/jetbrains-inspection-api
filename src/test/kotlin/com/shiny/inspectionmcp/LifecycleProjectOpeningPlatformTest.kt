@@ -60,13 +60,39 @@ class LifecycleProjectOpeningPlatformTest {
         val cache = project.getProjectDataPath("inspection-retirement").parent
         runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false)) }
         assertTrue(project.isDisposed)
-        registry.recordClosedProject(project, root)
         Files.createDirectories(cache)
         Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
+        registry.recordClosedProject(project, root)
         val result = HelperProjectCacheLifecycle(registry).retire(root, false)
         assertEquals("ok", result["status"], result.toString())
         assertFalse(Files.exists(cache))
-        assertTrue(registry.state.records.isEmpty())
+        assertTrue(registry.records(cache.parent, root).isEmpty())
+    }
+
+    @Test
+    fun `reusing a closed helper project invalidates its previous cache ownership`() {
+        val fixtureParent = Paths.get(requireNotNull(projectExtension.project.basePath)).parent
+        val root = Files.createTempDirectory(fixtureParent, "reused-project-cache").toRealPath()
+        VfsRootAccess.allowRootAccess(projectExtension.project, root.toString())
+        val handler = InspectionHandler()
+        val registry = HelperProjectCacheRegistry()
+        registry.ensureObserving()
+        try {
+            val project = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
+            val cache = project.getProjectDataPath("inspection-retirement").parent
+            runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(project, false)) }
+            Files.createDirectories(cache)
+            Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
+            registry.recordClosedProject(project, root)
+            val reopened = runInEdtAndGet { requireNotNull(handler.openProjectPath(root) {}) }
+            try {
+                assertEquals("refused", HelperProjectCacheLifecycle(registry).retire(root, false)["status"])
+            } finally {
+                runInEdtAndGet { assertTrue(ProjectManagerEx.getInstanceEx().forceCloseProject(reopened, false)) }
+            }
+            assertTrue(registry.records(cache.parent, root).isEmpty())
+            assertTrue(Files.exists(cache.resolve("owned-index.data")))
+        } finally { com.intellij.openapi.util.Disposer.dispose(registry) }
     }
 
     @Test
