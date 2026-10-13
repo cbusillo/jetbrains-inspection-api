@@ -63,6 +63,7 @@ class LifecycleProjectOpeningPlatformTest {
         Files.createDirectories(cache)
         Files.writeString(cache.resolve("owned-index.data"), "owned fixture")
         registry.recordClosedProject(project, root)
+        assertFalse(helperProjectCacheInUse(ProjectManager.getInstance().defaultProject, registry.records(cache.parent, root).single()))
         val result = HelperProjectCacheLifecycle(registry).retire(root, false)
         assertEquals("ok", result["status"], result.toString())
         assertFalse(Files.exists(cache))

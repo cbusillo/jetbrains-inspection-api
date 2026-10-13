@@ -94,17 +94,19 @@ class HelperProjectCacheLifecycleTest {
         val root = Files.createDirectory(directory.resolve("task")).toRealPath()
         val cache = record(root)
         assumeTrue(Files.getFileStore(cache).supportsFileAttributeView("posix"))
-        val permissions = Files.getPosixFilePermissions(cache)
+        val blockedDirectory = Files.createDirectory(cache.resolve("locked"))
+        Files.move(cache.resolve("index.data"), blockedDirectory.resolve("index.data"))
+        val permissions = Files.getPosixFilePermissions(blockedDirectory)
         var quarantine: Path? = null
         try {
-            Files.setPosixFilePermissions(cache, PosixFilePermissions.fromString("r-x------"))
+            Files.setPosixFilePermissions(blockedDirectory, PosixFilePermissions.fromString("r-x------"))
             val result = lifecycle().retire(root, false)
             val receipt = caches(result).single()
             assertEquals("cache_removal_failed", receipt["reason"])
             quarantine = Path.of(receipt["quarantine_path"] as String)
             assertTrue(Files.exists(quarantine.resolve(HELPER_PROJECT_CACHE_MARKER)))
             assertFalse(Files.exists(cache))
-        } finally { Files.setPosixFilePermissions(quarantine ?: cache, permissions) }
+        } finally { Files.setPosixFilePermissions((quarantine ?: cache).resolve("locked"), permissions) }
         assertEquals("removed", caches(lifecycle().retire(root, false)).single()["status"])
     }
 
