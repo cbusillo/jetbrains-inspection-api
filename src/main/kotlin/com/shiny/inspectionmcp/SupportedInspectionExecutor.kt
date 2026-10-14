@@ -8,6 +8,7 @@ import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.progress.ProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.psi.PsiElementVisitor
 import com.intellij.psi.PsiFile
 import com.intellij.util.PairProcessor
@@ -68,11 +69,15 @@ internal class SupportedInspectionExecutor {
         return inspectFile(psiFile, toolWrappers, indicator, ignoreSuppressedElements)
     }
 
-    internal fun collectScopeFiles(scope: AnalysisScope): List<PsiFile> {
+    internal fun collectScopeFiles(
+        scope: AnalysisScope,
+        cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
+    ): List<PsiFile> {
         ApplicationManager.getApplication().assertReadAccessAllowed()
         val filesByPath = linkedMapOf<String, PsiFile>()
         scope.accept(object : PsiElementVisitor() {
             override fun visitFile(file: PsiFile) {
+                cancellationCheck()
                 val path = file.virtualFile?.path ?: file.name
                 filesByPath.putIfAbsent(path, file)
             }

@@ -43,6 +43,10 @@ import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.QueryStringDecoder
 import java.net.URLEncoder
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -58,7 +62,12 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         assertApiDelegation(initiallyDelegated = false)
     }
 
-    private fun assertApiDelegation(initiallyDelegated: Boolean) {
+    @Test
+    fun `API retains proven findings while withholding delegated diagnostic coverage`() {
+        assertApiDelegation(initiallyDelegated = true, knownFinding = KnownFindingInspection())
+    }
+
+    private fun assertApiDelegation(initiallyDelegated: Boolean, knownFinding: LocalInspectionTool? = null) {
         val project = projectExtension.project
         val root = Files.createTempDirectory("typescript-delegation-api-")
         val path = root.resolve("broken.ts")
@@ -72,7 +81,8 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         val delegated = AtomicBoolean(initiallyDelegated)
         delegationToActivate.set(delegated)
         val activating = DelegationActivatingInspection()
-        val profile = createProfile(LocalInspectionToolWrapper(tool), LocalInspectionToolWrapper(activating))
+        val wrappers = listOf(tool, activating) + listOfNotNull(knownFinding)
+        val profile = createProfile(*wrappers.map(::LocalInspectionToolWrapper).toTypedArray())
         val manager = ProjectInspectionProfileManager.getInstance(project)
         manager.addProfile(profile)
         val disposable = Disposer.newDisposable()
@@ -95,13 +105,26 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
                 Thread.sleep(100)
             }
             val problems = request(handler, "/api/inspection/problems?scope=files&file=${encode(path.toString())}&$selector")
-            assertThat(status).describedAs(status).contains("\"inspection_in_progress\": false")
-            assertThat(problems).describedAs(problems).contains("\"inspection_verdict\": \"UNKNOWN\"")
-                .contains("\"classification\": \"configuration_blocked\"")
-                .contains("\"capture_incomplete_reason\": \"${CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue}\"")
-                .contains(tool.shortName)
-                .contains(path.toString())
-            assertThat(problems).doesNotContain("\"inspection_verdict\": \"GREEN\"")
+            val response = Json.parseToJsonElement(problems).jsonObject
+            if (knownFinding != null) {
+                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("RED")
+                assertThat(response["problems"]?.jsonArray?.map { it.jsonObject["inspectionType"]?.jsonPrimitive?.content })
+                    .contains(knownFinding.shortName)
+            } else {
+                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+                assertThat(response["capture_incomplete_reason"]?.jsonPrimitive?.content)
+                    .isEqualTo(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue)
+                assertThat(response["inspection_attribution"]?.jsonObject?.get("classification")?.jsonPrimitive?.content)
+                    .isEqualTo("configuration_blocked")
+            }
+            val diagnostic = requireNotNull(response["capture_diagnostic"]).jsonObject
+            val pairs = requireNotNull(diagnostic["batch_inspection_delegations"]).jsonArray
+            assertThat(pairs.map { it.jsonObject["tool"]?.jsonPrimitive?.content }).contains(tool.shortName)
+            assertThat(pairs.map { it.jsonObject["file"]?.jsonPrimitive?.content }).contains(path.toString())
+            assertThat(diagnostic["execution_proof_established"]?.jsonPrimitive?.content).isEqualTo("false")
+            assertThat(response["inspection_proof"]?.jsonObject?.get("status")?.jsonPrimitive?.content).isEqualTo("failed")
+            assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isNotEqualTo("GREEN")
+
         } finally {
             Disposer.dispose(disposable)
             delegationToActivate.set(null)
@@ -209,6 +232,18 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
             val file = root.createChildData(this, name)
             VfsUtil.saveText(file, text)
             requireNotNull(PsiManager.getInstance(projectExtension.project).findFile(file))
+        }
+    }
+
+    private class KnownFindingInspection : LocalInspectionTool() {
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "TypeScript delegation controls"
+
+        override fun buildVisitor(holder: ProblemsHolder, isOnTheFly: Boolean): PsiElementVisitor = object : PsiElementVisitor() {
+            override fun visitFile(file: PsiFile) {
+                holder.registerProblem(file, displayName)
+            }
         }
     }
 

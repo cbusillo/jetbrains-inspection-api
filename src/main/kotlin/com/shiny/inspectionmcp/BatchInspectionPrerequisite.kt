@@ -16,9 +16,10 @@ internal interface BatchInspectionPrerequisite {
 internal fun findBatchInspectionDelegations(
     profile: InspectionProfile,
     files: List<PsiFile>,
+    cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
 ): List<Map<String, String>> = buildList {
     for (file in files) {
-        ProgressManager.checkCanceled()
+        cancellationCheck()
         for (prerequisite in BatchInspectionPrerequisite.EP.getExtensionList(file.project)) {
             val tool = prerequisite.delegatedInspection(file, profile) ?: continue
             add(mapOf("tool" to tool, "file" to (file.virtualFile?.path ?: file.name)))

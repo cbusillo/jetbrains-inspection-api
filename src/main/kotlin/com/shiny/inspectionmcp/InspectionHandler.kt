@@ -2188,7 +2188,9 @@ class InspectionHandler : HttpRequestHandler() {
                 verdict = "RED",
                 reason = "actionable_findings",
                 message = "Inspection worked and returned actionable findings for the selected scope/filter.",
-                nextAction = "Fix the reported findings, then rerun inspection.",
+                nextAction = if ((payload["capture_diagnostic"] as? Map<*, *>)?.get("batch_inspection_delegation_count") is Number) {
+                    "Fix the reported findings. " + unknownVerdictNextAction(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue, payload)
+                } else "Fix the reported findings, then rerun inspection.",
             )
         }
         if (
@@ -2253,7 +2255,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val blockers = (diagnostic?.get("batch_inspection_delegations") as? List<*>).orEmpty()
                         .filterIsInstance<Map<*, *>>()
                         .joinToString("; ") { "${it["tool"]} on ${it["file"]}" }
-                    "The enabled TypeScript unresolved-reference inspection delegates diagnostics to the editor language service. Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in this exact project's settings and request a fresh API inspection. Keep the inspection enabled; no findings or clean result are proven by this run. Blocking: $blockers"
+                    "The enabled TypeScript unresolved-reference inspection delegates diagnostics to the editor language service. Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in this exact project's settings and request a fresh API inspection. Keep the inspection enabled; diagnostic coverage is incomplete and this run cannot prove GREEN. Blocking: $blockers"
                 }
                 "write_action_preempted" ->
                     "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
@@ -7210,36 +7212,31 @@ class InspectionHandler : HttpRequestHandler() {
             }
             ownedGlobalContext = globalContext
             globalContext.configure(profile, scope)
-            fun captureBatchInspectionDelegation(): Boolean {
-                val delegatedInspections = ApplicationManager.getApplication().runReadAction<List<Map<String, String>>, Exception> {
-                    findBatchInspectionDelegations(profile, SupportedInspectionExecutor().collectScopeFiles(scope))
+            val batchPrerequisites = BatchInspectionPrerequisite.EP.getExtensionList(project)
+            var batchPrerequisiteReadFailure: String? = null
+            fun collectBatchInspectionDelegations(): List<Map<String, String>> {
+                if (batchPrerequisites.isEmpty()) return emptyList()
+                val deadline = System.nanoTime() + 2_000_000_000L
+                val checkBudget = {
+                    ProgressManager.checkCanceled()
+                    if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("enumeration_time_limit")
                 }
-                if (delegatedInspections.isEmpty()) return false
-                resultsStore.setSnapshot(
-                    key,
-                    InspectionResultsSnapshot(
-                        problems = emptyList(),
-                        timestamp = currentTimeMs(),
-                        projectState = inspectionInputState,
-                        outcome = InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
-                        source = "batch_inspection_prerequisite",
-                        note = "Enabled batch inspection delegates findings to an editor service outside this run.",
-                        captureScope = effectiveCaptureScope,
-                        captureDiagnostic = analysisReadinessDiagnostic + mapOf(
-                            "execution_proof_block_reason" to "batch_inspection_delegated_to_editor_service",
-                            "batch_inspection_delegation_count" to delegatedInspections.size,
-                            "batch_inspection_delegations" to delegatedInspections.take(MAX_EXACT_FILE_PROOF_EXAMPLES),
-                            "batch_inspection_delegations_omitted_count" to
-                                (delegatedInspections.size - MAX_EXACT_FILE_PROOF_EXAMPLES).coerceAtLeast(0),
-                        ),
-                        captureIncompleteReason = CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
-                        runId = runId,
-                        triggerTimeMs = inspectionRunStatesByProject[key]?.triggerTimeMs,
-                    ),
-                )
-                return true
+                return try {
+                    retryWritePreemptedInspectionRead(checkBudget) {
+                        runWritePriorityInspectionRead(ProgressIndicatorBase(), {}) {
+                            findBatchInspectionDelegations(
+                                profile, SupportedInspectionExecutor().collectScopeFiles(scope, checkBudget), checkBudget,
+                            )
+                        }
+                    }
+                } catch (error: ProcessCanceledException) {
+                    throw error
+                } catch (error: Exception) {
+                    batchPrerequisiteReadFailure = error.message ?: error.javaClass.simpleName
+                    emptyList()
+                }
             }
-            if (captureBatchInspectionDelegation()) return
+            val initialBatchInspectionDelegations = collectBatchInspectionDelegations()
             try {
                 transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
                 globalContext.performInspectionsWithProgress(scope)
@@ -7814,15 +7811,38 @@ class InspectionHandler : HttpRequestHandler() {
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
                         }
-                        val qualifiedSnapshot = qualifyProjectAnalysisSnapshot(
+                        var qualifiedSnapshot = qualifyProjectAnalysisSnapshot(
                             project = project,
                             snapshot = snapshot,
                             analysisReadiness = analysisReadiness,
                             inputFingerprint = inspectionInputFingerprint,
                         )
-                        if (qualifiedSnapshot.outcome != InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
-                            captureBatchInspectionDelegation()
-                        ) return
+                        val batchDelegations = (initialBatchInspectionDelegations + collectBatchInspectionDelegations()).distinct()
+                        if (batchDelegations.isNotEmpty() || batchPrerequisiteReadFailure != null) {
+                            val diagnostic = qualifiedSnapshot.captureDiagnostic.orEmpty()
+                            val outcome = if (qualifiedSnapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED) {
+                                InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+                            } else qualifiedSnapshot.outcome
+                            qualifiedSnapshot = qualifiedSnapshot.copy(
+                                outcome = outcome,
+                                captureIncompleteReason = qualifiedSnapshot.captureIncompleteReason
+                                    ?: CaptureIncompleteReason.EXECUTION_NOT_PROVEN.takeIf {
+                                        outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+                                    },
+                                captureDiagnostic = diagnostic + mapOf(
+                                    "execution_proof_established" to false,
+                                    "execution_proof_clean" to false,
+                                    "execution_proof_block_reason" to (diagnostic["execution_proof_block_reason"]
+                                        ?: if (batchPrerequisiteReadFailure != null) batchPrerequisiteReadFailure
+                                        else "batch_inspection_delegated_to_editor_service"),
+                                    "batch_inspection_delegation_count" to batchDelegations.size,
+                                    "batch_inspection_delegations" to batchDelegations.take(MAX_EXACT_FILE_PROOF_EXAMPLES),
+                                    "batch_inspection_delegations_omitted_count" to
+                                        (batchDelegations.size - MAX_EXACT_FILE_PROOF_EXAMPLES).coerceAtLeast(0),
+                                    "batch_inspection_prerequisite_read_failure" to batchPrerequisiteReadFailure,
+                                ),
+                            )
+                        }
                         publishInspectionSnapshot(
                             project = project,
                             runId = runId,
