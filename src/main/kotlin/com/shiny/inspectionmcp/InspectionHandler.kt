@@ -2188,7 +2188,9 @@ class InspectionHandler : HttpRequestHandler() {
                 verdict = "RED",
                 reason = "actionable_findings",
                 message = "Inspection worked and returned actionable findings for the selected scope/filter.",
-                nextAction = "Fix the reported findings, then rerun inspection.",
+                nextAction = if ((payload["capture_diagnostic"] as? Map<*, *>)?.get("batch_inspection_delegation_count") is Number) {
+                    "Fix the reported findings. " + unknownVerdictNextAction(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue, payload)
+                } else "Fix the reported findings, then rerun inspection.",
             )
         }
         if (
@@ -2249,6 +2251,14 @@ class InspectionHandler : HttpRequestHandler() {
             (reason == "inspection_proof_failed" && executionProofReason in setOf("write_action_preempted", "time_limit"))
         ) {
             return when (executionProofReason) {
+                "batch_inspection_delegated_to_editor_service" -> {
+                    val blockers = (diagnostic?.get("batch_inspection_delegations") as? List<*>).orEmpty()
+                        .filterIsInstance<Map<*, *>>()
+                        .joinToString("; ") { "${it["tool"]} on ${it["file"]}" }
+                    "The enabled TypeScript unresolved-reference inspection delegates diagnostics to the editor language service. Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in this exact project's settings and request a fresh API inspection. Keep the inspection enabled; diagnostic coverage is incomplete and this run cannot prove GREEN. Blocking: $blockers"
+                }
+                "batch_inspection_prerequisite_read_failed" ->
+                    "Diagnostic coverage could not be checked. Report batch_inspection_prerequisite_read_failure; let IDE writes settle before a separately requested assessment, or use stock inspect.sh in an isolated profile. Do not report GREEN."
                 "write_action_preempted" ->
                     "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
                 "time_limit" ->
@@ -2474,7 +2484,7 @@ class InspectionHandler : HttpRequestHandler() {
         val attribution = mapOf(
             "schema_version" to INSPECTION_ATTRIBUTION_SCHEMA_VERSION,
             "source" to "plugin",
-            "classification" to attributionClassification(code),
+            "classification" to attributionClassification(code, target),
             "code" to code,
             "phase" to request.phase,
             "endpoint" to request.endpoint,
@@ -2496,7 +2506,20 @@ class InspectionHandler : HttpRequestHandler() {
         target["inspection_attribution"] = attribution
     }
 
-    private fun attributionClassification(code: String): String {
+    private fun attributionClassification(code: String, payload: Map<String, Any?>): String {
+        val diagnostic = payload["capture_diagnostic"] as? Map<*, *>
+        if (code == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue &&
+            diagnostic?.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
+        ) {
+            return "configuration_blocked"
+        }
+        if (code == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue &&
+            diagnostic?.get("execution_proof_block_reason") == "batch_inspection_prerequisite_read_failed"
+        ) {
+            return if (diagnostic["batch_inspection_prerequisite_read_failure"] == BATCH_INSPECTION_WRITE_PREEMPTED_REASON) {
+                "legitimate_fail_closed"
+            } else "tool_caused"
+        }
         if (code.startsWith("python_sdk_preparation_")) {
             return when (code) {
                 "python_sdk_preparation_venv_configuration_missing",
@@ -2676,11 +2699,18 @@ class InspectionHandler : HttpRequestHandler() {
             "RED" -> "findings"
             else -> "unattributed_unknown"
         }
+        val captureDiagnostic = payload["capture_diagnostic"] as? JsonObject
         val responseContext = mutableMapOf<String, Any?>(
             "session_id" to stringField("session_id"),
             "project_instance_id" to stringField("project_instance_id"),
             "project_key" to stringField("project_key"),
             "inspection_run_id" to (payload["inspection_run_id"] as? JsonPrimitive)?.longOrNull,
+            "capture_diagnostic" to mapOf(
+                "execution_proof_block_reason" to
+                    (captureDiagnostic?.get("execution_proof_block_reason") as? JsonPrimitive)?.contentOrNull,
+                "batch_inspection_prerequisite_read_failure" to
+                    (captureDiagnostic?.get("batch_inspection_prerequisite_read_failure") as? JsonPrimitive)?.contentOrNull,
+            ),
         )
         addInspectionAttribution(
             target = responseContext,
@@ -7193,6 +7223,44 @@ class InspectionHandler : HttpRequestHandler() {
             }
             ownedGlobalContext = globalContext
             globalContext.configure(profile, scope)
+            val batchPrerequisites = BatchInspectionPrerequisite.EP.getExtensionList(project)
+            var batchPrerequisiteReadFailure: String? = null
+            fun collectBatchInspectionDelegations(): List<Map<String, String>> {
+                if (batchPrerequisites.isEmpty()) return emptyList()
+                val preemptions = java.util.concurrent.atomic.AtomicInteger()
+                val checkCancellation = { checkInspectionRunCancellation(key, runId) }
+                val checkPreemptionBudget = {
+                    checkCancellation()
+                    if (preemptions.get() >= MAX_BATCH_INSPECTION_READ_PREEMPTIONS) {
+                        throw NativeInspectionObservationUnavailable(BATCH_INSPECTION_WRITE_PREEMPTED_REASON)
+                    }
+                }
+                return try {
+                    retryWritePreemptedInspectionRead(checkPreemptionBudget) {
+                        val readIndicator = ProgressIndicatorBase()
+                        val checkReadCancellation = {
+                            readIndicator.checkCanceled()
+                            checkCancellation()
+                        }
+                        runWritePriorityInspectionRead(readIndicator, {
+                            preemptions.incrementAndGet()
+                        }) {
+                            findBatchInspectionDelegations(
+                                profile, SupportedInspectionExecutor().collectScopeFiles(scope, checkReadCancellation), checkReadCancellation,
+                            )
+                        }
+                    }
+                } catch (error: ProcessCanceledException) {
+                    throw error
+                } catch (error: Exception) {
+                    batchPrerequisiteReadFailure = if (error is NativeInspectionObservationUnavailable &&
+                        error.message == BATCH_INSPECTION_WRITE_PREEMPTED_REASON
+                    ) BATCH_INSPECTION_WRITE_PREEMPTED_REASON else error.javaClass.simpleName
+                    logger.warn("Batch inspection prerequisite read failed; coverage remains unproven.", error)
+                    emptyList()
+                }
+            }
+            val initialBatchInspectionDelegations = collectBatchInspectionDelegations()
             try {
                 transitionInspectionRunStage(key, runId, InspectionRunStage.NATIVE_EXECUTE)
                 globalContext.performInspectionsWithProgress(scope)
@@ -7767,12 +7835,38 @@ class InspectionHandler : HttpRequestHandler() {
                                     "lastViewObservation=${lastViewObservation?.let { "isUpdating=${it.isUpdating}, hasProblems=${it.hasProblems}, rootChildCount=${it.rootChildCount}, updateStateReadable=${it.updateStateReadable}, problemStateReadable=${it.problemStateReadable}" } ?: "null"}"
                             )
                         }
-                        val qualifiedSnapshot = qualifyProjectAnalysisSnapshot(
+                        var qualifiedSnapshot = qualifyProjectAnalysisSnapshot(
                             project = project,
                             snapshot = snapshot,
                             analysisReadiness = analysisReadiness,
                             inputFingerprint = inspectionInputFingerprint,
                         )
+                        val batchDelegations = (initialBatchInspectionDelegations + collectBatchInspectionDelegations()).distinct()
+                        if (batchDelegations.isNotEmpty() || batchPrerequisiteReadFailure != null) {
+                            val diagnostic = qualifiedSnapshot.captureDiagnostic.orEmpty()
+                            val outcome = if (qualifiedSnapshot.outcome == InspectionSnapshotOutcome.CLEAN_CONFIRMED) {
+                                InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+                            } else qualifiedSnapshot.outcome
+                            qualifiedSnapshot = qualifiedSnapshot.copy(
+                                outcome = outcome,
+                                captureIncompleteReason = qualifiedSnapshot.captureIncompleteReason
+                                    ?: CaptureIncompleteReason.EXECUTION_NOT_PROVEN.takeIf {
+                                        outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE
+                                    },
+                                captureDiagnostic = diagnostic + mapOf(
+                                    "execution_proof_established" to false,
+                                    "execution_proof_clean" to false,
+                                    "execution_proof_block_reason" to (diagnostic["execution_proof_block_reason"]
+                                        ?: if (batchPrerequisiteReadFailure != null) "batch_inspection_prerequisite_read_failed"
+                                        else "batch_inspection_delegated_to_editor_service"),
+                                    "batch_inspection_delegation_count" to batchDelegations.size,
+                                    "batch_inspection_delegations" to batchDelegations.take(MAX_EXACT_FILE_PROOF_EXAMPLES),
+                                    "batch_inspection_delegations_omitted_count" to
+                                        (batchDelegations.size - MAX_EXACT_FILE_PROOF_EXAMPLES).coerceAtLeast(0),
+                                    "batch_inspection_prerequisite_read_failure" to batchPrerequisiteReadFailure,
+                                ),
+                            )
+                        }
                         publishInspectionSnapshot(
                             project = project,
                             runId = runId,
