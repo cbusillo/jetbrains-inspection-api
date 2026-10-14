@@ -67,11 +67,23 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         assertApiDelegation(initiallyDelegated = true, knownFinding = KnownFindingInspection())
     }
 
-    private fun assertApiDelegation(initiallyDelegated: Boolean, knownFinding: LocalInspectionTool? = null) {
+    @Test
+    fun `API confirms clean nondelegated coverage even when an uninterrupted prerequisite read takes time`() {
+        assertApiDelegation(initiallyDelegated = false, cleanControl = true, slowFirstCheck = true)
+    }
+
+    private fun assertApiDelegation(
+        initiallyDelegated: Boolean,
+        knownFinding: LocalInspectionTool? = null,
+        cleanControl: Boolean = false,
+        slowFirstCheck: Boolean = false,
+    ) {
         val project = projectExtension.project
         val root = Files.createTempDirectory("typescript-delegation-api-")
         val path = root.resolve("broken.ts")
-        Files.writeString(path, "export const value = missingBatchSymbol;")
+        Files.writeString(path, if (cleanControl) "export const value = 42;" else "export const value = missingBatchSymbol;")
+        val otherPath = root.resolve("correct.ts")
+        Files.writeString(otherPath, "export const other = 42;")
         runInEdtAndGet {
             val directory = requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root))
             VfsUtil.markDirtyAndRefresh(false, true, true, directory)
@@ -79,15 +91,19 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         }
         val tool = TypeScriptUnresolvedReferenceInspection()
         val delegated = AtomicBoolean(initiallyDelegated)
-        delegationToActivate.set(delegated)
+        delegationToActivate.set(delegated.takeUnless { cleanControl })
         val activating = DelegationActivatingInspection()
         val wrappers = listOf(tool, activating) + listOfNotNull(knownFinding)
         val profile = createProfile(*wrappers.map(::LocalInspectionToolWrapper).toTypedArray())
         val manager = ProjectInspectionProfileManager.getInstance(project)
         manager.addProfile(profile)
         val disposable = Disposer.newDisposable()
+        val delayed = AtomicBoolean(false)
         val provider = object : TypeScriptAnnotatorCheckerProvider() {
-            override fun skipErrors(element: PsiElement?): Boolean = delegated.get()
+            override fun skipErrors(element: PsiElement?): Boolean {
+                if (slowFirstCheck && delayed.compareAndSet(false, true)) Thread.sleep(2100)
+                return delegated.get()
+            }
         }
         ExtensionTestUtil.maskExtensions(
             TypeScriptAnnotatorCheckerProvider.EP, listOf(provider), disposable, areaInstance = project,
@@ -95,17 +111,23 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         try {
             val handler = InspectionHandler()
             val selector = "project=${encode(project.name)}"
-            val trigger = request(handler, "/api/inspection/trigger?scope=files&file=${encode(path.toString())}&profile=${encode(profile.name)}&$selector")
-            assertThat(trigger).contains("\"status\": \"triggered\"")
+            val trigger = request(handler, "/api/inspection/trigger?scope=files&file=${encode(path.toString())}&file=${encode(otherPath.toString())}&profile=${encode(profile.name)}&$selector")
+            assertThat(Json.parseToJsonElement(trigger).jsonObject["status"]?.jsonPrimitive?.content).isEqualTo("triggered")
             val deadline = System.nanoTime() + 180_000_000_000L
             var status = ""
             while (System.nanoTime() < deadline) {
                 status = request(handler, "/api/inspection/status?$selector")
-                if (status.contains("\"inspection_in_progress\": false")) break
+                if (Json.parseToJsonElement(status).jsonObject["inspection_in_progress"]?.jsonPrimitive?.content == "false") break
                 Thread.sleep(100)
             }
-            val problems = request(handler, "/api/inspection/problems?scope=files&file=${encode(path.toString())}&$selector")
+            val problems = request(handler, "/api/inspection/problems?scope=files&file=${encode(path.toString())}&file=${encode(otherPath.toString())}&$selector")
             val response = Json.parseToJsonElement(problems).jsonObject
+            if (cleanControl) {
+                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("GREEN")
+                assertThat(response["inspection_proof"]?.jsonObject?.get("status")?.jsonPrimitive?.content).isEqualTo("complete")
+                assertThat(response["problems"]?.jsonArray).isEmpty()
+                return
+            }
             if (knownFinding != null) {
                 assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("RED")
                 assertThat(response["problems"]?.jsonArray?.map { it.jsonObject["inspectionType"]?.jsonPrimitive?.content })
@@ -128,6 +150,11 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         } finally {
             Disposer.dispose(disposable)
             delegationToActivate.set(null)
+            manager.deleteProfile(profile.name)
+            runInEdtAndGet {
+                val directory = requireNotNull(LocalFileSystem.getInstance().findFileByNioFile(root))
+                PsiTestUtil.removeContentEntry(projectExtension.module, directory)
+            }
         }
     }
 

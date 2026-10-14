@@ -2257,6 +2257,8 @@ class InspectionHandler : HttpRequestHandler() {
                         .joinToString("; ") { "${it["tool"]} on ${it["file"]}" }
                     "The enabled TypeScript unresolved-reference inspection delegates diagnostics to the editor language service. Run stock inspect.sh in an isolated profile, or turn off the TypeScript language service in this exact project's settings and request a fresh API inspection. Keep the inspection enabled; diagnostic coverage is incomplete and this run cannot prove GREEN. Blocking: $blockers"
                 }
+                "batch_inspection_prerequisite_read_failed" ->
+                    "Diagnostic coverage could not be checked. Report batch_inspection_prerequisite_read_failure; let IDE writes settle before a separately requested assessment, or use stock inspect.sh in an isolated profile. Do not report GREEN."
                 "write_action_preempted" ->
                     "Inspection yielded to an IDE write action before execution proof completed. Stop retrying and report the exact-proof worker diagnostic; allow project updates to settle before a separately requested assessment."
                 "time_limit" ->
@@ -2510,6 +2512,11 @@ class InspectionHandler : HttpRequestHandler() {
             diagnostic?.get("execution_proof_block_reason") == "batch_inspection_delegated_to_editor_service"
         ) {
             return "configuration_blocked"
+        }
+        if (code == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue &&
+            diagnostic?.get("execution_proof_block_reason") == "batch_inspection_prerequisite_read_failed"
+        ) {
+            return "tool_caused"
         }
         if (code.startsWith("python_sdk_preparation_")) {
             return when (code) {
@@ -7217,22 +7224,22 @@ class InspectionHandler : HttpRequestHandler() {
             fun collectBatchInspectionDelegations(): List<Map<String, String>> {
                 if (batchPrerequisites.isEmpty()) return emptyList()
                 val deadline = System.nanoTime() + 2_000_000_000L
-                val checkBudget = {
+                val checkPreemptionBudget = {
                     ProgressManager.checkCanceled()
-                    if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("enumeration_time_limit")
+                    if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("write_action_preempted")
                 }
                 return try {
-                    retryWritePreemptedInspectionRead(checkBudget) {
+                    retryWritePreemptedInspectionRead(checkPreemptionBudget) {
                         runWritePriorityInspectionRead(ProgressIndicatorBase(), {}) {
                             findBatchInspectionDelegations(
-                                profile, SupportedInspectionExecutor().collectScopeFiles(scope, checkBudget), checkBudget,
+                                profile, SupportedInspectionExecutor().collectScopeFiles(scope),
                             )
                         }
                     }
                 } catch (error: ProcessCanceledException) {
                     throw error
                 } catch (error: Exception) {
-                    batchPrerequisiteReadFailure = error.message ?: error.javaClass.simpleName
+                    batchPrerequisiteReadFailure = error.javaClass.simpleName
                     emptyList()
                 }
             }
@@ -7833,7 +7840,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     "execution_proof_established" to false,
                                     "execution_proof_clean" to false,
                                     "execution_proof_block_reason" to (diagnostic["execution_proof_block_reason"]
-                                        ?: if (batchPrerequisiteReadFailure != null) batchPrerequisiteReadFailure
+                                        ?: if (batchPrerequisiteReadFailure != null) "batch_inspection_prerequisite_read_failed"
                                         else "batch_inspection_delegated_to_editor_service"),
                                     "batch_inspection_delegation_count" to batchDelegations.size,
                                     "batch_inspection_delegations" to batchDelegations.take(MAX_EXACT_FILE_PROOF_EXAMPLES),
