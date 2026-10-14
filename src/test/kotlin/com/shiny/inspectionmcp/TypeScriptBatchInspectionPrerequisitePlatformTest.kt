@@ -10,6 +10,7 @@ import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.lang.javascript.ecmascript6.TypeScriptAnnotatorCheckerProvider
 import com.intellij.lang.typescript.inspections.TypeScriptUnresolvedReferenceInspection
 import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.util.ProgressIndicatorBase
@@ -50,6 +51,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 
 class TypeScriptBatchInspectionPrerequisitePlatformTest {
     @Test
@@ -59,7 +62,7 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
 
     @Test
     fun `API rechecks service delegation before publishing a completed native run`() {
-        assertApiDelegation(initiallyDelegated = false)
+        assertApiDelegation(initiallyDelegated = false, correctedSources = true)
     }
 
     @Test
@@ -72,16 +75,23 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         assertApiDelegation(initiallyDelegated = false, cleanControl = true, slowFirstCheck = true)
     }
 
+    @Test
+    fun `API resumes a slow prerequisite read after an IDE write`() {
+        assertApiDelegation(initiallyDelegated = false, cleanControl = true, slowFirstCheck = true, preemptSlowRead = true)
+    }
+
     private fun assertApiDelegation(
         initiallyDelegated: Boolean,
         knownFinding: LocalInspectionTool? = null,
         cleanControl: Boolean = false,
         slowFirstCheck: Boolean = false,
+        preemptSlowRead: Boolean = false,
+        correctedSources: Boolean = false,
     ) {
         val project = projectExtension.project
         val root = Files.createTempDirectory("typescript-delegation-api-")
         val path = root.resolve("broken.ts")
-        Files.writeString(path, if (cleanControl) "export const value = 42;" else "export const value = missingBatchSymbol;")
+        Files.writeString(path, if (cleanControl || correctedSources) "export const value = 42;" else "export const value = missingBatchSymbol;")
         val otherPath = root.resolve("correct.ts")
         Files.writeString(otherPath, "export const other = 42;")
         runInEdtAndGet {
@@ -99,9 +109,21 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         manager.addProfile(profile)
         val disposable = Disposer.newDisposable()
         val delayed = AtomicBoolean(false)
+        val slowReadReady = CountDownLatch(1)
         val provider = object : TypeScriptAnnotatorCheckerProvider() {
             override fun skipErrors(element: PsiElement?): Boolean {
-                if (slowFirstCheck && delayed.compareAndSet(false, true)) Thread.sleep(2100)
+                if (slowFirstCheck && delayed.compareAndSet(false, true)) {
+                    Thread.sleep(2100)
+                    if (preemptSlowRead) {
+                        slowReadReady.countDown()
+                        val preemptionDeadline = System.nanoTime() + 10_000_000_000L
+                        while (ProgressManager.getInstance().progressIndicator?.isCanceled != true) {
+                            assertThat(System.nanoTime()).describedAs("IDE write must preempt the active prerequisite read")
+                                .isLessThan(preemptionDeadline)
+                            Thread.sleep(10)
+                        }
+                    }
+                }
                 return delegated.get()
             }
         }
@@ -113,6 +135,10 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
             val selector = "project=${encode(project.name)}"
             val trigger = request(handler, "/api/inspection/trigger?scope=files&file=${encode(path.toString())}&file=${encode(otherPath.toString())}&profile=${encode(profile.name)}&$selector")
             assertThat(Json.parseToJsonElement(trigger).jsonObject["status"]?.jsonPrimitive?.content).isEqualTo("triggered")
+            if (preemptSlowRead) {
+                assertThat(slowReadReady.await(10, TimeUnit.SECONDS)).isTrue()
+                ApplicationManager.getApplication().invokeLater { WriteAction.run<RuntimeException> {} }
+            }
             val deadline = System.nanoTime() + 180_000_000_000L
             var status = ""
             while (System.nanoTime() < deadline) {

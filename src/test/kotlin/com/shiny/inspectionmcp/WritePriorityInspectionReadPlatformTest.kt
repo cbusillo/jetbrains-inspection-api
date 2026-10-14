@@ -1,6 +1,7 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProcessCanceledException
@@ -89,6 +90,17 @@ class WritePriorityInspectionReadPlatformTest {
 
         assertThat(result).isEqualTo("completed")
         assertThat(indicator.isCanceled).isFalse()
+    }
+
+    @Test
+    fun `write priority read supports a nested nonblocking read`() {
+        val result = ApplicationManager.getApplication().executeOnPooledThread<String> {
+            runWritePriorityInspectionRead(EmptyProgressIndicator(), {}) {
+                ReadAction.nonBlocking<String> { "nested computation" }.executeSynchronously()
+            }
+        }.get(5, TimeUnit.SECONDS)
+
+        assertThat(result).isEqualTo("nested computation")
     }
 
     @Test

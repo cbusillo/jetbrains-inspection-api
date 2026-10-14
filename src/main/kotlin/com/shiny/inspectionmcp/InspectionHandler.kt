@@ -2516,7 +2516,9 @@ class InspectionHandler : HttpRequestHandler() {
         if (code == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue &&
             diagnostic?.get("execution_proof_block_reason") == "batch_inspection_prerequisite_read_failed"
         ) {
-            return "tool_caused"
+            return if (diagnostic["batch_inspection_prerequisite_read_failure"] == "write_action_preempted") {
+                "legitimate_fail_closed"
+            } else "tool_caused"
         }
         if (code.startsWith("python_sdk_preparation_")) {
             return when (code) {
@@ -7223,23 +7225,36 @@ class InspectionHandler : HttpRequestHandler() {
             var batchPrerequisiteReadFailure: String? = null
             fun collectBatchInspectionDelegations(): List<Map<String, String>> {
                 if (batchPrerequisites.isEmpty()) return emptyList()
-                val deadline = System.nanoTime() + 2_000_000_000L
+                val preemptionDeadline = AtomicLong(Long.MAX_VALUE)
+                val checkCancellation = { checkInspectionRunCancellation(key, runId) }
                 val checkPreemptionBudget = {
-                    ProgressManager.checkCanceled()
-                    if (System.nanoTime() >= deadline) throw NativeInspectionObservationUnavailable("write_action_preempted")
+                    checkCancellation()
+                    if (System.nanoTime() >= preemptionDeadline.get()) {
+                        throw NativeInspectionObservationUnavailable("write_action_preempted")
+                    }
                 }
                 return try {
                     retryWritePreemptedInspectionRead(checkPreemptionBudget) {
-                        runWritePriorityInspectionRead(ProgressIndicatorBase(), {}) {
+                        val readIndicator = ProgressIndicatorBase()
+                        val checkReadCancellation = {
+                            readIndicator.checkCanceled()
+                            checkCancellation()
+                        }
+                        runWritePriorityInspectionRead(readIndicator, {
+                            preemptionDeadline.compareAndSet(Long.MAX_VALUE, System.nanoTime() + 2_000_000_000L)
+                        }) {
                             findBatchInspectionDelegations(
-                                profile, SupportedInspectionExecutor().collectScopeFiles(scope),
+                                profile, SupportedInspectionExecutor().collectScopeFiles(scope, checkReadCancellation), checkReadCancellation,
                             )
                         }
                     }
                 } catch (error: ProcessCanceledException) {
                     throw error
                 } catch (error: Exception) {
-                    batchPrerequisiteReadFailure = error.javaClass.simpleName
+                    batchPrerequisiteReadFailure = if (error is NativeInspectionObservationUnavailable &&
+                        error.message == "write_action_preempted"
+                    ) "write_action_preempted" else error.javaClass.simpleName
+                    logger.warn("Batch inspection prerequisite read failed; coverage remains unproven.", error)
                     emptyList()
                 }
             }
