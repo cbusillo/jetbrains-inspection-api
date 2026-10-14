@@ -5,6 +5,9 @@ import com.intellij.openapi.extensions.ExtensionPointName
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.psi.PsiFile
 
+internal const val MAX_BATCH_INSPECTION_READ_PREEMPTIONS = 80
+internal const val BATCH_INSPECTION_WRITE_PREEMPTED_REASON = "write_action_preempted"
+
 internal interface BatchInspectionPrerequisite {
     fun delegatedInspection(file: PsiFile, profile: InspectionProfile): String?
 

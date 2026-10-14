@@ -4,6 +4,7 @@ import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.LocalInspectionTool
+import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.LocalInspectionToolSession
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
@@ -51,8 +52,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.nio.file.Files
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
-import java.util.concurrent.CountDownLatch
+import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class TypeScriptBatchInspectionPrerequisitePlatformTest {
     @Test
@@ -80,6 +82,16 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         assertApiDelegation(initiallyDelegated = false, cleanControl = true, slowFirstCheck = true, preemptSlowRead = true)
     }
 
+    @Test
+    fun `API resumes slow prerequisite reads after separated IDE writes`() {
+        assertApiDelegation(initiallyDelegated = false, cleanControl = true, slowFirstCheck = true, preemptSlowRead = true, writesToTrigger = 2)
+    }
+
+    @Test
+    fun `API attributes unavailable prerequisite coverage to write preemption`() {
+        assertApiDelegation(initiallyDelegated = false, cleanControl = true, writePreemptionFailure = true)
+    }
+
     private fun assertApiDelegation(
         initiallyDelegated: Boolean,
         knownFinding: LocalInspectionTool? = null,
@@ -87,6 +99,8 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         slowFirstCheck: Boolean = false,
         preemptSlowRead: Boolean = false,
         correctedSources: Boolean = false,
+        writesToTrigger: Int = 1,
+        writePreemptionFailure: Boolean = false,
     ) {
         val project = projectExtension.project
         val root = Files.createTempDirectory("typescript-delegation-api-")
@@ -109,13 +123,15 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         manager.addProfile(profile)
         val disposable = Disposer.newDisposable()
         val delayed = AtomicBoolean(false)
-        val slowReadReady = CountDownLatch(1)
+        val slowReadReady = LinkedBlockingQueue<Unit>()
+        val slowReads = AtomicInteger(if (preemptSlowRead) writesToTrigger else 1)
         val provider = object : TypeScriptAnnotatorCheckerProvider() {
             override fun skipErrors(element: PsiElement?): Boolean {
-                if (slowFirstCheck && delayed.compareAndSet(false, true)) {
+                if (slowFirstCheck && slowReads.getAndDecrement() > 0) {
+                    delayed.set(true)
                     Thread.sleep(2100)
                     if (preemptSlowRead) {
-                        slowReadReady.countDown()
+                        slowReadReady.add(Unit)
                         val preemptionDeadline = System.nanoTime() + 10_000_000_000L
                         while (ProgressManager.getInstance().progressIndicator?.isCanceled != true) {
                             assertThat(System.nanoTime()).describedAs("IDE write must preempt the active prerequisite read")
@@ -130,14 +146,26 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
         ExtensionTestUtil.maskExtensions(
             TypeScriptAnnotatorCheckerProvider.EP, listOf(provider), disposable, areaInstance = project,
         )
+        if (writePreemptionFailure) {
+            val failingPrerequisite = object : BatchInspectionPrerequisite {
+                override fun delegatedInspection(file: PsiFile, profile: InspectionProfile): String? {
+                    throw NativeInspectionObservationUnavailable(BATCH_INSPECTION_WRITE_PREEMPTED_REASON)
+                }
+            }
+            ExtensionTestUtil.maskExtensions(
+                BatchInspectionPrerequisite.EP, listOf(failingPrerequisite), disposable, areaInstance = project,
+            )
+        }
         try {
             val handler = InspectionHandler()
             val selector = "project=${encode(project.name)}"
             val trigger = request(handler, "/api/inspection/trigger?scope=files&file=${encode(path.toString())}&file=${encode(otherPath.toString())}&profile=${encode(profile.name)}&$selector")
             assertThat(Json.parseToJsonElement(trigger).jsonObject["status"]?.jsonPrimitive?.content).isEqualTo("triggered")
             if (preemptSlowRead) {
-                assertThat(slowReadReady.await(10, TimeUnit.SECONDS)).isTrue()
-                ApplicationManager.getApplication().invokeLater { WriteAction.run<RuntimeException> {} }
+                repeat(writesToTrigger) {
+                    assertThat(slowReadReady.poll(10, TimeUnit.SECONDS)).isNotNull()
+                    ApplicationManager.getApplication().invokeLater { WriteAction.run<RuntimeException> {} }
+                }
             }
             val deadline = System.nanoTime() + 180_000_000_000L
             var status = ""
@@ -148,10 +176,20 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
             }
             val problems = request(handler, "/api/inspection/problems?scope=files&file=${encode(path.toString())}&file=${encode(otherPath.toString())}&$selector")
             val response = Json.parseToJsonElement(problems).jsonObject
-            if (cleanControl) {
+            if (cleanControl && !writePreemptionFailure) {
+                if (slowFirstCheck) assertThat(delayed.get()).isTrue()
                 assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("GREEN")
                 assertThat(response["inspection_proof"]?.jsonObject?.get("status")?.jsonPrimitive?.content).isEqualTo("complete")
                 assertThat(response["problems"]?.jsonArray).isEmpty()
+                return
+            }
+            if (writePreemptionFailure) {
+                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+                assertThat(response["inspection_proof"]?.jsonObject?.get("status")?.jsonPrimitive?.content).isEqualTo("failed")
+                assertThat(response["inspection_attribution"]?.jsonObject?.get("classification")?.jsonPrimitive?.content)
+                    .isEqualTo("legitimate_fail_closed")
+                assertThat(response["capture_diagnostic"]?.jsonObject?.get("batch_inspection_prerequisite_read_failure")?.jsonPrimitive?.content)
+                    .isEqualTo(BATCH_INSPECTION_WRITE_PREEMPTED_REASON)
                 return
             }
             if (knownFinding != null) {
