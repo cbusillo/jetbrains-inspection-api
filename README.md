@@ -1001,8 +1001,8 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 
 ### Full builds and automatic IDE updates
 
-The **Full Build Release** workflow publishes a full proof and recovery build
-after every successful push-to-`main` CI run. Each build includes all features,
+The **CI** workflow calls **Full Build Release** after its commit gate passes
+for each push to `main`. Each build includes all features,
 including internal API uses still awaiting Marketplace Stable approval. It does
 not publish to Marketplace Stable or change existing Marketplace updates.
 
@@ -1046,6 +1046,11 @@ workflow artifact is retained (30 days). Existing assets are verified and never
 replaced. CI reruns reuse a complete published build after checking its source,
 digests and feed. Partial draft uploads resume from the retained workflow
 artifact; a rebuild with different timestamps intentionally refuses replacement.
+If that artifact has expired, confirm the retained draft is unpublished and
+targets the intended source commit, delete only that draft with
+`gh release delete agents/vX.Y.Z.N --repo cbusillo/jetbrains-inspection-api --yes`
+(using repository automation for agent work), then dispatch on `main` again.
+Keep the source tag; published releases are preserved and reused instead.
 Parallel builds publish separate releases, and the latest feed advances only
 to a higher version. To roll back an affected
 install, remove the custom repository and use **Install Plugin from Disk** with

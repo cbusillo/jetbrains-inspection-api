@@ -183,6 +183,21 @@ class PublishTest(FullReleaseFixture):
         self.assertIsNone(self.record)
         self.assertEqual(self.uploads, 0)
 
+    def test_concurrent_rebuild_reuses_the_verified_winning_release(self):
+        self.publish()
+        published = dict(self.assets)
+        uploads = self.uploads
+        archive, feed, checksums = release.bundle_files(self.version)
+        with ZipFile(self.directory / archive, "a") as distribution:
+            distribution.writestr("rebuilt-timestamp.txt", "later build")
+        (self.directory / checksums).write_text("".join(
+            f"{hashlib.sha256((self.directory / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in (archive, feed)
+        ))
+        self.publish()
+        self.assertEqual(self.assets, published)
+        self.assertEqual(self.uploads, uploads)
+
 
 class AgentsUploadTest(FullReleaseFixture):
     def test_uploads_verified_bytes_and_refuses_invalid_artifacts_before_network(self):

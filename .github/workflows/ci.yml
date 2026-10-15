@@ -14,6 +14,13 @@ permissions:
   pull-requests: read
 
 jobs:
+  full-release:
+    needs: commit-gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/agents-release.yml
+
   commit-gate:
     runs-on: ubuntu-latest
 

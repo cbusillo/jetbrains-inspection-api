@@ -131,6 +131,10 @@ def publish_release(directory: Path, repo: str, version: str, source_sha: str, n
     record = release_record(repo, tag)
     if record and record["target_commitish"] != source_sha:
         raise ValueError("Existing release points at another source")
+    if record and not record["draft"]:
+        with tempfile.TemporaryDirectory() as scratch:
+            if reuse_release(Path(scratch), repo, version, source_sha):
+                return
     if record is None:
         gh("release", "create", tag, "--repo", repo, "--target", source_sha,
            "--title", f"Full build {version}", "--notes-file", str(notes), "--draft", "--latest=false")
