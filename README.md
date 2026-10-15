@@ -999,6 +999,51 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 
 ## Releases
 
+### Full builds and automatic IDE updates
+
+The **Full Build Release** workflow publishes a full proof and recovery build
+after every successful push-to-`main` CI run. Each build includes all features,
+including internal API uses still awaiting Marketplace Stable approval. It does
+not publish to Marketplace Stable or change existing Marketplace updates.
+
+Versions use `pluginVersion` from `gradle.properties` plus the first-parent
+commit count, for example `1.14.2.123`. The matching tag is
+`agents/v1.14.2.123`. The base version and source descriptor move together through
+a PR; the fourth component increases automatically as `main` advances, without
+a version-only commit after every merge. Gradle patches the packaged descriptor
+and records that exact version and clean source commit in build provenance.
+
+To receive updates in PyCharm (or another supported JetBrains IDE):
+
+1. Open **Settings → Plugins → ⚙ → Manage Plugin Repositories**.
+2. Add this URL once:
+   `https://github.com/cbusillo/jetbrains-inspection-api/releases/latest/download/updatePlugins.xml`
+3. Refresh the plugin list and install or update **Inspection API**. Restart
+   when the IDE requests it. Subsequent releases appear in the IDE's normal
+   plugin update checks; the repository does not force an installation/restart.
+
+The zip and `updatePlugins.xml` come from the same verified artifact. The feed
+uses the packaged plugin ID, version, dependencies and IDE range. The release
+also records `SHA256SUMS`. The supported range remains in `build.gradle.kts`.
+This follows JetBrains' [custom repository format](https://plugins.jetbrains.com/docs/intellij/custom-plugin-repository.html).
+The separate `agents` Marketplace channel trial is at
+`https://plugins.jetbrains.com/plugins/agents/29580`; a successful upload alone
+does not establish approval or availability. The GitHub repository above receives
+every automated full-build release.
+
+For recovery, dispatch **Full Build Release** on `main`; it reruns the commit
+gate. For a publication-only failure, rerun failed jobs while the original
+workflow artifact is retained (30 days). Existing assets are verified and never
+replaced. Rebuilding an already published commit produces different timestamps
+and intentionally refuses replacement; recover with the retained artifact or
+release a subsequent commit. Parallel builds publish separate releases, and
+the latest feed advances only to a higher version. To roll back an affected
+install, remove the custom repository and use **Install Plugin from Disk** with
+a retained earlier GitHub release zip; re-add the repository after a corrected
+release. This is a manual downgrade, not an automatic downgrade policy.
+
+### Marketplace Stable releases
+
 Before release preparation or publication, read [DIRECTION.md](DIRECTION.md)
 for the current release direction and stop boundaries. The commands below
 describe the release mechanics; Marketplace publication requires the Director's decision.

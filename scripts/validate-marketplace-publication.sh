@@ -31,6 +31,10 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$CHANNEL" = "agents" ]; then
+  exit 0
+fi
+
 if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   if [ -n "$CHANNEL" ]; then
     echo "ERROR: Stable plugin versions must use the default Marketplace channel." >&2

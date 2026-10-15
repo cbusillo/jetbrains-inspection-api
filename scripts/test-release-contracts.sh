@@ -281,6 +281,12 @@ PYID
 
 test_marketplace_publication_policy() {
   ./scripts/validate-marketplace-publication.sh --version 1.2.3
+  ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 --channel agents
+  for channel in '' stable preview; do
+    if ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 ${channel:+--channel "$channel"} >/dev/null 2>&1; then
+      fail "Full build publisher accepted an unintended channel"
+    fi
+  done
 
   if ./scripts/validate-marketplace-publication.sh --version 1.2.3 --channel preview >/dev/null 2>&1; then
     fail "Marketplace publication policy accepted a Stable version with a custom channel"
