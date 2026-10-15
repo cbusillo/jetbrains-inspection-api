@@ -113,6 +113,7 @@ class PublishTest(FullReleaseFixture):
         self.assets = {}
         self.record = None
         self.uploads = 0
+        self.publication_contents = None
         self.notes = self.root / "notes.md"
         self.notes.write_text("Fixture release")
         self.addCleanup(patch.stopall)
@@ -138,6 +139,7 @@ class PublishTest(FullReleaseFixture):
             for name in names:
                 (directory / name).write_bytes(self.assets[name])
         elif command == "edit":
+            self.publication_contents = dict(self.assets)
             self.record["draft"] = False
         else:
             self.fail(f"Unexpected remote operation {command}")
@@ -150,6 +152,7 @@ class PublishTest(FullReleaseFixture):
         self.publish()
         self.assertFalse(self.record["draft"])
         self.assertEqual(self.assets, {p.name: p.read_bytes() for p in self.directory.iterdir()})
+        self.assertEqual(self.publication_contents, self.assets)
         uploads = self.uploads
         self.publish()
         self.assertEqual(self.uploads, uploads)
