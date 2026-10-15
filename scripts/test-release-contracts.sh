@@ -281,8 +281,7 @@ PYID
 
 test_marketplace_publication_policy() {
   ./scripts/validate-marketplace-publication.sh --version 1.2.3
-  ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 --channel agents
-  for channel in '' stable preview; do
+  for channel in '' stable preview agents; do
     if ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 ${channel:+--channel "$channel"} >/dev/null 2>&1; then
       fail "Full build publisher accepted an unintended channel"
     fi

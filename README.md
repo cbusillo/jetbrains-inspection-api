@@ -1031,6 +1031,15 @@ The separate `agents` Marketplace channel trial is at
 does not establish approval or availability. The GitHub repository above receives
 every automated full-build release.
 
+For an authorized `agents` trial, upload the downloaded, verified GitHub zip
+with `scripts/publish-agents-artifact.sh --archive /path/to/plugin.zip --version
+X.Y.Z.N --source-sha COMMIT --expected-sha256 DIGEST`, using the recorded release
+commit and digest. It requires the existing publisher credential, validates
+clean artifact provenance before any network write, and always selects `agents`.
+It never rebuilds or targets Stable. Gradle's `publishPlugin` remains restricted
+to the existing Stable policy. An upload is not approval; record the returned
+update ID and read its approval/listing and verifier state afterward.
+
 For recovery, dispatch **Full Build Release** on `main`; it reruns the commit
 gate. For a publication-only failure, rerun failed jobs while the original
 workflow artifact is retained (30 days). Existing assets are verified and never

@@ -184,16 +184,65 @@ class PublishTest(FullReleaseFixture):
         self.assertEqual(self.uploads, 0)
 
 
+class AgentsUploadTest(FullReleaseFixture):
+    def test_uploads_verified_bytes_and_refuses_invalid_artifacts_before_network(self):
+        script = Path(__file__).with_name("publish-agents-artifact.sh").resolve()
+        bin_path = self.root / "bin"
+        bin_path.mkdir()
+        receipt = self.root / "request.json"
+        fake_curl = bin_path / "curl"
+        fake_curl.write_text("#!" + sys.executable + '''
+import json, os, pathlib, sys
+fields = dict(value.split("=", 1) for index, value in enumerate(sys.argv) if index and sys.argv[index-1] == "--form")
+result = {"fields": fields, "authenticated": bool(sys.stdin.read().strip())}
+pathlib.Path(os.environ["UPLOAD_RECEIPT"]).write_text(json.dumps(result))
+print(json.dumps(result))
+''')
+        fake_curl.chmod(0o755)
+        env = {**os.environ, "PATH": f"{bin_path}:{os.environ['PATH']}",
+               "PUBLISH_TOKEN": "fixture-token", "UPLOAD_RECEIPT": str(receipt)}
+
+        def upload(archive, source, digest):
+            return subprocess.run([str(script), "--archive", str(archive), "--version", self.version,
+                                   "--source-sha", source, "--expected-sha256", digest],
+                                  env=env, capture_output=True, text=True)
+
+        archive = self.archive()
+        result = upload(archive, self.sha, hashlib.sha256(archive.read_bytes()).hexdigest())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        request = json.loads(result.stdout)
+        self.assertEqual(request["fields"]["channel"], "agents")
+        self.assertEqual(request["fields"]["file"], f"@{archive}")
+        self.assertTrue(request["authenticated"])
+        receipt.unlink()
+        for changes in ({"dirty": "true"}, {"source": "b" * 40}):
+            archive = self.archive(**changes)
+            result = upload(archive, self.sha, hashlib.sha256(archive.read_bytes()).hexdigest())
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(receipt.exists())
+        archive = self.archive()
+        result = upload(archive, self.sha, "0" * 64)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(receipt.exists())
+
+
 class ReleaseReadTest(unittest.TestCase):
     def test_only_a_confirmed_404_is_absence(self):
-        with patch.object(release, "gh", side_effect=subprocess.CalledProcessError(
+        with patch.object(release, "gh", side_effect=[subprocess.CalledProcessError(
             1, "gh", output="HTTP/2.0 404 Not Found\n\n{}"
-        )):
+        ), "[]"]):
             self.assertIsNone(release.release_record("fixture/repo", "agents/v1.2.3.4"))
         with patch.object(release, "gh", side_effect=subprocess.CalledProcessError(
             1, "gh", output="HTTP/2.0 403 Forbidden\n\n{}"
         )), self.assertRaises(subprocess.CalledProcessError):
             release.release_record("fixture/repo", "agents/v1.2.3.4")
+
+    def test_recovers_a_draft_omitted_by_the_published_tag_endpoint(self):
+        draft = {"id": 19, "draft": True, "tag_name": "agents/v1.2.3.4", "assets": []}
+        with patch.object(release, "gh", side_effect=[subprocess.CalledProcessError(
+            1, "gh", output="HTTP/2.0 404 Not Found\n\n{}"
+        ), json.dumps([[draft]])]):
+            self.assertEqual(release.release_record("fixture/repo", draft["tag_name"]), draft)
 
 
 class ReleaseNotesTest(unittest.TestCase):

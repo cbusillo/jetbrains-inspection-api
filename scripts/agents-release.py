@@ -86,7 +86,11 @@ def release_record(repo: str, tag: str) -> dict | None:
         response = gh("api", "--include", f"repos/{repo}/releases/tags/{tag.replace('/', '%2F')}")
     except subprocess.CalledProcessError as error:
         if re.match(r"HTTP/\S+ 404\b", error.stdout or ""):
-            return None
+            pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
+            matches = [record for page in pages for record in page if record["tag_name"] == tag]
+            if len(matches) > 1:
+                raise ValueError("Multiple releases for this tag require reconciliation")
+            return matches[0] if matches else None
         raise
     return json.loads(response.replace("\r\n", "\n").split("\n\n", 1)[1])
 
@@ -156,6 +160,11 @@ def main() -> None:
     feed_parser.add_argument("--source-sha", required=True)
     feed_parser.add_argument("--download-url", required=True)
     feed_parser.add_argument("--output", type=Path, required=True)
+    verify_parser = commands.add_parser("verify")
+    verify_parser.add_argument("--archive", type=Path, required=True)
+    verify_parser.add_argument("--version", required=True)
+    verify_parser.add_argument("--source-sha", required=True)
+    verify_parser.add_argument("--expected-sha256", required=True)
     for command in ("reuse", "publish"):
         release_parser = commands.add_parser(command)
         release_parser.add_argument("--directory", type=Path, required=True)
@@ -171,6 +180,12 @@ def main() -> None:
         args.output.write_bytes(update_feed(args.archive, args.version, args.source_sha, args.download_url))
     elif args.command == "reuse":
         print(str(reuse_release(args.directory, args.repo, args.version, args.source_sha)).lower())
+    elif args.command == "verify":
+        if not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256):
+            raise ValueError("A recorded archive SHA-256 is required")
+        if hashlib.sha256(args.archive.read_bytes()).hexdigest() != args.expected_sha256:
+            raise ValueError("Archive does not match the recorded release digest")
+        plugin_descriptor(args.archive, args.version, args.source_sha)
     else:
         publish_release(args.directory, args.repo, args.version, args.source_sha, args.notes)
 
