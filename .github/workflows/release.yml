@@ -258,7 +258,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "Release $GITHUB_REF_NAME" \
               --notes-file "$notes_file" \
-              --latest \
+              --latest=false \
               --verify-tag
           fi
 

@@ -281,6 +281,11 @@ PYID
 
 test_marketplace_publication_policy() {
   ./scripts/validate-marketplace-publication.sh --version 1.2.3
+  for channel in '' stable preview agents; do
+    if ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 ${channel:+--channel "$channel"} >/dev/null 2>&1; then
+      fail "Full build publisher accepted an unintended channel"
+    fi
+  done
 
   if ./scripts/validate-marketplace-publication.sh --version 1.2.3 --channel preview >/dev/null 2>&1; then
     fail "Marketplace publication policy accepted a Stable version with a custom channel"
@@ -454,6 +459,16 @@ test_workflow_action_pins() {
   temp_dir=$(mktemp -d)
   trap 'rm -rf "$temp_dir"' RETURN
   action=actions/example
+  for reference in './.github/workflows/build.yml' './.github/workflows/publish.yaml # same commit'; do
+    printf 'jobs:\n  publish:\n    uses: %s\n' "$reference" > "$temp_dir/workflow.yml"
+    uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >/dev/null
+  done
+  for reference in './.github/workflows/build.yml@main' './.github/workflows/../build.yml'; do
+    printf 'jobs:\n  publish:\n    uses: %s\n' "$reference" > "$temp_dir/workflow.yml"
+    if uv run scripts/lint-workflow-action-pins.py "$temp_dir/workflow.yml" >"$temp_dir/output" 2>&1; then
+      fail "action-pin linter accepted invalid local workflow $reference"
+    fi
+  done
   for reference in \
     "$action@0123456789abcdef0123456789abcdef01234567 # v6.0.0" \
     "$action@0123456789abcdef0123456789abcdef01234567"; do

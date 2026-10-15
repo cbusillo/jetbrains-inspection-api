@@ -88,6 +88,7 @@ if lane_selected contracts; then
     ./scripts/test-changed-file-lanes.sh
     uv run scripts/test-ide-retention.py
     ./scripts/test-release-contracts.sh
+    uv run scripts/test-agents-release.py
 else
     echo "Commit gate: only documentation changed; skipping contract tests."
 fi

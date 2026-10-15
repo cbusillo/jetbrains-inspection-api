@@ -1,7 +1,7 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <version>1.14.1</version>
+    <version>1.14.2</version>
     <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
@@ -27,6 +27,12 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Full builds from 1.14.2</b>
+        <ul>
+            <li>Publishes current full builds and an IDE update repository on GitHub after each successful main CI run.</li>
+            <li>Includes the post-1.14.0 inspection freshness, cancellation, Python readiness, lifecycle recovery, and TypeScript coverage corrections.</li>
+            <li>Preserves proven findings while reporting incomplete inspection coverage as inconclusive.</li>
+        </ul>
         <b>Version 1.14.0</b>
         <ul>
             <li>Fails closed until Python SDK-backed project analysis is stable, returning an inconclusive result instead of a false clean or partial finding result.</li>

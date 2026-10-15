@@ -40,7 +40,9 @@ if [[ -z "$version" || -z "$output" ]]; then
   exit 2
 fi
 
-last_release="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
+last_release="$(gh api --paginate 'repos/{owner}/{repo}/releases?per_page=100' \
+  --jq '.[] | select(.draft == false and (.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))) | .tag_name' \
+  | sed -n '1p')"
 if [[ -n "$last_release" && "$last_release" != "null" ]] && git rev-parse -q "$last_release" >/dev/null; then
   range="${last_release}..HEAD"
 else
@@ -56,7 +58,7 @@ seen_subjects="$(mktemp)"
 
 git log --pretty=format:'%s' --no-merges "$range" > "$commit_summary"
 
-while IFS= read -r subject; do
+while IFS= read -r subject || [ -n "$subject" ]; do
   [[ -n "$subject" ]] || continue
   if grep -Fxq -- "$subject" "$seen_subjects"; then
     continue

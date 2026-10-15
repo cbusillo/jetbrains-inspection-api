@@ -10,6 +10,7 @@ import sys
 
 USES = re.compile(r"^(?:-\s+)?uses:")
 PINNED = re.compile(r"^(?:-\s+)?uses:\s+[^@#\s]+@[0-9a-f]{40}(?:\s+#.*)?$")
+LOCAL_WORKFLOW = re.compile(r"^uses:\s+\./\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml(?:\s+#.*)?$")
 
 
 def main(paths: list[str]) -> int:
@@ -26,8 +27,8 @@ def main(paths: list[str]) -> int:
     for path in workflows:
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             line = line.strip()
-            if USES.match(line) and not PINNED.fullmatch(line):
-                failures.append(f"{path}:{number}: action must use a lowercase full commit SHA")
+            if USES.match(line) and not (PINNED.fullmatch(line) or LOCAL_WORKFLOW.fullmatch(line)):
+                failures.append(f"{path}:{number}: use a local reusable workflow or an external action pinned to a lowercase full commit SHA")
     for failure in failures:
         print(failure, file=sys.stderr)
     return int(bool(failures))

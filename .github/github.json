@@ -15,6 +15,8 @@
     "envExample": ".env.example",
     "ciWorkflow": ".github/workflows/ci.yml",
     "releaseWorkflow": ".github/workflows/release.yml",
+    "fullBuildReleaseWorkflow": ".github/workflows/agents-release.yml",
+    "fullBuildReleaseHelper": "scripts/agents-release.py",
     "commitGate": "scripts/commit-gate.sh",
     "changedFileLanes": "scripts/changed-file-lanes.sh",
     "release": "README.md#releases",
@@ -24,7 +26,7 @@
   "qualityGate": {
     "test": {
       "commitGate": "./scripts/commit-gate.sh --ci",
-      "workflowLint": "actionlint .github/workflows/ci.yml .github/workflows/release.yml && uv run scripts/lint-workflow-action-pins.py .github/workflows",
+      "workflowLint": "actionlint .github/workflows/*.yml && uv run scripts/lint-workflow-action-pins.py .github/workflows",
       "shellLint": "shellcheck --severity=warning scripts/*.sh",
       "all": "./scripts/test-all.sh",
       "plugin": "JAVA_HOME=\"${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}\" ./gradlew test",
@@ -35,7 +37,8 @@
       "ideRetention": "uv run scripts/test-ide-retention.py",
       "smokeLifecycle": "uv run scripts/test-smoke-lifecycle.py && ./scripts/test-red-lane-smoke-script.sh",
       "inspectionBoundaryLint": "uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
-      "internalApiManifest": "./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt"
+      "internalApiManifest": "./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
+      "fullBuildRelease": "uv run scripts/test-agents-release.py"
     },
     "build": {
       "buildPlugin": "./gradlew buildPlugin",
@@ -73,7 +76,8 @@
     "CodeQL",
     "Dependabot Updates",
     "Dependency Graph",
-    "Release"
+    "Release",
+    "Full Build Release"
   ],
   "qaLabels": [],
   "deployLabels": [],
@@ -152,6 +156,6 @@
     "instructions": "README.md#releases",
     "stopBoundaries": "DIRECTION.md#stop-boundaries",
     "stablePublishEnvironment": "stable-marketplace",
-    "publicationTrigger": "v* tag push"
+    "publicationTrigger": "v* tag push for Stable; successful main push CI for GitHub full builds"
   }
 }
