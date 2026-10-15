@@ -2,11 +2,16 @@
 """Exercise the packaged metadata used by IDE automatic updates."""
 
 import importlib.util
+import hashlib
 import io
+import json
+import os
 from pathlib import Path
 import sys
+import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
 
@@ -16,7 +21,7 @@ release = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(release)
 
 
-class FullReleaseTest(unittest.TestCase):
+class FullReleaseFixture(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -57,6 +62,7 @@ class FullReleaseTest(unittest.TestCase):
             )
         return path
 
+class FullReleaseTest(FullReleaseFixture):
     def test_version_orders_consecutive_main_commits(self):
         current = tuple(map(int, self.version.split(".")))
         following = tuple(map(int, release.release_version(self.properties, 18).split(".")))
@@ -86,6 +92,152 @@ class FullReleaseTest(unittest.TestCase):
             release.update_feed(self.archive(since=""), self.version, self.sha, self.url)
         with self.assertRaises(ValueError):
             release.update_feed(self.archive(), self.version, self.sha, self.url.replace("https:", "http:"))
+
+
+class PublishTest(FullReleaseFixture):
+    def setUp(self):
+        super().setUp()
+        self.repo = "fixture/inspection-api"
+        self.directory = self.root / "bundle"
+        self.directory.mkdir()
+        archive_name, feed_name, checksum_name = release.bundle_files(self.version)
+        (self.directory / archive_name).write_bytes(self.archive().read_bytes())
+        url = f"https://github.com/{self.repo}/releases/download/agents%2Fv{self.version}/{archive_name}"
+        (self.directory / feed_name).write_bytes(release.update_feed(
+            self.directory / archive_name, self.version, self.sha, url
+        ))
+        (self.directory / checksum_name).write_text("".join(
+            f"{hashlib.sha256((self.directory / name).read_bytes()).hexdigest()}  {name}\n"
+            for name in (archive_name, feed_name)
+        ))
+        self.assets = {}
+        self.record = None
+        self.uploads = 0
+        self.notes = self.root / "notes.md"
+        self.notes.write_text("Fixture release")
+        self.addCleanup(patch.stopall)
+        patch.object(release, "release_record", side_effect=self.remote_record).start()
+        patch.object(release, "gh", side_effect=self.remote_command).start()
+
+    def remote_record(self, *_):
+        if self.record is None:
+            return None
+        return {**self.record, "assets": [{"name": name} for name in self.assets]}
+
+    def remote_command(self, *args):
+        command = args[1]
+        if command == "create":
+            self.record = {"draft": True, "target_commitish": self.sha}
+        elif command == "upload":
+            path = Path(args[3])
+            self.assets[path.name] = path.read_bytes()
+            self.uploads += 1
+        elif command == "download":
+            directory = Path(args[args.index("--dir") + 1])
+            names = [args[args.index("--pattern") + 1]] if "--pattern" in args else self.assets
+            for name in names:
+                (directory / name).write_bytes(self.assets[name])
+        elif command == "edit":
+            self.record["draft"] = False
+        else:
+            self.fail(f"Unexpected remote operation {command}")
+        return ""
+
+    def publish(self):
+        release.publish_release(self.directory, self.repo, self.version, self.sha, self.notes)
+
+    def test_uploads_all_assets_before_publishing_and_reuses_without_reupload(self):
+        self.publish()
+        self.assertFalse(self.record["draft"])
+        self.assertEqual(self.assets, {p.name: p.read_bytes() for p in self.directory.iterdir()})
+        uploads = self.uploads
+        self.publish()
+        self.assertEqual(self.uploads, uploads)
+        self.assertTrue(release.reuse_release(self.root / "downloaded", self.repo, self.version, self.sha))
+
+    def test_resumes_a_draft_with_a_partly_uploaded_bundle(self):
+        self.record = {"draft": True, "target_commitish": self.sha}
+        archive = release.bundle_files(self.version)[0]
+        self.assets[archive] = (self.directory / archive).read_bytes()
+        self.publish()
+        self.assertFalse(self.record["draft"])
+        self.assertEqual(self.assets, {p.name: p.read_bytes() for p in self.directory.iterdir()})
+
+    def test_preserves_existing_different_bytes_and_does_not_publish(self):
+        self.record = {"draft": True, "target_commitish": self.sha}
+        name = release.bundle_files(self.version)[0]
+        self.assets[name] = b"different published bytes"
+        with self.assertRaises(ValueError):
+            self.publish()
+        self.assertTrue(self.record["draft"])
+        self.assertEqual(self.assets[name], b"different published bytes")
+        self.assertEqual(self.uploads, 0)
+
+    def test_a_corrupt_bundle_cannot_upload(self):
+        (self.directory / "updatePlugins.xml").write_text("corrupt")
+        with self.assertRaises(ValueError):
+            self.publish()
+        self.assertIsNone(self.record)
+        self.assertEqual(self.uploads, 0)
+
+
+class ReleaseReadTest(unittest.TestCase):
+    def test_only_a_confirmed_404_is_absence(self):
+        with patch.object(release, "gh", side_effect=subprocess.CalledProcessError(
+            1, "gh", output="HTTP/2.0 404 Not Found\n\n{}"
+        )):
+            self.assertIsNone(release.release_record("fixture/repo", "agents/v1.2.3.4"))
+        with patch.object(release, "gh", side_effect=subprocess.CalledProcessError(
+            1, "gh", output="HTTP/2.0 403 Forbidden\n\n{}"
+        )), self.assertRaises(subprocess.CalledProcessError):
+            release.release_record("fixture/repo", "agents/v1.2.3.4")
+
+
+class ReleaseNotesTest(unittest.TestCase):
+    def test_full_builds_do_not_shorten_the_stable_changelog(self):
+        script = Path(__file__).with_name("generate-release-notes.sh").resolve()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+
+            def git(*args):
+                subprocess.run(["git", *args], cwd=root, env=env, check=True, capture_output=True)
+
+            git("-c", "init.defaultBranch=main", "init")
+            git("config", "user.name", "Fixture")
+            git("config", "user.email", "fixture@example.invalid")
+            tracked = root / "source.txt"
+            tracked.write_text("base")
+            git("add", ".")
+            git("commit", "-m", "Initial fixture")
+            stable = "v2.3.4"
+            git("tag", stable)
+            fix_subject = "fix: preserve the first change in the fixture"
+            tracked.write_text("fix")
+            git("commit", "-am", fix_subject)
+            full = "agents/v2.3.5.19"
+            git("tag", full)
+            tracked.write_text("feature")
+            feature_subject = "feat: include the second change in the fixture"
+            git("commit", "-am", feature_subject)
+            bin_path = root / "bin"
+            bin_path.mkdir()
+            fixture = root / "releases.json"
+            fixture.write_text(json.dumps([
+                {"tag_name": full, "tagName": full, "draft": False},
+                {"tag_name": stable, "tagName": stable, "draft": False},
+            ]))
+            fake_gh = bin_path / "gh"
+            fake_gh.write_text('#!/bin/bash\nset -eu\njq -r "${@: -1}" "$RELEASE_FIXTURE"\n')
+            fake_gh.chmod(0o755)
+            env.update(PATH=f"{bin_path}:{env['PATH']}", RELEASE_FIXTURE=str(fixture))
+            output = root / "notes.md"
+            subprocess.run([str(script), "--version", "2.3.5", "--output", str(output)],
+                           cwd=root, env=env, check=True, capture_output=True)
+            notes = output.read_text()
+            self.assertIn(fix_subject, notes)
+            self.assertIn(feature_subject, notes)
+            self.assertIn(stable, notes)
 
 
 if __name__ == "__main__":

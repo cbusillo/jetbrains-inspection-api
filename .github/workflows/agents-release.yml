@@ -23,6 +23,7 @@ jobs:
       version: ${{ steps.source.outputs.version }}
       sha: ${{ steps.source.outputs.sha }}
       digest: ${{ steps.digest.outputs.sha256 }}
+      existing: ${{ steps.existing.outputs.reuse }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -45,10 +46,21 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           test -z "$(git status --porcelain --untracked-files=all)"
+      - name: Reuse a verified published build on CI reruns
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.source.outputs.version }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          reuse="$(uv run scripts/agents-release.py reuse --repo "$GITHUB_REPOSITORY" \
+            --version "$VERSION" --source-sha "$SOURCE_SHA" --directory "$RUNNER_TEMP/existing-release")"
+          echo "reuse=$reuse" >> "$GITHUB_OUTPUT"
       - name: Run gates for a manually requested release
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && steps.existing.outputs.reuse != 'true'
         run: ./scripts/commit-gate.sh --ci
       - name: Build and verify the full plugin
+        if: steps.existing.outputs.reuse != 'true'
         env:
           VERSION: ${{ steps.source.outputs.version }}
         run: |
@@ -64,6 +76,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
       - name: Validate provenance and generate the custom repository
+        if: steps.existing.outputs.reuse != 'true'
         env:
           VERSION: ${{ steps.source.outputs.version }}
           SOURCE_SHA: ${{ steps.source.outputs.sha }}
@@ -77,6 +90,7 @@ jobs:
             --output "$RUNNER_TEMP/full-release/updatePlugins.xml"
       - name: Record archive digest
         id: digest
+        if: steps.existing.outputs.reuse != 'true'
         env:
           VERSION: ${{ steps.source.outputs.version }}
         run: |
@@ -84,6 +98,7 @@ jobs:
           sha256sum "jetbrains-inspection-api-$VERSION.zip" updatePlugins.xml > SHA256SUMS
           echo "sha256=$(sha256sum "jetbrains-inspection-api-$VERSION.zip" | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        if: steps.existing.outputs.reuse != 'true'
         with:
           name: full-release
           path: ${{ runner.temp }}/full-release/
@@ -92,6 +107,7 @@ jobs:
 
   release:
     needs: package
+    if: needs.package.outputs.existing != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -99,6 +115,11 @@ jobs:
       group: full-release-${{ needs.package.outputs.sha }}
       cancel-in-progress: false
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.package.outputs.sha }}
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: full-release
@@ -110,25 +131,17 @@ jobs:
           SOURCE_SHA: ${{ needs.package.outputs.sha }}
           EXPECTED_DIGEST: ${{ needs.package.outputs.digest }}
         run: |
-          cd artifact
-          sha256sum --check SHA256SUMS
-          test "$(sha256sum "jetbrains-inspection-api-$VERSION.zip" | cut -d ' ' -f1)" = "$EXPECTED_DIGEST"
-          tag="agents/v$VERSION"
-          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json id > /dev/null 2>&1; then
-            mkdir "$RUNNER_TEMP/existing"
-            gh release download "$tag" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/existing"
-            cmp SHA256SUMS "$RUNNER_TEMP/existing/SHA256SUMS"
-            (cd "$RUNNER_TEMP/existing" && sha256sum --check SHA256SUMS)
-          else
-            printf 'Full proof and recovery build from %s.\n\nArchive SHA-256: %s\n\nAdd this repository once in Settings → Plugins → Manage Plugin Repositories:\n\nhttps://github.com/%s/releases/latest/download/updatePlugins.xml\n\nThe IDE will offer subsequent full-build updates. Marketplace Stable approval is separate.\n' \
-              "$SOURCE_SHA" "$EXPECTED_DIGEST" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
-            gh release create "$tag" ./* --repo "$GITHUB_REPOSITORY" \
-              --target "$SOURCE_SHA" --title "Full build $VERSION" \
-              --notes-file "$RUNNER_TEMP/notes.md" --latest=false
-          fi
+          test "$(sha256sum "artifact/jetbrains-inspection-api-$VERSION.zip" | cut -d ' ' -f1)" = "$EXPECTED_DIGEST"
+          printf 'Full proof and recovery build from %s.\n\nArchive SHA-256: %s\n\nAdd this repository once in Settings → Plugins → Manage Plugin Repositories:\n\nhttps://github.com/%s/releases/latest/download/updatePlugins.xml\n\nThe IDE will offer subsequent full-build updates. Marketplace Stable approval is separate.\n' \
+            "$SOURCE_SHA" "$EXPECTED_DIGEST" "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/notes.md"
+          uv run scripts/agents-release.py publish --repo "$GITHUB_REPOSITORY" \
+            --directory artifact --version "$VERSION" --source-sha "$SOURCE_SHA" --notes "$RUNNER_TEMP/notes.md"
 
   latest:
     needs: [package, release]
+    if: >-
+      always() && needs.package.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -152,3 +165,16 @@ jobs:
           if [ "$newest" = "$version" ]; then
             gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --latest
           fi
+          mkdir -p "$RUNNER_TEMP/expected-feed" "$RUNNER_TEMP/public-release"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern updatePlugins.xml --dir "$RUNNER_TEMP/expected-feed"
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            --pattern SHA256SUMS --dir "$RUNNER_TEMP/public-release"
+          curl --fail --silent --show-error --location \
+            "https://github.com/$GITHUB_REPOSITORY/releases/latest/download/updatePlugins.xml" \
+            --output "$RUNNER_TEMP/public-release/updatePlugins.xml"
+          cmp "$RUNNER_TEMP/expected-feed/updatePlugins.xml" "$RUNNER_TEMP/public-release/updatePlugins.xml"
+          download_url="$(python3 -c 'import sys, xml.etree.ElementTree as E; print(E.parse(sys.argv[1]).getroot().find("plugin").get("url"))' "$RUNNER_TEMP/public-release/updatePlugins.xml")"
+          curl --fail --silent --show-error --location "$download_url" \
+            --output "$RUNNER_TEMP/public-release/jetbrains-inspection-api-$version.zip"
+          (cd "$RUNNER_TEMP/public-release" && sha256sum --check SHA256SUMS)

@@ -1034,10 +1034,11 @@ every automated full-build release.
 For recovery, dispatch **Full Build Release** on `main`; it reruns the commit
 gate. For a publication-only failure, rerun failed jobs while the original
 workflow artifact is retained (30 days). Existing assets are verified and never
-replaced. Rebuilding an already published commit produces different timestamps
-and intentionally refuses replacement; recover with the retained artifact or
-release a subsequent commit. Parallel builds publish separate releases, and
-the latest feed advances only to a higher version. To roll back an affected
+replaced. CI reruns reuse a complete published build after checking its source,
+digests and feed. Partial draft uploads resume from the retained workflow
+artifact; a rebuild with different timestamps intentionally refuses replacement.
+Parallel builds publish separate releases, and the latest feed advances only
+to a higher version. To roll back an affected
 install, remove the custom repository and use **Install Plugin from Disk** with
 a retained earlier GitHub release zip; re-add the repository after a corrected
 release. This is a manual downgrade, not an automatic downgrade policy.
