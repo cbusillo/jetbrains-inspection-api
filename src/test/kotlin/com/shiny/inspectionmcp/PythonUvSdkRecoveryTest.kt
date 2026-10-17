@@ -210,9 +210,60 @@ case "$1" in -V|--version) exec '$$real' "$@";; *) exit 42;; esac
             check(reused === sdk)
             check(reused.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
             val previousData = sdk.sdkAdditionalData
-            platform.setupSdkPaths(type, sdk, EmptyProgressIndicator())
+            val project = io.mockk.mockk<com.intellij.openapi.project.Project>(relaxed = true)
+            val request = PythonSdkPreparationRequest(project, root, System.currentTimeMillis() + 30_000,
+                EmptyProgressIndicator(), { true }, PythonSdkPreparationProgress { System.currentTimeMillis() })
+            check(!platform.recoverIncompleteSdk(request, sdk, type))
+            check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+            val registry = ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
+            registry.recordAddedSdk(sdk, helperWorktreeRoot(root))
+            try {
+                var writes = 0
+                val ownerLost = JetBrainsPythonSdkPreparationPlatform { action ->
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                        if (++writes == 2) registry.state.records.removeIf { it.sdkName == sdk.name && it.interpreterHome == home }
+                        action()
+                    } }
+                }
+                check(!ownerLost.recoverIncompleteSdk(request, sdk, type))
+                check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                registry.recordAddedSdk(sdk, helperWorktreeRoot(root))
+                val originalVersion = sdk.versionString
+                val changedVersion = "concurrent update"
+                writes = 0
+                val changedSdk = JetBrainsPythonSdkPreparationPlatform { action ->
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                        if (++writes == 2) sdk.sdkModificator.apply { versionString = changedVersion; commitChanges() }
+                        action()
+                    } }
+                }
+                check(!changedSdk.recoverIncompleteSdk(request, sdk, type))
+                check(sdk.versionString == changedVersion)
+                check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                    sdk.sdkModificator.apply { versionString = originalVersion; commitChanges() }
+                } }
+                val duplicate = platform.createDetachedSdk(ProjectJdkTable.getInstance().allJdks.toList(), home, type)
+                ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                    ProjectJdkTable.getInstance().addJdk(duplicate)
+                } }
+                try {
+                    check(!platform.recoverIncompleteSdk(request, sdk, type))
+                    check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                } finally {
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                        ProjectJdkTable.getInstance().removeJdk(duplicate)
+                    } }
+                }
+                check(platform.recoverIncompleteSdk(request, sdk, type))
+            } finally {
+                registry.state.records.removeIf { it.sdkName == sdk.name && it.interpreterHome == home }
+            }
             check(platform.setupIncompleteDetail(sdk, home) == null)
             check(sdk.sdkAdditionalData?.javaClass == previousData?.javaClass)
+            val recoveredData = org.jdom.Element("additional")
+            type.saveAdditionalData(requireNotNull(sdk.sdkAdditionalData), recoveredData)
+            check(com.intellij.openapi.util.JDOMUtil.areElementsEqual(nativeData, recoveredData))
             check(ProjectJdkTable.getInstance().allJdks.single { it.homePath == home } === sdk)
             val afterSetupResult = createUv()
             val afterSetup = afterSetupResult.javaClass.getMethod("getResult").invoke(afterSetupResult) as Sdk

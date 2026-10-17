@@ -419,7 +419,14 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   seconds. If the IDE has just registered the exact local SDK and is still
   populating its version and class roots, preparation observes that same SDK
   for up to ten seconds without mutating it; identity or registration-count
-  changes fail closed, and an SDK that remains incomplete returns HTTP 409.
+  changes fail closed. An SDK that remains incomplete can be recovered only
+  when its exact identity and interpreter home are recorded as created by the
+  helper for this worktree, no other open project uses it, and only one SDK
+  matches that home. Ownership and conflict refusals return HTTP 409;
+  unexpected setup failures keep the preparation-failed response. Recovery configures a
+  detached candidate with the same serialized Python/uv association, then
+  copies its complete roots and version onto the original SDK only after
+  rechecking ownership and unchanged SDK state under the write action.
   Its `detail` names the last observed missing setup requirement or the exceeded
   observation deadline. Observations
   that finish after the setup or request deadline cannot establish readiness.
@@ -438,8 +445,10 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   and assess an independent inspection. For a uv-created `.venv`, new detached
   SDKs load uv association data through the SDK type's serialization API before
   path setup. The association must survive serialization readback; unsupported
-  providers return `python_sdk_preparation_unsupported` before registration. Existing SDKs are never converted
-  or repaired implicitly. Failures use a
+  providers return `python_sdk_preparation_unsupported` before registration. Existing SDKs are never converted to another provider. Unowned SDKs
+  remain observation-only; helper-owned recovery keeps the registered SDK object and its native
+  additional data, subject to the SDK model's own copy semantics. The provider
+  class and serialized association remain unchanged. Failures use a
   `python_sdk_preparation_*` reason and remain fail-closed. A newly configured
   SDK that fails setup returns HTTP 500 with
   `python_sdk_preparation_setup_incomplete`; `detail` identifies the first failed
