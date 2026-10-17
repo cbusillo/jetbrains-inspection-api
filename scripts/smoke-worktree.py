@@ -159,7 +159,11 @@ def prepared_generated_roots(payload, root):
     return [
         (Path(target).resolve() / name).relative_to(root.resolve())
         for name in state.get("required_generated_state", [])
-        if name == ".venv"
+        if isinstance(name, str)
+        and Path(name).name == ".venv"
+        and not Path(name).is_absolute()
+        and ".." not in Path(name).parts
+        and (Path(target) / name).resolve().is_relative_to(root.resolve())
     ]
 
 
