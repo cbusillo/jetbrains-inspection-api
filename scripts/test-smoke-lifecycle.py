@@ -230,6 +230,22 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertTrue(any("--no-dry-run" in call for call in self.calls))
 
+    def test_preparation_cannot_authorize_generated_roots_outside_the_worktree(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        escaped = self.worktree / "scripts/.venv"
+        escaped.symlink_to(outside, target_is_directory=True)
+        state = {"configured": True, "execution_state": "succeeded", "target_worktree": str(self.worktree)}
+        for name in (None, 42, str(outside / ".venv"), "scripts/../../outside/.venv", "scripts/.venv"):
+            with self.subTest(path=name):
+                state["required_generated_state"] = [name]
+                roots = smoke.prepared_generated_roots({"repository_preparation": state}, self.worktree)
+                self.assertEqual(roots, [])
+        result = self.retire({"cleanup": {"status": "closed"}, "repository_preparation": state})
+        self.assertEqual(result["status"], "retained")
+        self.assertTrue(escaped.is_symlink())
+        self.assertEqual(self.calls, [])
+
     def test_unproven_preparation_keeps_interpreter(self):
         (self.source / ".git/info/exclude").write_text(".venv/\n")
         (self.worktree / ".venv").mkdir()
