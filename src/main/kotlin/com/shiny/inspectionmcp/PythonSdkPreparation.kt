@@ -9,6 +9,7 @@ import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.projectRoots.ProjectJdkTable
 import com.intellij.openapi.projectRoots.Sdk
 import com.intellij.openapi.projectRoots.SdkType
@@ -17,6 +18,7 @@ import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.ProjectRootManager
 import com.intellij.openapi.util.SystemInfo
+import com.intellij.openapi.util.JDOMUtil
 import com.intellij.openapi.util.io.FileUtil
 import org.jdom.Element
 import java.nio.file.Files
@@ -103,6 +105,7 @@ internal interface PythonSdkPreparationPlatform {
     fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk
     fun setupSdkPaths(type: SdkType, sdk: Sdk, indicator: ProgressIndicator)
     fun setupIncompleteDetail(sdk: Sdk, interpreterHome: String): String?
+    fun recoverIncompleteSdk(request: PythonSdkPreparationRequest, sdk: Sdk, type: SdkType): Boolean
     fun commit(
         project: Project,
         expectedModules: List<Module>,
@@ -172,13 +175,17 @@ internal class PythonSdkPreparationService(
             if (existing != null) {
                 request.progress.enterStage("existing_sdk_setup")
                 awaitExistingSdkSetup(request, existing, interpreterHome)?.let { failure ->
-                    return failureWithReadback(
-                        reason = failure.reason,
-                        request = request,
-                        expectedModules = snapshot.modules,
-                        interpreterHome = interpreterHome,
-                        detail = failure.detail,
-                    )
+                    if (failure.reason != "python_sdk_preparation_existing_sdk_incomplete" ||
+                        !platform.recoverIncompleteSdk(request, existing, type)
+                    ) {
+                        return failureWithReadback(
+                            reason = failure.reason,
+                            request = request,
+                            expectedModules = snapshot.modules,
+                            interpreterHome = interpreterHome,
+                            detail = failure.detail,
+                        )
+                    }
                 }
             }
             val detached = if (existing == null) {
@@ -449,6 +456,89 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         }
 
     override fun registeredSdks(): List<Sdk> = ProjectJdkTable.getInstance().allJdks.toList()
+
+    private data class RecoverySnapshot(
+        val name: String,
+        val home: String?,
+        val version: String?,
+        val additionalData: String,
+        val roots: Map<OrderRootType, List<String>>,
+    )
+
+    private fun recoverySnapshot(sdk: Sdk, type: SdkType): RecoverySnapshot {
+        val additional = Element("additional")
+        sdk.sdkAdditionalData?.let { type.saveAdditionalData(it, additional) }
+        return RecoverySnapshot(sdk.name, sdk.homePath, sdk.versionString,
+            JDOMUtil.writeElement(additional), OrderRootType.getAllTypes().associateWith { rootType ->
+                sdk.rootProvider.getUrls(rootType).toList()
+            })
+    }
+
+    private fun recoveryIsOwned(request: PythonSdkPreparationRequest, sdk: Sdk): Boolean {
+        if (request.project.isDisposed || !request.ownershipIsCurrent()) return false
+        val home = sdk.homePath ?: return false
+        if (registeredSdks().filter { it.sdkType.name == PYTHON_SDK_TYPE_NAME && normalizedHome(it) == normalizedHome(sdk) }
+                .singleOrNull() !== sdk) return false
+        val root = helperWorktreeRoot(request.projectRoot)
+        val registry = ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
+        if (registry.state.records.none { record ->
+                record.sdkName == sdk.name && record.interpreterHome == home &&
+                    canonicalWorktree(Path.of(record.worktreePath)) == root
+            }) return false
+        return ProjectManager.getInstance().openProjects.none { other ->
+            other !== request.project &&
+                (listOf(ProjectRootManager.getInstance(other).projectSdk) +
+                    ModuleManager.getInstance(other).modules.map { ModuleRootManager.getInstance(it).sdk })
+                    .filterNotNull().any { it === sdk || normalizedHome(it) == normalizedHome(sdk) }
+        }
+    }
+
+    private fun PythonSdkPreparationRequest.checkCurrent() {
+        indicator.checkCanceled()
+        if (System.currentTimeMillis() >= deadlineMs) throw PythonSdkPreparationDeadlineExceededException()
+        if (project.isDisposed || !ownershipIsCurrent()) throw ProcessCanceledException()
+    }
+
+    override fun recoverIncompleteSdk(request: PythonSdkPreparationRequest, sdk: Sdk, type: SdkType): Boolean {
+        request.checkCurrent()
+        val application = ApplicationManager.getApplication()
+        val before = application.runReadAction<RecoverySnapshot?> {
+            if (recoveryIsOwned(request, sdk)) recoverySnapshot(sdk, type) else null
+        } ?: return false
+        request.progress.enterStage("existing_sdk_recovery")
+        val candidate = SdkConfigurationUtil.createSdk(registeredSdks(), requireNotNull(before.home), type, null, helperSdkName())
+        val data = type.loadAdditionalData(candidate, JDOMUtil.load(before.additionalData)) ?: return false
+        if (data.javaClass != sdk.sdkAdditionalData?.javaClass) return false
+        runSdkWriteAction {
+            request.checkCurrent()
+            candidate.sdkModificator.apply {
+                sdkAdditionalData = data
+                commitChanges()
+            }
+        }
+        request.checkCurrent()
+        setupSdkPaths(type, candidate, request.indicator)
+        request.checkCurrent()
+        if (setupIncompleteDetail(candidate, requireNotNull(before.home)) != null ||
+            candidate.sdkAdditionalData?.javaClass != data.javaClass) return false
+        var recovered = false
+        runSdkWriteAction {
+            request.checkCurrent()
+            if (recoveryIsOwned(request, sdk) && recoverySnapshot(sdk, type) == before) {
+                sdk.sdkModificator.apply {
+                    removeAllRoots()
+                    for (rootType in OrderRootType.getAllTypes()) {
+                        candidate.rootProvider.getUrls(rootType).forEach { addRoot(it, rootType) }
+                    }
+                    versionString = candidate.versionString
+                    sdkAdditionalData = candidate.sdkAdditionalData
+                    commitChanges()
+                }
+                recovered = true
+            }
+        }
+        return recovered
+    }
 
     override fun pythonSdkType(): SdkType? = SdkType.findByName(PYTHON_SDK_TYPE_NAME)
 

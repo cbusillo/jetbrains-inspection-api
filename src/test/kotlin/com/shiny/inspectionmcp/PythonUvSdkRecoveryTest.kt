@@ -210,7 +210,40 @@ case "$1" in -V|--version) exec '$$real' "$@";; *) exit 42;; esac
             check(reused === sdk)
             check(reused.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
             val previousData = sdk.sdkAdditionalData
-            platform.setupSdkPaths(type, sdk, EmptyProgressIndicator())
+            val project = io.mockk.mockk<com.intellij.openapi.project.Project>(relaxed = true)
+            var owned = true
+            val request = PythonSdkPreparationRequest(project, root, System.currentTimeMillis() + 30_000,
+                EmptyProgressIndicator(), { owned }, PythonSdkPreparationProgress { System.currentTimeMillis() })
+            check(!platform.recoverIncompleteSdk(request, sdk, type))
+            check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+            val registry = ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
+            registry.recordAddedSdk(sdk, helperWorktreeRoot(root))
+            try {
+                var writes = 0
+                val ownerLost = JetBrainsPythonSdkPreparationPlatform { action ->
+                    if (++writes == 2) owned = false
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction(action) }
+                }
+                check(!ownerLost.recoverIncompleteSdk(request, sdk, type))
+                check(!owned)
+                check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                owned = true
+                val duplicate = platform.createDetachedSdk(ProjectJdkTable.getInstance().allJdks.toList(), home, type)
+                ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                    ProjectJdkTable.getInstance().addJdk(duplicate)
+                } }
+                try {
+                    check(!platform.recoverIncompleteSdk(request, sdk, type))
+                    check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                } finally {
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                        ProjectJdkTable.getInstance().removeJdk(duplicate)
+                    } }
+                }
+                check(platform.recoverIncompleteSdk(request, sdk, type))
+            } finally {
+                registry.state.records.removeIf { it.sdkName == sdk.name && it.interpreterHome == home }
+            }
             check(platform.setupIncompleteDetail(sdk, home) == null)
             check(sdk.sdkAdditionalData?.javaClass == previousData?.javaClass)
             check(ProjectJdkTable.getInstance().allJdks.single { it.homePath == home } === sdk)

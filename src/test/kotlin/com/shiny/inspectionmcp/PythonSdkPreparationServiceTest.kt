@@ -97,6 +97,23 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
+    fun `recovers one owned incomplete SDK without replacing its registered identity`() {
+        val interpreter = createVenv()
+        val existing = sdk("owned", interpreter.toString())
+        platform.registered += existing
+        platform.setupComplete = false
+        platform.recoveryOwned = true
+
+        val result = prepare()
+
+        assertTrue(result.prepared)
+        assertEquals("reused", result.operation)
+        assertSame(existing, platform.registered.single())
+        assertNull(platform.committedDetachedSdk)
+        assertEquals(listOf("recover", "commit", "persist", "readback"), platform.mutationEvents)
+    }
+
+    @Test
     fun `registration failure reports safe readback without assignment`() {
         createVenv()
         platform.forcedCommitResult = PythonSdkCommitResult(
@@ -824,6 +841,7 @@ class PythonSdkPreparationServiceTest {
         }
         var createdHome: String? = null
         var setupComplete = true
+        var recoveryOwned = false
         var setupCompleteResults: ArrayDeque<Boolean>? = null
         var registeredSdkResults: ArrayDeque<List<Sdk>>? = null
         var setupFailure: Throwable? = null
@@ -903,6 +921,14 @@ class PythonSdkPreparationServiceTest {
             val results = setupCompleteResults
             val complete = if (results == null) setupComplete else if (results.size > 1) results.removeFirst() else results.first()
             return if (complete) null else "SDK CLASSES roots are missing after path setup."
+        }
+
+        override fun recoverIncompleteSdk(request: PythonSdkPreparationRequest, sdk: Sdk, type: SdkType): Boolean {
+            if (!recoveryOwned) return false
+            assertSame(registered.single(), sdk)
+            mutationEvents += "recover"
+            setupComplete = true
+            return true
         }
 
         override fun commit(
