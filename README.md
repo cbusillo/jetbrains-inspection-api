@@ -445,8 +445,9 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   SDKs load uv association data through the SDK type's serialization API before
   path setup. The association must survive serialization readback; unsupported
   providers return `python_sdk_preparation_unsupported` before registration. Existing SDKs are never converted to another provider. Unowned SDKs
-  remain observation-only; helper-owned recovery keeps the registered object
-  and additional-data class. Failures use a
+  remain observation-only; helper-owned recovery keeps the registered SDK object and its native
+  additional data, subject to the SDK model's own copy semantics. The provider
+  class and serialized association remain unchanged. Failures use a
   `python_sdk_preparation_*` reason and remain fail-closed. A newly configured
   SDK that fails setup returns HTTP 500 with
   `python_sdk_preparation_setup_incomplete`; `detail` identifies the first failed

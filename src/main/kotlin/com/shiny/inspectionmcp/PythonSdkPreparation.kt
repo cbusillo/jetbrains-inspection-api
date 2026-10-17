@@ -474,16 +474,15 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             })
     }
 
-    private fun recoveryIsOwned(request: PythonSdkPreparationRequest, sdk: Sdk): Boolean {
+    private fun recoveryIsOwned(request: PythonSdkPreparationRequest, sdk: Sdk, owner: Triple<String, String, String>): Boolean {
         if (request.project.isDisposed || !request.ownershipIsCurrent()) return false
         val home = sdk.homePath ?: return false
         if (registeredSdks().filter { it.sdkType.name == PYTHON_SDK_TYPE_NAME && normalizedHome(it) == normalizedHome(sdk) }
                 .singleOrNull() !== sdk) return false
-        val root = helperWorktreeRoot(request.projectRoot)
         val registry = ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
         if (registry.state.records.none { record ->
-                record.sdkName == sdk.name && record.interpreterHome == home &&
-                    canonicalWorktree(Path.of(record.worktreePath)) == root
+                record.sdkName == owner.first && record.interpreterHome == owner.second &&
+                    record.worktreePath == owner.third && sdk.name == owner.first && home == owner.second
             }) return false
         return ProjectManager.getInstance().openProjects.none { other ->
             other !== request.project &&
@@ -502,8 +501,15 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     override fun recoverIncompleteSdk(request: PythonSdkPreparationRequest, sdk: Sdk, type: SdkType): Boolean {
         request.checkCurrent()
         val application = ApplicationManager.getApplication()
+        val root = helperWorktreeRoot(request.projectRoot)
+        val registry = application.getService(HelperSdkOwnershipRegistry::class.java)
+        val records = application.runReadAction<List<Triple<String, String, String>>> {
+            registry.state.records.filter { it.sdkName == sdk.name && it.interpreterHome == sdk.homePath }
+                .map { Triple(it.sdkName, it.interpreterHome, it.worktreePath) }
+        }
+        val owner = records.firstOrNull { canonicalWorktree(Path.of(it.third)) == root } ?: return false
         val before = application.runReadAction<RecoverySnapshot?> {
-            if (recoveryIsOwned(request, sdk)) recoverySnapshot(sdk, type) else null
+            if (recoveryIsOwned(request, sdk, owner)) recoverySnapshot(sdk, type) else null
         } ?: return false
         request.progress.enterStage("existing_sdk_recovery")
         val candidate = SdkConfigurationUtil.createSdk(registeredSdks(), requireNotNull(before.home), type, null, helperSdkName())
@@ -524,14 +530,15 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         var recovered = false
         runSdkWriteAction {
             request.checkCurrent()
-            if (recoveryIsOwned(request, sdk) && recoverySnapshot(sdk, type) == before) {
+            if (recoveryIsOwned(request, sdk, owner) && recoverySnapshot(sdk, type) == before) {
+                val originalData = sdk.sdkAdditionalData
                 sdk.sdkModificator.apply {
                     removeAllRoots()
                     for (rootType in OrderRootType.getAllTypes()) {
                         candidate.rootProvider.getUrls(rootType).forEach { addRoot(it, rootType) }
                     }
                     versionString = candidate.versionString
-                    sdkAdditionalData = candidate.sdkAdditionalData
+                    sdkAdditionalData = originalData
                     commitChanges()
                 }
                 recovered = true
