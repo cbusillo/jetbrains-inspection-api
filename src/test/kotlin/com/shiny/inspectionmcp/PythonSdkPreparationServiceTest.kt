@@ -104,9 +104,9 @@ class PythonSdkPreparationServiceTest {
         platform.setupComplete = false
         platform.recoveryOwned = true
 
-        val result = prepare()
+        val result = prepare(deadlineMs = 30_000)
 
-        assertTrue(result.prepared)
+        assertTrue(result.prepared, result.toString())
         assertEquals("reused", result.operation)
         assertSame(existing, platform.registered.single())
         assertNull(platform.committedDetachedSdk)
