@@ -492,7 +492,7 @@ necessary: public path profiling skips out-of-scope files before recording a
 path and cannot preserve the unexpected-file check. Activity and per-kind
 completion counters are diagnostics only and are no longer collected.
 
-Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which copies maintained fixtures outside the plugin checkout; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
+Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates isolated linked worktrees containing the maintained fixtures; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
 Run the focused regression suite:
 

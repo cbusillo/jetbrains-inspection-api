@@ -48,6 +48,8 @@ class SmokeLifecycle(unittest.TestCase):
             ["git", "init", "-q", "-b", "main", str(self.source)], check=True
         )
         (self.source / "source.py").write_text('print("fixture")\n')
+        (self.source / "scripts").mkdir()
+        (self.source / "scripts/maintenance.py").write_text('print("maintenance")\n')
         subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
         subprocess.run(
             [
@@ -193,6 +195,38 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertEqual(
             (archive / ".idea/misc.xml").read_bytes(), b"prepared project model"
+        )
+        self.assertTrue(any("--no-dry-run" in call for call in self.calls))
+
+    def test_nested_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(
+        self,
+    ):
+        (self.source / ".git/info/exclude").write_text(".idea/\n.venv/\n")
+        (self.worktree / "scripts/.idea").mkdir()
+        (self.worktree / "scripts/.idea/misc.xml").write_bytes(b"prepared project model")
+        (self.worktree / "scripts/.venv/bin").mkdir(parents=True)
+        (self.worktree / "scripts/.venv/pyvenv.cfg").write_bytes(b"fixture interpreter config")
+        (self.worktree / "scripts/.venv/bin/python").symlink_to("/fixture/interpreter")
+        payload = {
+            "cleanup": {"status": "closed"},
+            "repository_preparation": {
+                "configured": True,
+                "execution_state": "succeeded",
+                "target_worktree": str(self.worktree),
+                "required_generated_state": ["scripts/.venv", "scripts/.idea"],
+            },
+        }
+        result = self.retire(payload)
+        self.assertEqual(result["status"], "removed")
+        archive = Path(result["generated_state_archive"])
+        self.assertEqual(
+            (archive / "scripts/.venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config"
+        )
+        self.assertEqual(
+            (archive / "scripts/.venv/bin/python").readlink(), Path("/fixture/interpreter")
+        )
+        self.assertEqual(
+            (archive / "scripts/.idea/misc.xml").read_bytes(), b"prepared project model"
         )
         self.assertTrue(any("--no-dry-run" in call for call in self.calls))
 

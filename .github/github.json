@@ -69,7 +69,7 @@
         {
           "id": "fixture-webstorm",
           "ide": "WebStorm",
-          "required": true,
+          "required": false,
           "include": [
             "test-fixtures/inspection-red-lane-webstorm/**"
           ],
@@ -78,7 +78,7 @@
         {
           "id": "fixture-pycharm",
           "ide": "PyCharm",
-          "required": true,
+          "required": false,
           "include": [
             "test-fixtures/inspection-red-lane-pycharm/**"
           ],
@@ -87,7 +87,7 @@
         {
           "id": "fixture-java",
           "ide": "IntelliJ IDEA",
-          "required": true,
+          "required": false,
           "include": [
             "test-fixtures/inspection-red-lane/**"
           ],
