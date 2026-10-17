@@ -228,6 +228,21 @@ case "$1" in -V|--version) exec '$$real' "$@";; *) exit 42;; esac
                 check(!ownerLost.recoverIncompleteSdk(request, sdk, type))
                 check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
                 registry.recordAddedSdk(sdk, helperWorktreeRoot(root))
+                val originalVersion = sdk.versionString
+                val changedVersion = "concurrent update"
+                writes = 0
+                val changedSdk = JetBrainsPythonSdkPreparationPlatform { action ->
+                    ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                        if (++writes == 2) sdk.sdkModificator.apply { versionString = changedVersion; commitChanges() }
+                        action()
+                    } }
+                }
+                check(!changedSdk.recoverIncompleteSdk(request, sdk, type))
+                check(sdk.versionString == changedVersion)
+                check(sdk.rootProvider.getFiles(OrderRootType.CLASSES).isEmpty())
+                ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
+                    sdk.sdkModificator.apply { versionString = originalVersion; commitChanges() }
+                } }
                 val duplicate = platform.createDetachedSdk(ProjectJdkTable.getInstance().allJdks.toList(), home, type)
                 ApplicationManager.getApplication().invokeAndWait { ApplicationManager.getApplication().runWriteAction {
                     ProjectJdkTable.getInstance().addJdk(duplicate)

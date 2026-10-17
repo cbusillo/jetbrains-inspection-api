@@ -422,7 +422,8 @@ clients should keep using `/route`, `/trigger`, `/wait`, `/status`, and
   changes fail closed. An SDK that remains incomplete can be recovered only
   when its exact identity and interpreter home are recorded as created by the
   helper for this worktree, no other open project uses it, and only one SDK
-  matches that home. Otherwise it returns HTTP 409. Recovery configures a
+  matches that home. Ownership and conflict refusals return HTTP 409;
+  unexpected setup failures keep the preparation-failed response. Recovery configures a
   detached candidate with the same serialized Python/uv association, then
   copies its complete roots and version onto the original SDK only after
   rechecking ownership and unchanged SDK state under the write action.

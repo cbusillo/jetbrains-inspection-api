@@ -513,38 +513,42 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         } ?: return false
         request.progress.enterStage("existing_sdk_recovery")
         val candidate = SdkConfigurationUtil.createSdk(registeredSdks(), requireNotNull(before.home), type, null, helperSdkName())
-        val data = type.loadAdditionalData(candidate, JDOMUtil.load(before.additionalData)) ?: return false
-        if (data.javaClass != sdk.sdkAdditionalData?.javaClass) return false
-        runSdkWriteAction {
-            request.checkCurrent()
-            candidate.sdkModificator.apply {
-                sdkAdditionalData = data
-                commitChanges()
-            }
-        }
-        request.checkCurrent()
-        setupSdkPaths(type, candidate, request.indicator)
-        request.checkCurrent()
-        if (setupIncompleteDetail(candidate, requireNotNull(before.home)) != null ||
-            candidate.sdkAdditionalData?.javaClass != data.javaClass) return false
-        var recovered = false
-        runSdkWriteAction {
-            request.checkCurrent()
-            if (recoveryIsOwned(request, sdk, owner) && recoverySnapshot(sdk, type) == before) {
-                val originalData = sdk.sdkAdditionalData
-                sdk.sdkModificator.apply {
-                    removeAllRoots()
-                    for (rootType in OrderRootType.getAllTypes()) {
-                        candidate.rootProvider.getUrls(rootType).forEach { addRoot(it, rootType) }
-                    }
-                    versionString = candidate.versionString
-                    sdkAdditionalData = originalData
+        try {
+            val data = type.loadAdditionalData(candidate, JDOMUtil.load(before.additionalData)) ?: return false
+            if (data.javaClass != sdk.sdkAdditionalData?.javaClass) return false
+            runSdkWriteAction {
+                request.checkCurrent()
+                candidate.sdkModificator.apply {
+                    sdkAdditionalData = data
                     commitChanges()
                 }
-                recovered = true
             }
+            request.checkCurrent()
+            setupSdkPaths(type, candidate, request.indicator)
+            request.checkCurrent()
+            if (setupIncompleteDetail(candidate, requireNotNull(before.home)) != null ||
+                candidate.sdkAdditionalData?.javaClass != data.javaClass) return false
+            var recovered = false
+            runSdkWriteAction {
+                request.checkCurrent()
+                if (recoveryIsOwned(request, sdk, owner) && recoverySnapshot(sdk, type) == before) {
+                    val originalData = sdk.sdkAdditionalData
+                    sdk.sdkModificator.apply {
+                        removeAllRoots()
+                        for (rootType in OrderRootType.getAllTypes()) {
+                            candidate.rootProvider.getUrls(rootType).forEach { addRoot(it, rootType) }
+                        }
+                        versionString = candidate.versionString
+                        sdkAdditionalData = originalData
+                        commitChanges()
+                    }
+                    recovered = true
+                }
+            }
+            return recovered
+        } finally {
+            if (candidate is com.intellij.openapi.Disposable) com.intellij.openapi.util.Disposer.dispose(candidate)
         }
-        return recovered
     }
 
     override fun pythonSdkType(): SdkType? = SdkType.findByName(PYTHON_SDK_TYPE_NAME)
