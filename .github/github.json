@@ -50,8 +50,69 @@
       "mcpServerJar": "./gradlew :mcp-server-jvm:mcpServerJar"
     },
     "inspection": {
-      "ide": "IntelliJ IDEA",
-      "scopePreference": "changed_files"
+      "scopePreference": "changed_files",
+      "prepare": {
+        "python": {
+          "version": "3.12",
+          "moduleName": "inspection-api-scripts",
+          "projectPath": "scripts",
+          "pep723Scripts": [
+            "install-local-plugin.py"
+          ],
+          "requiredGeneratedState": [
+            ".venv",
+            ".idea"
+          ]
+        }
+      },
+      "lanes": [
+        {
+          "id": "fixture-webstorm",
+          "ide": "WebStorm",
+          "required": true,
+          "include": [
+            "test-fixtures/inspection-red-lane-webstorm/**"
+          ],
+          "projectPath": "test-fixtures/inspection-red-lane-webstorm"
+        },
+        {
+          "id": "fixture-pycharm",
+          "ide": "PyCharm",
+          "required": true,
+          "include": [
+            "test-fixtures/inspection-red-lane-pycharm/**"
+          ],
+          "projectPath": "test-fixtures/inspection-red-lane-pycharm"
+        },
+        {
+          "id": "fixture-java",
+          "ide": "IntelliJ IDEA",
+          "required": true,
+          "include": [
+            "test-fixtures/inspection-red-lane/**"
+          ],
+          "projectPath": "test-fixtures/inspection-red-lane"
+        },
+        {
+          "id": "python",
+          "ide": "PyCharm",
+          "required": true,
+          "include": [
+            "scripts/*.py",
+            "scripts/**/*.py"
+          ],
+          "projectPath": "scripts"
+        },
+        {
+          "id": "jvm",
+          "ide": "IntelliJ IDEA",
+          "required": true,
+          "include": [
+            "*",
+            "**/*"
+          ]
+        }
+      ]
     },
     "manualSmoke": {
       "automatedIde": "JB_INSPECT_HELPER=\"${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}\" ./scripts/test-automated.sh",

@@ -129,6 +129,18 @@ evidence.
 
 ## Agent inspection helper
 
+Maintenance Python scripts use a nested PyCharm project under `scripts/`;
+Kotlin/Java/Gradle and the remaining files retain the root IntelliJ project.
+The configured assessment prepares the ignored `scripts/.venv` and
+`scripts/.idea` through the maintained generator, with dependency metadata
+from `install-local-plugin.py`. All current maintenance scripts use the
+standard library; extend that PEP 723 input set if their dependencies change.
+The root Java/Gradle bindings are preserved. This uses the nested structured
+preparation added in [codex-skills#2034](https://github.com/cbusillo/codex-skills/issues/2034);
+use a catalog containing that change. Start `agent-inspect` directly from the
+linked worktree; it runs each selected lane against its own project and SDK.
+Preparation alone does not prove IDE readiness or a decisive inspection.
+
 The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
 primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
 workflows while MCP remains supported).
