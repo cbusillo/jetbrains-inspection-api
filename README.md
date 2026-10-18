@@ -1010,6 +1010,10 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
 
 ### Full builds and automatic IDE updates
 
+[DIRECTION.md](DIRECTION.md) and [Director decision Q341](https://github.com/cbusillo/jetbrains-inspection-api/issues/506#issuecomment-6199420498)
+set the agreed finish line: publish a full build on GitHub after each merge to
+`main`; Marketplace Stable publication remains Chris's decision.
+
 The **CI** workflow calls **Full Build Release** after its commit gate passes
 for each push to `main`. Each build includes all features,
 including internal API uses still awaiting Marketplace Stable approval. It does
