@@ -192,7 +192,7 @@ fi
 if [ -n "$IDE_VERSION" ]; then
 	CMD+=(--ide-version "$IDE_VERSION")
 fi
-CMD+=(--scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+CMD+=(--native-project-scope --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 
 "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"

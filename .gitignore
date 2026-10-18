@@ -98,3 +98,8 @@ mcp-server/coverage/
 /mcp-server-jvm/build/
 /inspection-core/build/
 /handoff*.md
+
+# Generated Python inspection project; root Gradle bindings stay shared.
+/scripts/.venv/
+/scripts/.idea/
+/scripts/__pycache__/
