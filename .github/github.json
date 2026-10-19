@@ -217,6 +217,7 @@
     "instructions": "README.md#releases",
     "stopBoundaries": "DIRECTION.md#stop-boundaries",
     "stablePublishEnvironment": "stable-marketplace",
-    "publicationTrigger": "v* tag push for Stable; successful main push CI for GitHub full builds"
+    "agentsPublishEnvironment": "agents-marketplace",
+    "publicationTrigger": "v* tag push for Stable; successful main push CI for GitHub full builds and the Marketplace agents channel"
   }
 }
