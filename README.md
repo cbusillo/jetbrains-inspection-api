@@ -1039,19 +1039,23 @@ The zip and `updatePlugins.xml` come from the same verified artifact. The feed
 uses the packaged plugin ID, version, dependencies and IDE range. The release
 also records `SHA256SUMS`. The supported range remains in `build.gradle.kts`.
 This follows JetBrains' [custom repository format](https://plugins.jetbrains.com/docs/intellij/custom-plugin-repository.html).
-The separate `agents` Marketplace channel trial is at
-`https://plugins.jetbrains.com/plugins/agents/29580`; a successful upload alone
-does not establish approval or availability. The GitHub repository above receives
-every automated full-build release.
+Each full build also goes to the Marketplace `agents` channel at
+`https://plugins.jetbrains.com/plugins/agents/29580`. After the GitHub release
+is published, the workflow's `marketplace` job downloads that release's archive,
+checks it against the release's `SHA256SUMS`, feed and clean source provenance,
+and uploads exactly those bytes to `agents` with
+`scripts/agents-release.py marketplace`. It runs in the `agents-marketplace`
+GitHub environment, which holds the upload token. It never targets Stable and
+never changes another Marketplace update. A version already on `agents` is not
+uploaded again, and a build older than the newest `agents` build is skipped.
+A Marketplace failure fails only this job; the GitHub release and update feed
+stay published. Rerun the failed job to retry.
 
-For an authorized `agents` trial, upload the downloaded, verified GitHub zip
-with `scripts/publish-agents-artifact.sh --archive /path/to/plugin.zip --version
-X.Y.Z.N --source-sha COMMIT --expected-sha256 DIGEST`, using the recorded release
-commit and digest. It requires the existing publisher credential, validates
-clean artifact provenance before any network write, and always selects `agents`.
-It never rebuilds or targets Stable. Gradle's `publishPlugin` remains restricted
-to the existing Stable policy. An upload is not approval; record the returned
-update ID and read its approval/listing and verifier state afterward.
+An upload is not approval. Marketplace auto-approves `agents` uploads only while
+the plugin has an approved Stable update less than 120 days old. The job reports
+an update still waiting for moderation, and warns 30 days before and after that
+window closes. Gradle's `publishPlugin` remains restricted to the existing
+Stable policy.
 
 For recovery, dispatch **Full Build Release** on `main`; it reruns the commit
 gate. For a publication-only failure, rerun failed jobs while the original
@@ -1110,7 +1114,7 @@ The GitHub Release is created before Marketplace publication, preserving the
 existing Stable failure semantics. Its job has GitHub contents write permission
 but never receives `PUBLISH_TOKEN`. The final Marketplace job uses the
 `stable-marketplace` GitHub environment (restricted to `v*` tags, with a required
-reviewer), which is the only place `PUBLISH_TOKEN` exists, has read-only repository permission, runs no Gradle tasks, and uploads through the bounded
+reviewer), which is the only Stable workflow that receives `PUBLISH_TOKEN`, has read-only repository permission, runs no Gradle tasks, and uploads through the bounded
 `scripts/publish-stable-artifact.sh` after revalidating the tag, archive,
 embedded clean source commit, and independently recorded digest. Existing
 Marketplace updates are never replaced or resubmitted by this workflow change.

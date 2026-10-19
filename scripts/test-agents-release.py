@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the packaged metadata used by IDE automatic updates."""
 
+from datetime import UTC, datetime, timedelta
 import importlib.util
 import hashlib
 import io
@@ -94,7 +95,7 @@ class FullReleaseTest(FullReleaseFixture):
             release.update_feed(self.archive(), self.version, self.sha, self.url.replace("https:", "http:"))
 
 
-class PublishTest(FullReleaseFixture):
+class PublishFixture(FullReleaseFixture):
     def setUp(self):
         super().setUp()
         self.repo = "fixture/inspection-api"
@@ -148,6 +149,9 @@ class PublishTest(FullReleaseFixture):
     def publish(self):
         release.publish_release(self.directory, self.repo, self.version, self.sha, self.notes)
 
+
+class PublishTest(PublishFixture):
+
     def test_uploads_all_assets_before_publishing_and_reuses_without_reupload(self):
         self.publish()
         self.assertFalse(self.record["draft"])
@@ -199,47 +203,88 @@ class PublishTest(FullReleaseFixture):
         self.assertEqual(self.uploads, uploads)
 
 
-class AgentsUploadTest(FullReleaseFixture):
-    def test_uploads_verified_bytes_and_refuses_invalid_artifacts_before_network(self):
-        script = Path(__file__).with_name("publish-agents-artifact.sh").resolve()
-        bin_path = self.root / "bin"
-        bin_path.mkdir()
-        receipt = self.root / "request.json"
-        fake_curl = bin_path / "curl"
-        fake_curl.write_text("#!" + sys.executable + '''
-import json, os, pathlib, sys
-fields = dict(value.split("=", 1) for index, value in enumerate(sys.argv) if index and sys.argv[index-1] == "--form")
-result = {"fields": fields, "authenticated": bool(sys.stdin.read().strip())}
-pathlib.Path(os.environ["UPLOAD_RECEIPT"]).write_text(json.dumps(result))
-print(json.dumps(result))
-''')
-        fake_curl.chmod(0o755)
-        env = {**os.environ, "PATH": f"{bin_path}:{os.environ['PATH']}",
-               "PUBLISH_TOKEN": "fixture-token", "UPLOAD_RECEIPT": str(receipt)}
+class MarketplaceDeliveryTest(PublishFixture):
+    def setUp(self):
+        super().setUp()
+        self.publish()
+        self.now = datetime(2026, 10, 18, tzinfo=UTC)
+        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
+        self.channel_updates = []
+        self.marketplace_uploads = []
+        self.approve = True
+        self.upload_failure = None
+        patch.object(release, "marketplace", side_effect=self.remote_marketplace).start()
 
-        def upload(archive, source, digest):
-            return subprocess.run([str(script), "--archive", str(archive), "--version", self.version,
-                                   "--source-sha", source, "--expected-sha256", digest],
-                                  env=env, capture_output=True, text=True)
+    def marketplace_update(self, identifier, version, channel, created, approve=True):
+        return {"id": identifier, "version": version, "channel": channel, "approve": approve,
+                "listed": approve, "hidden": False, "cdate": str(int(created.timestamp() * 1000))}
 
-        archive = self.archive()
-        result = upload(archive, self.sha, hashlib.sha256(archive.read_bytes()).hexdigest())
-        self.assertEqual(result.returncode, 0, result.stderr)
-        request = json.loads(result.stdout)
-        self.assertTrue(request["fields"]["channel"])
-        self.assertNotEqual(request["fields"]["channel"].casefold(), "stable")
-        self.assertEqual(request["fields"]["file"], f"@{archive}")
-        self.assertTrue(request["authenticated"])
-        receipt.unlink()
-        for changes in ({"dirty": "true"}, {"source": "b" * 40}):
-            archive = self.archive(**changes)
-            result = upload(archive, self.sha, hashlib.sha256(archive.read_bytes()).hexdigest())
-            self.assertNotEqual(result.returncode, 0)
-            self.assertFalse(receipt.exists())
-        archive = self.archive()
-        result = upload(archive, self.sha, "0" * 64)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertFalse(receipt.exists())
+    def remote_marketplace(self, path, *form):
+        if path.startswith("/api/updates/upload"):
+            if self.upload_failure:
+                raise release.MarketplaceError(self.upload_failure)
+            fields = dict(field.split("=", 1) for field in form)
+            archive = Path(fields["file"].removeprefix("@"))
+            self.marketplace_uploads.append({**fields, "bytes": archive.read_bytes()})
+            update = self.marketplace_update(100 + len(self.marketplace_uploads), self.version,
+                                             fields["channel"], self.now, self.approve)
+            self.channel_updates.insert(0, update)
+            return update
+        channel = path.split("channel=", 1)[1].split("&", 1)[0]
+        updates = self.stable if channel == "" else self.channel_updates
+        return [update for update in updates if update["channel"] == channel]
+
+    def deliver(self, name="delivery"):
+        return release.deliver_to_marketplace(self.root / name, self.repo, self.version, self.sha, self.now)
+
+    def github_archive(self):
+        return self.assets[release.bundle_files(self.version)[0]]
+
+    def test_uploads_the_published_github_archive_once_outside_stable(self):
+        self.deliver()
+        self.deliver("rerun")
+        self.assertEqual(len(self.marketplace_uploads), 1)
+        upload = self.marketplace_uploads[0]
+        self.assertEqual(upload["bytes"], self.github_archive())
+        self.assertTrue(upload["channel"])
+        self.assertNotEqual(upload["channel"].casefold(), "stable")
+        self.assertEqual([update["version"] for update in self.stable], ["1.0.0"])
+
+    def test_refuses_before_any_marketplace_request_without_a_verified_github_release(self):
+        self.assets["updatePlugins.xml"] = b"tampered"
+        with self.assertRaises(ValueError):
+            self.deliver()
+        self.record["draft"] = True
+        self.assets["updatePlugins.xml"] = (self.directory / "updatePlugins.xml").read_bytes()
+        with self.assertRaises(ValueError):
+            self.deliver("draft")
+        self.assertEqual(release.marketplace.call_count, 0)
+
+    def test_marketplace_failure_leaves_the_github_release_published(self):
+        published = dict(self.assets)
+        self.upload_failure = "HTTP 500"
+        with self.assertRaises(release.MarketplaceError):
+            self.deliver()
+        self.assertFalse(self.record["draft"])
+        self.assertEqual(self.assets, published)
+
+    def test_does_not_upload_an_older_build_after_a_newer_one(self):
+        newer = ".".join([*self.version.split(".")[:3], str(int(self.version.split(".")[3]) + 1)])
+        self.channel_updates = [self.marketplace_update(90, newer, release.MARKETPLACE_CHANNEL, self.now)]
+        self.deliver()
+        self.assertEqual(self.marketplace_uploads, [])
+
+    def test_reports_moderation_and_an_ended_auto_approval_window(self):
+        self.approve = False
+        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=200))]
+        report = self.deliver()
+        warnings = [line for line in report if line.startswith("::warning::")]
+        self.assertEqual(len(warnings), 2)
+        self.assertTrue(any("moderation" in line for line in warnings))
+        self.approve = True
+        self.channel_updates.clear()
+        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
+        self.assertFalse(any(line.startswith("::warning::") for line in self.deliver("approved")))
 
 
 class ReleaseReadTest(unittest.TestCase):

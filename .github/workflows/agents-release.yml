@@ -132,6 +132,35 @@ jobs:
           uv run scripts/agents-release.py publish --repo "$GITHUB_REPOSITORY" \
             --directory artifact --version "$VERSION" --source-sha "$SOURCE_SHA" --notes "$RUNNER_TEMP/notes.md"
 
+  marketplace:
+    needs: [package, release]
+    if: >-
+      always() && needs.package.result == 'success' &&
+      (needs.release.result == 'success' || needs.release.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: agents-marketplace
+    permissions:
+      contents: read
+    concurrency:
+      group: agents-marketplace
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          ref: ${{ needs.package.outputs.sha }}
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Upload the published GitHub full build to the Marketplace agents channel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          VERSION: ${{ needs.package.outputs.version }}
+          SOURCE_SHA: ${{ needs.package.outputs.sha }}
+        run: |
+          uv run scripts/agents-release.py marketplace --repo "$GITHUB_REPOSITORY" \
+            --directory "$RUNNER_TEMP/published" --version "$VERSION" --source-sha "$SOURCE_SHA" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+
   latest:
     needs: [package, release]
     if: >-

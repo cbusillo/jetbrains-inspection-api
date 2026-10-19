@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Version and describe a clean full-build release for a custom repository."""
+"""Version, publish and deliver a clean full-build release to GitHub and the Marketplace agents channel."""
 
 import argparse
+from datetime import UTC, datetime, timedelta
 import hashlib
 import io
 import json
@@ -13,6 +14,13 @@ import tempfile
 from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
 from zipfile import ZipFile
+
+MARKETPLACE = "https://plugins.jetbrains.com"
+MARKETPLACE_PLUGIN = 29580
+MARKETPLACE_XML_ID = "com.shiny.inspection.api"
+MARKETPLACE_CHANNEL = "agents"
+AUTO_APPROVAL_WINDOW = timedelta(days=120)
+AUTO_APPROVAL_NOTICE = timedelta(days=30)
 
 
 def release_version(properties: Path, sequence: int) -> str:
@@ -152,6 +160,77 @@ def publish_release(directory: Path, repo: str, version: str, source_sha: str, n
         gh("release", "edit", tag, "--repo", repo, "--draft=false", "--latest=false")
 
 
+class MarketplaceError(RuntimeError):
+    pass
+
+
+def marketplace(path: str, *form: str) -> object:
+    token = os.environ.get("PUBLISH_TOKEN")
+    if not token:
+        raise ValueError("PUBLISH_TOKEN is required for Marketplace requests")
+    command = ["curl", "--fail-with-body", "--silent", "--show-error", "--header", "@-"]
+    for field in form:
+        command += ["--form", field]
+    result = subprocess.run([*command, f"{MARKETPLACE}{path}"], input=f"Authorization: Bearer {token}\n",
+                            capture_output=True, text=True)
+    if result.returncode:
+        detail = (result.stdout.strip() or result.stderr.strip())[:2000]
+        raise MarketplaceError(f"Marketplace request {path.split('?')[0]} failed: {detail}")
+    return json.loads(result.stdout)
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def is_listed(update: dict) -> bool:
+    return bool(update.get("approve") and update.get("listed") and not update.get("hidden"))
+
+
+def auto_approval_ends(stable_updates: list[dict]) -> datetime | None:
+    approved = [int(update["cdate"]) for update in stable_updates if is_listed(update)]
+    if not approved:
+        return None
+    return datetime.fromtimestamp(max(approved) / 1000, UTC) + AUTO_APPROVAL_WINDOW
+
+
+def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha: str,
+                           now: datetime) -> list[str]:
+    """Upload the published GitHub archive to the agents channel once; return report lines."""
+    if not reuse_release(directory, repo, version, source_sha):
+        raise ValueError("The GitHub release must be published and verified before the Marketplace upload")
+    archive = directory / bundle_files(version)[0]
+    updates = f"/api/plugins/{MARKETPLACE_PLUGIN}/updates"
+    channel = marketplace(f"{updates}?channel={MARKETPLACE_CHANNEL}&size=100")
+    report = []
+    existing = [update for update in channel if update["version"] == version]
+    newest = max((update["version"] for update in channel), key=version_key, default=None)
+    if existing:
+        update = existing[0]
+        report.append(f"{version} was already uploaded to {MARKETPLACE_CHANNEL}; not uploading again.")
+    elif newest and version_key(newest) > version_key(version):
+        return [f"Skipped {version}: {MARKETPLACE_CHANNEL} already has newer build {newest}."]
+    else:
+        update = marketplace("/api/updates/upload", f"xmlId={MARKETPLACE_XML_ID}",
+                             f"file=@{archive}", f"channel={MARKETPLACE_CHANNEL}")
+        if update.get("version") != version or update.get("channel") != MARKETPLACE_CHANNEL:
+            raise MarketplaceError(f"Marketplace recorded an unexpected update: {update.get('id')}")
+        report.append(f"Uploaded {version} to {MARKETPLACE_CHANNEL} as update {update['id']}.")
+    if is_listed(update):
+        report.append(f"Update {update['id']} is approved and listed on {MARKETPLACE_CHANNEL}.")
+    else:
+        report.append(f"::warning::Update {update['id']} ({version}) is waiting for JetBrains moderation "
+                      f"and is not yet listed on {MARKETPLACE_CHANNEL}. The GitHub release is unaffected.")
+    ends = auto_approval_ends(marketplace(f"{updates}?channel=&size=100"))
+    if ends is None or ends <= now:
+        report.append(f"::warning::Agents auto-approval no longer applies: no approved Stable update in the "
+                      f"last {AUTO_APPROVAL_WINDOW.days} days. New agents uploads go to normal moderation.")
+    elif ends - now <= AUTO_APPROVAL_NOTICE:
+        report.append(f"::warning::Agents auto-approval ends {ends:%B} {ends.day}, {ends.year}, {AUTO_APPROVAL_WINDOW.days} days "
+                      "after the latest approved Stable update. Later uploads go to normal moderation.")
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -164,12 +243,7 @@ def main() -> None:
     feed_parser.add_argument("--source-sha", required=True)
     feed_parser.add_argument("--download-url", required=True)
     feed_parser.add_argument("--output", type=Path, required=True)
-    verify_parser = commands.add_parser("verify")
-    verify_parser.add_argument("--archive", type=Path, required=True)
-    verify_parser.add_argument("--version", required=True)
-    verify_parser.add_argument("--source-sha", required=True)
-    verify_parser.add_argument("--expected-sha256", required=True)
-    for command in ("reuse", "publish"):
+    for command in ("reuse", "publish", "marketplace"):
         release_parser = commands.add_parser(command)
         release_parser.add_argument("--directory", type=Path, required=True)
         release_parser.add_argument("--repo", required=True)
@@ -184,12 +258,10 @@ def main() -> None:
         args.output.write_bytes(update_feed(args.archive, args.version, args.source_sha, args.download_url))
     elif args.command == "reuse":
         print(str(reuse_release(args.directory, args.repo, args.version, args.source_sha)).lower())
-    elif args.command == "verify":
-        if not re.fullmatch(r"[0-9a-f]{64}", args.expected_sha256):
-            raise ValueError("A recorded archive SHA-256 is required")
-        if hashlib.sha256(args.archive.read_bytes()).hexdigest() != args.expected_sha256:
-            raise ValueError("Archive does not match the recorded release digest")
-        plugin_descriptor(args.archive, args.version, args.source_sha)
+    elif args.command == "marketplace":
+        report = deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha,
+                                        datetime.now(UTC))
+        print("\n".join(report))
     else:
         publish_release(args.directory, args.repo, args.version, args.source_sha, args.notes)
 
