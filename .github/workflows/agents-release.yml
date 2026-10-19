@@ -3,10 +3,17 @@ name: Full Build Release
 
 "on":
   workflow_call:
+    secrets:
+      PUBLISH_TOKEN:
+        required: false
   workflow_dispatch:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   package:
