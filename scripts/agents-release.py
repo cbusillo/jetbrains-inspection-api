@@ -2,7 +2,7 @@
 """Version, publish and deliver a clean full-build release to GitHub and the Marketplace agents channel."""
 
 import argparse
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
@@ -191,7 +191,7 @@ def auto_approval_ends(stable_updates: list[dict]) -> datetime | None:
     approved = [int(update["cdate"]) for update in stable_updates if is_listed(update)]
     if not approved:
         return None
-    return datetime.fromtimestamp(max(approved) / 1000, UTC) + AUTO_APPROVAL_WINDOW
+    return datetime.fromtimestamp(max(approved) / 1000, timezone.utc) + AUTO_APPROVAL_WINDOW
 
 
 def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha: str,
@@ -221,14 +221,23 @@ def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha:
     else:
         report.append(f"::warning::Update {update['id']} ({version}) is waiting for JetBrains moderation "
                       f"and is not yet listed on {MARKETPLACE_CHANNEL}. The GitHub release is unaffected.")
-    ends = auto_approval_ends(marketplace(f"{updates}?channel=&size=100"))
-    if ends is None or ends <= now:
-        report.append(f"::warning::Agents auto-approval no longer applies: no approved Stable update in the "
-                      f"last {AUTO_APPROVAL_WINDOW.days} days. New agents uploads go to normal moderation.")
-    elif ends - now <= AUTO_APPROVAL_NOTICE:
-        report.append(f"::warning::Agents auto-approval ends {ends:%B} {ends.day}, {ends.year}, {AUTO_APPROVAL_WINDOW.days} days "
-                      "after the latest approved Stable update. Later uploads go to normal moderation.")
     return report
+
+
+def auto_approval_report(now: datetime) -> list[str]:
+    try:
+        stable = marketplace(f"/api/plugins/{MARKETPLACE_PLUGIN}/updates?channel=&size=100")
+    except MarketplaceError as error:
+        return [f"::warning::Could not read the Stable approval state for agents auto-approval: {error}"]
+    ends = auto_approval_ends(stable)
+    if ends is None or ends <= now:
+        return [f"::warning::Agents auto-approval no longer applies: no approved Stable update in the "
+                f"last {AUTO_APPROVAL_WINDOW.days} days. New agents uploads go to normal moderation."]
+    if ends - now <= AUTO_APPROVAL_NOTICE:
+        return [f"::warning::Agents auto-approval ends {ends:%B} {ends.day}, {ends.year}, "
+                f"{AUTO_APPROVAL_WINDOW.days} days after the latest approved Stable update. "
+                "Later uploads go to normal moderation."]
+    return []
 
 
 def main() -> None:
@@ -259,9 +268,10 @@ def main() -> None:
     elif args.command == "reuse":
         print(str(reuse_release(args.directory, args.repo, args.version, args.source_sha)).lower())
     elif args.command == "marketplace":
-        report = deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha,
-                                        datetime.now(UTC))
-        print("\n".join(report))
+        now = datetime.now(timezone.utc)
+        print("\n".join(deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha, now)),
+              flush=True)
+        print("\n".join(auto_approval_report(now)))
     else:
         publish_release(args.directory, args.repo, args.version, args.source_sha, args.notes)
 

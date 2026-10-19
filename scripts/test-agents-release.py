@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the packaged metadata used by IDE automatic updates."""
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import importlib.util
 import hashlib
 import io
@@ -207,7 +207,7 @@ class MarketplaceDeliveryTest(PublishFixture):
     def setUp(self):
         super().setUp()
         self.publish()
-        self.now = datetime(2026, 10, 18, tzinfo=UTC)
+        self.now = datetime(2026, 10, 18, tzinfo=timezone.utc)
         self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
         self.channel_updates = []
         self.marketplace_uploads = []
@@ -215,7 +215,8 @@ class MarketplaceDeliveryTest(PublishFixture):
         self.upload_failure = None
         patch.object(release, "marketplace", side_effect=self.remote_marketplace).start()
 
-    def marketplace_update(self, identifier, version, channel, created, approve=True):
+    @staticmethod
+    def marketplace_update(identifier, version, channel, created, approve=True):
         return {"id": identifier, "version": version, "channel": channel, "approve": approve,
                 "listed": approve, "hidden": False, "cdate": str(int(created.timestamp() * 1000))}
 
@@ -231,6 +232,8 @@ class MarketplaceDeliveryTest(PublishFixture):
             self.channel_updates.insert(0, update)
             return update
         channel = path.split("channel=", 1)[1].split("&", 1)[0]
+        if channel == "" and self.stable is None:
+            raise release.MarketplaceError("HTTP 500")
         updates = self.stable if channel == "" else self.channel_updates
         return [update for update in updates if update["channel"] == channel]
 
@@ -274,17 +277,68 @@ class MarketplaceDeliveryTest(PublishFixture):
         self.deliver()
         self.assertEqual(self.marketplace_uploads, [])
 
-    def test_reports_moderation_and_an_ended_auto_approval_window(self):
+    def test_reports_moderation_and_the_auto_approval_window(self):
         self.approve = False
-        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=200))]
         report = self.deliver()
-        warnings = [line for line in report if line.startswith("::warning::")]
-        self.assertEqual(len(warnings), 2)
-        self.assertTrue(any("moderation" in line for line in warnings))
+        self.assertTrue(any(line.startswith("::warning::") and "moderation" in line for line in report))
+        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=200))]
+        self.assertEqual(len(release.auto_approval_report(self.now)), 1)
+        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
+        self.assertEqual(release.auto_approval_report(self.now), [])
         self.approve = True
         self.channel_updates.clear()
-        self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
         self.assertFalse(any(line.startswith("::warning::") for line in self.deliver("approved")))
+
+    def test_a_stable_lookup_failure_is_reported_without_raising(self):
+        self.stable = None
+        report = release.auto_approval_report(self.now)
+        self.assertEqual(len(report), 1)
+        self.assertTrue(report[0].startswith("::warning::"))
+
+
+class MarketplaceRequestTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        root = Path(self.temp.name)
+        bin_path = root / "bin"
+        bin_path.mkdir()
+        self.receipt = root / "request.json"
+        fake_curl = bin_path / "curl"
+        fake_curl.write_text("#!" + sys.executable + '''
+import json, os, pathlib, sys
+pathlib.Path(os.environ["CURL_RECEIPT"]).write_text(json.dumps({"argv": sys.argv[1:], "stdin": sys.stdin.read()}))
+print(os.environ["CURL_RESPONSE"])
+sys.exit(int(os.environ["CURL_EXIT"]))
+''')
+        fake_curl.chmod(0o755)
+        self.token = "fixture-secret-token"
+        self.env = {"PATH": f"{bin_path}:{os.environ['PATH']}", "PUBLISH_TOKEN": self.token,
+                    "CURL_RECEIPT": str(self.receipt), "CURL_RESPONSE": json.dumps({"id": 7}), "CURL_EXIT": "0"}
+
+    def request(self, **env):
+        with patch.dict(os.environ, {**self.env, **env}):
+            return release.marketplace("/api/updates/upload", "channel=agents", "file=@/tmp/plugin.zip")
+
+    def test_sends_the_token_on_stdin_and_the_form_to_marketplace(self):
+        self.assertEqual(self.request(), {"id": 7})
+        sent = json.loads(self.receipt.read_text())
+        self.assertNotIn(self.token, " ".join(sent["argv"]))
+        self.assertEqual(sent["stdin"].strip(), f"Authorization: Bearer {self.token}")
+        self.assertEqual(sent["argv"][-1], f"{release.MARKETPLACE}/api/updates/upload")
+        forms = [sent["argv"][i + 1] for i, value in enumerate(sent["argv"]) if value == "--form"]
+        self.assertEqual(forms, ["channel=agents", "file=@/tmp/plugin.zip"])
+
+    def test_an_error_response_raises_without_the_token(self):
+        with self.assertRaises(release.MarketplaceError) as raised:
+            self.request(CURL_RESPONSE="Plugin version already exists", CURL_EXIT="22")
+        self.assertIn("already exists", str(raised.exception))
+        self.assertNotIn(self.token, str(raised.exception))
+
+    def test_refuses_without_a_token(self):
+        with self.assertRaises(ValueError):
+            self.request(PUBLISH_TOKEN="")
+        self.assertFalse(self.receipt.exists())
 
 
 class ReleaseReadTest(unittest.TestCase):
