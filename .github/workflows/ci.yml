@@ -20,6 +20,8 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/agents-release.yml
+    secrets:
+      PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
 
   commit-gate:
     runs-on: ubuntu-latest
