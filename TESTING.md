@@ -604,9 +604,8 @@ IntelliJ classloader isolation prevents reliable plugin instrumentation.
 The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
 maps changed paths to lanes: documentation-only changes run nothing beyond the
 version sync check; workflow and script changes normally run the contract tests
-without Gradle. Changes to `ci.yml`, `commit-gate.sh`, or
-`changed-file-lanes.sh` run both lanes; anything else (including an unknown
-change set) runs everything.
+without Gradle. Changes to the gate's own inputs, as listed in that script,
+run both lanes; anything else (including an unknown change set) runs everything.
 The local hook classifies staged files; CI passes the pull request's file list
 through `COMMIT_GATE_CHANGED_FILES`. Pushes to `main`, merge-train branches,
 and the tag-triggered release workflow always run the full gate. The CI job
