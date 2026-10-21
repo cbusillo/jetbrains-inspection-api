@@ -1283,8 +1283,8 @@ class InspectionSnapshotStateTest {
         assertFalse(response.contains("\"completion_reason\": \"results\""))
         assertEquals(true, status["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
-        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
-        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
+        assertEquals(7L, InspectionResultsStore.getSnapshot(snapshotKey())?.projectState?.psiModificationCount)
+        assertEquals(currentRun.runId, InspectionResultsStore.getSnapshot(snapshotKey())?.runId)
     }
 
     @Test
@@ -1322,8 +1322,8 @@ class InspectionSnapshotStateTest {
         assertFalse(response.contains("\"completion_reason\": \"results\""))
         assertEquals(true, status["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
-        assertEquals(7L, InspectionResultsStore.getProjectState(snapshotKey())?.psiModificationCount)
-        assertEquals(currentRun.runId, InspectionResultsStore.getRunId(snapshotKey()))
+        assertEquals(7L, InspectionResultsStore.getSnapshot(snapshotKey())?.projectState?.psiModificationCount)
+        assertEquals(currentRun.runId, InspectionResultsStore.getSnapshot(snapshotKey())?.runId)
     }
 
     @Test

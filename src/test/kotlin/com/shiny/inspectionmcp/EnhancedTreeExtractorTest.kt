@@ -950,7 +950,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionView.tree } returns inspectionTree
         every { inspectionTree.model } returns tree.model
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertEquals(1, problems.size)
         assertEquals("Cannot resolve symbol definitelyMissingInspectionSymbol", problems[0]["description"])
@@ -977,7 +977,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionTree.model } returns treeModel
         every { treeModel.root } returns problemNode
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertEquals(1, problems.size)
         assertEquals("Cannot resolve symbol MissingType", problems[0]["description"])
@@ -1006,7 +1006,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionTree.model } returns treeModel
         every { treeModel.root } returns root
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertEquals(1, problems.size)
         assertEquals("/tmp/project/src/InspectionRedFixture.java", problems[0]["file"])
@@ -1027,7 +1027,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionView.tree } returns inspectionTree
         every { inspectionTree.model } returns tree.model
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertTrue(problems.isEmpty())
     }
@@ -1048,7 +1048,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionView.tree } returns inspectionTree
         every { inspectionTree.model } returns tree.model
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertTrue(problems.isEmpty())
     }
@@ -1068,7 +1068,7 @@ class EnhancedTreeExtractorTest {
         every { inspectionView.tree } returns inspectionTree
         every { inspectionTree.model } returns tree.model
 
-        val problems = extractor.extractAllProblemsFromInspectionView(inspectionView, project)
+        val problems = extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project).problems
 
         assertTrue(problems.isEmpty())
     }

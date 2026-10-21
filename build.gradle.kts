@@ -348,45 +348,6 @@ tasks {
             html.required.set(true) 
             csv.required.set(true)
         }
-        
-        doFirst {
-            println("JaCoCo execution data files:")
-            executionData.files.forEach { println("  - $it") }
-            println("JaCoCo class directories:")
-            classDirectories.files.forEach { println("  - $it") }
-        }
-    }
-    
-    jacocoTestCoverageVerification {
-        dependsOn(jacocoTestReport)
-        
-        executionData.setFrom(fileTree(layout.buildDirectory).include("jacoco/*.exec"))
-        
-        classDirectories.setFrom(
-            files(classDirectories.files.map {
-                fileTree(it) {
-                    exclude("**/META-INF/**")
-                    exclude($$"**/*$WhenMappings.*")
-                    include("com/shiny/inspectionmcp/**")
-                }
-            })
-        )
-        
-        violationRules {
-            rule {
-                // IntelliJ plugin testing has classloader isolation that prevents 
-                // jacoco from instrumenting production code properly. However, we have
-                // 65+ comprehensive tests that exercise all major code paths.
-                // This is a known limitation documented in JetBrains plugin development.
-                limit {
-                    minimum = 0.0.toBigDecimal()  // IntelliJ plugin classloader isolation prevents proper coverage measurement
-                }
-            }
-        }
-        
-        // Note: IntelliJ plugin testing has classloader isolation that prevents 
-        // jacoco from instrumenting production code. However, we have comprehensive
-        // tests that exercise all major code paths through real method calls.
     }
     
     signPlugin {

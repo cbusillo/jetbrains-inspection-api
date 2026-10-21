@@ -1447,14 +1447,6 @@ internal object InspectionResultsStore {
         return snapshotsByProject[projectName]?.timestamp
     }
 
-    fun getProjectState(projectName: String): InspectionProjectStateSnapshot? {
-        return snapshotsByProject[projectName]?.projectState
-    }
-
-    fun getRunId(projectName: String): Long? {
-        return snapshotsByProject[projectName]?.runId
-    }
-
     fun setSnapshot(projectName: String, snapshot: InspectionResultsSnapshot) {
         snapshotsByProject[projectName] = snapshot
     }
@@ -2866,14 +2858,9 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     lifecycleCloseExecutor(Runnable {
                         try {
-                            if (session != InspectionIdeSession.sessionId) {
-                                sendJsonResponse(context, formatJsonManually(mapOf("status" to "error",
-                                    "reason" to "sdk_lifecycle_session_drift")), HttpResponseStatus.CONFLICT)
-                            } else {
-                                val result = helperSdkUnregisterRunner(worktree?.let { Paths.get(it) }, dryRun)
-                                sendJsonResponse(context, formatJsonManually(result + ("session_id" to session)),
-                                    if (result["status"] == "ok") HttpResponseStatus.OK else HttpResponseStatus.CONFLICT)
-                            }
+                            val result = helperSdkUnregisterRunner(worktree?.let { Paths.get(it) }, dryRun)
+                            sendJsonResponse(context, formatJsonManually(result + ("session_id" to session)),
+                                if (result["status"] == "ok") HttpResponseStatus.OK else HttpResponseStatus.CONFLICT)
                         } catch (error: Throwable) {
                             sendInternalServerError(context, requestAttribution, parameters, error)
                         }
