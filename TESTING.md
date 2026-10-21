@@ -617,32 +617,9 @@ The required status check is `commit-gate`. CodeQL is enforced separately by
 the code-scanning ruleset and thresholds recorded in `.github/github.json`;
 individual `Analyze (...)` jobs are not additional required status checks.
 
-Version tags (`v*`) run `.github/workflows/release.yml`, which rejects tag,
-`pluginVersion`, or `plugin.xml` mismatches before publication, repeats the
-commit gate, and rejects tags that do not point at the current default-branch
-commit. A fresh packaging runner proves its exact checkout is clean, builds one
-explicitly named archive without a Gradle build cache, runs
-`verifyPluginStructure`, and uploads that zip. A separate Java 21 verification
-runner downloads the archive, validates its embedded plugin ID, version,
-compatibility range, source commit, and clean fingerprint, then runs
-`verifyPlugin` against those exact bytes through
-`-PpluginVerificationArchive` and records the plugin zip SHA-256.
-
-The GitHub Release job and the later Marketplace job each download that same
-workflow artifact, re-resolve the remote tag and default-branch commit, and
-recheck the independently recorded plugin zip digest. Release notes are written
-under `$RUNNER_TEMP`, and the notes and workflow summary record both the source
-commit and archive SHA-256. The Marketplace job has read-only repository
-permission, receives `PUBLISH_TOKEN` only for its bounded publication steps,
-runs no Gradle tasks, and calls `scripts/publish-stable-artifact.sh`; it cannot
-silently rebuild or substitute the artifact attached to the GitHub Release.
-Use **Re-run failed jobs** for Stable recovery while the original workflow
-artifact is retained. This reuses the verified zip without rewriting existing
-release notes or clobbering attached assets. The workflow downloads an existing
-same-name asset and requires the verified SHA-256, attaches a missing asset, and
-fails closed when an existing asset has different bytes. A full workflow rerun
-rebuilds timestamped plugin bytes and therefore fails against an existing asset
-instead of replacing it.
+Version tags (`v*`) run `.github/workflows/release.yml`; see
+[Marketplace Stable releases](README.md#marketplace-stable-releases) for the
+packaging, verification, publication and rerun flow.
 
 `verifyPlugin` treats internal API usage as a release failure except for the
 existing inspection-engine Marketplace exemption. Every configured IDE report
@@ -677,13 +654,6 @@ The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal
 because IntelliJ classloader isolation prevents reliable plugin instrumentation;
 `./scripts/test-all.sh` reports that signal without making it a required check.
-
-Release preparation is a two-phase protected-branch flow:
-
-1. `./scripts/release.sh --patch|--minor|--major` creates and validates a
-   `release/vX.Y.Z` branch, pushes it, and opens a PR into the default branch.
-2. After that PR merges, update local `main` and run
-   `./scripts/release.sh tag vX.Y.Z` to validate and push the release tag.
 
 ## 2026.2 compatibility release gates
 

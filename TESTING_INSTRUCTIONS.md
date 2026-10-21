@@ -63,10 +63,7 @@ Expected behavior:
 
 Use this when validating worktree readiness inspection behavior from the
 external helper.
-The matrix runner's legacy worktree and cleanup behavior is tracked in
-[#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443). Use the
-manual sequence below with a host-approved linked worktree until it is fixed.
-On Chris-Studio, create it with `dev-worktree` under Developer-Artifacts. Retain
+Use a host-approved linked worktree. On Chris-Studio, create it with `dev-worktree` under Developer-Artifacts. Retain
 the project/worktree if cleanup is unresolved; do not delete it while the IDE
 still owns it.
 
@@ -82,7 +79,7 @@ still owns it.
    overwriting the config, or a missing inspection plugin.
 6. If debugging a product-specific failure, call `/api/inspection/lifecycle/open`
    directly and confirm the endpoint returns `status=opening` quickly; the
-   helper polling loop must then prove the project appears in `/list`.
+   helper polling loop must then prove the project appears in `/route`.
 7. Open the same worktree manually in the IDE and rerun `inspect-closeout`.
 8. Confirm cleanup reports `not_needed` and the manually opened project remains
    open.
@@ -91,76 +88,12 @@ still owns it.
 
 ## Red lane live smoke
 
-Use this when changing verdict classification, extraction, or helper readiness inspection
-behavior and you need to prove a real IDE finding reaches agents as `RED`:
-
-```bash
-HELPER="/path/to/jetbrains-inspection/scripts/jb-inspect.py"
-SMOKE_ROOT="/path/to/host-approved/artifacts/red-lane-smoke"
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
-  --product intellij \
-  --ide "IntelliJ IDEA" \
-  --json-out tmp/dogfood-red-lane.json
-
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
-  --product pycharm \
-  --ide "PyCharm" \
-  --json-out tmp/dogfood-red-lane-pycharm.json
-
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --work-root "$SMOKE_ROOT" --keep-project \
-  --product webstorm \
-  --ide "WebStorm" \
-  --json-out tmp/dogfood-red-lane-webstorm.json
-```
-
-The command copies the selected `test-fixtures/inspection-red-lane*` fixture to
-a disposable project under `SMOKE_ROOT`, runs helper
-`inspect-closeout` with `scope=whole_project`, and passes only when the
-structured helper JSON reports `VERDICT=RED`, reports `total_problems > 0`, and
-closes the helper-owned project. The helper may exit non-zero because `RED` is
-not readiness-clean. Pass `--helper` with the maintained skill path,
-`--work-root` with the host-approved artifact root, and `--keep-project` to
-preserve the copy until cleanup is verified; the legacy default and unconditional
-copy deletion are tracked in [#443](https://github.com/cbusillo/jetbrains-inspection-api/issues/443).
-Use a root trusted by the helper, or set
-`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$SMOKE_ROOT"` for the command
-when this is a dedicated smoke directory. Once evidence is retained and cleanup
-is confirmed `closed`, remove only that run's copied project. Preserve any copy
-whose cleanup remains unresolved.
-The script generates copy names, so the dedicated parent root is intentional
-and becomes an IDE Trusted Location.
+Use [Red lane dogfood](TESTING.md#red-lane-dogfood) when changing verdict
+classification, extraction, or helper readiness inspection behavior and you need
+to prove a real IDE finding reaches agents as `RED`.
 
 ## Fast-path scopes (manual)
 
-Changed files only (fast inner loop):
-
-```bash
-IDE_PORT=63341
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?scope=changed_files&include_unversioned=true&max_files=25"
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/status"
-```
-
-Explicit files list:
-
-```bash
-IDE_PORT=63341
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?scope=files&file=src/app.py&file=tests/test_app.py"
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/status"
-```
-
-Light inspection profile:
-
-```bash
-IDE_PORT=63341
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/trigger?profile=LLM%20Fast%20Checks"
-```
-
-After triggering, wait for status to settle, then fetch problems:
-
-```bash
-IDE_PORT=63341
-curl "http://127.0.0.1:$IDE_PORT/api/inspection/problems?severity=warning&limit=1"
-```
+Use the changed-files, explicit-files and profile examples under
+[Trigger Endpoint](README.md#trigger-endpoint), then fetch results through
+[Problems Endpoint](README.md#problems-endpoint).
