@@ -966,13 +966,6 @@ Notes:
 - CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
 - Documentation-only commits skip the Gradle lanes; see `TESTING.md` for how lanes are chosen.
 
-## Local cleanup
-
-Use `./scripts/clean-local.sh` to remove disposable local files such as
-`.DS_Store` files and old `tmp/*.log` test logs. The script intentionally leaves
-local configuration, agent state, Gradle caches, IDE sandboxes, and build output
-alone.
-
 ## Known Limitations
 
 ### Inspection Coverage Boundaries
@@ -985,26 +978,9 @@ alone.
 
 ## Testing
 
-### Automated IDE Testing
-```bash
-# Run an inspection of the configured test project (no installation)
-./scripts/test-automated.sh
-```
-
-For an authorized shared IDE installation, use [Local plugin rollout](MAINTAINING.md#local-plugin-rollout). The explicit installer requires an exact clean source archive, an exact app bundle and a coordinated maintenance window.
-
-The default reads the exact project and IDE selectors from `AGENTS.local.md`
-and delegates lifecycle inspection, verdicts and bounded retry policy to the
-maintained helper. Pass its CLI selectors directly when no local file exists.
-The explicit `--install` entry point uses the exact archive/source/app and
-preserved rollback manifests described in MAINTAINING.md; it requires a
-separately authorized coordinated window and does not claim runtime acceptance.
-
-### Unit Tests
-```bash
-# Run unit tests
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
-```
+See [TESTING.md](TESTING.md) for unit, platform and automated IDE tests, and
+[Local plugin rollout](MAINTAINING.md#local-plugin-rollout) for an authorized
+shared IDE installation.
 
 ## Releases
 
@@ -1139,29 +1115,8 @@ PUBLISH_TOKEN="$PUBLISH_TOKEN" ./scripts/publish-stable-artifact.sh \
   --source-sha "$source_sha"
 ```
 
-Before publishing a compatibility-range update, capture release evidence for the
-target IDE line:
-
-```bash
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin
-./scripts/release-compatibility-gate.sh
-```
-
-Run the [red-lane dogfood commands](TESTING.md#red-lane-dogfood) for IntelliJ
-IDEA, PyCharm, and WebStorm with the maintained helper, host-approved artifact
-root, and retained project copy. Add `--ide-channel stable --ide-version 2026.2
---timeout-ms 300000 --prepare-timeout-ms 300000` for that compatibility line.
-
-For agent-facing worktree proof, follow
-[agent smoke acceptance](TESTING.md#agent-smoke-acceptance) with the supported
-coding agent used for the release. It must interpret the helper's expected
-`RED` result from an isolated copy of the red-lane fixture, verify the exact
-project route, and report completed owned-project cleanup. Use the latest
-installed stable IntelliJ IDEA for normal dogfood and the exact stable 2026.2
-selector for compatibility evidence. Retain the request, helper JSON, and
-agent answer together.
+Before publishing a compatibility-range update, capture the evidence listed in
+[2026.2 compatibility release gates](TESTING.md#20262-compatibility-release-gates).
 
 Shortcut:
 
