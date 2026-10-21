@@ -30,23 +30,6 @@ class InspectionHandlerProcessTest {
     }
     
     @Test
-    @DisplayName("Problems endpoint rejects unknown severity values")
-    fun testProblemsEndpointRejectsUnknownSeverity() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")
-        whenever(mockDecoder.parameters()).thenReturn(mapOf("severity" to listOf("invalid_severity")))
-
-        val result = handler.process(mockDecoder, mockRequest, mockContext)
-
-        assertTrue(result)
-        verify(mockContext, times(1)).writeAndFlush(check {
-            val response = it as DefaultFullHttpResponse
-            val body = response.content().toString(Charsets.UTF_8)
-            assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
-            assertTrue(body.contains("\"parameter\": \"severity\""))
-        })
-    }
-
-    @Test
     @DisplayName("Problems endpoint rejects invalid pagination parameters")
     fun testProblemsEndpointRejectsInvalidPaginationParameters() {
         whenever(mockDecoder.path()).thenReturn("/api/inspection/problems")

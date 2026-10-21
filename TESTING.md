@@ -598,8 +598,8 @@ validator, and fixture-based release contract tests. It requires Java 21, then
 runs plugin tests,
 the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
 verification task depends on its module's tests and report, so tests are not run
-twice. The plugin's own 0% JaCoCo minimum remains report-only and is not required
-by CI.
+twice. The plugin module has a JaCoCo report but no coverage threshold, because
+IntelliJ classloader isolation prevents reliable plugin instrumentation.
 
 The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
 maps changed paths to lanes: documentation-only changes run nothing beyond the
@@ -674,9 +674,7 @@ workflow, source and manifest fixtures; the linters enforce the rules on actual
 repository inputs in both the commit gate and `test-all.sh`.
 
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
-and `mcp-server-jvm`. Plugin coverage remains a 0% minimum report-only signal
-because IntelliJ classloader isolation prevents reliable plugin instrumentation;
-`./scripts/test-all.sh` reports that signal without making it a required check.
+and `mcp-server-jvm`.
 
 Release preparation is a two-phase protected-branch flow:
 

@@ -1262,7 +1262,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals("profile_resolution_error", buildInspectionStatus()["capture_incomplete_reason"])
         assertEquals(
             settledModificationCount,
-            InspectionResultsStore.getProjectState(projectKey(mockProject))?.psiModificationCount,
+            InspectionResultsStore.getSnapshot(projectKey(mockProject))?.projectState?.psiModificationCount,
         )
     }
 

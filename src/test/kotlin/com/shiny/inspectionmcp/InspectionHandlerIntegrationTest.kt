@@ -54,25 +54,6 @@ class InspectionHandlerIntegrationTest {
     }
     
     @Test
-    @DisplayName("Should return 404 for unknown endpoints")
-    fun testUnknownEndpointReturns404() {
-        whenever(mockDecoder.path()).thenReturn("/api/inspection/unknown")
-        whenever(mockDecoder.parameters()).thenReturn(emptyMap())
-        
-        val responseCaptor = ArgumentCaptor.forClass(FullHttpResponse::class.java)
-        
-        handler.process(mockDecoder, mockRequest, mockContext)
-        
-        verify(mockContext).writeAndFlush(responseCaptor.capture())
-        
-        val response = responseCaptor.value
-        assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
-        
-        val content = response.content().toString(Charsets.UTF_8)
-        assertTrue(content.contains("Unknown endpoint"))
-    }
-    
-    @Test
     @DisplayName("Should return 500 for internal errors")
     fun testInternalErrorReturns500() {
         whenever(mockDecoder.path()).thenThrow(RuntimeException("Test error"))
@@ -115,6 +96,7 @@ class InspectionHandlerIntegrationTest {
             val response = responseCaptor.value
             assertEquals(HttpResponseStatus.NOT_FOUND, response.status(), 
                 "Should return 404 for unknown path: $path")
+            assertTrue(response.content().toString(Charsets.UTF_8).contains("Unknown endpoint"))
         }
     }
     

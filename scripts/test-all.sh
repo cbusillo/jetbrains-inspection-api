@@ -194,19 +194,8 @@ fi
 
 print_result $RELEASE_CONTRACT_RESULT "Release workflow contracts"
 
-# Step 5: Coverage Verification
-print_section "5. Coverage Verification"
-
-echo "Plugin JaCoCo verification (0% minimum; report-only signal)"
-if ./gradlew :jacocoTestCoverageVerification; then
-  PLUGIN_COVERAGE_RESULT=0
-else
-  PLUGIN_COVERAGE_RESULT=1
-  echo -e "${YELLOW}WARNING: Plugin JaCoCo verification failed; the configured minimum is 0% because IntelliJ classloader isolation makes plugin coverage report-only.${NC}"
-fi
-
-# Step 6: Core Coverage Verification
-print_section "6. Core Coverage Verification"
+# Step 5: Core Coverage Verification
+print_section "5. Core Coverage Verification"
 
 echo "Checking core test coverage..."
 if ./gradlew :inspection-core:jacocoTestCoverageVerification; then
@@ -216,8 +205,8 @@ else
   echo -e "${YELLOW}WARNING: Core coverage is below the configured 85% threshold${NC}"
 fi
 
-# Step 7: MCP Coverage Verification
-print_section "7. MCP Coverage Verification"
+# Step 6: MCP Coverage Verification
+print_section "6. MCP Coverage Verification"
 
 echo "Checking MCP server test coverage..."
 if ./gradlew :mcp-server-jvm:jacocoTestCoverageVerification; then
@@ -237,7 +226,6 @@ print_result $MCP_TEST_RESULT "  MCP server tests"
 print_result $BUILD_RESULT "  Plugin build"
 print_result $RED_LANE_SCRIPT_RESULT "  Red-lane smoke script contract"
 print_result $RELEASE_CONTRACT_RESULT "  Release workflow contracts"
-print_result $PLUGIN_COVERAGE_RESULT "  Plugin JaCoCo report-only verification"
 print_result $CORE_COVERAGE_RESULT "  Core coverage threshold"
 print_result $MCP_COVERAGE_RESULT "  MCP coverage threshold"
 

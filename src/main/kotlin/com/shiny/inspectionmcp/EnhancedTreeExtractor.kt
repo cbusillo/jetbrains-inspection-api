@@ -84,10 +84,6 @@ class EnhancedTreeExtractor {
         return resolved
     }
 
-    fun extractAllProblemsFromInspectionView(view: InspectionResultsView, project: Project): List<Map<String, Any>> {
-        return extractAllProblemsFromInspectionViewWithStatus(view, project).problems
-    }
-
     internal fun extractAllProblemsFromInspectionViewWithStatus(
         view: InspectionResultsView,
         project: Project,
@@ -591,16 +587,6 @@ class EnhancedTreeExtractor {
 
     private fun treeNodeText(node: TreeNode): String {
         return ((node as? DefaultMutableTreeNode)?.userObject ?: node).toString()
-    }
-
-    private fun treePath(node: TreeNode): List<TreeNode> {
-        val path = ArrayDeque<TreeNode>()
-        var current: TreeNode? = node
-        while (current != null) {
-            path.addFirst(current)
-            current = current.parent
-        }
-        return path.toList()
     }
 
     private fun nearestInspectionType(node: TreeNode): String {
