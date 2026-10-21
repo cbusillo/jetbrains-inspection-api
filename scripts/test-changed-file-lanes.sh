@@ -21,6 +21,7 @@ assert_lanes "contracts " .github/workflows/release.yml
 assert_lanes "contracts " scripts/release.sh README.md
 assert_lanes "contracts gradle " .github/workflows/ci.yml
 assert_lanes "contracts gradle " scripts/commit-gate.sh
+assert_lanes "contracts gradle " scripts/java21.sh
 assert_lanes "contracts gradle " README.md src/main/kotlin/com/shiny/inspectionmcp/InspectionHandler.kt
 assert_lanes "contracts gradle " build.gradle.kts
 assert_lanes "contracts gradle " gradle.properties
