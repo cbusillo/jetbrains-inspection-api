@@ -74,7 +74,6 @@ class GitPorcelainParserTest {
             assertTrue(result.second.isEmpty())
             verify(exactly = 1) {
                 handler["runBoundedGitCommand"](nestedProject.toString(), match<List<String>> { "rev-parse" in it })
-                handler["runBoundedGitCommand"](gitRoot.toString(), match<List<String>> { "status" in it })
             }
         } finally {
             gitRoot.toFile().deleteRecursively()

@@ -384,7 +384,7 @@ test_release_script_flow() {
     cp scripts/release.sh scripts/validate-release-version.sh "$repo/scripts/"
     printf 'pluginVersion=1.2.3\n' > "$repo/gradle.properties"
 
-    for script in test-all.sh test-automated.sh commit-gate.sh release-compatibility-gate.sh; do
+    for script in test-all.sh test-automated.sh release-compatibility-gate.sh; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/$script"
       chmod +x "$repo/scripts/$script"
     done
