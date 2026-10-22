@@ -997,8 +997,7 @@ not publish to Marketplace Stable or change existing Marketplace updates.
 
 Versions use `pluginVersion` from `gradle.properties` plus the first-parent
 commit count, for example `1.14.2.123`. The matching tag is
-`agents/v1.14.2.123`. The base version and source descriptor move together through
-a PR; the fourth component increases automatically as `main` advances, without
+`agents/v1.14.2.123`. The base version changes through a PR; the fourth component increases automatically as `main` advances, without
 a version-only commit after every merge. Gradle patches the packaged descriptor
 and records that exact version and clean source commit in build provenance.
 
