@@ -1823,6 +1823,7 @@ private data class ExactFileInspectionExecutionWrapper(
     var context: GlobalInspectionContextBoundary? = null,
     var resolvedBatchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? = null,
     var engineContextUsed: Boolean = false,
+    var executionFailure: String? = null,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -10251,7 +10252,9 @@ class InspectionHandler : HttpRequestHandler() {
                         continue
                     }
                     targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
-                    descriptors += runTargetInspectionEngineOnFile(psiFile, batchWrapper, profile, reportingWrappers)
+                    val result = runTargetInspectionEngineOnFile(psiFile, batchWrapper, profile, reportingWrappers)
+                    descriptors += result.problems
+                    result.incompleteReason?.let { errors += "inspection_engine:${psiFile.virtualFile?.path}:$it" }
                     cancellationCheck()
                 } catch (e: Exception) {
                     rethrowIfCanceled(e)
@@ -10270,7 +10273,7 @@ class InspectionHandler : HttpRequestHandler() {
         batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
         profile: InspectionProfileImpl,
         reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
-    ): List<FileInspectionProblem> {
+    ): FileInspectionResult {
         val project = psiFile.project
         val executionWrapper = synchronized(batchWrapper) {
             InspectionProfileImpl.copyToolSettings(batchWrapper)
@@ -10286,7 +10289,7 @@ class InspectionHandler : HttpRequestHandler() {
             ProgressManager.checkCanceled()
             val descriptors = if (executionContext == null) {
                 val localWrapper = executionWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                SupportedInspectionExecutor().executePreparedFile(
+                val problems = SupportedInspectionExecutor().executePreparedFile(
                     psiFile,
                     listOf(localWrapper),
                     requireNotNull(ProgressManager.getInstance().progressIndicator) {
@@ -10294,11 +10297,14 @@ class InspectionHandler : HttpRequestHandler() {
                     },
                 ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
                     .map { FileInspectionProblem(it, executionWrapper) }
+                FileInspectionResult(problems)
             } else if (executionWrapper is GlobalInspectionToolWrapper && executionWrapper.tool.isGlobalSimpleInspectionTool) {
-                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext(), reportingWrappers)
+                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext(), profile, reportingWrappers)
             } else {
-                InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
-                    .map { FileInspectionProblem(it, executionWrapper) }
+                FileInspectionResult(
+                    InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
+                        .map { FileInspectionProblem(it, executionWrapper) },
+                )
             }
             engineCompleted = true
             ProgressManager.checkCanceled()
@@ -11003,8 +11009,8 @@ class InspectionHandler : HttpRequestHandler() {
                                 val context = requireNotNull(batchWrapper.context).publicContext()
                                 if (batchWrapper.toolWrapper.tool.isGlobalSimpleInspectionTool) {
                                     runGlobalSimpleInspectionOnFile(
-                                        candidate.value, batchWrapper.toolWrapper, context, enabledTools.reportingWrappers,
-                                    )
+                                        candidate.value, batchWrapper.toolWrapper, context, profile, enabledTools.reportingWrappers,
+                                    ).also { batchWrapper.executionFailure = it.incompleteReason }.problems
                                 } else {
                                     InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
                                         .map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
@@ -11020,6 +11026,11 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
             }
+
+            override fun executionFailure(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
+            ): String? = batchWrapper.executionFailure
 
             override fun mapDescriptor(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,

@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
+import com.intellij.codeInsight.daemon.impl.HighlightVisitorBasedInspection
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.GlobalSimpleInspectionTool
 import com.intellij.codeInspection.InspectionEngine
@@ -18,7 +19,6 @@ import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.lang.annotation.ProblemGroup
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.EmptyProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
@@ -113,6 +113,25 @@ class StableBuildVerdictPlatformTest {
     }
 
     @ParameterizedTest
+    @CsvSource("false", "true")
+    fun `the platform Annotator runs on exact files`(syntaxError: Boolean) {
+        val project = projectExtension.project
+        val tool = HighlightVisitorBasedInspection()
+        val profile = registerProfile(project, GlobalInspectionToolWrapper(tool))
+        val root = createContentRoot("Checked.java", if (syntaxError) "class Checked { int x = ; }\n" else "class Checked {}\n")
+        val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}"
+
+        val status = runScope(project, scope, profile)
+
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo(if (syntaxError) "RED" else "GREEN")
+        if (syntaxError) {
+            val results = request(InspectionHandler(), "/api/inspection/problems?$scope&project=${encode(project.name)}")
+            assertThat(requireNotNull(results["problems"]).jsonArray.map { it.jsonObject["inspectionType"]?.jsonPrimitive?.content })
+                .contains(tool.shortName)
+        }
+    }
+
+    @ParameterizedTest
     @CsvSource("false,false,false", "false,true,false", "true,false,false", "true,true,false",
         "false,false,true", "false,true,true", "true,false,true", "true,true,true")
     fun `global-simple problem groups use the selected native reporting tools`(
@@ -130,6 +149,7 @@ class StableBuildVerdictPlatformTest {
         )
         profile.setToolEnabled(localTool.shortName, groupEnabled, project)
         profile.setErrorLevel(requireNotNull(HighlightDisplayKey.find(localTool.shortName)), HighlightDisplayLevel.ERROR, project)
+        profile.setErrorLevel(requireNotNull(HighlightDisplayKey.find(globalTool.shortName)), HighlightDisplayLevel.WARNING, project)
         val root = createContentRoot("Checked.java", "class Checked {}\n")
         val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}"
 
@@ -150,12 +170,12 @@ class StableBuildVerdictPlatformTest {
                         }
                         handler.runTargetInspectionEngineOnFile(
                             file, GlobalInspectionToolWrapper(globalTool), profile, reportingWrappers,
-                        ).map { problem ->
+                        ).problems.map { problem ->
                             requireNotNull(handler.buildProblemMap(problem.descriptor, problem.reportingWrapper, profile, project))
                         }
                     }
                 },
-                EmptyProgressIndicator(),
+                InspectionProgressIndicator(),
             )
         } else {
             val status = runScope(project, scope, profile)
@@ -252,15 +272,24 @@ class StableBuildVerdictPlatformTest {
         assertThat(proof.proofProblems.map { it["description"] }).containsExactly(HOLDER_FINDING)
     }
 
-    @Test
-    fun `a processor finding without a reference leaves global-simple proof incomplete`() {
+    @ParameterizedTest
+    @CsvSource("false", "true")
+    fun `a processor finding without a reference leaves proof incomplete and retains known findings`(includeHolderFinding: Boolean) {
         val root = createContentRoot("Checked.java", "class Checked {}\n")
-        Files.writeString(Path.of(root, "Other.java"), "class Other {}\n")
+        val other = Path.of(root, "Other.java")
+        Files.writeString(other, "class Other {}\n")
+        runInEdtAndGet { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(other) }
 
-        val proof = runGlobalSimpleProof(root, "Checked.java", "Other.java", tool = UnmappedProcessorInspection())
+        val proof = runGlobalSimpleProof(
+            root, "Checked.java", tool = if (includeHolderFinding) UnmappedProcessorWithHolderInspection() else UnmappedProcessorInspection(),
+        )
 
         assertThat(proof.proofEstablished).isFalse()
         assertThat(proof.failedObligationCount).isEqualTo(1)
+        assertThat(proof.proofProblems.map { it["description"] })
+            .describedAs(proof.toString())
+            .containsExactlyElementsOf(if (includeHolderFinding) listOf(HOLDER_FINDING) else emptyList())
+        assertThat(proof.totalDescriptorCount).isEqualTo(proof.proofProblems.size)
     }
 
     @Test
@@ -516,10 +545,27 @@ class StableBuildVerdictPlatformTest {
         override val useProcessor: Boolean = true
     }
 
-    private class UnmappedProcessorInspection : CrossFileHolderInspection() {
+    private open class UnmappedProcessorInspection : CrossFileHolderInspection() {
+        protected open val includeHolderFinding = false
+
         override val useProcessor: Boolean = true
 
         override val referenceCurrentFile: Boolean = false
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: GlobalInspectionContext,
+            processor: ProblemDescriptionsProcessor,
+        ) {
+            if (includeHolderFinding && file.name == "Checked.java") holder.registerProblem(file, HOLDER_FINDING)
+            super.checkFile(file, manager, holder, context, processor)
+        }
+    }
+
+    private class UnmappedProcessorWithHolderInspection : UnmappedProcessorInspection() {
+        override val includeHolderFinding = true
     }
 
     private class LifecycleGlobalSimpleInspection : GlobalSimpleInspectionTool() {

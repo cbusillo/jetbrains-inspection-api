@@ -71,6 +71,8 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 
     fun execute(candidate: ExactFileProofCandidate<T>, batchWrapper: W): List<D>
 
+    fun executionFailure(candidate: ExactFileProofCandidate<T>, batchWrapper: W): String? = null
+
     fun mapDescriptor(candidate: ExactFileProofCandidate<T>, batchWrapper: W, descriptor: D): Map<String, Any>?
 
     fun allowsCrossFileDescriptors(candidate: ExactFileProofCandidate<T>, batchWrapper: W): Boolean = false
@@ -562,7 +564,8 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             checkExecutionBudget()
             stage = "execution"
             val descriptors = adapter.execute(obligation.candidate, executionWrapper)
-            state.executed = true
+            state.failureDetail = adapter.executionFailure(obligation.candidate, executionWrapper)
+            state.executed = state.failureDetail == null
             state.descriptorCount = descriptors.size
             try {
                 checkExecutionBudget()
@@ -731,9 +734,9 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         if (deadlineExceeded()) accumulator.hitTimeLimit = true
         val obligation = state.obligation
         val diagnosticWrapper = state.executionWrapper ?: obligation.batchWrapper
+        accumulator.totalDescriptorCount += state.descriptorCount
         if (state.executed) {
             accumulator.executedToolCount++
-            accumulator.totalDescriptorCount += state.descriptorCount
             accumulator.executedScopeFiles += exactFileProofNormalizedPath(obligation.candidate.filePath)
         } else if (state.failureDetail == null) {
             accumulator.unexecutedRunnableObligationCount++

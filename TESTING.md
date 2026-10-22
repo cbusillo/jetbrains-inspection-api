@@ -640,7 +640,12 @@ build cannot prove a `whole_project`, `directory` or `all` run clean: it returns
 Global-simple tools use the public `InspectionEngine.runInspectionOnFile` route
 with a copied wrapper and private context. The adapter observes `checkFile`
 completion, runs the tool's start/finish callbacks, and retains both holder and
-processor findings. A skipped callback, exception, missing descriptor mapping,
+processor findings. The platform Annotator runs inside a daemon progress context
+with the selected profile bound to the file; caller cancellation and the replay
+deadline cancel that context. The Stable controls exercise the real Annotator
+on clean Java and a Java syntax error. An unmapped processor reference leaves
+proof incomplete while retaining valid holder findings from the same file.
+A skipped callback, exception, missing descriptor mapping,
 deadline or incomplete file obligation remains UNKNOWN. Diagnostics retain the
 local-tool count and add `execution_proof_enabled_global_simple_tool_count`;
 the obligation and execution totals include both kinds. Findings stay RED in
@@ -654,7 +659,7 @@ reporting tools, retaining the selected profile's inspection name and severity;
 disabled or unknown targets are dropped. An unavailable reporting map cannot
 prove a grouped result clean. Holder and start findings retain their originating
 tool's unfiltered presentation behavior. The grouped finding controls exercise
-both bounded proof and targeted fallback.
+both bounded proof and the fallback executor.
 Cross-file findings from either channel count as mapped, but affect the verdict
 only when their file belongs to the requested scope. A missing mapping still
 blocks clean proof. These checks share the same replay budget with local tools,

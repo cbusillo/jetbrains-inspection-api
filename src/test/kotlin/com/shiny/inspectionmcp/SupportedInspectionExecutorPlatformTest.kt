@@ -49,6 +49,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.profile.codeInspection.BaseInspectionProfileManager
 import com.intellij.profile.codeInspection.InspectionProfileManager
+import com.intellij.profile.codeInspection.ProjectInspectionProfileManager
 import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.runInEdtAndGet
@@ -437,7 +438,8 @@ class SupportedInspectionExecutorPlatformTest {
                     file, LocalInspectionToolWrapper(CleanInspection()), parent.profile, parent.reportingWrappers,
                 )
             }
-            assertThat(cleanDescriptors).isEmpty()
+            assertThat(cleanDescriptors.incompleteReason).isNull()
+            assertThat(cleanDescriptors.problems).isEmpty()
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
@@ -448,7 +450,8 @@ class SupportedInspectionExecutorPlatformTest {
                 )
             }
 
-            assertThat(findingDescriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
+            assertThat(findingDescriptors.incompleteReason).isNull()
+            assertThat(findingDescriptors.problems).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(SUPPORTED_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -509,8 +512,9 @@ class SupportedInspectionExecutorPlatformTest {
         }
     }
 
-    @Test
-    fun `single-file local fallback propagates mid-file caller cancellation and preserves caller state`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `single-file fallback propagates mid-file caller cancellation and preserves caller state`(global: Boolean) {
         val project = projectExtension.project
         val file = createPhysicalFile()
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
@@ -526,7 +530,8 @@ class SupportedInspectionExecutorPlatformTest {
             future = startWithCurrentParentIndicator(parent, failure) {
                 InspectionHandler().runTargetInspectionEngineOnFile(
                     file,
-                    LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
+                    if (global) GlobalInspectionToolWrapper(WritePriorityGlobalInspection())
+                    else LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
                     parent.profile,
                     parent.reportingWrappers,
                 )
@@ -567,11 +572,50 @@ class SupportedInspectionExecutorPlatformTest {
                 )
             }
 
-            assertThat(descriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
+            assertThat(descriptors.incompleteReason).isNull()
+            assertThat(descriptors.problems).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(GLOBAL_SIMPLE_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
+        } finally {
+            closeParentInspectionContext(parent)
+        }
+    }
+
+    @Test
+    fun `targeted fallback resolves and maps the selected profile`() {
+        val project = projectExtension.project
+        val file = createPhysicalFile()
+        val tool = FindingInspection()
+        val parent = createCompletedParentInspectionContext(file, tool)
+        parent.profile.setToolEnabled(tool.shortName, true, project)
+        parent.profile.setErrorLevel(requireNotNull(HighlightDisplayKey.find(tool.shortName)), HighlightDisplayLevel.ERROR, project)
+        val base = InspectionModelExtraction(
+            problems = emptyList(),
+            problemDescriptorCount = 0,
+            enabledToolCount = 1,
+            readableToolCount = 1,
+            unreadableToolCount = 0,
+            targetToolStates = listOf(mapOf("short_name" to tool.shortName, "enabled" to true, "descriptor_count" to 0)),
+        )
+        try {
+            val method = InspectionHandler::class.java.declaredMethods.single { it.name == "mergeInspectionEngineFallback" }
+            check(method.trySetAccessible())
+            val result = runWithCurrentParentIndicator(parent) {
+                assertThat(ProjectInspectionProfileManager.getInstance(project).currentProfile.getInspectionTool(tool.shortName, file))
+                    .isNull()
+                method.invoke(
+                    InspectionHandler(), base, project, parent.profile, parent.reportingWrappers,
+                    setOf(tool.shortName), listOf(file), {},
+                ) as InspectionModelExtraction
+            }
+
+            val problem = result.problems.single()
+            assertThat(problem["description"]).isEqualTo(SUPPORTED_FINDING)
+            assertThat(problem["inspectionType"]).isEqualTo(tool.shortName)
+            assertThat(problem["severity"]).isEqualTo("error")
+            assertThat(result.targetToolStates.single()["inspection_engine_errors"]).isNull()
         } finally {
             closeParentInspectionContext(parent)
         }
