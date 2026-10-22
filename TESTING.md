@@ -649,7 +649,12 @@ both builds. `StableBuildVerdictPlatformTest` in
 build. It covers a clean file run, a planted single-file engine skip, both
 finding channels and lifecycle callbacks, and a failure on one of two files.
 Processor findings honor the tool's suppression predicate, matching the native
-processor; holder findings retain the native holder's unfiltered behavior.
+processor. Problem groups route through the native run's initialized local
+reporting tools, retaining the selected profile's inspection name and severity;
+disabled or unknown targets are dropped. An unavailable reporting map cannot
+prove a grouped result clean. Holder and start findings retain their originating
+tool's unfiltered presentation behavior. The grouped finding controls exercise
+both bounded proof and targeted fallback.
 Cross-file findings from either channel count as mapped, but affect the verdict
 only when their file belongs to the requested scope. A missing mapping still
 blocks clean proof. These checks share the same replay budget with local tools,
@@ -774,8 +779,9 @@ ensure a diagnostic callback failure cannot prevent cancellation.
 proof resumes local and global-simple tools after the write and establishes
 proof within the original deadline, records the transient preemption, and
 avoids a terminal preemption. Engine retries receive a fresh file context after
-the platform cleans the interrupted one. Cooperative global-simple deadline
-cancellation remains unproven, just like local cancellation.
+the platform cleans the interrupted one. A deadline during a cooperative local
+or global-simple run leaves proof UNKNOWN; stopping a non-cooperative tool is
+not proven by these controls.
 `ExactFileExecutionProofTest` checks retained findings, incomplete obligations,
 worker shutdown, and wrapper cleanup. `InspectionCaptureTimingTest` verifies that
 proof time cannot substitute for the clean-result observation window or extend

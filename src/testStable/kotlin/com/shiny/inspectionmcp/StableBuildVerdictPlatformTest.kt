@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import com.intellij.codeHighlighting.HighlightDisplayLevel
 import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.GlobalInspectionContext
 import com.intellij.codeInspection.GlobalSimpleInspectionTool
@@ -15,9 +16,13 @@ import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+import com.intellij.lang.annotation.ProblemGroup
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.EmptyProgressIndicator
+import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.profile.codeInspection.ProjectInspectionProfileManager
@@ -43,6 +48,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.assertj.core.api.Assertions.assertThat
@@ -104,6 +110,69 @@ class StableBuildVerdictPlatformTest {
         val status = runScope(project, "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}", profile)
 
         assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("GREEN")
+    }
+
+    @ParameterizedTest
+    @CsvSource("false,false,false", "false,true,false", "true,false,false", "true,true,false",
+        "false,false,true", "false,true,true", "true,false,true", "true,true,true")
+    fun `global-simple problem groups use the selected native reporting tools`(
+        groupEnabled: Boolean,
+        useProcessor: Boolean,
+        useFallback: Boolean,
+    ) {
+        val project = projectExtension.project
+        val localTool = CleanInspection()
+        val globalTool = if (useProcessor) GroupedProcessorInspection() else GroupedHolderInspection()
+        val profile = registerProfile(
+            project,
+            LocalInspectionToolWrapper(localTool),
+            GlobalInspectionToolWrapper(globalTool),
+        )
+        profile.setToolEnabled(localTool.shortName, groupEnabled, project)
+        profile.setErrorLevel(requireNotNull(HighlightDisplayKey.find(localTool.shortName)), HighlightDisplayLevel.ERROR, project)
+        val root = createContentRoot("Checked.java", "class Checked {}\n")
+        val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}"
+
+        val shouldReport = groupEnabled || !useProcessor
+        val problems = if (useFallback) {
+            val handler = InspectionHandler()
+            val virtualFile = runInEdtAndGet {
+                requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(Path.of(root, "Checked.java")))
+            }
+            ProgressManager.getInstance().runProcess(
+                Computable {
+                    ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
+                        val file = requireNotNull(PsiManager.getInstance(project).findFile(virtualFile))
+                        val reportingWrappers = if (groupEnabled) {
+                            mapOf(localTool.shortName to LocalInspectionToolWrapper(localTool))
+                        } else {
+                            emptyMap()
+                        }
+                        handler.runTargetInspectionEngineOnFile(
+                            file, GlobalInspectionToolWrapper(globalTool), profile, reportingWrappers,
+                        ).map { problem ->
+                            requireNotNull(handler.buildProblemMap(problem.descriptor, problem.reportingWrapper, profile, project))
+                        }
+                    }
+                },
+                EmptyProgressIndicator(),
+            )
+        } else {
+            val status = runScope(project, scope, profile)
+            assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo(if (shouldReport) "RED" else "GREEN")
+            assertThat(status["total_problems"]?.jsonPrimitive?.int).isEqualTo(if (shouldReport) 1 else 0)
+            val results = request(InspectionHandler(), "/api/inspection/problems?$scope&project=${encode(project.name)}")
+            requireNotNull(results["problems"]).jsonArray.map { problem ->
+                problem.jsonObject.mapValues { it.value.jsonPrimitive.content }
+            }
+        }
+        assertThat(problems).hasSize(if (shouldReport) 1 else 0)
+        if (shouldReport) {
+            val problem = problems.single()
+            assertThat(problem["inspectionType"])
+                .isEqualTo(if (useProcessor) localTool.shortName else globalTool.shortName)
+            assertThat(problem["severity"]).isEqualTo(if (useProcessor) "error" else "warning")
+        }
     }
 
     @ParameterizedTest
@@ -276,7 +345,14 @@ class StableBuildVerdictPlatformTest {
         try {
             val request = DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, uri)
             assertThat(handler.process(QueryStringDecoder(uri), request, channel.pipeline().firstContext())).isTrue()
-            val response = channel.readOutbound<Any>()
+            val deadline = System.nanoTime() + 30_000_000_000L
+            var response = channel.readOutbound<Any>()
+            while (response == null) {
+                check(System.nanoTime() < deadline) { "No response for $uri" }
+                Thread.sleep(10)
+                channel.runPendingTasks()
+                response = channel.readOutbound<Any>()
+            }
             val content = (response as? FullHttpResponse)?.content() ?: response as ByteBuf
             return Json.parseToJsonElement(content.toString(Charsets.UTF_8)).jsonObject
         } finally {
@@ -365,6 +441,42 @@ class StableBuildVerdictPlatformTest {
             context: GlobalInspectionContext,
             processor: ProblemDescriptionsProcessor,
         ) = Unit
+    }
+
+    private open class GroupedHolderInspection : GlobalSimpleInspectionTool() {
+        protected open val useProcessor: Boolean = false
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "Stable build tests"
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: GlobalInspectionContext,
+            processor: ProblemDescriptionsProcessor,
+        ) {
+            val descriptor = manager.createProblemDescriptor(
+                file,
+                PROCESSOR_FINDING,
+                false,
+                null,
+                com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
+            )
+            descriptor.problemGroup = object : ProblemGroup {
+                override fun getProblemName(): String = CleanInspection().shortName
+            }
+            if (useProcessor) {
+                processor.addProblemElement(context.refManager.getReference(file), descriptor)
+            } else {
+                holder.registerProblem(descriptor)
+            }
+        }
+    }
+
+    private class GroupedProcessorInspection : GroupedHolderInspection() {
+        override val useProcessor: Boolean = true
     }
 
     private open class CrossFileHolderInspection : GlobalSimpleInspectionTool() {

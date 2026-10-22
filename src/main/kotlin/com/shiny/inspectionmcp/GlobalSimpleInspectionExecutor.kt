@@ -9,19 +9,27 @@ import com.intellij.codeInspection.ProblemDescriptionsProcessor
 import com.intellij.codeInspection.ProblemDescriptor
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
+import com.intellij.codeInspection.ex.InspectionToolWrapper
+import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.codeInspection.reference.RefEntity
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
+
+internal data class FileInspectionProblem(
+    val descriptor: ProblemDescriptor,
+    val reportingWrapper: InspectionToolWrapper<*, *>,
+)
 
 internal fun runGlobalSimpleInspectionOnFile(
     file: PsiFile,
     wrapper: GlobalInspectionToolWrapper,
     context: GlobalInspectionContext,
-): List<ProblemDescriptor> {
+    reportingWrappers: Map<String, LocalInspectionToolWrapper>?,
+): List<FileInspectionProblem> {
     val tool = wrapper.tool
     check(tool.isGlobalSimpleInspectionTool)
     var completed = false
-    var processorDescriptorCount = 0
+    val processorReportingWrappers = mutableListOf<InspectionToolWrapper<*, *>>()
     val holderDescriptors = mutableListOf<ProblemDescriptor>()
     val observedTool = object : GlobalSimpleInspectionTool() {
         override fun getShortName(): String = wrapper.shortName
@@ -33,18 +41,29 @@ internal fun runGlobalSimpleInspectionOnFile(
             globalContext: GlobalInspectionContext,
             processor: ProblemDescriptionsProcessor,
         ) {
-            val countingProcessor = object : ProblemDescriptionsProcessor by processor {
+            fun observingProcessor(
+                resolveReportingWrapper: (CommonProblemDescriptor) -> InspectionToolWrapper<*, *>?,
+            ) = object : ProblemDescriptionsProcessor by processor {
                 override fun addProblemElement(entity: RefEntity?, vararg descriptions: CommonProblemDescriptor) {
-                    val unsuppressed = descriptions.filterNot { description ->
-                        description is ProblemDescriptor && description.psiElement?.let(tool::isSuppressedFor) == true
+                    for (description in descriptions) {
+                        val reportingWrapper = resolveReportingWrapper(description) ?: continue
+                        processorReportingWrappers += reportingWrapper
+                        processor.addProblemElement(entity, description)
                     }
-                    processorDescriptorCount += unsuppressed.size
-                    processor.addProblemElement(entity, *unsuppressed.toTypedArray())
                 }
             }
-            (tool as? GlobalSimpleInspectionTool)?.inspectionStarted(manager, globalContext, countingProcessor)
-            tool.checkFile(checkedFile, manager, holder, globalContext, countingProcessor)
-            (tool as? GlobalSimpleInspectionTool)?.inspectionFinished(manager, globalContext, countingProcessor)
+            val routingProcessor = observingProcessor { description ->
+                val descriptor = description as? ProblemDescriptor
+                val group = descriptor?.problemGroup
+                when {
+                    descriptor?.psiElement?.let(tool::isSuppressedFor) == true -> null
+                    group == null -> wrapper
+                    else -> requireNotNull(reportingWrappers) { "Global-simple reporting tools are unavailable" }[group.problemName]
+                }
+            }
+            (tool as? GlobalSimpleInspectionTool)?.inspectionStarted(manager, globalContext, observingProcessor { wrapper })
+            tool.checkFile(checkedFile, manager, holder, globalContext, routingProcessor)
+            (tool as? GlobalSimpleInspectionTool)?.inspectionFinished(manager, globalContext, routingProcessor)
             holderDescriptors += holder.results
             completed = true
         }
@@ -56,8 +75,9 @@ internal fun runGlobalSimpleInspectionOnFile(
     }
     val processorDescriptors = InspectionEngine.runInspectionOnFile(file, observedWrapper, context)
     check(completed) { "Global-simple inspection did not complete: ${wrapper.shortName}" }
-    check(processorDescriptors.size == processorDescriptorCount) {
+    check(processorDescriptors.size == processorReportingWrappers.size) {
         "Global-simple inspection returned unmapped descriptors: ${wrapper.shortName}"
     }
-    return processorDescriptors + holderDescriptors
+    return processorDescriptors.zip(processorReportingWrappers, ::FileInspectionProblem) +
+        holderDescriptors.map { FileInspectionProblem(it, wrapper) }
 }

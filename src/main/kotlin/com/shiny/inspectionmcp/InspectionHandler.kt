@@ -9979,6 +9979,7 @@ class InspectionHandler : HttpRequestHandler() {
             base = presentationExtraction,
             project = project,
             selectedProfile = selectedProfile,
+            reportingWrappers = resolveEnabledFileToolShortNames(globalContext, cancellationCheck).reportingWrappers,
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
             cancellationCheck = cancellationCheck,
@@ -10148,6 +10149,7 @@ class InspectionHandler : HttpRequestHandler() {
         base: InspectionModelExtraction,
         project: Project,
         selectedProfile: InspectionProfile?,
+        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         cancellationCheck: () -> Unit,
@@ -10168,6 +10170,8 @@ class InspectionHandler : HttpRequestHandler() {
             val fallbackDescriptors = if (state["enabled"] == true && (state["descriptor_count"] as? Int ?: 0) == 0) {
                 runTargetInspectionEngineFallback(
                     project = project,
+                    profile = selectedProfile,
+                    reportingWrappers = reportingWrappers,
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
                     targetToolState = state,
@@ -10215,30 +10219,39 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun runTargetInspectionEngineFallback(
         project: Project,
+        profile: InspectionProfile?,
+        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
         toolShortName: String,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         targetToolState: MutableMap<String, Any?>,
         cancellationCheck: () -> Unit = { ProgressManager.checkCanceled() },
-    ): List<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>> {
+    ): List<FileInspectionProblem> {
         cancellationCheck()
-        val descriptors = mutableListOf<Pair<com.intellij.codeInspection.ProblemDescriptor, com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>>>()
+        val descriptors = mutableListOf<FileInspectionProblem>()
         val errors = mutableListOf<String>()
         targetToolState["inspection_engine_file_count"] = fallbackScopeFiles.size
         ApplicationManager.getApplication().runReadAction<Unit, Exception> {
             for (psiFile in fallbackScopeFiles) {
                 cancellationCheck()
                 try {
-                    val batchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                        project,
-                        psiFile,
-                        toolShortName,
-                    )
+                    require(profile is InspectionProfileImpl) { "Selected inspection profile is unavailable" }
+                    val sourceWrapper = profile.getInspectionTool(toolShortName, psiFile)
+                    val batchWrapper = if (sourceWrapper is com.intellij.codeInspection.ex.LocalInspectionToolWrapper) {
+                        com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                            project,
+                            psiFile,
+                            profile,
+                            sourceWrapper,
+                        )
+                    } else {
+                        sourceWrapper
+                    }
                     if (batchWrapper == null) {
                         errors += "inspection_engine:${psiFile.virtualFile?.path}:missing_batch_wrapper:$toolShortName"
                         continue
                     }
                     targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
-                    descriptors += runTargetInspectionEngineOnFile(psiFile, batchWrapper).map { it to batchWrapper }
+                    descriptors += runTargetInspectionEngineOnFile(psiFile, batchWrapper, profile, reportingWrappers)
                     cancellationCheck()
                 } catch (e: Exception) {
                     rethrowIfCanceled(e)
@@ -10255,7 +10268,9 @@ class InspectionHandler : HttpRequestHandler() {
     internal fun runTargetInspectionEngineOnFile(
         psiFile: com.intellij.psi.PsiFile,
         batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-    ): List<com.intellij.codeInspection.ProblemDescriptor> {
+        profile: InspectionProfileImpl,
+        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
+    ): List<FileInspectionProblem> {
         val project = psiFile.project
         val executionWrapper = synchronized(batchWrapper) {
             InspectionProfileImpl.copyToolSettings(batchWrapper)
@@ -10263,9 +10278,7 @@ class InspectionHandler : HttpRequestHandler() {
         val executionContext = if (canExecuteWithInspectEx(executionWrapper)) {
             null
         } else {
-            GlobalInspectionContextBoundary.createForExactFile(
-                InspectionManager.getInstance(project) as InspectionManagerEx,
-            )
+            createExactFileExecutionContext(project, profile, psiFile)
         }
         var primaryFailure: Throwable? = null
         var engineCompleted = false
@@ -10280,10 +10293,12 @@ class InspectionHandler : HttpRequestHandler() {
                         "Targeted local inspection requires the caller progress indicator"
                     },
                 ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
+                    .map { FileInspectionProblem(it, executionWrapper) }
             } else if (executionWrapper is GlobalInspectionToolWrapper && executionWrapper.tool.isGlobalSimpleInspectionTool) {
-                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
+                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext(), reportingWrappers)
             } else {
                 InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
+                    .map { FileInspectionProblem(it, executionWrapper) }
             }
             engineCompleted = true
             ProgressManager.checkCanceled()
@@ -10527,6 +10542,7 @@ class InspectionHandler : HttpRequestHandler() {
         val errorCount: Int,
         val errorExamples: List<Map<String, Any?>>,
         val globalSimpleShortNames: Set<String> = emptySet(),
+        val reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>? = null,
     ) {
         val fileToolShortNames: Set<String>
             get() = shortNames + globalSimpleShortNames
@@ -10560,6 +10576,14 @@ class InspectionHandler : HttpRequestHandler() {
             rethrowIfCanceled(error)
             recordError("enabled_tool_groups", error)
             emptyList()
+        }
+        val reportingWrappers = try {
+            toolGroups.mapNotNull { it.tool as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper }
+                .associateBy { it.shortName }
+        } catch (error: Exception) {
+            rethrowIfCanceled(error)
+            recordError("reporting_tool_wrappers", error)
+            null
         }
         for (toolGroup in toolGroups) {
             cancellationCheck()
@@ -10599,7 +10623,9 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             }
         }
-        return EnabledFileToolEnumeration(names, errorCount, errors, globalSimpleNames)
+        return EnabledFileToolEnumeration(
+            names, errorCount, errors, globalSimpleNames, reportingWrappers.takeIf { errorCount == 0 },
+        )
     }
 
     private fun createExactFileExecutionContext(
@@ -10785,7 +10811,7 @@ class InspectionHandler : HttpRequestHandler() {
             com.intellij.psi.PsiFile,
             HighlightDisplayKey,
             ExactFileInspectionExecutionWrapper,
-            com.intellij.codeInspection.ProblemDescriptor
+            FileInspectionProblem
             > {
             override fun resolveDisplayKey(candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>): HighlightDisplayKey? =
                 app.runReadAction<HighlightDisplayKey?, Exception> {
@@ -10928,7 +10954,7 @@ class InspectionHandler : HttpRequestHandler() {
             override fun execute(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
-            ): List<com.intellij.codeInspection.ProblemDescriptor> {
+            ): List<FileInspectionProblem> {
                 val batchAnnotator = (batchWrapper.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper)
                     ?.tool as? com.intellij.codeInspection.ex.ExternalAnnotatorBatchInspection
                 if (batchAnnotator != null) {
@@ -10949,7 +10975,7 @@ class InspectionHandler : HttpRequestHandler() {
                         ) {
                             batchAnnotatorRuns += candidate.shortName to candidate.filePath
                         }
-                    }
+                    }.map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
                 }
                 return retryWritePreemptedInspectionRead(::checkProofBudget) {
                     runDeadlineAwareProofProcess(candidate) { indicator ->
@@ -10967,6 +10993,7 @@ class InspectionHandler : HttpRequestHandler() {
                                     listOf(localWrapper),
                                     indicator,
                                 ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                                    .map { FileInspectionProblem(it, localWrapper) }
                             } else if (batchWrapper.toolWrapper is GlobalInspectionToolWrapper) {
                                 if (batchWrapper.engineContextUsed) {
                                     cleanupExactFileExecutionWrapper(batchWrapper)
@@ -10975,16 +11002,19 @@ class InspectionHandler : HttpRequestHandler() {
                                 batchWrapper.engineContextUsed = true
                                 val context = requireNotNull(batchWrapper.context).publicContext()
                                 if (batchWrapper.toolWrapper.tool.isGlobalSimpleInspectionTool) {
-                                    runGlobalSimpleInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
+                                    runGlobalSimpleInspectionOnFile(
+                                        candidate.value, batchWrapper.toolWrapper, context, enabledTools.reportingWrappers,
+                                    )
                                 } else {
                                     InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
+                                        .map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
                                 }
                             } else {
                                 InspectionEngine.runInspectionOnFile(
                                     candidate.value,
                                     batchWrapper.toolWrapper,
                                     requireNotNull(batchWrapper.context).publicContext(),
-                                )
+                                ).map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
                             }
                         }
                     }
@@ -10994,11 +11024,11 @@ class InspectionHandler : HttpRequestHandler() {
             override fun mapDescriptor(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 batchWrapper: ExactFileInspectionExecutionWrapper,
-                descriptor: com.intellij.codeInspection.ProblemDescriptor,
+                descriptor: FileInspectionProblem,
             ): Map<String, Any>? {
                 checkProofBudget()
                 return app.runReadAction<Map<String, Any>?, Exception> {
-                    buildProblemMap(descriptor, batchWrapper.toolWrapper, profile, project)
+                    buildProblemMap(descriptor.descriptor, descriptor.reportingWrapper, profile, project)
                 }.also { checkProofBudget() }
             }
 

@@ -433,7 +433,9 @@ class SupportedInspectionExecutorPlatformTest {
             assertThat(parent.currentIndicator.get()).isNull()
 
             val cleanDescriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CleanInspection()))
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file, LocalInspectionToolWrapper(CleanInspection()), parent.profile, parent.reportingWrappers,
+                )
             }
             assertThat(cleanDescriptors).isEmpty()
             assertParentContextIntact(parent, parentTools)
@@ -441,10 +443,12 @@ class SupportedInspectionExecutorPlatformTest {
                 .hasSize(runningContextCount)
 
             val findingDescriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(findingTool))
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file, LocalInspectionToolWrapper(findingTool), parent.profile, parent.reportingWrappers,
+                )
             }
 
-            assertThat(findingDescriptors).singleElement().extracting { it.descriptionTemplate }
+            assertThat(findingDescriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(SUPPORTED_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -492,7 +496,9 @@ class SupportedInspectionExecutorPlatformTest {
         try {
             assertThatThrownBy {
                 runWithCurrentParentIndicator(parent) {
-                    InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CancellingInspection()))
+                    InspectionHandler().runTargetInspectionEngineOnFile(
+                        file, LocalInspectionToolWrapper(CancellingInspection()), parent.profile, parent.reportingWrappers,
+                    )
                 }
             }.isInstanceOf(ProcessCanceledException::class.java)
 
@@ -521,6 +527,8 @@ class SupportedInspectionExecutorPlatformTest {
                 InspectionHandler().runTargetInspectionEngineOnFile(
                     file,
                     LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
+                    parent.profile,
+                    parent.reportingWrappers,
                 )
             }
             assertThat(control.enteredTool.await(2, TimeUnit.SECONDS)).isTrue()
@@ -554,10 +562,12 @@ class SupportedInspectionExecutorPlatformTest {
                 InspectionHandler().runTargetInspectionEngineOnFile(
                     file,
                     GlobalInspectionToolWrapper(FindingGlobalSimpleInspection()),
+                    parent.profile,
+                    parent.reportingWrappers,
                 )
             }
 
-            assertThat(descriptors).singleElement().extracting { it.descriptionTemplate }
+            assertThat(descriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(GLOBAL_SIMPLE_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -1107,9 +1117,9 @@ class SupportedInspectionExecutorPlatformTest {
             val toolsField = GlobalInspectionContextBase::class.java.getDeclaredField("myTools")
             check(toolsField.trySetAccessible()) { "Cannot seed native tool state for fallback regression" }
             toolsField.set(context.contextForTest(), linkedMapOf(tool.shortName to profile.getTools(tool.shortName, project)))
-            return ParentInspectionContext(context)
+            return ParentInspectionContext(context, profile)
         } catch (error: Throwable) {
-            runCatching { closeParentInspectionContext(ParentInspectionContext(context)) }
+            runCatching { closeParentInspectionContext(ParentInspectionContext(context, profile)) }
             throw error
         }
     }
@@ -1549,8 +1559,12 @@ class SupportedInspectionExecutorPlatformTest {
 
     private data class ParentInspectionContext(
         val context: GlobalInspectionContextBoundary,
+        val profile: InspectionProfileImpl,
         val currentIndicator: AtomicReference<ProgressWindow?> = AtomicReference(),
-    )
+    ) {
+        val reportingWrappers: Map<String, LocalInspectionToolWrapper>
+            get() = context.toolGroups().mapNotNull { it.tool as? LocalInspectionToolWrapper }.associateBy { it.shortName }
+    }
 
     class PluginLibraryRootAccessExtension : BeforeAllCallback, AfterAllCallback {
         private var disposable: Disposable? = null
