@@ -1132,6 +1132,7 @@ class SupportedInspectionExecutorPlatformTest {
             .containsExactlyInAnyOrderElementsOf(expectedToolShortNames)
     }
 
+    @Suppress("UnstableApiUsage")
     private fun subscribeLocalCompletions(
         project: Project,
         collector: NativeInspectionExecutionProofCollector,

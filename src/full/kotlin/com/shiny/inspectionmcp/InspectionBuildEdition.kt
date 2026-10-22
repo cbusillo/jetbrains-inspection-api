@@ -12,6 +12,7 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.util.messages.MessageBusConnection
 
 // The full build: native attestation through IntelliJ internals that Marketplace has not exempted for Stable.
+@Suppress("UnstableApiUsage")
 internal object InspectionBuildEdition {
     const val NAME = "full"
 
@@ -80,7 +81,7 @@ private class NativeAttestedGlobalInspectionContext(
     project,
     NotNullLazyValue.createValue { ContentFactory.getInstance().createContentManager(true, project) },
 ) {
-    private val platformPublisher = project.messageBus.syncPublisher(GlobalInspectionContextEx.INSPECT_TOPIC)
+    private val platformPublisher = project.messageBus.syncPublisher(INSPECT_TOPIC)
     private val attestedPublisher = object : InspectListener {
         override fun fileAnalyzed(file: PsiFile, eventProject: Project) {
             platformPublisher.fileAnalyzed(file, eventProject)

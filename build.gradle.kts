@@ -389,6 +389,10 @@ tasks {
     
     publishPlugin {
         token.set(System.getenv("PUBLISH_TOKEN"))
+        // Publish only an archive whose internal API use matched its edition's allowlist on every recommended IDE.
+        dependsOn(named("verifyPlugin"))
+        val verifierIdeSelection = providers.gradleProperty("pluginVerifierIdes").orNull
+        val publishingEdition = inspectionBuild
         val marketplaceChannel = providers.gradleProperty("marketplaceChannel").orNull
         val publishingVersion = project.property("pluginVersion").toString()
         val publicationPolicyScriptPath = project.layout.projectDirectory
@@ -398,13 +402,16 @@ tasks {
             channels.set(listOf(marketplaceChannel))
         }
         doFirst {
+            if (verifierIdeSelection != null) {
+                throw GradleException("publishPlugin verifies every recommended IDE; remove -PpluginVerifierIdes.")
+            }
             val command = mutableListOf(
                 "bash",
                 publicationPolicyScriptPath,
                 "--version",
                 publishingVersion,
                 "--edition",
-                inspectionBuild,
+                publishingEdition,
             )
             if (marketplaceChannel != null) {
                 command.add("--channel")
