@@ -127,7 +127,10 @@ internal object InspectionIdeRegistry {
         runCatching { InspectionIdeMemory.ensureObserving() }
 
         AppExecutorUtil.getAppExecutorService().execute {
-            waitForBuiltInServerStart()
+            try {
+                waitForBuiltInServerStart()
+            } catch (_: ProcessCanceledException) {
+            }
             writeRegistryFile()
             heartbeat = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
                 { writeRegistryFile() },
@@ -149,7 +152,8 @@ internal object InspectionIdeRegistry {
                     waitForStart.invoke(instance)
                     return
                 }
-            } catch (_: Throwable) {
+            } catch (error: Throwable) {
+                rethrowIfCanceled(error)
             }
         }
     }
@@ -282,7 +286,8 @@ private fun resolvePortFromClass(className: String, methodNames: List<String>): 
             if (port != null && port > 0) return port
         }
         null
-    } catch (_: Throwable) {
+    } catch (error: Throwable) {
+        rethrowIfCanceled(error)
         null
     }
 }

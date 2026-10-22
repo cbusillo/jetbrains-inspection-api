@@ -68,6 +68,7 @@ internal class NativeInspectionCompletionObservation {
             enumerate(this)
             enumerationCompleted = true
         } catch (error: Throwable) {
+            rethrowIfCanceled(error)
             unavailableReason = when (error) {
                 is NativeInspectionObservationUnavailable -> error.message
                 is ExactFileProofWritePreemptedException -> "observation_write_preempted"
@@ -83,6 +84,7 @@ internal class NativeInspectionCompletionObservation {
             classify(this)
             classificationCompleted = true
         } catch (error: Throwable) {
+            rethrowIfCanceled(error)
             classificationUnavailableReason = when (error) {
                 is NativeInspectionObservationUnavailable -> error.message
                 is ExactFileProofWritePreemptedException -> "classification_write_preempted"
@@ -176,6 +178,7 @@ internal class NativeInspectionCompletionObservation {
             ),
         )
     } catch (error: Throwable) {
+        rethrowIfCanceled(error)
         mapOf("schema_version" to 1, "mode" to "report_only", "enumeration_complete" to false,
             "unavailable_reason" to error.javaClass.simpleName)
     }

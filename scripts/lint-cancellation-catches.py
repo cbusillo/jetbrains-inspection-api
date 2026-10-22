@@ -8,7 +8,8 @@ import re
 import sys
 from pathlib import Path
 
-BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*Exception\s*\)\s*\{")
+BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*(?:Exception|RuntimeException|Throwable)\s*\)\s*\{")
+CANCELLATION_NOTE = re.compile(r"^[ \t]*//[ \t]*Cancellation:[ \t]*\S", re.MULTILINE)
 CANCELLATION_CATCH = re.compile(r"\bcatch\s*\(\s*\w+\s*:\s*ProcessCanceledException\s*\)\s*$")
 SIBLING_CATCH = re.compile(r"\bcatch\s*\([^()]*\)\s*$")
 CANCELLATION_HANDLERS = (
@@ -60,8 +61,23 @@ def has_earlier_cancellation_catch(text: str, catch_start: int) -> bool:
         position = sibling.start()
 
 
+def outside_nested_blocks(body: str) -> str:
+    depth = 0
+    kept = []
+    for character in body:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        elif depth == 0:
+            kept.append(character)
+    return "".join(kept)
+
+
 def handles_cancellation(name: str, body: str) -> bool:
     statements = body.strip()
+    if CANCELLATION_NOTE.search(outside_nested_blocks(body)):
+        return True
     if re.search(rf"\bthrow\s+{name}\s*$", statements):
         return True
     if re.search(rf"^\s*\w+\s*=\s*{name}\s*$", statements, re.MULTILINE):
@@ -90,7 +106,7 @@ def main() -> int:
         return 1
     failures = [
         f"{source}:{line}: broad catch must pass its exception to rethrowIfCanceled, end with throw, "
-        "or follow a ProcessCanceledException catch"
+        "follow a ProcessCanceledException catch, or explain in a '// Cancellation:' comment why it is safe"
         for source in sorted(args.sources.rglob("*.kt"))
         for line in swallowing_catches(source)
     ]
