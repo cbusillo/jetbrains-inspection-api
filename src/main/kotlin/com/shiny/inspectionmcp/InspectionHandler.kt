@@ -10077,8 +10077,16 @@ class InspectionHandler : HttpRequestHandler() {
                     unreadableToolCount += 1
                     continue
                 }
+                val entityFindings = try {
+                    exportEntityFindings(presentation, cancellationCheck)
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
+                    unreadableReasons.add(formatModelUnreadableReason("entity_findings", e))
+                    unreadableToolCount += 1
+                    continue
+                }
                 readableToolCount += 1
-                problemDescriptorCount += descriptors.size
+                problemDescriptorCount += descriptors.size + entityFindings.size
                 if (tracksTarget) {
                     targetToolStates.getOrPut(shortName) { linkedMapOf("short_name" to shortName) }.apply {
                         this["descriptor_count"] = descriptors.size
@@ -10086,9 +10094,10 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
 
-                for (descriptor in descriptors) {
+                val maps = descriptors.asSequence().mapNotNull { buildProblemMap(it, wrapper, selectedProfile, project) } +
+                    entityFindings.asSequence().mapNotNull { buildEntityFindingMap(it, wrapper) }
+                for (map in maps) {
                     cancellationCheck()
-                    val map = buildProblemMap(descriptor, wrapper, selectedProfile, project) ?: continue
                     val key = listOf(
                         map["severity"],
                         map["inspectionType"],
@@ -11079,23 +11088,78 @@ class InspectionHandler : HttpRequestHandler() {
             severity = resolveProblemSeverity(descriptor.highlightType, selectedProfile, displayKey, psiElement)
         }
 
-        val typeLower = inspectionType.lowercase()
-        severity = when {
-            typeLower.contains("grazie") -> "grammar"
-            typeLower.contains("spell") || typeLower.contains("aia") -> "typo"
-            else -> severity
-        }
-
         return mapOf(
             "description" to description,
             "file" to filePath,
             "line" to line,
             "column" to column,
-            "severity" to severity,
+            "severity" to textInspectionSeverity(inspectionType, severity),
             "category" to category,
             "inspectionType" to inspectionType,
             "source" to "inspection_context",
         )
+    }
+
+    /**
+     * Findings a presentation reports for reference-graph entities rather than as problem descriptors,
+     * such as the global `unused` declaration pass. This is the export the stock offline inspector
+     * writes; descriptor-backed findings are excluded because the caller reads them from the
+     * presentation's problem elements.
+     */
+    private fun exportEntityFindings(
+        presentation: com.intellij.codeInspection.InspectionToolResultExporter,
+        cancellationCheck: () -> Unit,
+    ): List<Element> {
+        val problemElements = presentation.problemElements
+        val reportsEntitiesWithoutDescriptors = presentation.content.values.any { entities ->
+            entities.any { !problemElements.containsKey(it) }
+        }
+        if (!reportsEntitiesWithoutDescriptors) return emptyList()
+        val findings = mutableListOf<Element>()
+        presentation.exportResults(
+            { finding ->
+                cancellationCheck()
+                findings.add(finding)
+            },
+            { false },
+            { true },
+        )
+        return findings
+    }
+
+    private fun buildEntityFindingMap(
+        finding: Element,
+        wrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
+    ): Map<String, Any>? {
+        val description = normalizeProblemDescription(finding.getChildText("description").orEmpty())
+            .takeIf { it.isNotBlank() } ?: return null
+        val problemClass = finding.getChild("problem_class")
+        val inspectionType = problemClass?.getAttributeValue("id")?.takeIf { it.isNotBlank() }
+            ?: runCatching { wrapper.shortName }.getOrNull()
+            ?: return null
+        val filePath = finding.getChildText("file")?.trim()?.takeIf { it.isNotEmpty() }?.let { url ->
+            VirtualFileManager.getInstance().findFileByUrl(url)?.path ?: VirtualFileManager.extractPath(url)
+        } ?: "unknown"
+        val severity = severityFromHighlightSeverityName(problemClass?.getAttributeValue("severity")) ?: "warning"
+        return mapOf(
+            "description" to description,
+            "file" to filePath,
+            "line" to (finding.getChildText("line")?.trim()?.toIntOrNull() ?: 0),
+            "column" to (finding.getChildText("offset")?.trim()?.toIntOrNull() ?: 0),
+            "severity" to textInspectionSeverity(inspectionType, severity),
+            "category" to wrapper.groupDisplayName,
+            "inspectionType" to inspectionType,
+            "source" to "inspection_context",
+        )
+    }
+
+    private fun textInspectionSeverity(inspectionType: String, severity: String): String {
+        val typeLower = inspectionType.lowercase()
+        return when {
+            typeLower.contains("grazie") -> "grammar"
+            typeLower.contains("spell") || typeLower.contains("aia") -> "typo"
+            else -> severity
+        }
     }
     
     private fun sendJsonResponse(
