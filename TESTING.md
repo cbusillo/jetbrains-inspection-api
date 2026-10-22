@@ -660,6 +660,20 @@ Stable check against the compile IDE only (`-PpluginVerifierIdes=target`, about
 15 seconds); the release workflows and `release-compatibility-gate.sh` check
 every recommended IDE.
 
+Verifier downloads and extracted plugins stay in each worktree's
+`build/pluginVerifier`; reports stay in `build/reports/pluginVerifier`.
+IDE distributions remain in Gradle's shared dependency/transform cache.
+Do not share a build directory between worktrees or clean another session's
+verifier home.
+
+The commit gate also runs a real verifier with a disposable fallback user home
+and fails if the verifier writes there. To exercise this regression directly:
+
+```bash
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin \
+  -PpluginVerifierIdes=target -I scripts/test-plugin-verifier-isolation.init.gradle
+```
+
 All production `GlobalInspectionContextImpl` source references must stay in
 `src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt` (including
 its private attested subclass), and `scripts/lint-inspection-boundary.py`

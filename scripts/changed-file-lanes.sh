@@ -12,7 +12,7 @@ while IFS= read -r changed_path || [ -n "$changed_path" ]; do
   case "$changed_path" in
     *.md|LICENSE|docs/*)
       ;;
-    scripts/commit-gate.sh|scripts/java21.sh|scripts/changed-file-lanes.sh|.github/workflows/ci.yml)
+    scripts/commit-gate.sh|scripts/java21.sh|scripts/changed-file-lanes.sh|scripts/*.gradle|.github/workflows/ci.yml)
       needs_contracts=1
       needs_gradle=1
       ;;

@@ -267,6 +267,7 @@ tasks {
     }
 
     withType<VerifyPluginTask> {
+        systemProperty("plugin.verifier.home.dir", layout.buildDirectory.dir("pluginVerifier").get().asFile.absolutePath)
         val verifierPluginVersion = project.property("pluginVersion").toString()
         val externalVerificationArchive = providers.gradleProperty("pluginVerificationArchive")
         if (externalVerificationArchive.isPresent) {

@@ -59,7 +59,8 @@ source "$ROOT/scripts/java21.sh"
 use_java21
 
 # Stable build: no internal API use beyond its exempted allowlist, and truthful verdicts without them.
-./gradlew buildPlugin verifyPlugin -PinspectionBuild=stable -PpluginVerifierIdes=target
+./gradlew buildPlugin verifyPlugin -PinspectionBuild=stable -PpluginVerifierIdes=target \
+    -I scripts/test-plugin-verifier-isolation.init.gradle
 ./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'
 
 ./gradlew :test
