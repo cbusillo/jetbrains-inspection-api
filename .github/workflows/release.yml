@@ -104,7 +104,7 @@ jobs:
           distribution: "temurin"
 
       - name: Build clean Stable artifact
-        run: ./gradlew --no-build-cache buildPlugin verifyPluginStructure
+        run: ./gradlew --no-build-cache buildPlugin verifyPluginStructure -PinspectionBuild=stable
 
       - name: Validate clean Stable artifact
         env:

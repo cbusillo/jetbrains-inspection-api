@@ -112,6 +112,7 @@ def write_archive(
     build_info = "\n".join(
         [
             f"plugin.version={version}",
+            "plugin.build.edition=stable",
             f"plugin.build.commit={build_commit}",
             f"plugin.build.short_commit={build_commit[:12]}",
             f"plugin.build.dirty={str(build_dirty).lower()}",
@@ -161,6 +162,7 @@ cases = {
     "malformed-provenance": (build_path, b"not-a-property"),
     "wrong-short-commit": (build_path, entries[build_path].replace(b"plugin.build.short_commit=0123456789ab", b"plugin.build.short_commit=incorrect")),
     "wrong-fingerprint": (build_path, entries[build_path].replace(b"-clean", b"-incorrect")),
+    "full-edition": (build_path, entries[build_path].replace(b"plugin.build.edition=stable", b"plugin.build.edition=full")),
 }
 for case, (target, replacement) in cases.items():
     content = dict(entries)
@@ -216,7 +218,7 @@ CURL
   for invalid_case in \
     invalid-id invalid-version invalid-range invalid-until-range dirty wrong-source missing-jar \
     missing-descriptor malformed-descriptor missing-provenance malformed-provenance \
-    wrong-short-commit wrong-fingerprint duplicate-descriptor duplicate-provenance duplicate-plugin-jar; do
+    wrong-short-commit wrong-fingerprint full-edition duplicate-descriptor duplicate-provenance duplicate-plugin-jar; do
     invalid_archive="$temp_dir/$invalid_case/jetbrains-inspection-api-1.2.3.zip"
     [ -f "$invalid_archive" ] || fail "Missing invalid artifact fixture $invalid_case"
     invalid_sha256=$(shasum -a 256 "$invalid_archive" | awk '{print $1}')
@@ -236,6 +238,7 @@ CURL
       malformed-provenance) expected="build provenance is malformed";;
       wrong-short-commit) expected="plugin.build.short_commit";;
       wrong-fingerprint) expected="plugin.build.fingerprint";;
+      full-edition) expected="plugin.build.edition=full";;
       *) fail "Unknown invalid artifact fixture $invalid_archive";;
     esac
     assert_contains "$temp_dir/refusal.txt" "$expected"
@@ -276,6 +279,10 @@ PYID
 
 test_marketplace_publication_policy() {
   ./scripts/validate-marketplace-publication.sh --version 1.2.3
+  ./scripts/validate-marketplace-publication.sh --version 1.2.3 --edition stable
+  if ./scripts/validate-marketplace-publication.sh --version 1.2.3 --edition full >/dev/null 2>&1; then
+    fail "Marketplace publication policy accepted the full build edition for Stable"
+  fi
   for channel in '' stable preview agents; do
     if ./scripts/validate-marketplace-publication.sh --version 1.2.3.42 ${channel:+--channel "$channel"} >/dev/null 2>&1; then
       fail "Full build publisher accepted an unintended channel"
@@ -332,9 +339,17 @@ REPORT
     fail "internal API allowlist accepted a malformed report line"
   fi
 
-  : > "$manifest"
-  if ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" >/dev/null 2>&1; then
-    fail "internal API allowlist accepted an empty manifest"
+  printf '# Stable: no exempted uses\n' > "$manifest"
+  mkdir "$temp_dir/clean-report"
+  ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" --report-dir "$temp_dir/clean-report" >/dev/null
+  mkdir "$temp_dir/dirty-report"
+  printf 'Internal class example.A is referenced in stable.Location. This class is internal.\n' \
+    > "$temp_dir/dirty-report/internal-api-usages.txt"
+  if ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" --report-dir "$temp_dir/dirty-report" >/dev/null 2>&1; then
+    fail "internal API allowlist accepted an internal use that an empty manifest does not allow"
+  fi
+  if ./scripts/verify-internal-api-allowlist.py --manifest "$manifest" --report-dir "$temp_dir/absent-report" >/dev/null 2>&1; then
+    fail "internal API allowlist accepted a missing report directory"
   fi
   cat > "$manifest" <<'MANIFEST'
 Internal interface example.Z is referenced in approved.Z
@@ -476,42 +491,48 @@ test_workflow_action_pins() {
 }
 
 test_inspection_boundary_linter() {
-  local temp_dir sources manifest boundary escaped owner
+  local temp_dir sources public_sources manifest boundary escaped owner
   temp_dir=$(mktemp -d)
   trap 'rm -rf "$temp_dir"' RETURN
-  sources="$temp_dir/src"
+  sources="$temp_dir/full"
+  public_sources="$temp_dir/main"
   manifest="$temp_dir/allowlist.txt"
-  boundary="$sources/com/shiny/inspectionmcp/GlobalInspectionContextBoundary.kt"
-  escaped="$sources/com/shiny/inspectionmcp/Escaped.kt"
-  mkdir -p "$(dirname "$boundary")"
+  boundary="$sources/com/shiny/inspectionmcp/InspectionBuildEdition.kt"
+  escaped="$public_sources/com/shiny/inspectionmcp/Escaped.kt"
+  mkdir -p "$(dirname "$boundary")" "$(dirname "$escaped")"
   printf 'val context: GlobalInspectionContextImpl\n' > "$boundary"
-  for owner in GlobalInspectionContextBoundary NativeAttestedGlobalInspectionContext; do
+  run_boundary_lint() {
+    uv run scripts/lint-inspection-boundary.py --sources "$sources" --sources "$public_sources" \
+      --boundary "$boundary" --manifest "$manifest"
+  }
+  for owner in InspectionBuildEdition NativeAttestedGlobalInspectionContext; do
     printf 'com.shiny.inspectionmcp.%s uses GlobalInspectionContextImpl\n' "$owner" > "$manifest"
-    uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >/dev/null
+    run_boundary_lint >/dev/null
   done
-  if uv run scripts/lint-inspection-boundary.py --sources "$temp_dir/missing" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+  if uv run scripts/lint-inspection-boundary.py --sources "$temp_dir/missing" --boundary "$boundary" \
+    --manifest "$manifest" >"$temp_dir/output" 2>&1; then
     fail "boundary linter accepted a missing source directory"
   fi
   assert_contains "$temp_dir/output" "source directory does not exist"
   mv "$boundary" "$temp_dir/boundary.kt"
-  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+  if run_boundary_lint >"$temp_dir/output" 2>&1; then
     fail "boundary linter accepted a missing boundary source"
   fi
   assert_contains "$temp_dir/output" "boundary source is missing"
   mv "$temp_dir/boundary.kt" "$boundary"
   printf 'val context: GlobalInspectionContextImpl\n' > "$escaped"
-  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+  if run_boundary_lint >"$temp_dir/output" 2>&1; then
     fail "boundary linter accepted an escaped source reference"
   fi
   assert_contains "$temp_dir/output" "$escaped:1:"
   rm "$escaped"
   printf 'com.shiny.inspectionmcp.Escaped uses GlobalInspectionContextImpl\n' > "$manifest"
-  if uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >"$temp_dir/output" 2>&1; then
+  if run_boundary_lint >"$temp_dir/output" 2>&1; then
     fail "boundary linter accepted a misattributed manifest finding"
   fi
   assert_contains "$temp_dir/output" "$manifest:1:"
   printf '# GlobalInspectionContextImpl comment\n\n' > "$manifest"
-  uv run scripts/lint-inspection-boundary.py --sources "$sources" --manifest "$manifest" >/dev/null
+  run_boundary_lint >/dev/null
   rm -rf "$temp_dir"
   trap - RETURN
 }

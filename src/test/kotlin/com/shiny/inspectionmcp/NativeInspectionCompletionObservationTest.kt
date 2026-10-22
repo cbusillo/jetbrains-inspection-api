@@ -1,6 +1,5 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -28,8 +27,8 @@ class NativeInspectionCompletionObservationTest {
         val second = tool("Second")
         fun run(dropSecond: Boolean): Pair<NativeInspectionExecutionProofResult, Map<String, Any?>> {
             val collector = NativeInspectionExecutionProofCollector(project, setOf(path))
-            collector.inspectionFinished(1, 1, 0, first, InspectListener.InspectionKind.LOCAL, file, project)
-            if (!dropSecond) collector.inspectionFinished(1, 1, 0, second, InspectListener.InspectionKind.LOCAL, file, project)
+            collector.inspectionFinished(0, first, NativeInspectionPass.LOCAL, file, project)
+            if (!dropSecond) collector.inspectionFinished(0, second, NativeInspectionPass.LOCAL, file, project)
             collector.recordExactFileAnalyzed(file, project)
             collector.markCompletedNormally()
             collector.completionObservation.observeCandidates { it.candidate(first, path); it.candidate(second, path) }
@@ -64,7 +63,7 @@ class NativeInspectionCompletionObservationTest {
     fun `enumeration failure withholds clean proof and disables comparison`() {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(path))
         collector.recordExactFileAnalyzed(file, project)
-        collector.recordExactInspectionFinished(0, tool(), InspectListener.InspectionKind.GLOBAL, project)
+        collector.recordExactInspectionFinished(0, tool(), NativeInspectionPass.GLOBAL, project)
         collector.markCompletedNormally()
         collector.completionObservation.observeCandidates { error("metadata unavailable") }
         collector.completionObservation.classifyMissingCompletions { }

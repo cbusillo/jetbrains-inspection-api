@@ -1,6 +1,5 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
@@ -30,11 +29,9 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.inspectionFinished(
-            10L,
-            1L,
             0,
             tool,
-            InspectListener.InspectionKind.LOCAL,
+            NativeInspectionPass.LOCAL,
             file,
             project,
         )
@@ -57,7 +54,7 @@ class NativeInspectionExecutionProofTest {
             every { shortName } returns "UnusedImport"
         }
         fun finishedRun() = NativeInspectionExecutionProofCollector(project, setOf(filePath)).apply {
-            inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
+            inspectionFinished(0, tool, NativeInspectionPass.LOCAL, file, project)
             recordExactFileAnalyzed(file, project)
             markCompletedNormally()
         }
@@ -88,7 +85,7 @@ class NativeInspectionExecutionProofTest {
     fun `global inspection completion without file traversal remains unproven`() {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
-        collector.recordExactInspectionFinished(0, tool, InspectListener.InspectionKind.GLOBAL, project)
+        collector.recordExactInspectionFinished(0, tool, NativeInspectionPass.GLOBAL, project)
         collector.markCompletedNormally()
 
         val result = collector.result()
@@ -104,7 +101,7 @@ class NativeInspectionExecutionProofTest {
 
         collector.recordExactFileAnalyzed(file, project)
         collector.observeExactToolCompletion(0, tool, file, project)
-        collector.recordExactInspectionFinished(0, tool, InspectListener.InspectionKind.GLOBAL_SIMPLE, project)
+        collector.recordExactInspectionFinished(0, tool, NativeInspectionPass.GLOBAL, project)
         collector.markCompletedNormally()
         collector.observeCompletionOf(tool)
 
@@ -119,11 +116,9 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.inspectionFinished(
-            10L,
-            1L,
             2,
             tool,
-            InspectListener.InspectionKind.LOCAL,
+            NativeInspectionPass.LOCAL,
             file,
             project,
         )
@@ -143,11 +138,9 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.inspectionFinished(
-            10L,
-            1L,
             0,
             tool,
-            InspectListener.InspectionKind.LOCAL,
+            NativeInspectionPass.LOCAL,
             file,
             project,
         )
@@ -167,11 +160,9 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.inspectionFinished(
-            10L,
-            1L,
             0,
             tool,
-            InspectListener.InspectionKind.LOCAL,
+            NativeInspectionPass.LOCAL,
             file,
             project,
         )
@@ -202,11 +193,9 @@ class NativeInspectionExecutionProofTest {
 
         collector.recordExactFileAnalyzed(file, otherProject)
         collector.inspectionFinished(
-            10L,
-            1L,
             0,
             tool,
-            InspectListener.InspectionKind.GLOBAL,
+            NativeInspectionPass.GLOBAL,
             null,
             otherProject,
         )
@@ -229,7 +218,7 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath))
 
         collector.recordExactFileAnalyzed(invalidFile, project)
-        collector.recordExactInspectionFinished(0, invalidTool, InspectListener.InspectionKind.GLOBAL, project)
+        collector.recordExactInspectionFinished(0, invalidTool, NativeInspectionPass.GLOBAL, project)
         collector.markCompletedNormally()
 
         val result = collector.result()
@@ -243,7 +232,7 @@ class NativeInspectionExecutionProofTest {
         val collector = NativeInspectionExecutionProofCollector(project, setOf(filePath, secondPath))
 
         collector.recordExactFileAnalyzed(file, project)
-        collector.inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
+        collector.inspectionFinished(0, tool, NativeInspectionPass.LOCAL, file, project)
         collector.markCompletedNormally()
 
         val result = collector.result()
@@ -264,7 +253,7 @@ class NativeInspectionExecutionProofTest {
 
         collector.recordExactFileAnalyzed(file, project)
         collector.recordExactFileAnalyzed(unexpectedFile, project)
-        collector.inspectionFinished(10L, 1L, 0, tool, InspectListener.InspectionKind.LOCAL, file, project)
+        collector.inspectionFinished(0, tool, NativeInspectionPass.LOCAL, file, project)
         collector.markCompletedNormally()
 
         val result = collector.result()
