@@ -72,7 +72,8 @@ internal fun problemDescriptorStartOffset(
 private fun descriptorTextRange(descriptor: ProblemDescriptor): TextRange? {
     return try {
         descriptor.javaClass.getMethod("getTextRange").invoke(descriptor) as? TextRange
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         null
     }
 }

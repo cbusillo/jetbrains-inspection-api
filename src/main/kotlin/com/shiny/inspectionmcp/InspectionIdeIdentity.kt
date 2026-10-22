@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
@@ -163,9 +164,11 @@ internal object InspectionIdeRegistry {
             Files.writeString(temp, body)
             try {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
             }
+        } catch (_: ProcessCanceledException) {
         } catch (_: Exception) {
         }
     }
@@ -173,7 +176,8 @@ internal object InspectionIdeRegistry {
     private fun deleteRegistryFile() {
         try {
             Files.deleteIfExists(registryFile(inspectionRegistryInstancesDir()))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
         }
     }
 

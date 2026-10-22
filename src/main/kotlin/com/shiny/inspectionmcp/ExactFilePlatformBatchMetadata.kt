@@ -30,7 +30,8 @@ internal fun classifyMissingBatchWrapperPlatformMetadata(
 ): MissingBatchWrapperPlatformMetadata {
     val sourceIsUnfair = try {
         sourceWrapper.isUnfair
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         return MissingBatchWrapperPlatformMetadata(
             classification = MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
             failureStage = "source_is_unfair",
@@ -46,7 +47,8 @@ internal fun classifyMissingBatchWrapperPlatformMetadata(
 
     val sourceTool = try {
         sourceWrapper.tool
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         return MissingBatchWrapperPlatformMetadata(
             classification = MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
             sourceIsUnfair = true,
@@ -62,7 +64,8 @@ internal fun classifyMissingBatchWrapperPlatformMetadata(
 
     val pairedBatchShortName = try {
         pairedTool.inspectionForBatchShortName
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         return MissingBatchWrapperPlatformMetadata(
             classification = MissingBatchWrapperPlatformClassification.METADATA_UNAVAILABLE,
             sourceIsUnfair = true,

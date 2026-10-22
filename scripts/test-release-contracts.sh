@@ -516,6 +516,83 @@ test_inspection_boundary_linter() {
   trap - RETURN
 }
 
+test_cancellation_catch_linter() {
+  local temp_dir sources source
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf "$temp_dir"' RETURN
+  sources="$temp_dir/src"
+  source="$sources/Sample.kt"
+  mkdir -p "$sources"
+  if uv run scripts/lint-cancellation-catches.py --sources "$temp_dir/missing" >"$temp_dir/output" 2>&1; then
+    fail "cancellation linter accepted a missing source directory"
+  fi
+  assert_contains "$temp_dir/output" "source directory does not exist"
+  cat > "$source" <<'KOTLIN'
+fun rethrows() = try { read() } catch (e: Exception) { rethrowIfCanceled(e); null }
+fun rethrowsLater() {
+    try {
+        read()
+    } catch (error: Exception) {
+        record(error)
+        throw error
+    }
+}
+fun carries() {
+    var failure: Exception? = null
+    try {
+        read()
+    } catch (error: Exception) {
+        failure = error
+    }
+}
+fun answers() {
+    try {
+        read()
+    } catch (error: Exception) {
+        sendInternalServerError(context, request, error)
+    }
+}
+fun cancelledFirst() {
+    try {
+        read()
+    } catch (e: ProcessCanceledException) {
+        throw e
+    } catch (e: java.io.IOException) {
+        null
+    } catch (e: Exception) {
+        null
+    }
+}
+KOTLIN
+  uv run scripts/lint-cancellation-catches.py --sources "$sources" >/dev/null
+  cat > "$source" <<'KOTLIN'
+fun swallows() = try { read() } catch (_: Exception) { null }
+fun throwsSometimes() {
+    try {
+        read()
+    } catch (e: Exception) {
+        if (fatal) throw e
+        null
+    }
+}
+fun rethrowsAnother() {
+    try {
+        read()
+    } catch (e: Exception) {
+        rethrowIfCanceled(other)
+    }
+}
+KOTLIN
+  if uv run scripts/lint-cancellation-catches.py --sources "$sources" >"$temp_dir/output" 2>&1; then
+    fail "cancellation linter accepted catches that swallow cancellation"
+  fi
+  assert_contains "$temp_dir/output" "$source:1:"
+  assert_contains "$temp_dir/output" "$source:5:"
+  assert_contains "$temp_dir/output" "$source:13:"
+  rm -rf "$temp_dir"
+  trap - RETURN
+}
+
 test_version_validator
 test_stable_artifact_publication
 test_marketplace_publication_policy
@@ -523,5 +600,6 @@ test_internal_api_allowlist
 test_release_script_flow
 test_workflow_action_pins
 test_inspection_boundary_linter
+test_cancellation_catch_linter
 
 echo "Release contract tests passed."

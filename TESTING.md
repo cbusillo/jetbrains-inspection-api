@@ -635,6 +635,12 @@ The boundary exists only for synchronous native
 execution, direct presentation access, lifecycle cleanup, and native
 attestation that the supported bounded `inspectEx` path cannot provide.
 
+Plugin code must not turn a cancelled read action or progress into a fallback
+value. `scripts/lint-cancellation-catches.py` accepts a `catch (e: Exception)`
+only when it passes the exception to `rethrowIfCanceled` (or another named
+cancellation handler), ends by throwing it, keeps it for a later throw, or
+follows a `ProcessCanceledException` catch.
+
 When an intentional Stable implementation change alters verifier findings,
 review the complete `missing`/`unexpected` diff from `verifyPlugin`, update the
 manifest with the sorted canonical first sentence of each approved finding, and
@@ -645,7 +651,7 @@ The release contract tests run the Stable release scripts against fakes and
 cover version and channel rejection, artifact identity, source provenance,
 verified digests, unexpected internal APIs, and the release PR/tag flow. Invalid
 artifact fixtures supply their actual digest and require the intended validator
-refusal before fake upload. Action-pin and boundary linter tests use disposable
+refusal before fake upload. Action-pin, boundary and cancellation linter tests use disposable
 workflow, source and manifest fixtures; the linters enforce the rules on actual
 repository inputs in both the commit gate and `test-all.sh`.
 
