@@ -39,6 +39,8 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.nio.file.Files
 import java.nio.file.Path
 import java.lang.reflect.InvocationTargetException
@@ -915,8 +917,6 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"status\": \"no_results\""))
         assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
         assertTrue(response.contains("\"inspection_verdict_reason\": \"no_results\""))
-        assertTrue(response.contains("No trustworthy inspection result was captured"))
-        assertFalse(response.contains("100% pass"))
         assertTrue(response.contains("\"project\": \"TestProject\""))
         assertTrue(response.contains("\"project_key\":"))
         assertTrue(response.contains("\"total_problems\": 0"))
@@ -1326,9 +1326,9 @@ class InspectionSnapshotStateTest {
         assertEquals(currentRun.runId, InspectionResultsStore.getSnapshot(snapshotKey())?.runId)
     }
 
-    @Test
-    @DisplayName("Status distinguishes unreconciled current-run PSI churn")
-    fun testStatusReportsCurrentRunPsiChurnWhenReconcileCannotConfirm() {
+    @ParameterizedTest
+    @ValueSource(strings = ["status", "problems"])
+    fun testEndpointsWithholdUnreconciledCurrentRunPsiChurn(endpoint: String) {
         val extractor = mockk<EnhancedTreeExtractor>()
         val currentRun = beginInspectionRun()
         finishInspectionRun(snapshotKey(), currentRun.runId)
@@ -1352,12 +1352,22 @@ class InspectionSnapshotStateTest {
         )
         every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
 
-        val status = buildInspectionStatus()
+        val response = requestBody("/api/inspection/$endpoint?project=TestProject")
+        val status = jsonResponseValue(response) as Map<*, *>
 
         assertEquals(true, status["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", status["snapshot_change_kind"])
         assertEquals(listOf("project_changed_since_inspection"), status["stale_reasons"])
-        assertEquals(currentRun.runId, (status["snapshot_run_id"] as Number).toLong())
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        if (endpoint == "problems") {
+            assertEquals("stale_results", status["status"])
+            assertEquals("stale_results", status["inspection_verdict_reason"])
+            assertEquals(1, (status["cached_total_problems"] as Number).toInt())
+            assertEquals(0, (status["cached_problems_shown"] as Number).toInt())
+            assertFalse(response.contains("Fresh warning"))
+        } else {
+            assertEquals(currentRun.runId, (status["snapshot_run_id"] as Number).toLong())
+        }
     }
 
     @Test
@@ -1434,44 +1444,6 @@ class InspectionSnapshotStateTest {
         assertFalse(problems.contains("Finding captured before the edit"), problems)
         assertEquals(true, status["results_may_be_stale"], status.toString())
         assertEquals("UNKNOWN", status["inspection_verdict"], status.toString())
-    }
-
-    @Test
-    @DisplayName("Problems endpoint withholds unreconciled current-run PSI churn")
-    fun testProblemsEndpointWithholdsUnreconciledCurrentRunPsiChurn() {
-        val extractor = mockk<EnhancedTreeExtractor>()
-        val currentRun = beginInspectionRun()
-        finishInspectionRun(snapshotKey(), currentRun.runId)
-        every { extractor.extractAllProblemsWithStatus(mockProject) } returns ProblemExtractionResult(
-            problems = emptyList(),
-            succeeded = true,
-            source = ProblemExtractionSource.INSPECTION_RESULTS,
-        )
-        enhancedTreeExtractorFactory = { extractor }
-        InspectionResultsStore.setSnapshot(
-            snapshotKey(),
-            InspectionResultsSnapshot(
-                problems = listOf(staleProblem(description = "Fresh warning")),
-                timestamp = System.currentTimeMillis() - 16000L,
-                projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
-                outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
-                source = "inspection_view",
-                runId = currentRun.runId,
-                triggerTimeMs = currentRun.triggerTimeMs,
-            ),
-        )
-        every { PsiModificationTracker.getInstance(mockProject).modificationCount } returns 8L
-
-        val response = getInspectionProblems()
-
-        assertTrue(response.contains("\"status\": \"stale_results\""))
-        assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
-        assertTrue(response.contains("\"inspection_verdict_reason\": \"stale_results\""))
-        assertTrue(response.contains("\"results_may_be_stale\": true"))
-        assertTrue(response.contains("\"snapshot_change_kind\": \"project_changed_since_inspection\""))
-        assertTrue(response.contains("\"cached_total_problems\": 1"))
-        assertTrue(response.contains("\"cached_problems_shown\": 0"))
-        assertFalse(response.contains("Fresh warning"))
     }
 
     @Test

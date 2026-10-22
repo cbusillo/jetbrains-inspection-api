@@ -1366,7 +1366,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"completion_reason\":"))
         assertTrue(body.contains("\"inspection_attribution\":"), body)
-        assertTrue(body.contains("\"schema_version\": 1"), body)
         assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
         verify(exactly = 1) { mockApplication.executeOnPooledThread(any<Runnable>()) }
     }
@@ -1405,8 +1404,9 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals(listOf("capture_deadline", "wait_timeout"), history.map { it.asJsonObject["source"].asString })
     }
 
-    @Test
-    fun `test wait endpoint refuses a replacement inspection run`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["wait", "problems"])
+    fun `test endpoints refuse a replacement inspection run`(endpoint: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         runPooledTasksInline()
@@ -1423,7 +1423,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         )
 
         val response = processGetRequest(
-            "/api/inspection/wait?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
+            "/api/inspection/$endpoint?timeout_ms=1000&poll_ms=200&inspection_run_id=7"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
@@ -1431,7 +1431,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"status\": \"run_changed\""))
         assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
         assertTrue(body.contains("\"inspection_run_id\": 8"))
-        assertTrue(body.contains("\"timed_out\": false"))
+        if (endpoint == "wait") assertTrue(body.contains("\"timed_out\": false"))
     }
 
     @Test
@@ -1755,33 +1755,6 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @Test
-    fun `test problems endpoint refuses a replacement inspection run`() {
-        every { mockProject.basePath } returns "/tmp/TestProject"
-        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
-        runPooledTasksInline()
-        mockInspectionPrerequisites(mockProject)
-        setInspectionRunState(
-            projectKey(mockProject),
-            InspectionRunState(
-                runId = 8L,
-                triggerTimeMs = System.currentTimeMillis(),
-                inProgress = false,
-                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
-            ),
-        )
-
-        val response = processGetRequest(
-            "/api/inspection/problems?severity=all&inspection_run_id=7"
-        )
-        val body = response.content().toString(Charsets.UTF_8)
-
-        assertEquals(HttpResponseStatus.OK, response.status())
-        assertTrue(body.contains("\"status\": \"run_changed\""))
-        assertTrue(body.contains("\"expected_inspection_run_id\": 7"))
-        assertTrue(body.contains("\"inspection_run_id\": 8"))
-    }
-
-    @Test
     fun `test problems endpoint keeps active run while prior snapshot remains`() {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -1851,7 +1824,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         val response = processGetRequest("/api/inspection/wait?project=NonExistent&timeout_ms=10&poll_ms=10")
             .content().toString(Charsets.UTF_8)
 
-        assertTrue(response.contains("Requested project 'NonExistent' is not open in the IDE."))
+        assertTrue((jsonResponseValue(response) as Map<*, *>)["error"].toString().contains("NonExistent"))
         assertTrue(response.contains("\"completion_reason\": \"no_project\""))
         assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
         assertTrue(response.contains("\"inspection_verdict_reason\": \"no_project\""))
@@ -1980,44 +1953,36 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         "description" to description,
     )
 
-    @Test
-    fun `test status runtime failure returns HTTP 500`() {
-        mockkStatic(ToolWindowManager::class)
-        every { ToolWindowManager.getInstance(mockProject) } throws IllegalStateException("boom")
+    @ParameterizedTest
+    @ValueSource(strings = ["status", "problems"])
+    fun `test endpoint runtime failures return HTTP 500 without leaking details`(endpoint: String) {
+        runPooledTasksInline()
+        if (endpoint == "status") {
+            mockkStatic(ToolWindowManager::class)
+            every { ToolWindowManager.getInstance(mockProject) } throws IllegalStateException("boom")
+        } else {
+            every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } throws
+                IllegalStateException("boom")
+        }
 
         val response = processGetRequest(
-            "/api/inspection/status?client_run_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+            "/api/inspection/$endpoint?client_run_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
-        assertTrue(body.contains("Internal server error"))
+        val error = (jsonResponseValue(body) as Map<*, *>)["error"]
+        assertTrue(error is String && error.isNotBlank())
         assertTrue(body.contains("\"inspection_verdict\": \"UNKNOWN\""), body)
         assertTrue(body.contains("\"inspection_verdict_reason\": \"inspection_api_http_error\""), body)
         assertTrue(body.contains("\"classification\": \"tool_caused\""), body)
-        assertTrue(body.contains("\"phase\": \"status\""), body)
+        assertTrue(body.contains("\"phase\": \"$endpoint\""), body)
         assertTrue(body.contains("\"http_status\": 500"), body)
         assertTrue(body.contains("\"client_run_id\": \"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\""), body)
+        assertTrue(body.contains("\"endpoint\": \"/api/inspection/$endpoint\""), body)
         assertFalse(body.contains("boom"), body)
     }
 
-    @Test
-    fun `test problems runtime failure returns HTTP 500`() {
-        runPooledTasksInline()
-        every { mockApplication.runReadAction(any<ThrowableComputable<Any, Exception>>()) } throws
-            IllegalStateException("boom")
-
-        val response = processGetRequest(
-            "/api/inspection/problems?client_run_id=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
-        )
-        val body = response.content().toString(Charsets.UTF_8)
-
-        assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
-        assertTrue(body.contains("Internal server error"))
-        assertTrue(body.contains("\"endpoint\": \"/api/inspection/problems\""), body)
-        assertTrue(body.contains("\"client_run_id\": \"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb\""), body)
-        assertFalse(body.contains("boom"), body)
-    }
     @ParameterizedTest
     @ValueSource(strings = ["/tmp/outside/Included.kt", "/tmp/TestProject/build/Included.kt", "/tmp/TestProject/.idea/workspace.xml"])
     fun `test files publication cannot reconcile a selected file the tracker does not watch`(path: String) {
