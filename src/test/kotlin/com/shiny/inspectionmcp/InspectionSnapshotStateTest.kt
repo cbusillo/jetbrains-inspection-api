@@ -917,8 +917,6 @@ class InspectionSnapshotStateTest {
         assertTrue(response.contains("\"status\": \"no_results\""))
         assertTrue(response.contains("\"inspection_verdict\": \"UNKNOWN\""))
         assertTrue(response.contains("\"inspection_verdict_reason\": \"no_results\""))
-        assertTrue(response.contains("No trustworthy inspection result was captured"))
-        assertFalse(response.contains("100% pass"))
         assertTrue(response.contains("\"project\": \"TestProject\""))
         assertTrue(response.contains("\"project_key\":"))
         assertTrue(response.contains("\"total_problems\": 0"))

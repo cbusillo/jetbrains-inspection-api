@@ -629,28 +629,27 @@ KOTLIN
   trap - RETURN
 }
 
-test_all_delegates_to_commit_gate() {
-  local temp_dir actual status
+test_all_preserves_gate_failure() {
+  local temp_dir gate_status expected_status
   temp_dir=$(mktemp -d)
+  expected_status=17
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/scripts"
   cp scripts/test-all.sh "$temp_dir/scripts/"
   cat > "$temp_dir/scripts/commit-gate.sh" <<'SH'
 #!/usr/bin/env bash
-printf '%s\n' "$@"
-exit "${FAKE_GATE_STATUS:-0}"
+[ "$PWD" = "$EXPECTED_ROOT" ] || exit 29
+exit "$FAKE_GATE_STATUS"
 SH
   chmod +x "$temp_dir/scripts/commit-gate.sh"
-  actual=$(cd / && "$temp_dir/scripts/test-all.sh" 'argument with spaces')
-  [ "$actual" = $'--ci\nargument with spaces' ] || fail "test-all did not select the full gate and preserve arguments"
-  status=0
-  FAKE_GATE_STATUS=17 "$temp_dir/scripts/test-all.sh" >/dev/null || status=$?
-  [ "$status" -eq 17 ] || fail "test-all did not propagate the failing gate status"
+  gate_status=0
+  (cd / && EXPECTED_ROOT="$temp_dir" FAKE_GATE_STATUS="$expected_status" "$temp_dir/scripts/test-all.sh") || gate_status=$?
+  [ "$gate_status" -eq "$expected_status" ] || fail "test-all did not run the gate from its root and preserve its failure"
   rm -rf "$temp_dir"
   trap - RETURN
 }
 
-test_all_delegates_to_commit_gate
+test_all_preserves_gate_failure
 test_version_validator
 test_stable_artifact_publication
 test_marketplace_publication_policy

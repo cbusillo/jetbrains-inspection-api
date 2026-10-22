@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-exec "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/commit-gate.sh" --ci "$@"
+cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+exec ./scripts/commit-gate.sh --ci
