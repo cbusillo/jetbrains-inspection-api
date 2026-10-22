@@ -3,6 +3,7 @@ package com.shiny.inspectionmcp
 import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.StandardProgressIndicator
+import com.intellij.openapi.progress.WrappedProgressIndicator
 import com.intellij.openapi.progress.util.ProgressIndicatorUtils
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -37,7 +38,9 @@ internal fun <T> runWritePriorityInspectionRead(
     val completed = AtomicBoolean(false)
     val result = AtomicReference<T>()
     val actionCancellation = AtomicReference<ProcessCanceledException?>()
-    val writePriorityIndicator = object : ProgressIndicator by indicator, StandardProgressIndicator {
+    val writePriorityIndicator = object : ProgressIndicator by indicator, StandardProgressIndicator, WrappedProgressIndicator {
+        override fun getOriginalProgressIndicator(): ProgressIndicator = indicator
+
         override fun cancel() {
             if (preempted.compareAndSet(false, true)) {
                 try {

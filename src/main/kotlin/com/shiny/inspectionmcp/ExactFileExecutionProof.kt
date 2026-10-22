@@ -71,7 +71,11 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 
     fun execute(candidate: ExactFileProofCandidate<T>, batchWrapper: W): List<D>
 
+    fun executionFailure(candidate: ExactFileProofCandidate<T>, batchWrapper: W): String? = null
+
     fun mapDescriptor(candidate: ExactFileProofCandidate<T>, batchWrapper: W, descriptor: D): Map<String, Any>?
+
+    fun allowsCrossFileDescriptors(candidate: ExactFileProofCandidate<T>, batchWrapper: W): Boolean = false
 
     fun cleanupBatchWrapper(candidate: ExactFileProofCandidate<T>, batchWrapper: W) = Unit
 
@@ -87,6 +91,7 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 internal data class BoundedExecutionProofResult(
     val proofProblems: List<Map<String, Any>>,
     val enabledLocalToolCount: Int,
+    val enabledGlobalSimpleToolCount: Int = 0,
     val executedToolCount: Int = 0,
     val totalDescriptorCount: Int = 0,
     val skippedReason: String? = null,
@@ -559,7 +564,8 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
             checkExecutionBudget()
             stage = "execution"
             val descriptors = adapter.execute(obligation.candidate, executionWrapper)
-            state.executed = true
+            state.failureDetail = adapter.executionFailure(obligation.candidate, executionWrapper)
+            state.executed = state.failureDetail == null
             state.descriptorCount = descriptors.size
             try {
                 checkExecutionBudget()
@@ -603,7 +609,10 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                     }
                     throw error
                 }
-                if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
+                val mappedFile = (mapped?.get("file") as? String)?.takeIf { it.isNotBlank() }
+                val matchesCandidate = mapped != null && exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)
+                val allowedCrossFile = mappedFile != null && adapter.allowsCrossFileDescriptors(obligation.candidate, executionWrapper)
+                if (mapped == null || (!matchesCandidate && !allowedCrossFile)) {
                     state.unmappedDetails += if (mapped == null) {
                         "mapping_returned_null"
                     } else {
@@ -725,9 +734,9 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
         if (deadlineExceeded()) accumulator.hitTimeLimit = true
         val obligation = state.obligation
         val diagnosticWrapper = state.executionWrapper ?: obligation.batchWrapper
+        accumulator.totalDescriptorCount += state.descriptorCount
         if (state.executed) {
             accumulator.executedToolCount++
-            accumulator.totalDescriptorCount += state.descriptorCount
             accumulator.executedScopeFiles += exactFileProofNormalizedPath(obligation.candidate.filePath)
         } else if (state.failureDetail == null) {
             accumulator.unexecutedRunnableObligationCount++

@@ -7,13 +7,11 @@ import com.intellij.openapi.project.Project
 import com.intellij.util.messages.MessageBusConnection
 
 // The Marketplace Stable build: public IntelliJ APIs only. In a normal IDE the public native
-// run skips its per-file pass, so Stable cannot attest broad scopes or run global-simple tools per file.
+// run skips its per-file pass, so Stable cannot attest broad scopes.
 internal object InspectionBuildEdition {
     const val NAME = "stable"
 
     val nativeAttestationUnavailableReason: String? = STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON
-
-    val nativeFilePassUnavailableReason: String? = STABLE_BUILD_GLOBAL_SIMPLE_UNPROVEN_REASON
 
     fun createNativeContext(
         inspectionManager: InspectionManagerEx,
