@@ -558,7 +558,7 @@ class SupportedInspectionExecutorPlatformTest {
             }
 
             assertThat(descriptors).singleElement().extracting { it.descriptionTemplate }
-                .isEqualTo("Global simple finding")
+                .isEqualTo(GLOBAL_SIMPLE_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
@@ -1246,8 +1246,8 @@ class SupportedInspectionExecutorPlatformTest {
         return profile
     }
 
-    private fun enabledTools(vararg tools: LocalInspectionTool): InspectionHandler.EnabledLocalToolEnumeration =
-        InspectionHandler.EnabledLocalToolEnumeration(
+    private fun enabledTools(vararg tools: LocalInspectionTool): InspectionHandler.EnabledFileToolEnumeration =
+        InspectionHandler.EnabledFileToolEnumeration(
             shortNames = tools.mapTo(linkedSetOf()) { it.shortName },
             errorCount = 0,
             errorExamples = emptyList(),
@@ -1404,16 +1404,13 @@ class SupportedInspectionExecutorPlatformTest {
             context: GlobalInspectionContext,
             processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
         ) {
-            holder.registerProblem(file, "Global simple finding")
-            processor.addProblemElement(
-                requireNotNull(context.refManager.getReference(file)),
-                *holder.resultsArray,
-            )
+            holder.registerProblem(file, GLOBAL_SIMPLE_FINDING)
         }
     }
 
     companion object {
         private const val SUPPORTED_FINDING = "Supported finding"
+        private const val GLOBAL_SIMPLE_FINDING = "Global simple finding"
 
         @JvmField
         @RegisterExtension

@@ -476,7 +476,7 @@ requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change
 
 ### Inspection execution proof (issues #239, #259, #284, #296, and #301)
 
-For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; each obligation executes through the supported `InspectionEngine.inspectEx` API with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
+For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; local obligations use `InspectionEngine.inspectEx` and global-simple obligations use the public single-file route described below, with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
 
 For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`. This native attestation is in the full build only; see [Stable and full builds](#stable-and-full-builds).
 
@@ -492,7 +492,7 @@ necessary: public path profiling skips out-of-scope files before recording a
 path and cannot preserve the unexpected-file check. Activity and per-kind
 completion counters are diagnostics only and are no longer collected.
 
-Automated wrapper tests prove only API reachability: local wrappers can use `inspectEx`, while global-simple and true-global wrappers cannot. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates isolated linked worktrees containing the maintained fixtures; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
+Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates isolated linked worktrees containing the maintained fixtures; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
 Run the focused regression suite:
 
@@ -636,12 +636,18 @@ In a normal IDE the public native run skips its per-file pass, so the Stable
 build cannot prove a `whole_project`, `directory` or `all` run clean: it returns
 `UNKNOWN` with `execution_proof_block_reason:
 "stable_build_cannot_prove_broad_scope"`. For `current_file`, `files` and
-`changed_files` it keeps the exact-file proof, but if the profile enables a
-global-simple inspection (which only that per-file pass runs) it returns
-`UNKNOWN` with `"stable_build_cannot_run_global_simple_inspections"`. Findings
-stay RED in both builds. `StableBuildVerdictPlatformTest` in
+`changed_files` both builds prove local and global-simple inspections per file.
+Global-simple tools use the public `InspectionEngine.runInspectionOnFile` route
+with a copied wrapper and private context. The adapter observes `checkFile`
+completion, runs the tool's start/finish callbacks, and retains both holder and
+processor findings. A skipped callback, exception, missing descriptor mapping,
+deadline or incomplete file obligation remains UNKNOWN. Diagnostics retain the
+local-tool count and add `execution_proof_enabled_global_simple_tool_count`;
+the obligation and execution totals include both kinds. Findings stay RED in
+both builds. `StableBuildVerdictPlatformTest` in
 `src/testStable/kotlin` checks these verdicts and compiles only in the Stable
-build:
+build. It covers a clean file run, a planted single-file engine skip, both
+finding channels and lifecycle callbacks, and a failure on one of two files:
 
 ```bash
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'

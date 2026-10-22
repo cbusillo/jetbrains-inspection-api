@@ -2262,8 +2262,6 @@ class InspectionHandler : HttpRequestHandler() {
                     unprovenBatchAnnotatorNextAction(diagnostic?.get("execution_proof_unproven_batch_annotators") as? List<*>)
                 STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON ->
                     "This is the Marketplace Stable build. It cannot prove that a whole-project or directory inspection is clean, because that proof needs IntelliJ APIs not yet approved for Stable. Any findings it reports are real. For a clean verdict, inspect files with the current_file, files, or changed_files scope, or use the full build. Do not report GREEN."
-                STABLE_BUILD_GLOBAL_SIMPLE_UNPROVEN_REASON ->
-                    "This is the Marketplace Stable build. The inspection profile enables inspections that run only in the IDE's full per-file pass, which Stable cannot run, so it cannot prove these files are clean. Any findings it reports are real. Use the full build for a clean verdict. Do not report GREEN."
                 "native_attestation_context_creation_failed" ->
                     "Update or reinstall the inspection plugin, restart the IDE, and include execution_proof diagnostics if native attestation remains unavailable."
                 "native_inspection_failures", "native_inspection_reported_problems" ->
@@ -7424,10 +7422,10 @@ class InspectionHandler : HttpRequestHandler() {
                                     )
                                 } else {
                                     try {
-                                        val enabledTools = resolveEnabledLocalToolShortNames(globalContext) {
+                                        val enabledTools = resolveEnabledFileToolShortNames(globalContext) {
                                             checkInspectionRunCancellation(key, runId)
                                         }
-                                        exactProofToolShortNames = enabledTools.shortNames
+                                        exactProofToolShortNames = enabledTools.fileToolShortNames
                                         val proofRun = runBoundedExecutionProof(
                                             enabledTools,
                                             profile,
@@ -7445,8 +7443,6 @@ class InspectionHandler : HttpRequestHandler() {
                                         }
                                         boundedProof = unprovenBatchAnnotators?.let {
                                             proofRun.copy(skippedReason = it.reason, unprovenBatchAnnotatorExamples = it.examples)
-                                        } ?: unprovenFilePassReason(proofRun, globalContext)?.let {
-                                            proofRun.copy(skippedReason = it)
                                         } ?: proofRun
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
@@ -10282,12 +10278,10 @@ class InspectionHandler : HttpRequestHandler() {
                         "Targeted local inspection requires the caller progress indicator"
                     },
                 ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
+            } else if (executionWrapper is GlobalInspectionToolWrapper && executionWrapper.tool.isGlobalSimpleInspectionTool) {
+                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
             } else {
-                InspectionEngine.runInspectionOnFile(
-                    psiFile,
-                    executionWrapper,
-                    executionContext.publicContext(),
-                )
+                InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
             }
             engineCompleted = true
             ProgressManager.checkCanceled()
@@ -10450,6 +10444,7 @@ class InspectionHandler : HttpRequestHandler() {
             "execution_proof_mode" to "exact_bounded",
             "execution_proof_smart_mode_stable" to proof.smartModeStable,
             "execution_proof_enabled_local_tool_count" to proof.enabledLocalToolCount,
+            "execution_proof_enabled_global_simple_tool_count" to proof.enabledGlobalSimpleToolCount,
             "execution_proof_executed_tool_count" to proof.executedToolCount,
             "execution_proof_descriptor_count" to proof.totalDescriptorCount,
             "execution_proof_missing_wrapper_count" to proof.missingWrapperCount,
@@ -10525,38 +10520,22 @@ class InspectionHandler : HttpRequestHandler() {
         ).filterValues { it != null }
     }
 
-    internal data class EnabledLocalToolEnumeration(
+    internal data class EnabledFileToolEnumeration(
         val shortNames: Set<String>,
         val errorCount: Int,
         val errorExamples: List<Map<String, Any?>>,
-    )
-
-    // Exact proof runs local tools only; global-simple tools run in the native per-file pass.
-    private fun unprovenFilePassReason(
-        proof: BoundedExecutionProofResult,
-        globalContext: GlobalInspectionContextBoundary,
-    ): String? {
-        val reason = InspectionBuildEdition.nativeFilePassUnavailableReason ?: return null
-        if (!proof.proofEstablished) return null
-        val enabledGlobalSimpleTool = try {
-            globalContext.toolGroups().any { toolGroup ->
-                toolGroup.tools.any { state ->
-                    val wrapper = state.tool
-                    state.isEnabled && wrapper is GlobalInspectionToolWrapper && wrapper.tool.isGlobalSimpleInspectionTool
-                }
-            }
-        } catch (error: Exception) {
-            rethrowIfCanceled(error)
-            true
-        }
-        return reason.takeIf { enabledGlobalSimpleTool }
+        val globalSimpleShortNames: Set<String> = emptySet(),
+    ) {
+        val fileToolShortNames: Set<String>
+            get() = shortNames + globalSimpleShortNames
     }
 
-    private fun resolveEnabledLocalToolShortNames(
+    private fun resolveEnabledFileToolShortNames(
         globalContext: GlobalInspectionContextBoundary,
         cancellationCheck: () -> Unit,
-    ): EnabledLocalToolEnumeration {
+    ): EnabledFileToolEnumeration {
         val names = linkedSetOf<String>()
+        val globalSimpleNames = linkedSetOf<String>()
         val errors = mutableListOf<Map<String, Any?>>()
         var errorCount = 0
 
@@ -10606,18 +10585,19 @@ class InspectionHandler : HttpRequestHandler() {
                     recordError("enabled_tool_wrapper", error)
                     continue
                 }
-                if (wrapper !is com.intellij.codeInspection.ex.LocalInspectionToolWrapper) continue
-                val shortName = try {
-                    wrapper.shortName
+                try {
+                    when {
+                        wrapper is com.intellij.codeInspection.ex.LocalInspectionToolWrapper -> names += wrapper.shortName
+                        wrapper is GlobalInspectionToolWrapper && wrapper.tool.isGlobalSimpleInspectionTool ->
+                            globalSimpleNames += wrapper.shortName
+                    }
                 } catch (error: Exception) {
                     rethrowIfCanceled(error)
-                    recordError("enabled_tool_short_name", error)
-                    continue
+                    recordError("enabled_file_tool", error)
                 }
-                names += shortName
             }
         }
-        return EnabledLocalToolEnumeration(names, errorCount, errors)
+        return EnabledFileToolEnumeration(names, errorCount, errors, globalSimpleNames)
     }
 
     private fun createExactFileExecutionContext(
@@ -10653,7 +10633,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     internal fun runBoundedExecutionProof(
-        enabledTools: EnabledLocalToolEnumeration,
+        enabledTools: EnabledFileToolEnumeration,
         profile: InspectionProfileImpl,
         project: Project,
         scopeFiles: List<com.intellij.psi.PsiFile>,
@@ -10740,19 +10720,20 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
-        if (enabledTools.shortNames.isEmpty() && enabledTools.errorCount == 0) {
+        if (enabledTools.fileToolShortNames.isEmpty() && enabledTools.errorCount == 0) {
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
                 enabledLocalToolCount = 0,
-                skippedReason = "no_enabled_local_tools",
+                skippedReason = "no_enabled_file_tools",
             )
         }
         val maxFiles = 25
         if (scopeFiles.size > maxFiles) {
-            val candidateObligationCount = enabledTools.shortNames.size * scopeFiles.size
+            val candidateObligationCount = enabledTools.fileToolShortNames.size * scopeFiles.size
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
                 enabledLocalToolCount = enabledTools.shortNames.size,
+                enabledGlobalSimpleToolCount = enabledTools.globalSimpleShortNames.size,
                 candidateObligationCount = candidateObligationCount,
                 unvisitedClassificationObligationCount = candidateObligationCount,
                 enumerationErrorCount = enabledTools.errorCount,
@@ -10761,7 +10742,7 @@ class InspectionHandler : HttpRequestHandler() {
                 blockingExamples = enabledTools.errorExamples,
             )
         }
-        val candidates = enabledTools.shortNames.flatMap { shortName ->
+        val candidates = enabledTools.fileToolShortNames.flatMap { shortName ->
             scopeFiles.map { psiFile ->
                 ExactFileProofCandidate(
                     shortName = shortName,
@@ -10821,20 +10802,27 @@ class InspectionHandler : HttpRequestHandler() {
             ): ExactFileInspectionExecutionWrapper? =
                 app.runReadAction<com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>?, Exception> {
                     profile.getInspectionTool(candidate.shortName, candidate.value)
-                        as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                        ?.takeIf {
+                            it is com.intellij.codeInspection.ex.LocalInspectionToolWrapper ||
+                                it is GlobalInspectionToolWrapper && it.tool.isGlobalSimpleInspectionTool
+                        }
                 }?.let(::ExactFileInspectionExecutionWrapper)
 
             override fun isLanguageApplicable(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): Boolean = app.runReadAction<Boolean, Exception> {
-                val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                sourceWrapper.resolvedBatchWrapper = com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
-                    project,
-                    candidate.value,
-                    profile,
-                    localWrapper,
-                )
+                val localWrapper = sourceWrapper.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                sourceWrapper.resolvedBatchWrapper = if (localWrapper != null) {
+                    com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
+                        project,
+                        candidate.value,
+                        profile,
+                        localWrapper,
+                    )
+                } else {
+                    sourceWrapper.toolWrapper
+                }
                 val inspectInjectedPsi = sourceWrapper.resolvedBatchWrapper?.let(::canInspectInjectedPsi) ?: true
                 val languages = fileLanguages.getOrPut(candidate.value to inspectInjectedPsi) {
                     val collected = linkedSetOf<com.intellij.lang.Language>()
@@ -10886,11 +10874,11 @@ class InspectionHandler : HttpRequestHandler() {
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
             ): ExactFileProofBatchCapability = app.runReadAction<ExactFileProofBatchCapability, Exception> {
-                val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 val batchWrapper = sourceWrapper.resolvedBatchWrapper
                 if (batchWrapper != null) {
                     ExactFileProofBatchCapability.BATCH_RUNNABLE
                 } else {
+                    val localWrapper = sourceWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                     when (classifyMissingBatchWrapperPlatformMetadata(localWrapper).classification) {
                         MissingBatchWrapperPlatformClassification.INTENTIONALLY_NON_BATCH ->
                             ExactFileProofBatchCapability.NON_BATCH_CAPABLE_EXCLUDED
@@ -10977,6 +10965,12 @@ class InspectionHandler : HttpRequestHandler() {
                                     listOf(localWrapper),
                                     indicator,
                                 ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                            } else if (batchWrapper.toolWrapper is GlobalInspectionToolWrapper) {
+                                runGlobalSimpleInspectionOnFile(
+                                    candidate.value,
+                                    batchWrapper.toolWrapper,
+                                    requireNotNull(batchWrapper.context).publicContext(),
+                                )
                             } else {
                                 InspectionEngine.runInspectionOnFile(
                                     candidate.value,
@@ -11072,6 +11066,7 @@ class InspectionHandler : HttpRequestHandler() {
             adapter = adapter,
         )
         val proofWithWriteContention = proof.copy(
+            enabledGlobalSimpleToolCount = enabledTools.globalSimpleShortNames.size,
             batchAnnotatorRuns = batchAnnotatorRuns.toSet(),
             writePreemptionCount = writePreemptionCount.get(),
             firstWritePreemption = firstWritePreemption.get(),

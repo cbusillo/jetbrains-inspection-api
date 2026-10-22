@@ -87,6 +87,7 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 internal data class BoundedExecutionProofResult(
     val proofProblems: List<Map<String, Any>>,
     val enabledLocalToolCount: Int,
+    val enabledGlobalSimpleToolCount: Int = 0,
     val executedToolCount: Int = 0,
     val totalDescriptorCount: Int = 0,
     val skippedReason: String? = null,
