@@ -77,7 +77,8 @@ class EnhancedTreeExtractor {
 
         val resolved = try {
             targetClass.getMethod(name)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
         perClassCache[name] = resolved ?: noMethod
@@ -91,7 +92,8 @@ class EnhancedTreeExtractor {
         val problems = mutableListOf<Map<String, Any>>()
         val succeeded = try {
             extractProblemsFromView(view, problems, project)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             false
         }
         return ProblemExtractionResult(
@@ -147,7 +149,8 @@ class EnhancedTreeExtractor {
             for (name in inspectionFallbackToolWindowIds) {
                 val fallback = try {
                     toolWindowManager.getToolWindow(name)
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     null
                 } ?: continue
                 val beforeFallback = problems.size
@@ -166,6 +169,7 @@ class EnhancedTreeExtractor {
             }
             
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             succeeded = false
         }
         
@@ -181,7 +185,8 @@ class EnhancedTreeExtractor {
         var enumeratedIds = true
         val ids = try {
             toolWindowManager.toolWindowIds.toList()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             enumeratedIds = false
             emptyList()
         }
@@ -252,7 +257,8 @@ class EnhancedTreeExtractor {
                     return InspectionToolWindowState.HAS_TREE
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             return InspectionToolWindowState.UNREADABLE
         }
         return InspectionToolWindowState.EMPTY
@@ -314,7 +320,8 @@ class EnhancedTreeExtractor {
                 sawResultsSurface = foundResultsSurface,
                 addedProblems = addedProblems,
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             ToolWindowExtractionResult(succeeded = false, sawResultsSurface = foundResultsSurface, addedProblems = addedProblems)
         }
     }
@@ -357,7 +364,8 @@ class EnhancedTreeExtractor {
         if (app.isDispatchThread) {
             return try {
                 toolWindow.contentManager
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 null
             }
         }
@@ -368,7 +376,8 @@ class EnhancedTreeExtractor {
         return try {
             val method = getZeroArgMethod(toolWindow.javaClass, "getContentManagerIfCreated") ?: return null
             method.invoke(toolWindow) as? ContentManager
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -399,6 +408,7 @@ class EnhancedTreeExtractor {
             val tree = inspectionResultsTree(view) ?: return false
             extractProblemsFromTree(tree, problems, project)
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             false
         }
     }
@@ -406,7 +416,8 @@ class EnhancedTreeExtractor {
     private fun inspectionResultsTree(view: InspectionResultsView): JTree? {
         return try {
             getZeroArgMethod(view.javaClass, "getTree")?.invoke(view) as? JTree
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         } ?: findInspectionTree(view)
     }
@@ -420,6 +431,7 @@ class EnhancedTreeExtractor {
             walkNode(root, problems, project, 0)
             
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             false
         }
     }
@@ -462,6 +474,7 @@ class EnhancedTreeExtractor {
             }
             succeeded
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             false
         }
     }
@@ -652,7 +665,8 @@ class EnhancedTreeExtractor {
                     .map(Path::toString)
                     .orElse(null)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -798,7 +812,8 @@ class EnhancedTreeExtractor {
         return try {
             val method = getZeroArgMethod(target.javaClass, name) ?: return null
             method.invoke(target)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -829,7 +844,8 @@ class EnhancedTreeExtractor {
         val word = typoWord(description) ?: return null
         val lines = try {
             File(file).readLines()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             return null
         }
         val locations = yamlBlockScalarTypoLocations(lines, line, word)
@@ -886,6 +902,7 @@ class EnhancedTreeExtractor {
                         currentNode = try {
                             currentNode.javaClass.getMethod("getParent").invoke(currentNode)
                         } catch (e: Exception) {
+                            rethrowIfCanceled(e)
                             null
                         }
                     }
@@ -960,6 +977,7 @@ class EnhancedTreeExtractor {
                                     inspectionType = match?.value ?: "unknown"
                                 }
                             } catch (e: Exception) {
+                                rethrowIfCanceled(e)
                                 category = "General"
                                 val match = Regex("(\\w+Inspection|\\w+Check)").find(parentStr)
                                 inspectionType = match?.value ?: "unknown"
@@ -1003,6 +1021,7 @@ class EnhancedTreeExtractor {
                                             else -> severity
                                         }
                                     } catch (e: Exception) {
+                                        rethrowIfCanceled(e)
                                         severity
                                     }
                                 }
@@ -1010,6 +1029,7 @@ class EnhancedTreeExtractor {
                             }
                         }
                 } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                 }
 
                 if (inspectionType == "GrazieInspection") {
@@ -1040,6 +1060,7 @@ class EnhancedTreeExtractor {
                 extractFallbackProblemFromInspectionNode(node, problems)
             }
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
         }
     }
 

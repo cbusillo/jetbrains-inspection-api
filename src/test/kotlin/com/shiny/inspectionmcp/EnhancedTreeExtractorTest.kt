@@ -11,6 +11,7 @@ import com.intellij.codeInspection.ui.InspectionTree
 import com.intellij.codeInspection.ui.ProblemDescriptionNode
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.openapi.wm.ToolWindow
@@ -57,6 +58,23 @@ class EnhancedTreeExtractorTest {
 
         assertFalse(result.succeeded)
         assertTrue(result.problems.isEmpty())
+    }
+
+    @Test
+    @DisplayName("Should propagate cancellation instead of reporting a tree traversal failure")
+    fun testExtractionStatusPropagatesCancellation() {
+        val project = mockk<Project>(relaxed = true)
+        val inspectionView = mockk<InspectionResultsView>()
+        val tree = mockk<InspectionTree>()
+        val model = mockk<TreeModel>()
+
+        every { inspectionView.tree } returns tree
+        every { tree.model } returns model
+        every { model.root } throws ProcessCanceledException()
+
+        assertThrows(ProcessCanceledException::class.java) {
+            extractor.extractAllProblemsFromInspectionViewWithStatus(inspectionView, project)
+        }
     }
 
     @Test

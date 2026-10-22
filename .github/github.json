@@ -37,6 +37,7 @@
       "ideRetention": "uv run scripts/test-ide-retention.py",
       "smokeLifecycle": "uv run scripts/test-smoke-lifecycle.py && ./scripts/test-red-lane-smoke-script.sh",
       "inspectionBoundaryLint": "uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
+      "cancellationCatchLint": "uv run scripts/lint-cancellation-catches.py --sources src/main/kotlin",
       "internalApiManifest": "./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
       "fullBuildRelease": "uv run scripts/test-agents-release.py"
     },

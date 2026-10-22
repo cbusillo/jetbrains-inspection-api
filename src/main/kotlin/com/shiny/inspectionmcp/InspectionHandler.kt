@@ -1350,7 +1350,8 @@ private fun normalizeFileSystemPath(value: String?): String? {
     }
     return try {
         Paths.get(expanded).normalize().toAbsolutePath().toString()
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         null
     }
 }
@@ -1468,7 +1469,8 @@ internal var enhancedTreeExtractorFactory: () -> EnhancedTreeExtractor = { Enhan
 internal var recentProjectsManagerProvider: () -> RecentProjectsManagerBase? = {
     try {
         RecentProjectsManagerBase.getInstanceEx()
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        rethrowIfCanceled(e)
         null
     }
 }
@@ -4918,13 +4920,15 @@ class InspectionHandler : HttpRequestHandler() {
             }
             val lexicalFilePath = try {
                 Paths.get(file.path).normalize().toAbsolutePath()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 unresolvedDocumentCount++
                 continue
             }
             val canonicalFilePath = try {
                 lexicalFilePath.toRealPath()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 unresolvedDocumentCount++
                 continue
             }
@@ -5736,7 +5740,8 @@ class InspectionHandler : HttpRequestHandler() {
 
         val liveExtraction = try {
             enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             ProblemExtractionResult(emptyList(), succeeded = false)
         }
         if (liveExtraction.source == ProblemExtractionSource.PROBLEMS_FALLBACK) {
@@ -5789,7 +5794,8 @@ class InspectionHandler : HttpRequestHandler() {
             ApplicationManager.getApplication().runReadAction<CurrentRunPsiChurnReconciliation, Exception> {
                 reconcileCurrentRunPsiChurnUnderReadAction(project, snapshot)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             CurrentRunPsiChurnReconciliation(snapshot, false)
         }
     }
@@ -5800,7 +5806,8 @@ class InspectionHandler : HttpRequestHandler() {
     ): CurrentRunPsiChurnReconciliation {
         val liveExtraction = try {
             enhancedTreeExtractorFactory().extractAllProblemsWithStatus(project)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             return CurrentRunPsiChurnReconciliation(snapshot, false)
         }
         if (
@@ -6197,7 +6204,8 @@ class InspectionHandler : HttpRequestHandler() {
                 changedFilesMode = resolvedCaptureScope.changedFilesMode,
                 maxFiles = resolvedCaptureScope.maxFiles,
             ).map { file -> file.path }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             return false
         }
         return capturedFiles == normalizeResolvedFileSet(currentFiles)
@@ -6282,7 +6290,8 @@ class InspectionHandler : HttpRequestHandler() {
 
             try {
                 waitPollSleep(pollMs)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 return formatWaitError(
                     mutableMapOf("error" to "Wait interrupted"),
                     start,
@@ -6469,7 +6478,8 @@ class InspectionHandler : HttpRequestHandler() {
 
             try {
                 waitPollSleep(pollMs)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 return formatWaitResponse(status, start, timeoutMs, pollMs, false, "interrupted", requestAttribution)
             }
 
@@ -6672,7 +6682,8 @@ class InspectionHandler : HttpRequestHandler() {
                         .thenBy { suggestion -> suggestion.name }
                 )
                 .take(3)
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             emptyList()
         }
     }
@@ -6827,7 +6838,8 @@ class InspectionHandler : HttpRequestHandler() {
                 (profileManager.profiles.map { it.name } + listOfNotNull(preflightProfile?.name))
                     .distinct()
                     .sorted()
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 null
             }
             val requestedProfileMissing = requestedProfileName != null && preflightProfile == null
@@ -7152,7 +7164,8 @@ class InspectionHandler : HttpRequestHandler() {
             )
             val resolvedProfileName = try {
                 profile.name
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 null
             }
             val ideProductCode = safeInspectionIdentity()["ide_product_code"]?.toString()
@@ -7953,12 +7966,6 @@ class InspectionHandler : HttpRequestHandler() {
             if (!captureScheduled) {
                 finishInspectionRun(key, runId)
             }
-        }
-    }
-
-    private fun rethrowIfCanceled(e: Exception) {
-        if (e is ProcessCanceledException) {
-            throw e
         }
     }
 
@@ -8863,7 +8870,8 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 profileManager.currentProfile
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -8953,7 +8961,8 @@ class InspectionHandler : HttpRequestHandler() {
                     profileConfigurationHash = profileConfigurationHash,
                 )
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -8992,7 +9001,8 @@ class InspectionHandler : HttpRequestHandler() {
                 rootPaths = fingerprint.rootPaths,
                 excludedRootPaths = fingerprint.excludedRootPaths,
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -9137,7 +9147,8 @@ class InspectionHandler : HttpRequestHandler() {
             app.runReadAction<AnalysisScope?, Exception> {
                 PsiManager.getInstance(project).findFile(file)?.let(::AnalysisScope)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -9148,7 +9159,8 @@ class InspectionHandler : HttpRequestHandler() {
             app.runReadAction<AnalysisScope?, Exception> {
                 PsiManager.getInstance(project).findDirectory(directory)?.let(::AnalysisScope)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -9206,7 +9218,8 @@ class InspectionHandler : HttpRequestHandler() {
             val absolute = try {
                 val path = Paths.get(p)
                 if (path.isAbsolute) p else if (!base.isNullOrBlank()) Paths.get(base, p).normalize().toString() else p
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 p
             }
             localFileSystem.findFileByPath(absolute)
@@ -9316,7 +9329,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
             } catch (error: BadRequestException) {
                 throw error
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 throw BadRequestException("files", "File path '$rawPath' is invalid.")
             }
             val file = localFileSystem.findFileByPath(absolutePath)
@@ -9342,7 +9356,8 @@ class InspectionHandler : HttpRequestHandler() {
             }
         } catch (error: BadRequestException) {
             throw error
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             throw BadRequestException("dir", "Directory path '$rawDirectory' is invalid.")
         }
         val directory = LocalFileSystem.getInstance().findFileByPath(absolutePath)
@@ -9418,6 +9433,7 @@ class InspectionHandler : HttpRequestHandler() {
                     ?: diagnostic
             }
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             mapOf("path" to file.path, "diagnostic_error" to formatModelUnreadableReason("file_scope", e))
         }
     }
@@ -9458,7 +9474,8 @@ class InspectionHandler : HttpRequestHandler() {
                 if (unversioned != null) {
                     changeFiles.addAll(unversioned)
                 }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
             }
         }
         val unique = changeFiles
@@ -9514,7 +9531,8 @@ class InspectionHandler : HttpRequestHandler() {
                 val absolute = try {
                     val path = Paths.get(rawPath)
                     if (path.isAbsolute) rawPath else if (!base.isNullOrBlank()) Paths.get(base, rawPath).normalize().toString() else rawPath
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     rawPath
                 }
                 normalizeFileSystemPath(absolute)
@@ -9583,7 +9601,8 @@ class InspectionHandler : HttpRequestHandler() {
                 .directory(File(directory))
                 .redirectErrorStream(true)
                 .start()
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             throw BadRequestException(
                 "changed_files_mode",
                 "Unable to start Git classification for changed_files_mode.",
@@ -9594,8 +9613,9 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: InterruptedException) {
             destroyProcessTree(process)
             throw error
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             destroyProcessTree(process)
+            rethrowIfCanceled(e)
             throw BadRequestException(
                 "changed_files_mode",
                 "Unable to read Git classification for changed_files_mode.",
@@ -9632,7 +9652,8 @@ class InspectionHandler : HttpRequestHandler() {
                     file.isValid && file.isInLocalFileSystem && projectFileIndex.isInContent(file)
                 }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
             null
         }
     }
@@ -9959,6 +9980,7 @@ class InspectionHandler : HttpRequestHandler() {
         val tools = try {
             globalContext.toolGroups()
         } catch (e: Exception) {
+            rethrowIfCanceled(e)
             return InspectionModelExtraction(
                 problems = emptyList(),
                 problemDescriptorCount = 0,
@@ -9973,19 +9995,22 @@ class InspectionHandler : HttpRequestHandler() {
             cancellationCheck()
             val scopeStates = try {
                 toolGroup.tools
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 emptyList()
             }
             for (state in scopeStates) {
                 cancellationCheck()
                 val stateEnabled = try {
                     state.isEnabled
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     false
                 }
                 val wrapper = try {
                     state.tool
                 } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     unreadableReasons.add(formatModelUnreadableReason("tool", e))
                     null
                 }
@@ -9995,7 +10020,8 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 val shortName = try {
                     wrapper.shortName
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     null
                 }
                 val tracksTarget = shortName != null && shortName in targetToolShortNames
@@ -10004,9 +10030,9 @@ class InspectionHandler : HttpRequestHandler() {
                         this["wrapper_class"] = wrapper.javaClass.name
                         this["present"] = true
                         this["enabled"] = stateEnabled
-                        this["level"] = try { state.level.name } catch (_: Exception) { null }
-                        this["group"] = try { wrapper.groupDisplayName } catch (_: Exception) { null }
-                        this["tool_class"] = try { wrapper.tool.javaClass.name } catch (_: Exception) { null }
+                        this["level"] = try { state.level.name } catch (e: Exception) { rethrowIfCanceled(e); null }
+                        this["group"] = try { wrapper.groupDisplayName } catch (e: Exception) { rethrowIfCanceled(e); null }
+                        this["tool_class"] = try { wrapper.tool.javaClass.name } catch (e: Exception) { rethrowIfCanceled(e); null }
                     }
                 }
                 if (!stateEnabled) continue
@@ -10015,6 +10041,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val presentation = try {
                     globalContext.presentation(wrapper)
                 } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     unreadableReasons.add(formatModelUnreadableReason("presentation", e))
                     null
                 }
@@ -10027,6 +10054,7 @@ class InspectionHandler : HttpRequestHandler() {
                 try {
                     presentation.updateContent()
                 } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     unreadableReasons.add(formatModelUnreadableReason("update_content", e))
                     unreadableToolCount += 1
                     continue
@@ -10037,6 +10065,7 @@ class InspectionHandler : HttpRequestHandler() {
                     val values = elements.getValues()
                     if (!values.isNullOrEmpty()) values else presentation.problemDescriptors
                 } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     unreadableReasons.add(formatModelUnreadableReason("descriptors", e))
                     unreadableToolCount += 1
                     continue
@@ -10319,7 +10348,8 @@ class InspectionHandler : HttpRequestHandler() {
                 val absolute = try {
                     val path = Paths.get(directory)
                     if (path.isAbsolute) directory else if (!base.isNullOrBlank()) Paths.get(base, directory).normalize().toString() else directory
-                } catch (_: Exception) {
+                } catch (e: Exception) {
+                    rethrowIfCanceled(e)
                     directory
                 }
                 LocalFileSystem.getInstance().findFileByPath(absolute)
@@ -10499,6 +10529,7 @@ class InspectionHandler : HttpRequestHandler() {
         val toolGroups = try {
             globalContext.toolGroups()
         } catch (error: Exception) {
+            rethrowIfCanceled(error)
             recordError("enabled_tool_groups", error)
             emptyList()
         }
@@ -10507,6 +10538,7 @@ class InspectionHandler : HttpRequestHandler() {
             val states = try {
                 toolGroup.tools
             } catch (error: Exception) {
+                rethrowIfCanceled(error)
                 recordError("enabled_tool_states", error)
                 continue
             }
@@ -10515,6 +10547,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val enabled = try {
                     state.isEnabled
                 } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     recordError("enabled_tool_state", error)
                     continue
                 }
@@ -10522,6 +10555,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val wrapper = try {
                     state.tool
                 } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     recordError("enabled_tool_wrapper", error)
                     continue
                 }
@@ -10529,6 +10563,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val shortName = try {
                     wrapper.shortName
                 } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     recordError("enabled_tool_short_name", error)
                     continue
                 }

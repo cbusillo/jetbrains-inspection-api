@@ -163,17 +163,20 @@ internal object InspectionIdeRegistry {
             Files.writeString(temp, body)
             try {
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                rethrowIfCanceled(e)
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
         }
     }
 
     private fun deleteRegistryFile() {
         try {
             Files.deleteIfExists(registryFile(inspectionRegistryInstancesDir()))
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            rethrowIfCanceled(e)
         }
     }
 
