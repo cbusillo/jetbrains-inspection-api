@@ -78,6 +78,7 @@ internal fun buildInspectionIdentity(): Map<String, Any?> {
         "ide_channel" to inspectionIdeChannel(appInfo.isEAP),
         "plugin_version" to buildInfo.version,
         "plugin_build_fingerprint" to buildInfo.fingerprint,
+        "plugin_build_edition" to InspectionBuildEdition.NAME,
         "plugin_build_commit" to buildInfo.commit,
         "plugin_build_short_commit" to buildInfo.shortCommit,
         "plugin_build_dirty" to buildInfo.dirty,

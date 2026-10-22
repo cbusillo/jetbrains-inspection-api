@@ -479,7 +479,7 @@ requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change
 
 For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; each obligation executes through the supported `InspectionEngine.inspectEx` API with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
 
-For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`.
+For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`. This native attestation is in the full build only; see [Stable and full builds](#stable-and-full-builds).
 
 The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. `inspectEx` descriptors still carry `ProblemHighlightType` rather than the selected profile's display level, so the mapper resolves the tool's `HighlightDisplayKey` against the selected profile and may raise the descriptor-derived severity. It never lowers descriptor severity, and missing keys, PSI elements, or profile lookup failures retain the descriptor-derived value.
 
@@ -622,20 +622,53 @@ Version tags (`v*`) run `.github/workflows/release.yml`; see
 [Marketplace Stable releases](README.md#marketplace-stable-releases) for the
 packaging, verification, publication and rerun flow.
 
-`verifyPlugin` treats internal API usage as a release failure except for the
-existing inspection-engine Marketplace exemption. Every configured IDE report
-must match the exact, sorted canonical findings in
-`config/plugin-verifier/stable-internal-api-allowlist.txt`; additional findings,
-missing expected findings, malformed report lines, or absent reports fail the
-build. This replaces broad class-name substring acceptance.
+### Stable and full builds
+
+One source tree builds two archives. `-PinspectionBuild=full` (the default)
+adds `src/full/kotlin`, which carries native attestation through internal
+IntelliJ APIs; GitHub releases and the Marketplace `agents` channel publish it.
+`-PinspectionBuild=stable` adds `src/stable/kotlin` instead, which uses public
+APIs only, and is the archive the Stable release workflow builds. Each build
+records its edition as `plugin.build.edition` in `inspection-build.properties`
+and as `plugin_build_edition` in the identity metadata. The Stable release
+validator refuses an archive whose edition is not `stable`, and
+`publishPlugin` refuses to send another edition to Stable.
+
+In a normal IDE the public native run skips its per-file pass, so the Stable
+build cannot prove a `whole_project`, `directory` or `all` run clean: it returns
+`UNKNOWN` with `execution_proof_block_reason:
+"stable_build_cannot_prove_broad_scope"`. For `current_file`, `files` and
+`changed_files` it keeps the exact-file proof, but if the profile enables a
+global-simple inspection (which only that per-file pass runs) it returns
+`UNKNOWN` with `"stable_build_cannot_run_global_simple_inspections"`. Findings
+stay RED in both builds. `StableBuildVerdictPlatformTest` in
+`src/testStable/kotlin` checks these verdicts and compiles only in the Stable
+build:
+
+```bash
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'
+```
+
+`verifyPlugin` compares each configured IDE report with the exact, sorted
+canonical findings in `config/plugin-verifier/<edition>-internal-api-allowlist.txt`
+for the selected edition. The Stable list may contain only uses JetBrains has
+exempted for this plugin; it is empty today, so any internal API use in the
+Stable archive fails. Additional findings, missing expected findings, malformed
+report lines, or no plugin report at all fail the build; a plugin report
+without an internal API file counts as no findings. The commit gate runs the
+Stable check against the compile IDE only (`-PpluginVerifierIdes=target`, about
+15 seconds); the release workflows and `release-compatibility-gate.sh` check
+every recommended IDE.
 
 All production `GlobalInspectionContextImpl` source references must stay in
-`GlobalInspectionContextBoundary.kt` (including its private attested subclass),
-and `scripts/lint-inspection-boundary.py` rejects source or Stable allowlist
-references that escape that named boundary on the commit gate execution path.
-The boundary exists only for synchronous native
-execution, direct presentation access, lifecycle cleanup, and native
-attestation that the supported bounded `inspectEx` path cannot provide.
+`src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt` (including
+its private attested subclass), and `scripts/lint-inspection-boundary.py`
+rejects source or allowlist references that escape that named boundary on the
+commit gate execution path. The boundary exists only for synchronous native
+execution and native attestation that the supported bounded `inspectEx` path
+cannot provide.
+
+### Linters and release contract tests
 
 Plugin code must not turn a cancelled read action or progress into a fallback
 value. `scripts/lint-cancellation-catches.py` accepts a catch of `Exception`,
@@ -645,11 +678,12 @@ it, keeps it for a later throw, follows a `ProcessCanceledException` catch, or
 explains in a `// Cancellation:` comment why it is safe, such as a failure
 carried to another thread that rethrows it.
 
-When an intentional Stable implementation change alters verifier findings,
-review the complete `missing`/`unexpected` diff from `verifyPlugin`, update the
+When an intentional implementation change alters verifier findings, review the
+complete `missing`/`unexpected` diff from `verifyPlugin`, update that edition's
 manifest with the sorted canonical first sentence of each approved finding, and
-rerun `./gradlew verifyPlugin` across every configured IDE. Never add a broader
-class-name pattern to make a report pass.
+rerun `./gradlew verifyPlugin -PinspectionBuild=<edition>` across every
+configured IDE. A Stable entry needs JetBrains' exemption for that exact use.
+Never add a broader class-name pattern to make a report pass.
 
 The release contract tests run the Stable release scripts against fakes and
 cover version and channel rejection, artifact identity, source provenance,
@@ -669,7 +703,8 @@ evidence for:
 
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure`
-- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin`
+- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=stable`
+- `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=full`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
   stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable

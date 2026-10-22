@@ -17,6 +17,7 @@ import com.intellij.codeInspection.ex.GlobalInspectionContextBase
 import com.intellij.codeInspection.ex.GlobalInspectionContextEx
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectListener
+import com.intellij.util.messages.MessageBusConnection
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.codeInspection.ex.InspectionToolWrapper
@@ -82,8 +83,7 @@ class SupportedInspectionExecutorPlatformTest {
         listOf(clean, otherLanguage, silent).forEach { profile.setToolEnabled(it.shortName, true, project) }
         val groups = profile.getAllEnabledInspectionTools(project)
         val collector = NativeInspectionExecutionProofCollector(project, setOf(file.virtualFile.path))
-        val connection = project.messageBus.connect()
-        connection.subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, collector)
+        val connection = subscribeLocalCompletions(project, collector)
         resetVisits(clean)
         try {
             ReadAction.run<RuntimeException> {
@@ -174,22 +174,7 @@ class SupportedInspectionExecutorPlatformTest {
         val context = (InspectionManager.getInstance(project) as InspectionManagerEx).createNewGlobalContext()
         groups.forEach { it.tool.initialize(context) }
         val collector = NativeInspectionExecutionProofCollector(project, setOf(file.virtualFile.path))
-        val connection = project.messageBus.connect()
-        connection.subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, object : InspectListener {
-            override fun inspectionFinished(
-                duration: Long,
-                threadId: Long,
-                problemsCount: Int,
-                tool: InspectionToolWrapper<*, *>,
-                inspectionKind: InspectListener.InspectionKind,
-                file: PsiFile?,
-                project: Project,
-            ) {
-                if (tool.shortName != dropFinishOf?.shortName) {
-                    collector.inspectionFinished(duration, threadId, problemsCount, tool, inspectionKind, file, project)
-                }
-            }
-        })
+        val connection = subscribeLocalCompletions(project, collector, dropFinishOf?.shortName)
         resetVisits(running)
         try {
             ReadAction.run<RuntimeException> {
@@ -1145,6 +1130,36 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(requireNotNull(parent.currentIndicator.get()).isCanceled).isFalse()
         assertThat(parent.context.toolGroups().map { it.shortName })
             .containsExactlyInAnyOrderElementsOf(expectedToolShortNames)
+    }
+
+    @Suppress("UnstableApiUsage")
+    private fun subscribeLocalCompletions(
+        project: Project,
+        collector: NativeInspectionExecutionProofCollector,
+        droppedToolShortName: String? = null,
+    ): MessageBusConnection = project.messageBus.connect().apply {
+        subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, object : InspectListener {
+            override fun inspectionFinished(
+                duration: Long,
+                threadId: Long,
+                problemsCount: Int,
+                tool: InspectionToolWrapper<*, *>,
+                inspectionKind: InspectListener.InspectionKind,
+                file: PsiFile?,
+                project: Project,
+            ) {
+                if (tool.shortName == droppedToolShortName) return
+                val pass = if (
+                    inspectionKind == InspectListener.InspectionKind.LOCAL ||
+                    inspectionKind == InspectListener.InspectionKind.LOCAL_PRIORITY
+                ) NativeInspectionPass.LOCAL else NativeInspectionPass.GLOBAL
+                collector.inspectionFinished(problemsCount, tool, pass, file, project)
+            }
+
+            override fun inspectionFailed(toolId: String, throwable: Throwable, file: PsiFile?, project: Project) {
+                collector.inspectionFailed(toolId, throwable, file, project)
+            }
+        })
     }
 
     private fun GlobalInspectionContextBoundary.contextForTest(): GlobalInspectionContextImpl {
