@@ -1276,6 +1276,7 @@ internal fun collectBoundedProcessOutput(
         try {
             output.set(process.inputStream.readNBytes(maxOutputBytes + 1))
         } catch (error: Throwable) {
+            // Cancellation: this reader thread has no progress; the caller rethrows readerFailure.
             readerFailure.set(error)
         }
     }
@@ -4451,6 +4452,7 @@ class InspectionHandler : HttpRequestHandler() {
             schedulePythonSdkPreparationTimeout(timeoutTask, pythonSdkPreparationTimeoutMs)
         } catch (error: Throwable) {
             pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            rethrowIfCanceled(error)
             sendPythonSdkPreparationFailure(
                 context,
                 parameters,
@@ -4483,6 +4485,8 @@ class InspectionHandler : HttpRequestHandler() {
                     deadlineDiagnostic = control.progress.diagnostic()
                 }
                 prepared
+            } catch (_: ProcessCanceledException) {
+                PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
             } catch (error: Throwable) {
                 PythonSdkPreparationResult(
                     prepared = false,
@@ -4503,6 +4507,7 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (error: Throwable) {
             runCatching { cancelTimeout() }
             pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+            rethrowIfCanceled(error)
             if (control.responseSent.compareAndSet(false, true)) {
                 sendPythonSdkPreparationFailure(
                     context,
@@ -4857,15 +4862,19 @@ class InspectionHandler : HttpRequestHandler() {
                     .let(closeResult::set)
             }
             closeResult.get() ?: lifecycleCloseGuardUnavailable()
-        } catch (_: Throwable) {
-            closeResult.get() ?: lifecycleCloseGuardUnavailable()
+        } catch (error: Throwable) {
+            closeResult.get() ?: run {
+                rethrowIfCanceled(error)
+                lifecycleCloseGuardUnavailable()
+            }
         }
     }
 
     private fun closeProjectWithoutSaveAfterGuard(project: Project, worktreeRoot: Path): LifecycleCloseInvocation {
         val refusal = try {
             lifecycleCloseUnsavedDocumentGuard(project, worktreeRoot)
-        } catch (_: Throwable) {
+        } catch (error: Throwable) {
+            rethrowIfCanceled(error)
             return lifecycleCloseGuardUnavailable()
         }
         return if (refusal != null) {
@@ -7193,6 +7202,7 @@ class InspectionHandler : HttpRequestHandler() {
                 try {
                     nativeInspectionExpectedFilePaths(scope)
                 } catch (error: Throwable) {
+                    rethrowIfCanceled(error)
                     nativeScopeEnumerationFailure = error
                     emptySet()
                 }
@@ -7223,6 +7233,7 @@ class InspectionHandler : HttpRequestHandler() {
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
                     nativeProofConnection = null
+                    rethrowIfCanceled(error)
                     nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
                     logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
                     GlobalInspectionContextBoundary.create(inspectionManager)
@@ -10661,6 +10672,7 @@ class InspectionHandler : HttpRequestHandler() {
                     try {
                         cancellationCheck()
                     } catch (error: RuntimeException) {
+                        // Cancellation: carried to the proof thread, which rethrows externalCancellation.
                         externalCancellation.compareAndSet(null, error)
                         indicator.cancel()
                     }

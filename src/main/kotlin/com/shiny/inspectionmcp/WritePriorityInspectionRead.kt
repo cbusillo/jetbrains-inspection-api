@@ -44,6 +44,7 @@ internal fun <T> runWritePriorityInspectionRead(
                     // This callback runs before an IDE write and must not acquire IDE read/write access.
                     onPreempt()
                 } catch (_: Throwable) {
+                    // Cancellation: cancel() must not throw; the finally block cancels the indicator, which carries it.
                 } finally {
                     indicator.cancel()
                 }

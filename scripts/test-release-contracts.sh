@@ -563,6 +563,15 @@ fun cancelledFirst() {
         null
     }
 }
+fun rethrowsThrowable() = try { read() } catch (error: Throwable) { rethrowIfCanceled(error); null }
+fun transports() {
+    try {
+        read()
+    } catch (error: RuntimeException) {
+        // Cancellation: carried to the waiting thread, which rethrows it.
+        pending.set(error)
+    }
+}
 KOTLIN
   uv run scripts/lint-cancellation-catches.py --sources "$sources" >/dev/null
   cat > "$source" <<'KOTLIN'
@@ -582,6 +591,16 @@ fun rethrowsAnother() {
         rethrowIfCanceled(other)
     }
 }
+fun swallowsThrowable() = try { read() } catch (_: Throwable) { null }
+fun swallowsRuntime() = try { read() } catch (error: RuntimeException) { log(error) }
+fun explainsNothing() {
+    try {
+        read()
+    } catch (error: Throwable) {
+        // Cancellation:
+        pending.set(error)
+    }
+}
 KOTLIN
   if uv run scripts/lint-cancellation-catches.py --sources "$sources" >"$temp_dir/output" 2>&1; then
     fail "cancellation linter accepted catches that swallow cancellation"
@@ -589,6 +608,9 @@ KOTLIN
   assert_contains "$temp_dir/output" "$source:1:"
   assert_contains "$temp_dir/output" "$source:5:"
   assert_contains "$temp_dir/output" "$source:13:"
+  assert_contains "$temp_dir/output" "$source:17:"
+  assert_contains "$temp_dir/output" "$source:18:"
+  assert_contains "$temp_dir/output" "$source:22:"
   rm -rf "$temp_dir"
   trap - RETURN
 }
