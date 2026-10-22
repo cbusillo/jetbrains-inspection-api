@@ -54,11 +54,6 @@ jobs:
       - name: Set up uv for smoke lifecycle tests
         uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
 
-      - name: Test smoke lifecycle and local installer behavior
-        run: |
-          uv run scripts/test-smoke-lifecycle.py
-          ./scripts/test-red-lane-smoke-script.sh
-
       - name: List pull request changed files
         if: github.event_name == 'pull_request'
         env:

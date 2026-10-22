@@ -301,7 +301,6 @@ internal abstract class InspectionHandlerTestSupport {
         "scope_file_diagnostics_complete" to false,
         "scope_file_semantic_evidence_complete" to true,
         "scope_file_semantic_coverage" to mapOf(
-            "schema_version" to 1,
             "evaluated_file_count" to 26,
             "unproven_file_count" to 0,
             "missing_file_count" to 1,

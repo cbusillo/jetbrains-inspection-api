@@ -42,10 +42,12 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platform
 # MCP server jar
 ./gradlew :mcp-server-jvm:mcpServerJar
 
-# Everything (plugin tests + MCP tests + plugin build)
+# Full commit gate (script contracts, plugin/core/MCP tests, coverage gates and plugin build)
 ./scripts/test-all.sh
 ```
 
+`test-all.sh` delegates to `commit-gate.sh --ci`, so release preparation and the
+Test All run configuration run the complete gate even with no staged changes.
 For local plugin rollout, rollback, and diagnosis techniques, see
 [the maintainer guide](MAINTAINING.md).
 

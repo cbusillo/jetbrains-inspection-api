@@ -40,6 +40,8 @@ if lane_selected contracts; then
     uv run scripts/lint-cancellation-catches.py --sources src/main/kotlin
     ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
     ./scripts/test-changed-file-lanes.sh
+    uv run scripts/test-smoke-lifecycle.py
+    ./scripts/test-red-lane-smoke-script.sh
     uv run scripts/test-ide-retention.py
     ./scripts/test-release-contracts.sh
     uv run scripts/test-agents-release.py

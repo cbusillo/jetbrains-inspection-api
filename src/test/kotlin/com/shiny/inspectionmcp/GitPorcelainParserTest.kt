@@ -1,15 +1,19 @@
 package com.shiny.inspectionmcp
 
 import com.intellij.openapi.project.Project
+import io.mockk.EqMatcher
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkConstructor
+import io.mockk.unmockkConstructor
+import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
-import java.nio.file.Path
+import java.io.File
 import java.util.concurrent.TimeUnit
 
 class GitPorcelainParserTest {
@@ -47,14 +51,27 @@ class GitPorcelainParserTest {
     @Test
     @DisplayName("computeGitStagingSets resolves nested project paths against the Git root")
     fun testNestedProjectGitRoot() {
-        val gitRoot = Files.createTempDirectory("inspection-git-root")
+        val gitRoot = Files.createTempDirectory("inspection-git-root").toRealPath()
+        mockkConstructor(ProcessBuilder::class)
         try {
-            runGit(gitRoot, "init", "--quiet")
             val nestedProject = gitRoot.resolve("services/app")
             val sourceFile = nestedProject.resolve("src/App.kt")
             Files.createDirectories(sourceFile.parent)
             Files.writeString(sourceFile, "val staged = true\n")
-            runGit(gitRoot, "add", "services/app/src/App.kt")
+            every { anyConstructed<ProcessBuilder>().start() } throws AssertionError("Unexpected Git command")
+            val commands = listOf(
+                listOf("git", "rev-parse", "--show-toplevel") to "$gitRoot\n",
+                listOf("git", "status", "--porcelain", "-z") to "A  services/app/src/App.kt\u0000",
+            )
+            commands.forEach { (command, output) ->
+                every { constructedWith<ProcessBuilder>(EqMatcher(command)).directory(any<File>()) } answers {
+                    self as ProcessBuilder
+                }
+                every { constructedWith<ProcessBuilder>(EqMatcher(command)).redirectErrorStream(true) } answers {
+                    self as ProcessBuilder
+                }
+                every { constructedWith<ProcessBuilder>(EqMatcher(command)).start() } returns gitProcess(output)
+            }
 
             val project = mockk<Project>()
             every { project.basePath } returns nestedProject.toString()
@@ -65,26 +82,17 @@ class GitPorcelainParserTest {
 
             assertEquals(setOf(sourceFile.toRealPath().toString()), result.first)
             assertTrue(result.second.isEmpty())
+            verify(exactly = 1) { constructedWith<ProcessBuilder>(EqMatcher(commands[0].first)).directory(nestedProject.toFile()) }
+            verify(exactly = 1) { constructedWith<ProcessBuilder>(EqMatcher(commands[1].first)).directory(gitRoot.toFile()) }
         } finally {
+            unmockkConstructor(ProcessBuilder::class)
             gitRoot.toFile().deleteRecursively()
         }
     }
 
-    private fun runGit(directory: Path, vararg arguments: String) {
-        val outputFile = Files.createTempFile("inspection-git-output", ".log")
-        try {
-            val process = ProcessBuilder(listOf("git") + arguments)
-                .directory(directory.toFile())
-                .redirectErrorStream(true)
-                .redirectOutput(outputFile.toFile())
-                .start()
-            val finished = process.waitFor(30, TimeUnit.SECONDS)
-            if (!finished) process.destroyForcibly().waitFor()
-            val output = Files.readString(outputFile)
-            assertTrue(finished, "git ${arguments.joinToString(" ")} did not finish: $output")
-            assertEquals(0, process.exitValue(), output)
-        } finally {
-            Files.deleteIfExists(outputFile)
-        }
+    private fun gitProcess(output: String): Process = mockk {
+        every { inputStream } returns output.byteInputStream()
+        every { waitFor(any<Long>(), TimeUnit.MILLISECONDS) } returns true
+        every { exitValue() } returns 0
     }
 }

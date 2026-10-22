@@ -629,6 +629,28 @@ KOTLIN
   trap - RETURN
 }
 
+test_all_delegates_to_commit_gate() {
+  local temp_dir actual status
+  temp_dir=$(mktemp -d)
+  trap 'rm -rf "$temp_dir"' RETURN
+  mkdir -p "$temp_dir/scripts"
+  cp scripts/test-all.sh "$temp_dir/scripts/"
+  cat > "$temp_dir/scripts/commit-gate.sh" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$@"
+exit "${FAKE_GATE_STATUS:-0}"
+SH
+  chmod +x "$temp_dir/scripts/commit-gate.sh"
+  actual=$(cd / && "$temp_dir/scripts/test-all.sh" 'argument with spaces')
+  [ "$actual" = $'--ci\nargument with spaces' ] || fail "test-all did not select the full gate and preserve arguments"
+  status=0
+  FAKE_GATE_STATUS=17 "$temp_dir/scripts/test-all.sh" >/dev/null || status=$?
+  [ "$status" -eq 17 ] || fail "test-all did not propagate the failing gate status"
+  rm -rf "$temp_dir"
+  trap - RETURN
+}
+
+test_all_delegates_to_commit_gate
 test_version_validator
 test_stable_artifact_publication
 test_marketplace_publication_policy
