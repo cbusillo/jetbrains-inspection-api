@@ -49,6 +49,7 @@ import com.intellij.psi.PsiFile
 import com.intellij.psi.PsiManager
 import com.intellij.profile.codeInspection.BaseInspectionProfileManager
 import com.intellij.profile.codeInspection.InspectionProfileManager
+import com.intellij.profile.codeInspection.ProjectInspectionProfileManager
 import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.DumbModeTestUtils
 import com.intellij.testFramework.runInEdtAndGet
@@ -433,7 +434,9 @@ class SupportedInspectionExecutorPlatformTest {
             assertThat(parent.currentIndicator.get()).isNull()
 
             val cleanDescriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CleanInspection()))
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file, LocalInspectionToolWrapper(CleanInspection()), parent.profile,
+                )
             }
             assertThat(cleanDescriptors).isEmpty()
             assertParentContextIntact(parent, parentTools)
@@ -441,10 +444,12 @@ class SupportedInspectionExecutorPlatformTest {
                 .hasSize(runningContextCount)
 
             val findingDescriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(findingTool))
+                InspectionHandler().runTargetInspectionEngineOnFile(
+                    file, LocalInspectionToolWrapper(findingTool), parent.profile,
+                )
             }
 
-            assertThat(findingDescriptors).singleElement().extracting { it.descriptionTemplate }
+            assertThat(findingDescriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(SUPPORTED_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -492,7 +497,9 @@ class SupportedInspectionExecutorPlatformTest {
         try {
             assertThatThrownBy {
                 runWithCurrentParentIndicator(parent) {
-                    InspectionHandler().runTargetInspectionEngineOnFile(file, LocalInspectionToolWrapper(CancellingInspection()))
+                    InspectionHandler().runTargetInspectionEngineOnFile(
+                        file, LocalInspectionToolWrapper(CancellingInspection()), parent.profile,
+                    )
                 }
             }.isInstanceOf(ProcessCanceledException::class.java)
 
@@ -504,7 +511,7 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `single-file local fallback propagates mid-file caller cancellation and preserves caller state`() {
+    fun `single-file fallback propagates mid-file caller cancellation and preserves caller state`() {
         val project = projectExtension.project
         val file = createPhysicalFile()
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
@@ -521,6 +528,7 @@ class SupportedInspectionExecutorPlatformTest {
                 InspectionHandler().runTargetInspectionEngineOnFile(
                     file,
                     LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
+                    parent.profile,
                 )
             }
             assertThat(control.enteredTool.await(2, TimeUnit.SECONDS)).isTrue()
@@ -542,26 +550,38 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @Test
-    fun `single-file global-simple fallback returns findings without consuming the parent context`() {
+    fun `targeted fallback resolves and maps the selected profile`() {
         val project = projectExtension.project
         val file = createPhysicalFile()
-        val parentTool = CleanInspection()
-        val parent = createCompletedParentInspectionContext(file, parentTool)
-        val parentTools = parent.context.toolGroups().map { it.shortName }
-        val runningContextCount = (InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts.size
+        val tool = FindingInspection()
+        val parent = createCompletedParentInspectionContext(file, tool)
+        parent.profile.setToolEnabled(tool.shortName, true, project)
+        parent.profile.setErrorLevel(requireNotNull(HighlightDisplayKey.find(tool.shortName)), HighlightDisplayLevel.ERROR, project)
+        val base = InspectionModelExtraction(
+            problems = emptyList(),
+            problemDescriptorCount = 0,
+            enabledToolCount = 1,
+            readableToolCount = 1,
+            unreadableToolCount = 0,
+            targetToolStates = listOf(mapOf("short_name" to tool.shortName, "enabled" to true, "descriptor_count" to 0)),
+        )
         try {
-            val descriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(
-                    file,
-                    GlobalInspectionToolWrapper(FindingGlobalSimpleInspection()),
-                )
+            val method = InspectionHandler::class.java.declaredMethods.single { it.name == "mergeInspectionEngineFallback" }
+            check(method.trySetAccessible())
+            val result = runWithCurrentParentIndicator(parent) {
+                assertThat(ProjectInspectionProfileManager.getInstance(project).currentProfile.getInspectionTool(tool.shortName, file))
+                    .isNull()
+                method.invoke(
+                    InspectionHandler(), base, project, parent.profile,
+                    setOf(tool.shortName), listOf(file), {},
+                ) as InspectionModelExtraction
             }
 
-            assertThat(descriptors).singleElement().extracting { it.descriptionTemplate }
-                .isEqualTo("Global simple finding")
-            assertParentContextIntact(parent, parentTools)
-            assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
-                .hasSize(runningContextCount)
+            val problem = result.problems.single()
+            assertThat(problem["description"]).isEqualTo(SUPPORTED_FINDING)
+            assertThat(problem["inspectionType"]).isEqualTo(tool.shortName)
+            assertThat(problem["severity"]).isEqualTo("error")
+            assertThat(result.targetToolStates.single()["inspection_engine_errors"]).isNull()
         } finally {
             closeParentInspectionContext(parent)
         }
@@ -597,6 +617,31 @@ class SupportedInspectionExecutorPlatformTest {
         assertThat(canExecuteWithInspectEx(LocalInspectionToolWrapper(CleanInspection()))).isTrue()
         assertThat(canExecuteWithInspectEx(GlobalInspectionToolWrapper(TestGlobalInspection()))).isFalse()
         assertThat(canExecuteWithInspectEx(GlobalInspectionToolWrapper(TestGlobalSimpleInspection()))).isFalse()
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `paired local tools execute both kinds of global counterpart`(simple: Boolean) {
+        val project = projectExtension.project
+        val local = PairedGlobalInspection()
+        val global = if (simple) PairedGlobalSimpleInspection() else PairedGlobalCounterpartInspection()
+        visitCounts.remove(global.shortName)
+        val profile = profileWithWrappers(LocalInspectionToolWrapper(local), GlobalInspectionToolWrapper(global))
+        profile.setToolEnabled(local.shortName, true, project)
+        profile.setToolEnabled(global.shortName, true, project)
+        val file = createPhysicalFile()
+
+        val proof = InspectionHandler().runBoundedExecutionProof(
+            enabledTools = enabledTools(local),
+            profile = profile,
+            project = project,
+            scopeFiles = listOf(file),
+            analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
+            cancellationCheck = {},
+        )
+
+        assertThat(proof.proofEstablished).describedAs(proof.toString()).isTrue()
+        assertThat(visitCounts[global.shortName]?.get()).isGreaterThan(0)
     }
 
     @Test
@@ -654,24 +699,34 @@ class SupportedInspectionExecutorPlatformTest {
     }
 
     @ParameterizedTest
-    @ValueSource(booleans = [false, true])
-    fun `bounded proof records indexing transitions while resuming after a pending write`(indexing: Boolean) {
+    @org.junit.jupiter.params.provider.CsvSource("false,false", "false,true", "true,false", "true,true")
+    fun `bounded proof records indexing transitions while resuming after a pending write`(indexing: Boolean, global: Boolean) {
         val project = projectExtension.project
         val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger(), blockOnlyFirst = true)
         val writeRan = CountDownLatch(1)
         val observedSource = AtomicReference<InspectionRunFailureSource>()
         blockingInspectionControl.set(control)
-        val tool = WritePriorityBlockingInspection()
+        val wrapper = if (global) {
+            GlobalInspectionToolWrapper(WritePriorityGlobalInspection())
+        } else {
+            LocalInspectionToolWrapper(WritePriorityBlockingInspection())
+        }
+        val tool = wrapper.tool
         val psiFile = createPhysicalFile()
         DumbService.getInstance(project).waitForSmartMode()
-        val profile = profileWith(tool)
+        val profile = profileWithWrappers(wrapper)
         profile.setToolEnabled(tool.shortName, true, project)
         val result = AtomicReference<BoundedExecutionProofResult>()
 
         val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
             result.set(
                 InspectionHandler().runBoundedExecutionProof(
-                    enabledTools = enabledTools(tool),
+                    enabledTools = InspectionHandler.EnabledFileToolEnumeration(
+                        if (global) emptySet() else setOf(tool.shortName),
+                        0,
+                        emptyList(),
+                        if (global) setOf(tool.shortName) else emptySet(),
+                    ),
                     profile = profile,
                     project = project,
                     scopeFiles = listOf(psiFile),
@@ -698,7 +753,7 @@ class SupportedInspectionExecutorPlatformTest {
             future.get(5, TimeUnit.SECONDS)
             val proof = requireNotNull(result.get())
             assertThat(proof.smartModeStable).isEqualTo(!indexing)
-            assertThat(proof.proofEstablished).isTrue()
+            assertThat(proof.proofEstablished).describedAs(proof.toString()).isTrue()
             assertThat(proof.hitWritePreemption).isFalse()
             if (indexing) {
                 assertThat(proof.writePreemptionCount).isGreaterThanOrEqualTo(1)
@@ -713,20 +768,27 @@ class SupportedInspectionExecutorPlatformTest {
             assertThat(control.toolExited.get()).isEqualTo(1)
         } finally {
             control.release.countDown()
+            runCatching { future.get(5, TimeUnit.SECONDS) }
             blockingInspectionControl.compareAndSet(control, null)
         }
     }
 
-    @Test
-    fun `bounded proof deadline captures cooperative inspection before unwind`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `bounded proof deadline captures cooperative inspection before unwind`(global: Boolean) {
         val project = projectExtension.project
         val control = BlockingInspectionControl(CountDownLatch(1), AtomicInteger())
         val observedBeforeToolUnwind = AtomicReference<Boolean>()
         val observedSource = AtomicReference<InspectionRunFailureSource>()
         blockingInspectionControl.set(control)
-        val tool = WritePriorityBlockingInspection()
+        val wrapper = if (global) {
+            GlobalInspectionToolWrapper(WritePriorityGlobalInspection())
+        } else {
+            LocalInspectionToolWrapper(WritePriorityBlockingInspection())
+        }
+        val tool = wrapper.tool
         val psiFile = createPhysicalFile()
-        val profile = profileWith(tool)
+        val profile = profileWithWrappers(wrapper)
         profile.setToolEnabled(tool.shortName, true, project)
         val result = AtomicReference<BoundedExecutionProofResult>()
         val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 250L }
@@ -734,7 +796,12 @@ class SupportedInspectionExecutorPlatformTest {
         val future = ApplicationManager.getApplication().executeOnPooledThread<Unit> {
             result.set(
                 handler.runBoundedExecutionProof(
-                    enabledTools = enabledTools(tool),
+                    enabledTools = InspectionHandler.EnabledFileToolEnumeration(
+                        if (global) emptySet() else setOf(tool.shortName),
+                        0,
+                        emptyList(),
+                        if (global) setOf(tool.shortName) else emptySet(),
+                    ),
                     profile = profile,
                     project = project,
                     scopeFiles = listOf(psiFile),
@@ -748,16 +815,21 @@ class SupportedInspectionExecutorPlatformTest {
             )
         }
 
-        assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
-        future.get(5, TimeUnit.SECONDS)
-        val proof = requireNotNull(result.get())
-        assertThat(proof.hitTimeLimit).isTrue()
-        assertThat(proof.proofEstablished).isFalse()
-        assertThat(proof.proofBlockReason).isEqualTo("time_limit")
-        assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_DEADLINE)
-        assertThat(observedBeforeToolUnwind.get()).isTrue()
-        assertThat(control.toolExited.get()).isEqualTo(control.enteredCount.get())
-        blockingInspectionControl.compareAndSet(control, null)
+        try {
+            assertThat(control.enteredTool.await(5, TimeUnit.SECONDS)).isTrue()
+            future.get(5, TimeUnit.SECONDS)
+            val proof = requireNotNull(result.get())
+            assertThat(proof.hitTimeLimit).isTrue()
+            assertThat(proof.proofEstablished).isFalse()
+            assertThat(proof.proofBlockReason).isEqualTo("time_limit")
+            assertThat(observedSource.get()).isEqualTo(InspectionRunFailureSource.EXACT_PROOF_DEADLINE)
+            assertThat(observedBeforeToolUnwind.get()).isTrue()
+            assertThat(control.toolExited.get()).isEqualTo(control.enteredCount.get())
+        } finally {
+            control.release.countDown()
+            runCatching { future.get(5, TimeUnit.SECONDS) }
+            blockingInspectionControl.compareAndSet(control, null)
+        }
     }
 
     @Test
@@ -1055,9 +1127,9 @@ class SupportedInspectionExecutorPlatformTest {
             val toolsField = GlobalInspectionContextBase::class.java.getDeclaredField("myTools")
             check(toolsField.trySetAccessible()) { "Cannot seed native tool state for fallback regression" }
             toolsField.set(context.contextForTest(), linkedMapOf(tool.shortName to profile.getTools(tool.shortName, project)))
-            return ParentInspectionContext(context)
+            return ParentInspectionContext(context, profile)
         } catch (error: Throwable) {
-            runCatching { closeParentInspectionContext(ParentInspectionContext(context)) }
+            runCatching { closeParentInspectionContext(ParentInspectionContext(context, profile)) }
             throw error
         }
     }
@@ -1229,11 +1301,13 @@ class SupportedInspectionExecutorPlatformTest {
                     .mapNotNullTo(linkedSetOf()) { it.virtualFile?.path }
         }
 
-    private fun profileWith(vararg tools: LocalInspectionTool): InspectionProfileImpl {
+    private fun profileWith(vararg tools: LocalInspectionTool): InspectionProfileImpl =
+        profileWithWrappers(*tools.map(::LocalInspectionToolWrapper).toTypedArray())
+
+    private fun profileWithWrappers(vararg wrappers: InspectionToolWrapper<*, *>): InspectionProfileImpl {
         val project = projectExtension.project
-        val wrappers = tools.map(::LocalInspectionToolWrapper)
         wrappers.forEach { HighlightDisplayKey.findOrRegister(it.shortName, it.displayName) }
-        val supplier = InspectionToolsSupplier.Simple(wrappers.map { it as InspectionToolWrapper<*, *> })
+        val supplier = InspectionToolsSupplier.Simple(wrappers.toList())
         val manager = InspectionProfileManager.getInstance() as BaseInspectionProfileManager
         val profile = InspectionProfileImpl("evidence-${profileCounter.incrementAndGet()}", supplier, manager)
         val previousInitInspections = InspectionProfileImpl.INIT_INSPECTIONS
@@ -1246,8 +1320,8 @@ class SupportedInspectionExecutorPlatformTest {
         return profile
     }
 
-    private fun enabledTools(vararg tools: LocalInspectionTool): InspectionHandler.EnabledLocalToolEnumeration =
-        InspectionHandler.EnabledLocalToolEnumeration(
+    private fun enabledTools(vararg tools: LocalInspectionTool): InspectionHandler.EnabledFileToolEnumeration =
+        InspectionHandler.EnabledFileToolEnumeration(
             shortNames = tools.mapTo(linkedSetOf()) { it.shortName },
             errorCount = 0,
             errorExamples = emptyList(),
@@ -1353,22 +1427,25 @@ class SupportedInspectionExecutorPlatformTest {
             isOnTheFly: Boolean,
             session: LocalInspectionToolSession,
         ): PsiElementVisitor {
-            val control = requireNotNull(blockingInspectionControl.get())
-            control.enteredTool.countDown()
-            val enteredCount = control.enteredCount.incrementAndGet()
-            if (control.blockOnlyFirst && enteredCount > 1) {
-                return super.buildVisitor(holder, isOnTheFly, session)
-            }
-            try {
-                while (true) {
-                    if (control.release.await(25, TimeUnit.MILLISECONDS)) {
-                        throw ProcessCanceledException()
-                    }
-                    ProgressManager.checkCanceled()
-                }
-            } finally {
-                control.toolExited.incrementAndGet()
-            }
+            waitForInspectionWrite()
+            return super.buildVisitor(holder, isOnTheFly, session)
+        }
+    }
+
+    private class WritePriorityGlobalInspection : GlobalSimpleInspectionTool() {
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "Supported inspection tests"
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: GlobalInspectionContext,
+            processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
+        ) {
+            check((context as com.intellij.codeInspection.ex.GlobalInspectionContextEx).currentScope?.contains(file.virtualFile) == true)
+            waitForInspectionWrite()
         }
     }
 
@@ -1376,6 +1453,38 @@ class SupportedInspectionExecutorPlatformTest {
 
     private class PairedUnfairInspection : RecordingInspection(), PairedUnfairLocalInspectionTool {
         override fun getInspectionForBatchShortName(): String = "MissingPairedBatchInspection"
+    }
+
+    private class PairedGlobalInspection : RecordingInspection(), PairedUnfairLocalInspectionTool {
+        override fun getInspectionForBatchShortName(): String = GLOBAL_COUNTERPART_NAME
+    }
+
+    private open class PairedGlobalCounterpartInspection : TestGlobalInspection() {
+        override fun getShortName(): String = GLOBAL_COUNTERPART_NAME
+
+        override fun checkElement(
+            refEntity: com.intellij.codeInspection.reference.RefEntity,
+            scope: AnalysisScope,
+            manager: InspectionManager,
+            globalContext: GlobalInspectionContext,
+        ): Array<com.intellij.codeInspection.CommonProblemDescriptor>? {
+            visitCounts.computeIfAbsent(shortName) { AtomicInteger() }.incrementAndGet()
+            return null
+        }
+    }
+
+    private class PairedGlobalSimpleInspection : PairedGlobalCounterpartInspection() {
+        override fun isGlobalSimpleInspectionTool(): Boolean = true
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: GlobalInspectionContext,
+            processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
+        ) {
+            visitCounts.computeIfAbsent(shortName) { AtomicInteger() }.incrementAndGet()
+        }
     }
 
     private class ThrowingUnfairMetadataWrapper(tool: LocalInspectionTool) : LocalInspectionToolWrapper(tool) {
@@ -1392,28 +1501,9 @@ class SupportedInspectionExecutorPlatformTest {
         override fun isGlobalSimpleInspectionTool(): Boolean = true
     }
 
-    private class FindingGlobalSimpleInspection : GlobalSimpleInspectionTool() {
-        override fun getDisplayName(): String = shortName
-
-        override fun getGroupDisplayName(): String = "Supported inspection tests"
-
-        override fun checkFile(
-            file: PsiFile,
-            manager: InspectionManager,
-            holder: ProblemsHolder,
-            context: GlobalInspectionContext,
-            processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
-        ) {
-            holder.registerProblem(file, "Global simple finding")
-            processor.addProblemElement(
-                requireNotNull(context.refManager.getReference(file)),
-                *holder.resultsArray,
-            )
-        }
-    }
-
     companion object {
         private const val SUPPORTED_FINDING = "Supported finding"
+        private const val GLOBAL_COUNTERPART_NAME = "GlobalCounterpartProbe"
 
         @JvmField
         @RegisterExtension
@@ -1429,6 +1519,21 @@ class SupportedInspectionExecutorPlatformTest {
         private val profileCounter = AtomicInteger()
         private val visitCounts = ConcurrentHashMap<String, AtomicInteger>()
         private val blockingInspectionControl = AtomicReference<BlockingInspectionControl?>()
+
+        private fun waitForInspectionWrite() {
+            val control = requireNotNull(blockingInspectionControl.get())
+            control.enteredTool.countDown()
+            val enteredCount = control.enteredCount.incrementAndGet()
+            if (control.blockOnlyFirst && enteredCount > 1) return
+            try {
+                while (true) {
+                    if (control.release.await(25, TimeUnit.MILLISECONDS)) throw ProcessCanceledException()
+                    ProgressManager.checkCanceled()
+                }
+            } finally {
+                control.toolExited.incrementAndGet()
+            }
+        }
 
         private fun resetVisits(tool: LocalInspectionTool) {
             visitCounts.remove(tool.shortName)
@@ -1447,6 +1552,7 @@ class SupportedInspectionExecutorPlatformTest {
 
     private data class ParentInspectionContext(
         val context: GlobalInspectionContextBoundary,
+        val profile: InspectionProfileImpl,
         val currentIndicator: AtomicReference<ProgressWindow?> = AtomicReference(),
     )
 

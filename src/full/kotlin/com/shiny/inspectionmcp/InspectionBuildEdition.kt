@@ -18,8 +18,6 @@ internal object InspectionBuildEdition {
 
     val nativeAttestationUnavailableReason: String? = null
 
-    val nativeFilePassUnavailableReason: String? = null
-
     fun createNativeContext(
         inspectionManager: InspectionManagerEx,
         project: Project,

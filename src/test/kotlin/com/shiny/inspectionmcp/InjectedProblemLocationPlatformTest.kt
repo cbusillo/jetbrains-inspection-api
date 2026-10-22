@@ -238,7 +238,7 @@ class InjectedProblemLocationPlatformTest {
         }
         profile.setToolEnabled(tool.shortName, enabled, project)
         return handler.runBoundedExecutionProof(
-            enabledTools = InspectionHandler.EnabledLocalToolEnumeration(setOf(tool.shortName), 0, emptyList()),
+            enabledTools = InspectionHandler.EnabledFileToolEnumeration(setOf(tool.shortName), 0, emptyList()),
             profile = profile,
             project = project,
             scopeFiles = listOf(hostFile),

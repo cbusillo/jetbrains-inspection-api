@@ -8,7 +8,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 
 internal const val STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON = "stable_build_cannot_prove_broad_scope"
-internal const val STABLE_BUILD_GLOBAL_SIMPLE_UNPROVEN_REASON = "stable_build_cannot_run_global_simple_inspections"
 
 internal data class NativeInspectionExecutionProofResult(
     val completedNormally: Boolean,
