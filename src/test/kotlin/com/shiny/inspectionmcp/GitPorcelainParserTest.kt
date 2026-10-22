@@ -3,14 +3,14 @@ package com.shiny.inspectionmcp
 import com.intellij.openapi.project.Project
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.spyk
+import io.mockk.verify
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
-import java.nio.file.Path
-import java.util.concurrent.TimeUnit
 
 class GitPorcelainParserTest {
 
@@ -47,44 +47,36 @@ class GitPorcelainParserTest {
     @Test
     @DisplayName("computeGitStagingSets resolves nested project paths against the Git root")
     fun testNestedProjectGitRoot() {
-        val gitRoot = Files.createTempDirectory("inspection-git-root")
+        val gitRoot = Files.createTempDirectory("inspection-git-root").toRealPath()
         try {
-            runGit(gitRoot, "init", "--quiet")
             val nestedProject = gitRoot.resolve("services/app")
             val sourceFile = nestedProject.resolve("src/App.kt")
             Files.createDirectories(sourceFile.parent)
             Files.writeString(sourceFile, "val staged = true\n")
-            runGit(gitRoot, "add", "services/app/src/App.kt")
+            val handler = spyk(InspectionHandler(), recordPrivateCalls = true)
+            every { handler["runBoundedGitCommand"](any<String>(), any<List<String>>()) } answers {
+                val arguments = secondArg<List<String>>()
+                when {
+                    "rev-parse" in arguments -> "$gitRoot\n".toByteArray()
+                    "status" in arguments -> "A  services/app/src/App.kt\u0000".toByteArray()
+                    else -> error("Unexpected Git operation")
+                }
+            }
 
             val project = mockk<Project>()
             every { project.basePath } returns nestedProject.toString()
             val method = InspectionHandler::class.java.getDeclaredMethod("computeGitStagingSets", Project::class.java)
             method.isAccessible = true
             @Suppress("UNCHECKED_CAST")
-            val result = method.invoke(InspectionHandler(), project) as Pair<Set<String>, Set<String>>
+            val result = method.invoke(handler, project) as Pair<Set<String>, Set<String>>
 
             assertEquals(setOf(sourceFile.toRealPath().toString()), result.first)
             assertTrue(result.second.isEmpty())
+            verify(exactly = 1) {
+                handler["runBoundedGitCommand"](nestedProject.toString(), match<List<String>> { "rev-parse" in it })
+            }
         } finally {
             gitRoot.toFile().deleteRecursively()
-        }
-    }
-
-    private fun runGit(directory: Path, vararg arguments: String) {
-        val outputFile = Files.createTempFile("inspection-git-output", ".log")
-        try {
-            val process = ProcessBuilder(listOf("git") + arguments)
-                .directory(directory.toFile())
-                .redirectErrorStream(true)
-                .redirectOutput(outputFile.toFile())
-                .start()
-            val finished = process.waitFor(30, TimeUnit.SECONDS)
-            if (!finished) process.destroyForcibly().waitFor()
-            val output = Files.readString(outputFile)
-            assertTrue(finished, "git ${arguments.joinToString(" ")} did not finish: $output")
-            assertEquals(0, process.exitValue(), output)
-        } finally {
-            Files.deleteIfExists(outputFile)
         }
     }
 }

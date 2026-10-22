@@ -41,6 +41,8 @@ if lane_selected contracts; then
     ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/full-internal-api-allowlist.txt >/dev/null
     ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
     ./scripts/test-changed-file-lanes.sh
+    uv run scripts/test-smoke-lifecycle.py
+    ./scripts/test-red-lane-smoke-script.sh
     uv run scripts/test-ide-retention.py
     ./scripts/test-release-contracts.sh
     uv run scripts/test-agents-release.py
@@ -57,7 +59,8 @@ source "$ROOT/scripts/java21.sh"
 use_java21
 
 # Stable build: no internal API use beyond its exempted allowlist, and truthful verdicts without them.
-./gradlew buildPlugin verifyPlugin -PinspectionBuild=stable -PpluginVerifierIdes=target
+./gradlew buildPlugin verifyPlugin -PinspectionBuild=stable -PpluginVerifierIdes=target \
+    -I scripts/test-plugin-verifier-isolation.init.gradle
 ./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'
 
 ./gradlew :test

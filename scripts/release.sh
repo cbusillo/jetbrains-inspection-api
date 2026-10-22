@@ -282,7 +282,6 @@ run_release_validation() {
   fi
 
   ./scripts/test-automated.sh
-  ./scripts/commit-gate.sh
   ./scripts/release-compatibility-gate.sh
   ./scripts/validate-release-version.sh --tag "v$version" >/dev/null
 }
@@ -303,7 +302,6 @@ open_release_pr() {
 
 - \`./scripts/test-all.sh\`
 - \`./scripts/test-automated.sh\`
-- \`./scripts/commit-gate.sh\`
 - \`./scripts/release-compatibility-gate.sh\`
 EOF
   gh pr create \

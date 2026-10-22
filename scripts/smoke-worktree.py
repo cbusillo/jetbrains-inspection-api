@@ -2,7 +2,6 @@
 # /// script
 # requires-python = ">=3.11"
 # ///
-"""Own disposable smoke worktrees and retain evidence on every refusal."""
 
 import argparse
 import hashlib
@@ -13,17 +12,20 @@ import signal
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 HOST_ROOT = Path("/Volumes/Developer-Artifacts/worktrees")
 
 
-def run(*args):
+def run(*args: str) -> str:
     return subprocess.check_output(args, text=True, stderr=subprocess.PIPE).strip()
 
 
-def manifest(root):
-    result = {}
+def manifest(root: Path) -> dict[str, dict[str, str | bool]]:
+    result: dict[str, dict[str, str | bool]] = {}
     for path in sorted(root.rglob("*")):
         relative = path.relative_to(root).as_posix()
         if relative == ".git" or relative.startswith(".git/"):
@@ -41,26 +43,20 @@ def manifest(root):
     return result
 
 
-def create(source, slug, parent, manager):
+def create(source: Path, slug: str, parent: Path | None, manager: Path) -> dict[str, Any]:
     source = source.resolve(strict=True)
     commit = run("git", "-C", str(source), "rev-parse", "--verify", "HEAD^{commit}")
     if platform.node().split(".")[0].lower() == "chris-studio":
         if parent:
-            raise ValueError(
-                "Chris-Studio worktrees use dev-worktree routing; omit --worktree-root/--work-root."
-            )
+            raise ValueError("Chris-Studio worktrees use dev-worktree routing; omit --worktree-root/--work-root.")
         created = run(str(manager), str(source), slug, commit).splitlines()[-1]
         root = Path(created).resolve(strict=True)
         if root.parent.parent != HOST_ROOT or root.name != slug:
-            raise ValueError(
-                "Worktree manager returned a path outside the approved root; retain it."
-            )
+            raise ValueError("Worktree manager returned a path outside the approved root; retain it.")
         managed = True
     else:
         if not parent:
-            raise ValueError(
-                "Portable hosts require an explicit --worktree-root/--work-root."
-            )
+            raise ValueError("Portable hosts require an explicit --worktree-root/--work-root.")
         parent = parent.resolve()
         parent.mkdir(parents=True, exist_ok=True)
         root = parent / slug
@@ -105,14 +101,9 @@ def create(source, slug, parent, manager):
         raise
 
 
-def generated_path(relative, prepared_roots=()):
+def generated_path(relative: str, prepared_roots: Iterable[Path] = ()) -> bool:
     parts = Path(relative).parts
-    if any(
-        part.startswith(".env")
-        or part in {"id_rsa", "id_ed25519"}
-        or part.endswith((".key", ".p12", ".pfx"))
-        for part in parts
-    ):
+    if any(part.startswith(".env") or part in {"id_rsa", "id_ed25519"} or part.endswith((".key", ".p12", ".pfx")) for part in parts):
         return False
     if any(Path(relative).is_relative_to(path) for path in prepared_roots):
         return True
@@ -132,13 +123,10 @@ def generated_path(relative, prepared_roots=()):
                 "vcs.xml",
             }
         )
-    return bool(parts) and any(
-        part in {".gradle", ".kotlin", "build", "out", ".intellijPlatform"}
-        for part in parts
-    )
+    return bool(parts) and any(part in {".gradle", ".kotlin", "build", "out", ".intellijPlatform"} for part in parts)
 
 
-def prepared_generated_roots(payload, root):
+def prepared_generated_roots(payload: dict[str, Any], root: Path) -> list[Path]:
     state = (
         payload.get("repository_preparation")
         or payload.get("agent_result", {}).get("repository_preparation")
@@ -152,9 +140,7 @@ def prepared_generated_roots(payload, root):
     ):
         return []
     target = state.get("target_worktree")
-    if not isinstance(target, str) or not Path(target).resolve().is_relative_to(
-        root.resolve()
-    ):
+    if not isinstance(target, str) or not Path(target).resolve().is_relative_to(root.resolve()):
         return []
     return [
         (Path(target).resolve() / name).relative_to(root.resolve())
@@ -167,13 +153,14 @@ def prepared_generated_roots(payload, root):
     ]
 
 
-def preserve_generated_state(root, before, current, evidence, prepared_roots=()):
-    changed = [
-        name
-        for name in set(before) | set(current)
-        if before.get(name) != current.get(name)
-    ]
-    # Unknown ignored data remains in the exact project. Only known generated files can be archived.
+def preserve_generated_state(
+    root: Path,
+    before: dict[str, dict[str, str | bool]],
+    current: dict[str, dict[str, str | bool]],
+    evidence: Path,
+    prepared_roots: Iterable[Path] = (),
+) -> str | None:
+    changed = [name for name in set(before) | set(current) if before.get(name) != current.get(name)]
     if any(not generated_path(name, prepared_roots) for name in changed):
         return None
     if evidence.resolve().is_relative_to(root.resolve()):
@@ -193,21 +180,13 @@ def preserve_generated_state(root, before, current, evidence, prepared_roots=())
         else:
             shutil.copy2(source, target)
     archived = manifest(archive)
-    if any(
-        archived.get(name) != value
-        for name, value in current.items()
-        if name in changed
-    ):
-        raise ValueError(
-            "Generated-state preservation did not verify; retain the project."
-        )
-    (evidence / (archive.name + "-manifest.json")).write_text(
-        json.dumps({name: current.get(name) for name in changed}, indent=2)
-    )
+    if any(archived.get(name) != value for name, value in current.items() if name in changed):
+        raise ValueError("Generated-state preservation did not verify; retain the project.")
+    (evidence / (archive.name + "-manifest.json")).write_text(json.dumps({name: current.get(name) for name in changed}, indent=2))
     return str(archive)
 
 
-def sdk_removal_result(helper, root, evidence, apply=False):
+def sdk_removal_result(helper: Path, root: Path, evidence: Path, apply: bool = False) -> dict[str, Any]:
     args = ["uv", "run", str(helper), "remove-worktree", "--json"]
     if apply:
         args.append("--no-dry-run")
@@ -218,7 +197,7 @@ def sdk_removal_result(helper, root, evidence, apply=False):
     return json.loads(output)
 
 
-def retire(receipt, payload, helper, evidence):
+def retire(receipt: dict[str, Any], payload: dict[str, Any], helper: Path, evidence: Path) -> dict[str, Any]:
     root = Path(receipt["root"])
     if not root.is_dir() or root.is_symlink():
         return {"status": "retained", "reason": "worktree_identity_changed"}
@@ -237,11 +216,7 @@ def retire(receipt, payload, helper, evidence):
         != receipt.get("common_git_dir")
     ):
         return {"status": "retained", "reason": "worktree_identity_changed"}
-    if (
-        not isinstance(payload, dict)
-        or not isinstance(payload.get("cleanup"), dict)
-        or payload["cleanup"].get("status") != "closed"
-    ):
+    if not isinstance(payload, dict) or not isinstance(payload.get("cleanup"), dict) or payload["cleanup"].get("status") != "closed":
         return {"status": "retained", "reason": "lifecycle_cleanup_unresolved"}
     if (
         run("git", "-C", str(root), "rev-parse", "--show-toplevel") != str(root)
@@ -253,12 +228,9 @@ def retire(receipt, payload, helper, evidence):
         return {"status": "retained", "reason": "project_changed"}
     current = manifest(root)
     tracked = set(run("git", "-C", str(root), "ls-files", "-z").split("\0"))
-    if any(
-        value.get("protected") and name not in tracked
-        for name, value in current.items()
-    ):
+    if any(value.get("protected") and name not in tracked for name, value in current.items()):
         return {"status": "retained", "reason": "private_configuration"}
-    archive = None
+    archive: str | None = None
     if current != receipt["manifest"]:
         archive = preserve_generated_state(
             root,
@@ -276,7 +248,6 @@ def retire(receipt, payload, helper, evidence):
         run(receipt["manager"], "retire", "--dry-run", str(root))
     elif lock_reason is not None:
         return {"status": "retained", "reason": "foreign_lock"}
-    # The maintained helper proves live SDK/lease safety before non-force removal.
     preview = sdk_removal_result(helper, root, evidence)
     if preview.get("status") != "ok" or preview.get("dry_run") is not True:
         return {
@@ -284,19 +255,36 @@ def retire(receipt, payload, helper, evidence):
             "reason": "sdk_preview_unresolved",
             "preview": preview,
         }
-    if (
-        manifest(root) != current
-        or run("git", "-C", str(root), "rev-parse", "HEAD") != receipt["head"]
-    ):
+    if manifest(root) != current or run("git", "-C", str(root), "rev-parse", "HEAD") != receipt["head"]:
         return {
             "status": "retained",
             "reason": "project_changed_during_preview",
             "preview": preview,
         }
-    # Defer ordinary termination until removal settles and the original lock is restored.
-    previous_mask = signal.pthread_sigmask(
-        signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT}
-    )
+    with defer_termination_until_lock_restored(receipt, root, gitdir, lock, lock_reason):
+        applied = sdk_removal_result(helper, root, evidence, apply=True)
+        if applied.get("status") != "ok" or applied.get("worktree_removed") is not True or root.exists():
+            return {
+                "status": "retained",
+                "reason": "sdk_removal_unresolved",
+                "preview": preview,
+                "apply": applied,
+            }
+    branch_cleanup = delete_unchanged_smoke_branch(receipt)
+    return {
+        "status": "removed",
+        "preview": preview,
+        "apply": applied,
+        "generated_state_archive": archive,
+        "branch_cleanup": branch_cleanup,
+    }
+
+
+@contextmanager
+def defer_termination_until_lock_restored(
+    receipt: dict[str, Any], root: Path, gitdir: Path, lock: Path, lock_reason: str | None
+) -> Iterator[None]:
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
     try:
         if lock_reason is not None:
             run("git", "-C", receipt["source"], "worktree", "unlock", str(root))
@@ -304,26 +292,10 @@ def retire(receipt, payload, helper, evidence):
         signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
         raise
     try:
-        applied = sdk_removal_result(helper, root, evidence, apply=True)
-        if (
-            applied.get("status") != "ok"
-            or applied.get("worktree_removed") is not True
-            or root.exists()
-        ):
-            return {
-                "status": "retained",
-                "reason": "sdk_removal_unresolved",
-                "preview": preview,
-                "apply": applied,
-            }
+        yield
     finally:
         try:
-            if (
-                lock_reason is not None
-                and root.exists()
-                and gitdir.exists()
-                and not lock.exists()
-            ):
+            if lock_reason is not None and root.exists() and gitdir.exists() and not lock.exists():
                 run(
                     "git",
                     "-C",
@@ -336,13 +308,12 @@ def retire(receipt, payload, helper, evidence):
                 )
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
-    # No smoke commit was created; delete only the branch still at its original head.
+
+
+def delete_unchanged_smoke_branch(receipt: dict[str, Any]) -> dict[str, str]:
     branch_cleanup = {"status": "not_needed"}
     try:
-        if (
-            run("git", "-C", receipt["source"], "rev-parse", receipt["branch"])
-            == receipt["head"]
-        ):
+        if run("git", "-C", receipt["source"], "rev-parse", receipt["branch"]) == receipt["head"]:
             run("git", "-C", receipt["source"], "branch", "-d", receipt["branch"])
             branch_cleanup = {"status": "removed"}
     except subprocess.CalledProcessError as error:
@@ -351,25 +322,17 @@ def retire(receipt, payload, helper, evidence):
             "branch": receipt["branch"],
             "error": str(error),
         }
-    return {
-        "status": "removed",
-        "preview": preview,
-        "apply": applied,
-        "generated_state_archive": archive,
-        "branch_cleanup": branch_cleanup,
-    }
+    return branch_cleanup
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     commands = parser.add_subparsers(dest="command", required=True)
     new = commands.add_parser("create")
     new.add_argument("--source", type=Path, required=True)
     new.add_argument("--slug", required=True)
     new.add_argument("--parent", type=Path)
-    new.add_argument(
-        "--manager", type=Path, default=Path.home() / ".local/bin/dev-worktree"
-    )
+    new.add_argument("--manager", type=Path, default=Path.home() / ".local/bin/dev-worktree")
     new.add_argument("--receipt", type=Path, required=True)
     delete = commands.add_parser("retire")
     delete.add_argument("--receipt", type=Path, required=True)
@@ -383,19 +346,13 @@ def main():
             args.receipt.write_text(json.dumps(receipt, indent=2) + "\n")
             print(receipt["root"])
         else:
-            receipt = None
-            evidence = None
+            receipt: dict[str, Any] | None = None
+            evidence: Path | None = None
             try:
                 receipt = json.loads(args.receipt.read_text())
-                if args.receipt.parent.resolve().is_relative_to(
-                    Path(receipt["root"]).resolve()
-                ):
-                    raise ValueError(
-                        "Keep retirement receipts and evidence outside the worktree."
-                    )
-                evidence = Path(
-                    tempfile.mkdtemp(prefix="retirement-", dir=args.receipt.parent)
-                )
+                if args.receipt.parent.resolve().is_relative_to(Path(receipt["root"]).resolve()):
+                    raise ValueError("Keep retirement receipts and evidence outside the worktree.")
+                evidence = Path(tempfile.mkdtemp(prefix="retirement-", dir=args.receipt.parent))
                 result = retire(
                     receipt,
                     json.loads(args.payload.read_text()),
@@ -409,17 +366,12 @@ def main():
                     "error": str(error),
                     "worktree_present": (
                         Path(receipt["root"]).exists()
-                        if isinstance(receipt, dict)
-                        and isinstance(receipt.get("root"), str)
+                        if isinstance(receipt, dict) and isinstance(receipt.get("root"), str)
                         else None
                     ),
                 }
                 if isinstance(error, subprocess.CalledProcessError):
-                    records = Path(
-                        tempfile.mkdtemp(
-                            prefix="retirement-failure-", dir=args.receipt.parent
-                        )
-                    )
+                    records = Path(tempfile.mkdtemp(prefix="retirement-failure-", dir=args.receipt.parent))
                     for name, content in [
                         ("stdout", error.stdout),
                         ("stderr", error.stderr),

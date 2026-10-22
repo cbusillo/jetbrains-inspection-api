@@ -3,9 +3,9 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-from pathlib import Path
 import argparse
 import sys
+from pathlib import Path
 
 IMPLEMENTATION = "GlobalInspectionContextImpl"
 MANIFEST_OWNERS = (
@@ -15,9 +15,7 @@ MANIFEST_OWNERS = (
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description=f"Keep {IMPLEMENTATION} references inside the one full-build boundary file."
-    )
+    parser = argparse.ArgumentParser(description=f"Keep {IMPLEMENTATION} references inside the one full-build boundary file.")
     parser.add_argument("--sources", type=Path, action="append", required=True)
     parser.add_argument("--boundary", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
@@ -31,7 +29,7 @@ def main() -> int:
         print(f"{args.boundary}: boundary source is missing", file=sys.stderr)
         return 1
     boundary = args.boundary.resolve()
-    failures = []
+    failures: list[str] = []
     for sources in args.sources:
         for source in sorted(sources.rglob("*.kt")):
             if source.resolve() == boundary:

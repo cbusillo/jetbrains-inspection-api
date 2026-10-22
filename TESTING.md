@@ -42,10 +42,12 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platform
 # MCP server jar
 ./gradlew :mcp-server-jvm:mcpServerJar
 
-# Everything (plugin tests + MCP tests + plugin build)
+# Full commit gate (script contracts, plugin/core/MCP tests, coverage gates and plugin build)
 ./scripts/test-all.sh
 ```
 
+`test-all.sh` delegates to `commit-gate.sh --ci`, so release preparation and the
+Test All run configuration run the complete gate even with no staged changes.
 For local plugin rollout, rollback, and diagnosis techniques, see
 [the maintainer guide](MAINTAINING.md).
 
@@ -468,9 +470,8 @@ Use `--ide` for the inspection identity selector and `--ide-app` for the exact
 macOS app bundle to launch. Keep the bundle selector aligned with the installed
 application name even when channel and version selectors identify an EAP line.
 
-This is a live IDE smoke, not a normal CI unit test. The red-lane/matrix shell contracts and Python lifecycle/installer tests run
-in CI using pinned uv setup; they also run under `./scripts/test-all.sh`.
-They stub live IDE operations and never install or restart an IDE. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
+This is a live IDE smoke. The red-lane/matrix shell contracts and Python lifecycle/installer tests
+stub live IDE operations and never install or restart an IDE. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
 and checks the IntelliJ, PyCharm, and WebStorm fixture contracts without
 requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change.
 
@@ -593,8 +594,9 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 - `./scripts/commit-gate.sh --ci`
 
 The commit gate runs the
-action-pin and inspection-boundary linters, the exact internal-API manifest
-validator, and fixture-based release contract tests. It requires Java 21, then
+action-pin, inspection-boundary and cancellation linters, the exact internal-API manifest
+validator, smoke lifecycle/installer and red-lane/matrix contracts, IDE retention
+controls, and release contract tests. It requires Java 21, then
 runs plugin tests,
 the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
 verification task depends on its module's tests and report, so tests are not run
@@ -602,8 +604,8 @@ twice. The plugin module has a JaCoCo report but no coverage threshold, because
 IntelliJ classloader isolation prevents reliable plugin instrumentation.
 
 The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
-maps changed paths to lanes: documentation-only changes run nothing beyond the
-version sync check; workflow and script changes normally run the contract tests
+maps changed paths to lanes: documentation-only changes skip both lanes;
+workflow and script changes normally run the contract tests
 without Gradle. Changes to the gate's own inputs, as listed in that script,
 run both lanes; anything else (including an unknown change set) runs everything.
 The local hook classifies staged files; CI passes the pull request's file list
@@ -658,6 +660,20 @@ Stable check against the compile IDE only (`-PpluginVerifierIdes=target`, about
 15 seconds); the release workflows and `release-compatibility-gate.sh` check
 every recommended IDE.
 
+Verifier downloads and extracted plugins stay in each worktree's
+`build/pluginVerifier`; reports stay in `build/reports/pluginVerifier`.
+IDE distributions remain in Gradle's shared dependency/transform cache.
+Do not share a build directory between worktrees or clean another session's
+verifier home.
+
+The commit gate also runs a real verifier with a disposable fallback user home
+and fails if the verifier writes there. To exercise this regression directly:
+
+```bash
+JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin \
+  -PpluginVerifierIdes=target -I scripts/test-plugin-verifier-isolation.init.gradle
+```
+
 All production `GlobalInspectionContextImpl` source references must stay in
 `src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt` (including
 its private attested subclass), and `scripts/lint-inspection-boundary.py`
@@ -689,7 +705,7 @@ verified digests, unexpected internal APIs, and the release PR/tag flow. Invalid
 artifact fixtures supply their actual digest and require the intended validator
 refusal before fake upload. Action-pin, boundary and cancellation linter tests use disposable
 workflow, source and manifest fixtures; the linters enforce the rules on actual
-repository inputs in both the commit gate and `test-all.sh`.
+repository inputs in the commit gate.
 
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`.

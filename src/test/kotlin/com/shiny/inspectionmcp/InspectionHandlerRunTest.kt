@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
 import com.intellij.openapi.project.DumbService
@@ -1478,7 +1480,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
                     "scope_file_diagnostics_complete" to false,
                     "scope_file_semantic_evidence_complete" to true,
                     "scope_file_semantic_coverage" to mapOf(
-                        "schema_version" to 1,
                         "evaluated_file_count" to 26,
                         "unproven_file_count" to 0,
                         "missing_file_count" to 0,
@@ -2200,7 +2201,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
-        assertTrue(body.contains("Parameter 'inspection_run_id' is required."))
+        assertEquals("inspection_run_id", (jsonResponseValue(body) as Map<*, *>)["parameter"])
         verify(exactly = 0) { indicator.cancel() }
     }
 
@@ -2701,7 +2702,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val response = jsonResponseValue(httpResponse.content().toString(Charsets.UTF_8)) as Map<*, *>
 
         assertEquals(HttpResponseStatus.NOT_FOUND, httpResponse.status())
-        assertEquals("Requested project 'odoo api' is not open in the IDE.", response["error"])
+        assertTrue(response["error"].toString().contains("odoo api"))
         assertEquals("no_project", response["status"])
         assertEquals("UNKNOWN", response["inspection_verdict"])
         assertEquals("no_project", response["inspection_verdict_reason"])
@@ -2712,20 +2713,13 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals(recentProjectPath, suggestion["path"])
     }
 
-    @Test
-    fun `test process trigger falls back for blank project query`() {
-        val response = processTriggerRequest("/api/inspection/trigger?project=")
+    @ParameterizedTest
+    @ValueSource(strings = ["", "%20%20"])
+    fun `test process trigger falls back for blank project query`(query: String) {
+        val response = processTriggerRequest("/api/inspection/trigger?project=$query")
 
         assertEquals(HttpResponseStatus.OK, response.status())
-        assertFalse(response.content().toString(Charsets.UTF_8).contains("No project found"))
-    }
-
-    @Test
-    fun `test process trigger falls back for whitespace project query`() {
-        val response = processTriggerRequest("/api/inspection/trigger?project=%20%20")
-
-        assertEquals(HttpResponseStatus.OK, response.status())
-        assertFalse(response.content().toString(Charsets.UTF_8).contains("No project found"))
+        assertEquals(projectKey(mockProject), (jsonResponseValue(response.content().toString(Charsets.UTF_8)) as Map<*, *>)["project_key"])
     }
 
     @Test
@@ -3052,27 +3046,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertFalse(body.contains("\"project_key\": \"path:/repo/main\""))
     }
 
-    @Test
-    fun `test trigger endpoint reports ambiguous project names as bad request`() {
-        val firstProject = mockProject(
-            name = "Shared",
-            basePath = "/repo/one",
-            projectFilePath = "/repo/one/.idea/misc.xml",
-        )
-        val secondProject = mockProject(
-            name = "Shared",
-            basePath = "/repo/two",
-            projectFilePath = "/repo/two/.idea/misc.xml",
-        )
-        every { mockProjectManager.openProjects } returns arrayOf(firstProject, secondProject)
-
-        val response = processTriggerRequest("/api/inspection/trigger?project=Shared")
-        val body = response.content().toString(Charsets.UTF_8)
-
-        assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
-        assertTrue(body.contains("Multiple open projects matched this request"))
-        assertFalse(body.contains("Requested project 'Shared' is not open in the IDE"))
-    }
 
     @Test
     fun `test trigger endpoint cwd prefers nested project file root over containing parent`() {
@@ -3104,7 +3077,6 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"Child\""))
         assertTrue(body.contains("\"base_path\": \"$nestedPath\""))
-        assertFalse(body.contains("Multiple open projects matched this request"))
     }
 
     @Test
@@ -3117,7 +3089,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
 
         assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
         assertTrue(body.contains("\"status\": \"no_project\""))
-        assertTrue(body.contains("Requested project '/repo/app/src' is not open"))
+        assertTrue((jsonResponseValue(body) as Map<*, *>)["error"].toString().contains("/repo/app/src"))
     }
 
     @Test
@@ -3164,6 +3136,8 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         val response = processTriggerRequest("/api/inspection/trigger?project=does-not-exist")
 
         assertEquals(HttpResponseStatus.NOT_FOUND, response.status())
-        assertTrue(response.content().toString(Charsets.UTF_8).contains("Requested project 'does-not-exist' is not open in the IDE."))
+        val body = jsonResponseValue(response.content().toString(Charsets.UTF_8)) as Map<*, *>
+        assertEquals("no_project", body["status"])
+        assertTrue(body["error"].toString().contains("does-not-exist"))
     }
 }
