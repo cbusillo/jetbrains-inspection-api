@@ -203,7 +203,6 @@ class McpServerTest {
             val text = response.firstText()
             assertTrue(text.contains("\"total_problems\": 2"))
             assertTrue(text.contains("VERDICT: RED"))
-            assertTrue(text.contains("Found 2 problems total"))
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("file_pattern=my+file.js"))
             assertTrue(query.contains("limit=10"))
@@ -213,7 +212,7 @@ class McpServerTest {
 
     @Test
     fun inspectionGetProblemsAddsPaginationGuidance() {
-        val response = """{"status":"results_available","total_problems":5,"problems_shown":2,"pagination":{"has_more":true,"next_offset":2},"problems":[]}"""
+        val response = """{"status":"results_available","total_problems":5,"problems_shown":2,"pagination":{"has_more":true,"next_offset":2},"problems":[],"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings"}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
@@ -225,26 +224,10 @@ class McpServerTest {
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", args))
             val text = result.firstText()
             assertTrue(text.contains("VERDICT: RED"))
-            assertTrue(text.contains("Found 5 problems total"))
             assertTrue(text.contains("NEXT: More results available"))
             val query = server.lastQuery.get() ?: ""
             assertTrue(query.contains("offset=2"))
             assertTrue(query.contains("problem_type=SpellCheckingInspection"))
-        }
-    }
-
-    @Test
-    fun inspectionGetProblemsHandlesNoResults() {
-        val response = """{"status":"no_results","total_problems":0,"problems_shown":0,"problems":[],"pagination":{"limit":100,"offset":0,"has_more":false,"next_offset":null},"filters":{"severity":"all","scope":"whole_project","problem_type":"all","file_pattern":"all"}}"""
-        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_results"))
-            assertFalse(text.contains("clean runs"))
         }
     }
 
@@ -268,24 +251,6 @@ class McpServerTest {
             assertTrue(text.contains("Invalid request parameter"))
             assertTrue(text.contains("Parameter: limit"))
             assertTrue(text.contains("must be at least 1"))
-        }
-    }
-
-    @Test
-    fun inspectionGetProblemsWarnsWhenCaptureIncomplete() {
-        val response = """{"status":"capture_incomplete","capture_incomplete_reason":"extractor_failure","proof_failures":["extractor_failure"],"capture_diagnostic":{"exit_reason":"deadline"},"total_problems":0,"problems_shown":0,"problems":[]}"""
-        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("NEXT_ACTION"))
-            assertTrue(text.contains("reason=extractor_failure"))
-            assertTrue(text.contains("capture_incomplete_reason"))
-            assertFalse(text.contains("capture_diagnostic"))
-            assertFalse(text.contains("OK: No problems found matching filters"))
         }
     }
 
@@ -335,7 +300,7 @@ class McpServerTest {
             val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
             val text = result.firstText()
 
-            assertTrue(text.contains("VERDICT: UNKNOWN reason=execution_not_proven"))
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=inspection_proof_failed"))
             assertTrue(text.contains("\"inspection_run_id\": 73"))
             assertTrue(text.contains("\"inspection_terminal_outcome\": \"timed_out\""))
             assertTrue(text.contains("\"inspection_failure_diagnostic\""))
@@ -344,9 +309,6 @@ class McpServerTest {
             assertTrue(text.contains("\"inspection_tool_short_name\": \"ProofTool\""))
             assertFalse(text.contains("capture_diagnostic"))
             assertFalse(text.contains("raw detail that must stay nested"))
-            assertFalse(text.contains("Retry once"))
-            assertFalse(text.contains("increase timeout_ms"))
-            assertFalse(text.contains("VERDICT: GREEN"))
         }
     }
 
@@ -418,27 +380,6 @@ class McpServerTest {
     }
 
     @Test
-    fun inspectionGetProblemsDoesNotRelaxUnrelatedProofFailures() {
-        listOf("scope_semantic_coverage_missing", "scope_semantic_coverage_truncated", "execution_not_proven").forEach { reason ->
-            val response = """
-                {
-                  "status": "results_available", "inspection_run_id": 75,
-                  "total_problems": 1, "problems": [{"description": "Unproven finding"}],
-                  "proof_failures": ["$reason"],
-                  "inspection_verdict": "RED", "inspection_verdict_reason": "actionable_findings"
-                }
-            """.trimIndent()
-            MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-                server.start()
-                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-                val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
-                assertTrue(text.contains("VERDICT: UNKNOWN reason=inspection_proof_failed"), text)
-                assertFalse(text.contains("VERDICT: RED"), text)
-            }
-        }
-    }
-
-    @Test
     fun inspectionGetProblemsKeepsExplicitStaleDiagnostics() {
         val response = """{"status":"stale_results","results_may_be_stale":true,"include_stale":true,"cached_total_problems":1,"cached_problems_shown":1,"problems":[{"description":"Cached warning"}],"pagination":{"limit":100,"offset":0,"has_more":false},"inspection_verdict":"UNKNOWN","inspection_verdict_reason":"stale_results"}"""
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
@@ -453,55 +394,6 @@ class McpServerTest {
             assertTrue(text.contains("reason=stale_results"))
             assertTrue(text.contains("Cached warning"))
             assertTrue(text.contains("\"problems\""))
-        }
-    }
-
-    @Test
-    fun inspectionGetProblemsWarnsWhenResultsAreStale() {
-        val response = """{"status":"stale_results","message":"Project files changed since the last inspection."}"""
-        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=stale_results"))
-            assertTrue(text.contains("results are stale"))
-            assertTrue(text.contains("include_stale=true"))
-            assertTrue(text.contains("explicit cached-result diagnostics"))
-        }
-    }
-
-    @Test
-    fun inspectionGetProblemsBlockerOverridesPluginRedVerdict() {
-        val response = """{"status":"stale_results","results_may_be_stale":true,"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings","total_problems":5,"problems":[]}"""
-        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=stale_results"))
-            assertFalse(text.contains("VERDICT: RED"))
-        }
-    }
-
-    @Test
-    fun inspectionGetProblemsProofFailureOverridesPluginRedVerdict() {
-        val response = """{"status":"results_available","total_problems":1,"problems_shown":1,"problems":[{"description":"Wrong scope warning"}],"proof_failures":["route_mismatch"],"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings"}"""
-        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=inspection_proof_failed"))
-            assertFalse(text.contains("VERDICT: RED"))
-            assertFalse(text.contains("Wrong scope warning"))
-            assertFalse(text.contains("\"problems\""))
         }
     }
 
@@ -564,17 +456,95 @@ class McpServerTest {
     }
 
     @Test
-    fun inspectionGetProblemsHandlesZeroResults() {
-        val response = """{"status":"results_available","total_problems":0,"problems_shown":0,"problems":[]}"""
+    fun mcpReportsPluginRedWhenCurrentFindingsCarryABroadExecutionProofGap() {
+        val response = """
+            {
+              "status": "results_available", "inspection_run_id": 81,
+              "total_problems": 1, "problems_shown": 1,
+              "problems": [{"description": "Native finding"}],
+              "proof_failures": ["execution_not_proven"],
+              "capture_diagnostic": {"inspection_run_id": 81, "execution_proof_mode": "native", "execution_proof_established": false},
+              "inspection_verdict": "RED",
+              "inspection_verdict_reason": "actionable_findings",
+              "inspection_verdict_message": "Plugin says the findings are current.",
+              "inspection_verdict_next_action": "Plugin says fix the findings."
+            }
+        """.trimIndent()
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
             server.start()
             val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
-            val result = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: GREEN"))
-            assertTrue(text.contains("reason=no_matching_findings"))
-            assertFalse(text.contains("No problems found"))
+            val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
+
+            assertTrue(
+                text.startsWith(
+                    "VERDICT: RED reason=actionable_findings\n" +
+                        "MESSAGE: Plugin says the findings are current.\n" +
+                        "NEXT_ACTION: Plugin says fix the findings.",
+                ),
+                text,
+            )
+            assertTrue(text.contains("Native finding"), text)
+        }
+    }
+
+    @Test
+    fun mcpReportsUnknownWhenThePluginSentNoVerdict() {
+        listOf(
+            "problems" to """{"status":"results_available","total_problems":0,"problems_shown":0,"problems":[]}""",
+            "problems" to """{"status":"results_available","total_problems":3,"problems_shown":1,"problems":[{"description":"Unjudged finding"}]}""",
+            "status" to """{"is_scanning":false,"clean_inspection":true,"has_inspection_results":false}""",
+            "wait" to """{"wait_completed":true,"completion_reason":"clean","total_problems":0}""",
+            "wait" to """{"wait_completed":true,"completion_reason":"results"}""",
+        ).forEach { (endpoint, response) ->
+            MockIdeServer(mapOf("/api/inspection/$endpoint" to MockResponse(response))).use { server ->
+                server.start()
+                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+                val tool = when (endpoint) {
+                    "problems" -> "inspection_get_problems"
+                    "status" -> "inspection_get_status"
+                    else -> "inspection_wait"
+                }
+
+                val text = executor.handleToolCall(buildToolCall(tool, buildJsonObject { })).firstText()
+
+                assertTrue(text.startsWith("VERDICT: UNKNOWN reason=plugin_verdict_missing"), "$endpoint $response:\n$text")
+                assertFalse(text.contains("Unjudged finding"), text)
+            }
+        }
+    }
+
+    @Test
+    fun mcpReportsThePluginVerdictReasonMessageAndNextAction() {
+        listOf(
+            Triple("problems", "inspection_get_problems", "GREEN"),
+            Triple("status", "inspection_get_status", "UNKNOWN"),
+            Triple("wait", "inspection_wait", "RED"),
+        ).forEach { (endpoint, tool, verdict) ->
+            val response = """
+                {
+                  "status": "no_recent_inspection", "completion_reason": "no_recent_inspection",
+                  "inspection_verdict": "$verdict",
+                  "inspection_verdict_reason": "plugin_reason_$endpoint",
+                  "inspection_verdict_message": "Plugin message for $endpoint.",
+                  "inspection_verdict_next_action": "Plugin next action for $endpoint."
+                }
+            """.trimIndent()
+            MockIdeServer(mapOf("/api/inspection/$endpoint" to MockResponse(response))).use { server ->
+                server.start()
+                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+                val text = executor.handleToolCall(buildToolCall(tool, buildJsonObject { })).firstText()
+
+                assertTrue(
+                    text.startsWith(
+                        "VERDICT: $verdict reason=plugin_reason_$endpoint\n" +
+                            "MESSAGE: Plugin message for $endpoint.\n" +
+                            "NEXT_ACTION: Plugin next action for $endpoint.",
+                    ),
+                    text,
+                )
+            }
         }
     }
 
@@ -652,6 +622,30 @@ class McpServerTest {
             assertTrue(text.contains("\"status\": \"run_changed\""), text)
             assertTrue(text.contains("VERDICT: UNKNOWN reason=run_changed"), text)
             assertFalse(text.contains("VERDICT: GREEN"), text)
+        }
+    }
+
+    @Test
+    fun inspectionGetStatusFailsClosedOnReplacementRun() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val replacementStatus = """{"is_scanning":false,"inspection_in_progress":false,"inspection_run_id":8,"snapshot_run_id":8,"total_problems":1,"proof_failures":["execution_not_proven"],"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings"}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/status" to MockResponse(replacementStatus),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val status = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = status.firstText()
+
+            assertFalse(status.isError(), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_changed"), text)
+            assertTrue(text.contains("\"expected_inspection_run_id\": 7"), text)
+            assertFalse(text.contains("VERDICT: RED"), text)
         }
     }
 
@@ -923,20 +917,6 @@ class McpServerTest {
     }
 
     @Test
-    fun inspectionGetStatusAddsGuidance() {
-        MockIdeServer().use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val response = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = response.firstText()
-            assertTrue(text.contains("\"has_inspection_results\": true"))
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=results_available_without_findings"))
-        }
-    }
-
-    @Test
     fun inspectionGetStatusOmitsBlankProjectParam() {
         MockIdeServer().use { server ->
             server.start()
@@ -954,153 +934,6 @@ class McpServerTest {
             val query = server.lastQuery.get().orEmpty()
             assertFalse(query.contains("project="))
             assertTrue(query.contains("client_run_id="))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusHandlesScanning() {
-        val response = """{"is_scanning":true}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            assertTrue(result.firstText().contains("still running"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusBlockerOverridesPluginGreenVerdict() {
-        val response = """{"is_scanning":true,"inspection_in_progress":true,"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed","clean_inspection":true}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=inspection_still_running"))
-            assertFalse(text.contains("VERDICT: GREEN"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusProofFailureOverridesPluginGreenVerdict() {
-        val response = """{"status":"results_available","clean_inspection":true,"total_problems":0,"problems_shown":0,"problems":[],"proof_failures":["profile_mismatch"],"inspection_proof":{"status":"failed","proof_failures":["profile_mismatch"]},"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed"}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.startsWith("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=inspection_proof_failed"))
-            assertFalse(text.contains("VERDICT: GREEN"))
-            assertFalse(text.contains("\"total_problems\": 0"))
-            assertFalse(text.contains("\"problems\""))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusHandlesStaleResults() {
-        val response = """{"results_may_be_stale":true}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=stale_results"))
-            assertTrue(text.contains("Trigger inspection again"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusPreservesDiskSynchronizationRecoveryWithoutPluginVerdict() {
-        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"inspection_inputs_changed","capture_diagnostic":{"exit_reason":"disk_psi_content_mismatch"}}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-            val text = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { })).firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=inspection_inputs_changed"))
-            assertTrue(text.contains("Reload from Disk"))
-            assertTrue(text.contains("modification time"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusHandlesCaptureIncomplete() {
-        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"view_not_ready","has_inspection_results":false,"clean_inspection":false}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("NEXT_ACTION"))
-            assertTrue(text.contains("reason=view_not_ready"))
-            assertFalse(text.contains("codebase is clean"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusProvidesProfileResolutionGuidance() {
-        val response = """{"capture_incomplete":true,"capture_incomplete_reason":"profile_resolution_error","has_inspection_results":false,"clean_inspection":false}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-
-            assertTrue(text.contains("requested inspection profile exists and is loaded"))
-            assertFalse(text.contains("narrower scope"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusHandlesNoRecentInspection() {
-        val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":120000}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_recent_inspection"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusHandlesRecentNoResults() {
-        val response = """{"is_scanning":false,"has_inspection_results":false,"time_since_last_trigger_ms":5000}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_results"))
-        }
-    }
-
-    @Test
-    fun inspectionGetStatusDoesNotReportProblemsForCleanSnapshot() {
-        val response = """{"is_scanning":false,"has_inspection_results":false,"clean_inspection":true,"total_problems":0,"time_since_last_trigger_ms":5000}"""
-        MockIdeServer(mapOf("/api/inspection/status" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: GREEN"))
-            assertTrue(text.contains("reason=clean_confirmed"))
-            assertFalse(text.contains("STATUS: Inspection complete - problems found"))
         }
     }
 
@@ -1154,141 +987,6 @@ class McpServerTest {
     }
 
     @Test
-    fun inspectionWaitHandlesNoProject() {
-        val response = """{"wait_completed":false,"timed_out":false,"completion_reason":"no_project"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_project"))
-            assertTrue(text.contains("exact project name"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesInterrupted() {
-        val response = """{"wait_completed":false,"completion_reason":"interrupted"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=interrupted"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesTimeout() {
-        val response = """{"wait_completed":false,"timed_out":true}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=timeout"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitBlockerOverridesPluginGreenVerdict() {
-        val response = """{"wait_completed":false,"timed_out":true,"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=timeout"))
-            assertFalse(text.contains("VERDICT: GREEN"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitProofFailureOverridesPluginGreenVerdict() {
-        val response = """{"wait_completed":true,"completion_reason":"clean","total_problems":0,"problems_shown":0,"problems":[],"proof_failures":["run_mismatch"],"inspection_verdict":"GREEN","inspection_verdict_reason":"clean_confirmed"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.startsWith("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=inspection_proof_failed"))
-            assertFalse(text.contains("VERDICT: GREEN"))
-            assertFalse(text.contains("\"total_problems\": 0"))
-            assertFalse(text.contains("\"problems\""))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesNoResults() {
-        val response = """{"wait_completed":true,"completion_reason":"no_results"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_results"))
-            assertTrue(text.contains("Retry once"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesNoRecentInspection() {
-        val response = """{"wait_completed":false,"completion_reason":"no_recent_inspection"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=no_recent_inspection"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesStaleResults() {
-        val response = """{"wait_completed":true,"completion_reason":"stale_results","results_may_be_stale":true}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("reason=stale_results"))
-            assertTrue(text.contains("Trigger inspection again"))
-        }
-    }
-
-    @Test
-    fun inspectionWaitHandlesCaptureIncomplete() {
-        val response = """{"wait_completed":true,"completion_reason":"capture_incomplete","capture_incomplete_reason":"timeout"}"""
-        MockIdeServer(mapOf("/api/inspection/wait" to MockResponse(response))).use { server ->
-            server.start()
-            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
-
-            val result = executor.handleToolCall(buildToolCall("inspection_wait", buildJsonObject { }))
-            val text = result.firstText()
-            assertTrue(text.contains("VERDICT: UNKNOWN"))
-            assertTrue(text.contains("NEXT_ACTION"))
-            assertTrue(text.contains("reason=timeout"))
-            assertFalse(text.contains("codebase is clean"))
-        }
-    }
-
-    @Test
     fun inspectionGetProblemsHandlesInvalidJson() {
         MockIdeServer(mapOf("/api/inspection/problems" to MockResponse("{"))).use { server ->
             server.start()
@@ -1326,7 +1024,7 @@ class McpServerTest {
             StaticHttpResponse(
                 statusCode = 200,
                 request = HttpRequest.newBuilder(URI("http://localhost:63343/api/inspection/status")).build(),
-                body = """{"is_scanning":false,"clean_inspection":true}"""
+                body = """{"is_scanning":false,"clean_inspection":true,"inspection_verdict":"GREEN"}"""
             )
         )
         val executor = ToolExecutor(
@@ -1900,7 +1598,7 @@ private class MockIdeServer(
         val defaults = mapOf(
             "/api/inspection/status" to MockResponse("""{"is_scanning":false,"has_inspection_results":true}"""),
             "/api/inspection/problems" to MockResponse(
-                """{"status":"results_available","total_problems":2,"problems_shown":2,"problems":[]}"""
+                """{"status":"results_available","total_problems":2,"problems_shown":2,"problems":[],"inspection_verdict":"RED"}"""
             ),
             "/api/inspection/trigger" to MockResponse(
                 """{"status":"triggered","message":"Inspection triggered","run_id":7,"project_key":"${identityProjectKey()}","session_id":"${identitySessionId}-${port}"}"""

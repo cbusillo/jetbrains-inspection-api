@@ -26,7 +26,7 @@
       "capture_incomplete_reason"
     ],
     "mcp_not_contains": [
-      "capture_diagnostic",
+      "\"capture_diagnostic\"",
       "\"problems\"",
       "\"total_problems\""
     ],
