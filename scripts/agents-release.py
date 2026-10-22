@@ -9,7 +9,7 @@ import re
 import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -92,6 +92,14 @@ def gh(*args: str) -> str:
     if not os.environ.get("GH_TOKEN"):
         raise ValueError("An explicit GH_TOKEN is required")
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+
+
+def find_release_in_pages(repo: str, tag: str) -> dict[str, Any] | None:
+    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
+    matches = [record for page in pages for record in page if record["tag_name"] == tag]
+    if len(matches) > 1:
+        raise ValueError("Multiple releases for this tag require reconciliation")
+    return matches[0] if matches else None
 
 
 def release_record(repo: str, tag: str) -> dict[str, Any] | None:
@@ -206,7 +214,7 @@ def auto_approval_ends(stable_updates: list[dict[str, Any]]) -> datetime | None:
     approved = [int(update["cdate"]) for update in stable_updates if is_listed(update)]
     if not approved:
         return None
-    return datetime.fromtimestamp(max(approved) / 1000, UTC) + AUTO_APPROVAL_WINDOW
+    return datetime.fromtimestamp(max(approved) / 1000, timezone.utc) + AUTO_APPROVAL_WINDOW  # noqa: UP017
 
 
 def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha: str, now: datetime) -> list[str]:
@@ -260,14 +268,6 @@ def auto_approval_report(now: datetime) -> list[str]:
     return []
 
 
-def find_release_in_pages(repo: str, tag: str) -> dict[str, Any] | None:
-    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
-    matches = [record for page in pages for record in page if record["tag_name"] == tag]
-    if len(matches) > 1:
-        raise ValueError("Multiple releases for this tag require reconciliation")
-    return matches[0] if matches else None
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Version, publish and deliver a clean full-build release to GitHub and the Marketplace agents channel."
@@ -298,7 +298,7 @@ def main() -> None:
     elif args.command == "reuse":
         print(str(reuse_release(args.directory, args.repo, args.version, args.source_sha)).lower())
     elif args.command == "marketplace":
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)  # noqa: UP017
         print("\n".join(deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha, now)), flush=True)
         print("\n".join(auto_approval_report(now)))
     else:

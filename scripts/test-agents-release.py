@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -211,7 +211,7 @@ class MarketplaceDeliveryTest(PublishFixture):
     def setUp(self) -> None:
         super().setUp()
         self.publish()
-        self.now = datetime(2026, 10, 18, tzinfo=UTC)
+        self.now = datetime(2026, 10, 18, tzinfo=timezone.utc)  # noqa: UP017
         self.stable = [self.marketplace_update(1, "1.0.0", "", self.now - timedelta(days=10))]
         self.channel_updates: list[dict[str, Any]] = []
         self.marketplace_uploads: list[dict[str, Any]] = []

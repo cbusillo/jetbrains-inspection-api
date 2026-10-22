@@ -346,7 +346,7 @@ def install(args: argparse.Namespace) -> None:
     artifact_root = args.artifact_root.resolve(strict=True)
     if artifact_root == plugins or artifact_root.is_relative_to(plugins):
         raise ValueError("Keep evidence outside installed plugins.")
-    require_host_artifact_root(args, artifact_root)
+    require_host_artifact_root(args.repo, artifact_root)
     evidence = Path(tempfile.mkdtemp(prefix="local-plugin-", dir=artifact_root))
     (evidence / ".retain-until").write_text(str(datetime.now(UTC).date() + timedelta(days=7)) + "\n")
     print(f"Retained installation evidence: {evidence}", flush=True)
@@ -360,12 +360,12 @@ def install(args: argparse.Namespace) -> None:
     ):
         wait_no_helpers(args.timeout)
         identities = helper.discover_identities(None)
-        normally_quit_pids = main_processes(process_inventory(), executable)
-        targets = [identity for identity in identities if identity.get("pid") in normally_quit_pids]
-        if normally_quit_pids and len(targets) != 1:
+        running_target_pids = main_processes(process_inventory(), executable)
+        targets = [identity for identity in identities if identity.get("pid") in running_target_pids]
+        if running_target_pids and len(targets) != 1:
             raise ValueError("Cannot prove plugin identity for the exact running IDE.")
         require_no_target_leases(helper.read_local_leases(), targets)
-        require_idle_projects_under_routing_lock(helper, targets)
+        require_idle_projects_in_process(helper, targets)
         quit_normally(app, executable, args.timeout)
         require_stopped(executable)
         receipt = replace_payload(candidate, plugins / PLUGIN, evidence, executable)
@@ -378,11 +378,11 @@ def install(args: argparse.Namespace) -> None:
         )
         (evidence / "installation.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps(receipt))
-    if normally_quit_pids:
+    if running_target_pids:
         subprocess.run(["open", "-a", str(app)], check=True)
 
 
-def require_host_artifact_root(args: argparse.Namespace, artifact_root: Path) -> None:
+def require_host_artifact_root(repo: Path, artifact_root: Path) -> None:
     import platform
 
     if platform.node().split(".")[0].lower() == "chris-studio":
@@ -390,7 +390,7 @@ def require_host_artifact_root(args: argparse.Namespace, artifact_root: Path) ->
         if not artifact_root.is_relative_to(root) or not (root / "worktrees").is_dir():
             raise ValueError("Use the host-approved, mounted Developer-Artifacts evidence root.")
         manager = Path.home() / ".local/bin/dev-worktree"
-        subprocess.run([str(manager), "retire", "--dry-run", str(args.repo.resolve())], check=True)
+        subprocess.run([str(manager), "retire", "--dry-run", str(repo.resolve())], check=True)
 
 
 def require_clean_source_checkout(repo: Path, source_sha: str) -> None:
@@ -400,7 +400,7 @@ def require_clean_source_checkout(repo: Path, source_sha: str) -> None:
         raise ValueError("Build source must be the exact clean source checkout.")
 
 
-def require_idle_projects_under_routing_lock(helper: ModuleType, targets: list[dict[str, Any]]) -> None:
+def require_idle_projects_in_process(helper: ModuleType, targets: list[dict[str, Any]]) -> None:
     for identity in targets:
         for project in identity.get("open_projects") or []:
             if not project.get("base_path"):
