@@ -63,7 +63,7 @@ def has_earlier_cancellation_catch(text: str, catch_start: int) -> bool:
 
 def outside_nested_blocks(body: str) -> str:
     depth = 0
-    kept = []
+    kept: list[str] = []
     for character in body:
         if character == "{":
             depth += 1
@@ -87,7 +87,7 @@ def handles_cancellation(name: str, body: str) -> bool:
 
 def swallowing_catches(source: Path) -> list[int]:
     text = source.read_text(encoding="utf-8")
-    lines = []
+    lines: list[int] = []
     for match in BROAD_CATCH.finditer(text):
         body_open = match.end() - 1
         body = text[body_open + 1 : matching_close(text, body_open)]
