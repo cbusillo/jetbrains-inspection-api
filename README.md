@@ -997,8 +997,7 @@ not publish to Marketplace Stable or change existing Marketplace updates.
 
 Versions use `pluginVersion` from `gradle.properties` plus the first-parent
 commit count, for example `1.14.2.123`. The matching tag is
-`agents/v1.14.2.123`. The base version and source descriptor move together through
-a PR; the fourth component increases automatically as `main` advances, without
+`agents/v1.14.2.123`. The base version changes through a PR; the fourth component increases automatically as `main` advances, without
 a version-only commit after every merge. Gradle patches the packaged descriptor
 and records that exact version and clean source commit in build provenance.
 
@@ -1065,7 +1064,7 @@ Release publishing is tag-based, but release preparation must go through a pull
 request. `scripts/release.sh` creates a `release/vX.Y.Z` task branch, runs the
 full release gates, pushes that branch, and opens a PR into the protected
 default branch. After the PR merges, its separate `tag` mode verifies that the
-tag, `pluginVersion`, and `plugin.xml` versions match before pushing the tag.
+tag and `pluginVersion` match before pushing the tag.
 The tag-triggered GitHub Actions workflow also proves the tag points at the
 current default-branch commit and repeats the version check. A fresh packaging
 job builds one clean, explicitly named plugin zip without a Gradle build cache

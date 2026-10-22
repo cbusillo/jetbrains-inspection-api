@@ -28,12 +28,11 @@ test_version_validator() {
   local temp_dir version tag actual
   temp_dir=$(mktemp -d)
   trap 'rm -rf "$temp_dir"' RETURN
-  mkdir -p "$temp_dir/src/main/resources/META-INF" "$temp_dir/scripts"
+  mkdir -p "$temp_dir/scripts"
   cp scripts/validate-release-version.sh "$temp_dir/scripts/"
 
   for version in 1.2.3 8.7.6; do
     printf 'pluginVersion=%s\n' "$version" > "$temp_dir/gradle.properties"
-    printf '<idea-plugin><version>%s</version></idea-plugin>\n' "$version" > "$temp_dir/src/main/resources/META-INF/plugin.xml"
     actual=$(cd "$temp_dir" && ./scripts/validate-release-version.sh --tag "v$version")
     [ "$actual" = "$version" ] || fail "version validator returned the wrong normalized version"
     for tag in v0.0.0 1.2.3 v1.2.3-beta.1 preview/v1.2.3-beta.1; do
@@ -41,10 +40,6 @@ test_version_validator() {
         fail "version validator accepted invalid or mismatched tag $tag"
       fi
     done
-    printf '<idea-plugin><version>0.0.0</version></idea-plugin>\n' > "$temp_dir/src/main/resources/META-INF/plugin.xml"
-    if (cd "$temp_dir" && ./scripts/validate-release-version.sh --tag "v$version" >/dev/null 2>&1); then
-      fail "version validator accepted a plugin.xml mismatch"
-    fi
   done
   rm -rf "$temp_dir"
   trap - RETURN
@@ -367,28 +362,6 @@ MANIFEST
   trap - RETURN
 }
 
-write_gate_stub() {
-  local path="$1"
-  cat > "$path" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-version=$(sed -n 's/^pluginVersion=//p' gradle.properties)
-python3 - "$version" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-path = Path("src/main/resources/META-INF/plugin.xml")
-text = path.read_text(encoding="utf-8")
-path.write_text(
-    re.sub(r"<version>[^<]*</version>", f"<version>{sys.argv[1]}</version>", text, count=1),
-    encoding="utf-8",
-)
-PY
-STUB
-  chmod +x "$path"
-}
-
 test_release_script_flow() {
   local temp_dir repo remote fake_bin gh_log git_env_vars
   temp_dir=$(mktemp -d)
@@ -407,16 +380,14 @@ test_release_script_flow() {
     git init --bare "$remote" >/dev/null
     git --git-dir="$remote" symbolic-ref HEAD refs/heads/main
     git init -b main "$repo" >/dev/null
-    mkdir -p "$repo/scripts" "$repo/src/main/resources/META-INF" "$fake_bin"
+    mkdir -p "$repo/scripts" "$fake_bin"
     cp scripts/release.sh scripts/validate-release-version.sh "$repo/scripts/"
     printf 'pluginVersion=1.2.3\n' > "$repo/gradle.properties"
-    printf '<idea-plugin><version>1.2.3</version></idea-plugin>\n' > "$repo/src/main/resources/META-INF/plugin.xml"
 
-    for script in test-all.sh test-automated.sh release-compatibility-gate.sh; do
+    for script in test-all.sh test-automated.sh commit-gate.sh release-compatibility-gate.sh; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/$script"
       chmod +x "$repo/scripts/$script"
     done
-    write_gate_stub "$repo/scripts/commit-gate.sh"
 
     cat > "$fake_bin/gh" <<'GH'
 #!/usr/bin/env bash
@@ -438,7 +409,6 @@ GH
     [ "$(git branch --show-current)" = "release/v1.2.4" ] || fail "prepare did not create the release branch"
     [ "$(git show origin/main:gradle.properties)" = "pluginVersion=1.2.3" ] || fail "prepare changed remote main"
     [ "$(git show origin/release/v1.2.4:gradle.properties)" = "pluginVersion=1.2.4" ] || fail "release branch version is wrong"
-    git show origin/release/v1.2.4:src/main/resources/META-INF/plugin.xml | grep -Fq '<version>1.2.4</version>' || fail "release branch plugin.xml version is wrong"
     [ -z "$(git tag --list)" ] || fail "prepare created a tag before merge"
     assert_contains "$gh_log" "auth status"
     assert_contains "$gh_log" "pr create --base main --head release/v1.2.4"

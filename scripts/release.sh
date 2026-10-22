@@ -23,7 +23,7 @@ protected default branch and never creates a release tag.
 
 tag: after the release pull request is merged, validates that the clean local
 default branch exactly matches the remote default branch and vX.Y.Z matches
-pluginVersion and plugin.xml, then creates and pushes the release tag.
+pluginVersion, then creates and pushes the release tag.
 USAGE
 }
 
@@ -261,18 +261,6 @@ updated, count = re.subn(
 if count != 1:
     raise SystemExit("ERROR: Failed to update pluginVersion in gradle.properties")
 properties_path.write_text(updated, encoding="utf-8")
-
-plugin_xml_path = Path("src/main/resources/META-INF/plugin.xml")
-plugin_xml = plugin_xml_path.read_text(encoding="utf-8")
-updated_xml, xml_count = re.subn(
-    r"<version>[^<]*</version>",
-    f"<version>{version}</version>",
-    plugin_xml,
-    count=1,
-)
-if xml_count != 1:
-    raise SystemExit("ERROR: Failed to update version in plugin.xml")
-plugin_xml_path.write_text(updated_xml, encoding="utf-8")
 PY
 }
 
@@ -363,7 +351,7 @@ prepare_release() {
   update_plugin_version "$new_version"
   run_release_validation "$new_version"
 
-  git add gradle.properties src/main/resources/META-INF/plugin.xml
+  git add gradle.properties
   git commit -m "Bump version to ${new_version}"
 
   if [ "$PUSH" -eq 1 ]; then
