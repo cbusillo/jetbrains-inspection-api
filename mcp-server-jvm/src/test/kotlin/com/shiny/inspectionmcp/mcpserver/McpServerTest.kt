@@ -626,6 +626,30 @@ class McpServerTest {
     }
 
     @Test
+    fun inspectionGetStatusFailsClosedOnReplacementRun() {
+        val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
+        val replacementStatus = """{"is_scanning":false,"inspection_in_progress":false,"inspection_run_id":8,"snapshot_run_id":8,"total_problems":1,"proof_failures":["execution_not_proven"],"inspection_verdict":"RED","inspection_verdict_reason":"actionable_findings"}"""
+        MockIdeServer(
+            mapOf(
+                "/api/inspection/trigger" to MockResponse(triggerResponse),
+                "/api/inspection/status" to MockResponse(replacementStatus),
+            ),
+        ).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            executor.handleToolCall(buildToolCall("inspection_trigger", buildJsonObject { }))
+            val status = executor.handleToolCall(buildToolCall("inspection_get_status", buildJsonObject { }))
+            val text = status.firstText()
+
+            assertFalse(status.isError(), text)
+            assertTrue(text.contains("VERDICT: UNKNOWN reason=run_changed"), text)
+            assertTrue(text.contains("\"expected_inspection_run_id\": 7"), text)
+            assertFalse(text.contains("VERDICT: RED"), text)
+        }
+    }
+
+    @Test
     fun inspectionWaitFailsClosedWhenTerminalRunIdentityIsMissing() {
         val triggerResponse = """{"status":"triggered","run_id":7,"project_key":"path:/tmp/jetbrains-inspection-api","session_id":"session"}"""
         val unpinnedWait = """{"wait_completed":true,"completion_reason":"clean","inspection_verdict":"GREEN","total_problems":0}"""

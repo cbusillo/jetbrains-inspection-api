@@ -430,9 +430,10 @@ internal class ToolExecutor(
                 routed.result,
                 routed.pinnedInspection,
             )
+            val result = failClosedOnInspectionRunChange(routed.result, routed.pinnedInspection)
 
-            val guidance = pluginVerdictGuidance(routed.result)
-            val text = renderInspectionResult(routed.result, guidance, buildRouteGuidance(routed.target))
+            val guidance = pluginVerdictGuidance(result)
+            val text = renderInspectionResult(result, guidance, buildRouteGuidance(routed.target))
             toolText(text)
         } catch (error: Exception) {
             toolError("Error getting status: ${error.message}")
