@@ -11,6 +11,7 @@ import com.intellij.codeInspection.ProblemDescriptionsProcessor
 import com.intellij.codeInspection.ProblemsHolder
 import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionProfileImpl
+import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
@@ -38,9 +39,17 @@ import io.netty.handler.codec.http.FullHttpResponse
 import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.QueryStringDecoder
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.int
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.CsvSource
 import java.net.URLEncoder
 import java.nio.file.Files
 import java.nio.file.Path
@@ -50,16 +59,15 @@ import java.util.concurrent.atomic.AtomicInteger
 // when it cannot prove every enabled inspection ran, and it must still report real findings.
 class StableBuildVerdictPlatformTest {
     @Test
-    fun `a clean directory run is UNKNOWN with a plain Stable explanation`() {
+    fun `a clean directory run remains UNKNOWN`() {
         val project = projectExtension.project
         val profile = registerProfile(project, LocalInspectionToolWrapper(CleanInspection()))
 
         val status = runScope(project, "scope=directory&dir=${encode(createContentRoot("fixture.txt", "clean\n"))}", profile)
 
-        assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"UNKNOWN\"")
-        assertThat(status).describedAs(status)
-            .contains("\"execution_proof_block_reason\": \"$STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON\"")
-        assertThat(status).describedAs(status).contains("This is the Marketplace Stable build.")
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+        assertThat(status["capture_diagnostic"]?.jsonObject?.get("execution_proof_block_reason")?.jsonPrimitive?.content)
+            .isEqualTo(STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON)
     }
 
     @Test
@@ -69,7 +77,7 @@ class StableBuildVerdictPlatformTest {
 
         val status = runScope(project, "scope=directory&dir=${encode(createContentRoot("fixture.txt", "finding\n"))}", profile)
 
-        assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"RED\"")
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("RED")
     }
 
     @Test
@@ -80,7 +88,7 @@ class StableBuildVerdictPlatformTest {
 
         val status = runScope(project, "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}", profile)
 
-        assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"GREEN\"")
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("GREEN")
     }
 
     @Test
@@ -95,7 +103,31 @@ class StableBuildVerdictPlatformTest {
 
         val status = runScope(project, "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}", profile)
 
-        assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"GREEN\"")
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("GREEN")
+    }
+
+    @ParameterizedTest
+    @CsvSource("false,false", "false,true", "true,false", "true,true")
+    fun `global-simple cross-file findings respect the requested scope`(includeOtherFile: Boolean, useProcessor: Boolean) {
+        val project = projectExtension.project
+        val profile = registerProfile(
+            project,
+            LocalInspectionToolWrapper(CleanInspection()),
+            GlobalInspectionToolWrapper(
+                if (useProcessor) CrossFileProcessorInspection() else CrossFileHolderInspection(),
+            ),
+        )
+        val root = createContentRoot("Checked.java", "class Checked {}\n")
+        val other = Path.of(root, "Other.java")
+        Files.writeString(other, "class Other {}\n")
+        runInEdtAndGet { LocalFileSystem.getInstance().refreshAndFindFileByNioFile(other) }
+
+        val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}" +
+            if (includeOtherFile) "&file=${encode(other.toString())}" else ""
+        val status = runScope(project, scope, profile)
+
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo(if (includeOtherFile) "RED" else "GREEN")
+        assertThat(status["total_problems"]?.jsonPrimitive?.int).isEqualTo(if (includeOtherFile) 1 else 0)
     }
 
     @Test
@@ -122,8 +154,9 @@ class StableBuildVerdictPlatformTest {
                 profile,
             )
 
-            assertThat(status).describedAs(status).contains("\"inspection_verdict\": \"UNKNOWN\"")
-            assertThat(status).describedAs(status).contains("\"execution_proof_failed_obligation_count\": 1")
+            assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+            assertThat(status["capture_diagnostic"]?.jsonObject?.get("execution_proof_failed_obligation_count")?.jsonPrimitive?.int)
+                .isEqualTo(1)
         } finally {
             unmockkStatic(InspectionEngine::class)
         }
@@ -141,6 +174,27 @@ class StableBuildVerdictPlatformTest {
     }
 
     @Test
+    fun `global-simple processor suppression preserves native holder semantics`() {
+        val root = createContentRoot("Suppressed.java", "class Suppressed {}\n")
+
+        val proof = runGlobalSimpleProof(root, "Suppressed.java")
+
+        assertThat(proof.proofEstablished).describedAs(proof.toString()).isTrue()
+        assertThat(proof.proofProblems.map { it["description"] }).containsExactly(HOLDER_FINDING)
+    }
+
+    @Test
+    fun `a processor finding without a reference leaves global-simple proof incomplete`() {
+        val root = createContentRoot("Checked.java", "class Checked {}\n")
+        Files.writeString(Path.of(root, "Other.java"), "class Other {}\n")
+
+        val proof = runGlobalSimpleProof(root, "Checked.java", "Other.java", tool = UnmappedProcessorInspection())
+
+        assertThat(proof.proofEstablished).isFalse()
+        assertThat(proof.failedObligationCount).isEqualTo(1)
+    }
+
+    @Test
     fun `a global-simple failure on one file leaves proof incomplete and keeps other findings`() {
         val root = createContentRoot("Checked.java", "class Checked {}\n")
         Files.writeString(Path.of(root, "Failed.java"), "class Failed {}\n")
@@ -154,10 +208,15 @@ class StableBuildVerdictPlatformTest {
             .containsExactlyInAnyOrder(HOLDER_FINDING, PROCESSOR_FINDING, FINISHED_FINDING)
     }
 
-    private fun runGlobalSimpleProof(root: String, vararg fileNames: String): BoundedExecutionProofResult {
+    private fun runGlobalSimpleProof(
+        root: String,
+        vararg fileNames: String,
+        tool: GlobalSimpleInspectionTool = LifecycleGlobalSimpleInspection(),
+    ): BoundedExecutionProofResult {
         val project = projectExtension.project
-        val tool = LifecycleGlobalSimpleInspection()
         val profile = registerProfile(project, GlobalInspectionToolWrapper(tool))
+        val manager = InspectionManager.getInstance(project) as InspectionManagerEx
+        val runningContexts = manager.runningContexts.toSet()
         val files = fileNames.map { fileName ->
             val virtualFile = runInEdtAndGet {
                 requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(Path.of(root, fileName)))
@@ -166,7 +225,7 @@ class StableBuildVerdictPlatformTest {
                 requireNotNull(PsiManager.getInstance(project).findFile(virtualFile))
             }
         }
-        return InspectionHandler().runBoundedExecutionProof(
+        val proof = InspectionHandler().runBoundedExecutionProof(
             enabledTools = InspectionHandler.EnabledFileToolEnumeration(
                 emptySet(), 0, emptyList(), setOf(tool.shortName),
             ),
@@ -176,9 +235,11 @@ class StableBuildVerdictPlatformTest {
             analysisDumbModeCount = DumbService.getInstance(project).modificationTracker.modificationCount,
             cancellationCheck = {},
         )
+        assertThat(manager.runningContexts).containsExactlyInAnyOrderElementsOf(runningContexts)
+        return proof
     }
 
-    private fun runScope(project: Project, scopeQuery: String, profile: InspectionProfileImpl): String {
+    private fun runScope(project: Project, scopeQuery: String, profile: InspectionProfileImpl): JsonObject {
         val handler = InspectionHandler()
         val previousExtractorFactory = enhancedTreeExtractorFactory
         val extractor = mockk<EnhancedTreeExtractor>()
@@ -190,19 +251,19 @@ class StableBuildVerdictPlatformTest {
                 handler,
                 "/api/inspection/trigger?$scopeQuery&project=${encode(project.name)}&profile=${encode(profile.name)}",
             )
-            assertThat(trigger).describedAs(trigger).contains("\"status\": \"triggered\"")
+            assertThat(trigger["status"]?.jsonPrimitive?.content).isEqualTo("triggered")
             return awaitTerminalStatus(handler, project)
         } finally {
             enhancedTreeExtractorFactory = previousExtractorFactory
         }
     }
 
-    private fun awaitTerminalStatus(handler: InspectionHandler, project: Project): String {
+    private fun awaitTerminalStatus(handler: InspectionHandler, project: Project): JsonObject {
         val deadline = System.nanoTime() + 180_000_000_000L
-        var status = ""
+        var status: JsonObject? = null
         while (System.nanoTime() < deadline) {
             status = request(handler, "/api/inspection/status?project=${encode(project.name)}")
-            if (status.contains("\"inspection_in_progress\": false") && status.contains("\"inspection_verdict\"")) {
+            if (status["inspection_in_progress"]?.jsonPrimitive?.booleanOrNull == false && status.containsKey("inspection_verdict")) {
                 return status
             }
             Thread.sleep(500)
@@ -210,14 +271,14 @@ class StableBuildVerdictPlatformTest {
         error("inspection did not finish: $status")
     }
 
-    private fun request(handler: InspectionHandler, uri: String): String {
+    private fun request(handler: InspectionHandler, uri: String): JsonObject {
         val channel = EmbeddedChannel(ChannelInboundHandlerAdapter())
         try {
             val request = DefaultFullHttpRequest(HttpVersion.HTTP_1_1, HttpMethod.GET, uri)
             assertThat(handler.process(QueryStringDecoder(uri), request, channel.pipeline().firstContext())).isTrue()
             val response = channel.readOutbound<Any>()
             val content = (response as? FullHttpResponse)?.content() ?: response as ByteBuf
-            return content.toString(Charsets.UTF_8)
+            return Json.parseToJsonElement(content.toString(Charsets.UTF_8)).jsonObject
         } finally {
             channel.finishAndReleaseAll()
         }
@@ -306,6 +367,49 @@ class StableBuildVerdictPlatformTest {
         ) = Unit
     }
 
+    private open class CrossFileHolderInspection : GlobalSimpleInspectionTool() {
+        protected open val useProcessor: Boolean = false
+
+        protected open val referenceCurrentFile: Boolean = true
+
+        override fun getDisplayName(): String = shortName
+
+        override fun getGroupDisplayName(): String = "Stable build tests"
+
+        override fun checkFile(
+            file: PsiFile,
+            manager: InspectionManager,
+            holder: ProblemsHolder,
+            context: GlobalInspectionContext,
+            processor: ProblemDescriptionsProcessor,
+        ) {
+            val other = requireNotNull(file.containingDirectory.findFile("Other.java"))
+            val descriptor = manager.createProblemDescriptor(
+                other,
+                HOLDER_FINDING,
+                false,
+                null,
+                com.intellij.codeInspection.ProblemHighlightType.GENERIC_ERROR_OR_WARNING,
+            )
+            if (useProcessor) {
+                val reference = context.refManager.getReference(if (referenceCurrentFile) file else other)
+                processor.addProblemElement(reference, descriptor)
+            } else {
+                holder.registerProblem(descriptor)
+            }
+        }
+    }
+
+    private class CrossFileProcessorInspection : CrossFileHolderInspection() {
+        override val useProcessor: Boolean = true
+    }
+
+    private class UnmappedProcessorInspection : CrossFileHolderInspection() {
+        override val useProcessor: Boolean = true
+
+        override val referenceCurrentFile: Boolean = false
+    }
+
     private class LifecycleGlobalSimpleInspection : GlobalSimpleInspectionTool() {
         private var started = false
         private var checkedFile: PsiFile? = null
@@ -315,6 +419,9 @@ class StableBuildVerdictPlatformTest {
         override fun getDisplayName(): String = shortName
 
         override fun getGroupDisplayName(): String = "Stable build tests"
+
+        override fun isSuppressedFor(element: com.intellij.psi.PsiElement): Boolean =
+            element.containingFile.name == "Suppressed.java"
 
         override fun inspectionStarted(
             manager: InspectionManager,

@@ -2,7 +2,6 @@ package com.shiny.inspectionmcp
 
 import com.intellij.codeInspection.CommonProblemDescriptor
 import com.intellij.codeInspection.GlobalInspectionContext
-import com.intellij.codeInspection.GlobalInspectionTool
 import com.intellij.codeInspection.GlobalSimpleInspectionTool
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionManager
@@ -24,10 +23,8 @@ internal fun runGlobalSimpleInspectionOnFile(
     var completed = false
     var processorDescriptorCount = 0
     val holderDescriptors = mutableListOf<ProblemDescriptor>()
-    val observedTool = object : GlobalInspectionTool() {
+    val observedTool = object : GlobalSimpleInspectionTool() {
         override fun getShortName(): String = wrapper.shortName
-
-        override fun isGlobalSimpleInspectionTool(): Boolean = true
 
         override fun checkFile(
             checkedFile: PsiFile,
@@ -38,8 +35,11 @@ internal fun runGlobalSimpleInspectionOnFile(
         ) {
             val countingProcessor = object : ProblemDescriptionsProcessor by processor {
                 override fun addProblemElement(entity: RefEntity?, vararg descriptions: CommonProblemDescriptor) {
-                    processorDescriptorCount += descriptions.size
-                    processor.addProblemElement(entity, *descriptions)
+                    val unsuppressed = descriptions.filterNot { description ->
+                        description is ProblemDescriptor && description.psiElement?.let(tool::isSuppressedFor) == true
+                    }
+                    processorDescriptorCount += unsuppressed.size
+                    processor.addProblemElement(entity, *unsuppressed.toTypedArray())
                 }
             }
             (tool as? GlobalSimpleInspectionTool)?.inspectionStarted(manager, globalContext, countingProcessor)

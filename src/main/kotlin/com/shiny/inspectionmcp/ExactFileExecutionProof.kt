@@ -73,6 +73,8 @@ internal interface ExactFileProofAdapter<T, K, W, D> {
 
     fun mapDescriptor(candidate: ExactFileProofCandidate<T>, batchWrapper: W, descriptor: D): Map<String, Any>?
 
+    fun allowsCrossFileDescriptors(candidate: ExactFileProofCandidate<T>, batchWrapper: W): Boolean = false
+
     fun cleanupBatchWrapper(candidate: ExactFileProofCandidate<T>, batchWrapper: W) = Unit
 
     fun diagnosticRow(
@@ -604,7 +606,10 @@ internal fun <T, K, W, D> runExactFileExecutionProof(
                     }
                     throw error
                 }
-                if (mapped == null || !exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)) {
+                val mappedFile = (mapped?.get("file") as? String)?.takeIf { it.isNotBlank() }
+                val matchesCandidate = mapped != null && exactFileProofProblemMatchesCandidate(obligation.candidate.filePath, mapped)
+                val allowedCrossFile = mappedFile != null && adapter.allowsCrossFileDescriptors(obligation.candidate, executionWrapper)
+                if (mapped == null || (!matchesCandidate && !allowedCrossFile)) {
                     state.unmappedDetails += if (mapped == null) {
                         "mapping_returned_null"
                     } else {

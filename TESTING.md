@@ -647,7 +647,16 @@ the obligation and execution totals include both kinds. Findings stay RED in
 both builds. `StableBuildVerdictPlatformTest` in
 `src/testStable/kotlin` checks these verdicts and compiles only in the Stable
 build. It covers a clean file run, a planted single-file engine skip, both
-finding channels and lifecycle callbacks, and a failure on one of two files:
+finding channels and lifecycle callbacks, and a failure on one of two files.
+Processor findings honor the tool's suppression predicate, matching the native
+processor; holder findings retain the native holder's unfiltered behavior.
+Cross-file findings from either channel count as mapped, but affect the verdict
+only when their file belongs to the requested scope. A missing mapping still
+blocks clean proof. These checks share the same replay budget with local tools,
+including in the full build after its native pass. Unreadable global-tool
+metadata leaves enumeration incomplete and the verdict UNKNOWN.
+
+Run the Stable controls with:
 
 ```bash
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'
@@ -762,9 +771,11 @@ wait, the interrupted read must report preemption, and the callback must observe
 the worker before it unwinds. Separate cases preserve caller cancellation and
 ensure a diagnostic callback failure cannot prevent cancellation.
 `SupportedInspectionExecutorPlatformTest` also proves that bounded exact-file
-proof resumes the interrupted tool after the write and establishes proof within
-the original deadline, records the transient preemption, and avoids a terminal
-preemption.
+proof resumes local and global-simple tools after the write and establishes
+proof within the original deadline, records the transient preemption, and
+avoids a terminal preemption. Engine retries receive a fresh file context after
+the platform cleans the interrupted one. Cooperative global-simple deadline
+cancellation remains unproven, just like local cancellation.
 `ExactFileExecutionProofTest` checks retained findings, incomplete obligations,
 worker shutdown, and wrapper cleanup. `InspectionCaptureTimingTest` verifies that
 proof time cannot substitute for the clean-result observation window or extend

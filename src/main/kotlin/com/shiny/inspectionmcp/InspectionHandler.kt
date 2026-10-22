@@ -1820,8 +1820,9 @@ internal fun classifyCaptureIncompleteReason(
 
 private data class ExactFileInspectionExecutionWrapper(
     val toolWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
-    val context: GlobalInspectionContextBoundary? = null,
+    var context: GlobalInspectionContextBoundary? = null,
     var resolvedBatchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>? = null,
+    var engineContextUsed: Boolean = false,
 )
 
 class InspectionHandler : HttpRequestHandler() {
@@ -7464,6 +7465,7 @@ class InspectionHandler : HttpRequestHandler() {
                         // Exact proof has completed before result settling; retain its scoped snapshot separately from tool-window results.
                         val settlingScopedProofFindings = filterProblemsForScope(proofFindings, scopeProblemMatcher)
                             .distinctBy(::problemKey)
+                        boundedProof = boundedProof?.copy(proofProblems = settlingScopedProofFindings)
                         val executionProofClean = when (executionProofMode) {
                             InspectionExecutionProofMode.EXACT_BOUNDED -> boundedProof?.proofClean == true
                             InspectionExecutionProofMode.NATIVE_ATTESTED -> nativeProofCollector?.result()?.proofClean == true
@@ -10966,11 +10968,17 @@ class InspectionHandler : HttpRequestHandler() {
                                     indicator,
                                 ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
                             } else if (batchWrapper.toolWrapper is GlobalInspectionToolWrapper) {
-                                runGlobalSimpleInspectionOnFile(
-                                    candidate.value,
-                                    batchWrapper.toolWrapper,
-                                    requireNotNull(batchWrapper.context).publicContext(),
-                                )
+                                if (batchWrapper.engineContextUsed) {
+                                    cleanupExactFileExecutionWrapper(batchWrapper)
+                                    batchWrapper.context = createExactFileExecutionContext(project, profile, candidate.value)
+                                }
+                                batchWrapper.engineContextUsed = true
+                                val context = requireNotNull(batchWrapper.context).publicContext()
+                                if (batchWrapper.toolWrapper.tool.isGlobalSimpleInspectionTool) {
+                                    runGlobalSimpleInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
+                                } else {
+                                    InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
+                                }
                             } else {
                                 InspectionEngine.runInspectionOnFile(
                                     candidate.value,
@@ -10993,6 +11001,11 @@ class InspectionHandler : HttpRequestHandler() {
                     buildProblemMap(descriptor, batchWrapper.toolWrapper, profile, project)
                 }.also { checkProofBudget() }
             }
+
+            override fun allowsCrossFileDescriptors(
+                candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+                batchWrapper: ExactFileInspectionExecutionWrapper,
+            ): Boolean = (batchWrapper.toolWrapper as? GlobalInspectionToolWrapper)?.tool?.isGlobalSimpleInspectionTool == true
 
             override fun cleanupBatchWrapper(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
