@@ -399,7 +399,7 @@ test_release_script_flow() {
     cp scripts/release.sh scripts/validate-release-version.sh "$repo/scripts/"
     printf 'pluginVersion=1.2.3\n' > "$repo/gradle.properties"
 
-    for script in test-all.sh test-automated.sh commit-gate.sh release-compatibility-gate.sh; do
+    for script in test-all.sh test-automated.sh release-compatibility-gate.sh; do
       printf '#!/usr/bin/env bash\nexit 0\n' > "$repo/scripts/$script"
       chmod +x "$repo/scripts/$script"
     done
@@ -650,6 +650,27 @@ KOTLIN
   trap - RETURN
 }
 
+test_all_preserves_gate_failure() {
+  local temp_dir gate_status expected_status
+  temp_dir=$(mktemp -d)
+  expected_status=17
+  trap 'rm -rf "$temp_dir"' RETURN
+  mkdir -p "$temp_dir/scripts"
+  cp scripts/test-all.sh "$temp_dir/scripts/"
+  cat > "$temp_dir/scripts/commit-gate.sh" <<'SH'
+#!/usr/bin/env bash
+[ "$PWD" = "$EXPECTED_ROOT" ] || exit 29
+exit "$FAKE_GATE_STATUS"
+SH
+  chmod +x "$temp_dir/scripts/commit-gate.sh"
+  gate_status=0
+  (cd / && EXPECTED_ROOT="$temp_dir" FAKE_GATE_STATUS="$expected_status" "$temp_dir/scripts/test-all.sh") || gate_status=$?
+  [ "$gate_status" -eq "$expected_status" ] || fail "test-all did not run the gate from its root and preserve its failure"
+  rm -rf "$temp_dir"
+  trap - RETURN
+}
+
+test_all_preserves_gate_failure
 test_version_validator
 test_stable_artifact_publication
 test_marketplace_publication_policy

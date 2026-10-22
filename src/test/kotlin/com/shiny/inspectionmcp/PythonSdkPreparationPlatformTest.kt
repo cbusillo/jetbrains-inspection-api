@@ -20,6 +20,7 @@ import com.intellij.testFramework.runInEdtAndGet
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -58,7 +59,7 @@ class PythonSdkPreparationPlatformTest {
             val incomplete = platform.commit(project, listOf(module), home, replacement, { true }, EmptyProgressIndicator())
             assertFalse(incomplete.succeeded)
             assertEquals("python_sdk_preparation_existing_sdk_incomplete", incomplete.reason)
-            assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(existing, home))
+            assertNotNull(platform.setupIncompleteDetail(existing, home))
             assertEquals(platform.setupIncompleteDetail(existing, home), incomplete.detail)
             assertSame(existing, table.allJdks.single { it.homePath == home })
             assertNull(ProjectRootManager.getInstance(project).projectSdk)

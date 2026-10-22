@@ -60,9 +60,13 @@ class CopyMcpCommandActionTest {
 
     @Test
     fun `redacts user home prefix in path strings`() {
-        val userHome = System.getProperty("user.home")
-        val samplePath = "$userHome/plugins/inspection-api.jar"
-        assertEquals("~/plugins/inspection-api.jar", redactUserHome(samplePath))
+        val home = createTempDirectory("inspection-home").toString()
+        val previousHome = System.setProperty("user.home", home)
+        try {
+            assertEquals("~/plugins/inspection-api.jar", redactUserHome("$home/plugins/inspection-api.jar"))
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home") else System.setProperty("user.home", previousHome)
+        }
     }
 
     @Test

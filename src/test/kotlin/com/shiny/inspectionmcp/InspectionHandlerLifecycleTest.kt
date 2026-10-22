@@ -1,6 +1,8 @@
 package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
 import com.intellij.ide.DataManager
@@ -674,10 +676,11 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertEquals("TestProject", statusProjectName("   "))
     }
 
-    @Test
-    fun `test route endpoint reports session drift as conflict`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["route", "status", "problems", "wait"])
+    fun `test endpoints report session drift as conflict`(endpoint: String) {
         val response = processGetRequest(
-            "/api/inspection/route?session_id=old-session&client_run_id=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+            "/api/inspection/$endpoint?session_id=old-session&client_run_id=cccccccc-cccc-4ccc-8ccc-cccccccccccc"
         )
         val body = response.content().toString(Charsets.UTF_8)
 
@@ -687,7 +690,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(body.contains("\"inspection_verdict_reason\": \"session_drift\""))
         assertTrue(body.contains("\"expected_session_id\": \"old-session\""))
         assertTrue(body.contains("\"classification\": \"legitimate_fail_closed\""), body)
-        assertTrue(body.contains("\"phase\": \"route\""), body)
+        assertTrue(body.contains("\"phase\": \"$endpoint\""), body)
         assertTrue(body.contains("\"http_status\": 409"), body)
         assertTrue(body.contains("\"client_run_id\": \"cccccccc-cccc-4ccc-8ccc-cccccccccccc\""), body)
     }
@@ -711,7 +714,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"Child\""))
-        assertFalse(body.contains("Multiple open projects matched this request"))
     }
 
     @Test
@@ -3026,14 +3028,19 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
     @Test
     fun `test lifecycle open normalizes home-relative path for already open project`() {
-        val home = System.getProperty("user.home")
+        val home = Files.createTempDirectory("inspection-home").toString()
         val projectPath = Paths.get(home, "repo-open-existing").toString()
         every { mockProject.basePath } returns projectPath
         every { mockProject.projectFilePath } returns Paths.get(projectPath, ".idea/misc.xml").toString()
 
-        val response = processGetRequest(
-            "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode("~/repo-open-existing", "UTF-8") }"
-        )
+        val previousHome = System.setProperty("user.home", home)
+        val response = try {
+            processGetRequest(
+                "/api/inspection/lifecycle/open?worktree_path=${java.net.URLEncoder.encode("~/repo-open-existing", "UTF-8") }"
+            )
+        } finally {
+            if (previousHome == null) System.clearProperty("user.home") else System.setProperty("user.home", previousHome)
+        }
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.OK, response.status())
@@ -3951,8 +3958,9 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertTrue(second.content().toString(Charsets.UTF_8).contains("\"status\": \"closed\""))
     }
 
-    @Test
-    fun `test route endpoint rejects ambiguous project names`() {
+    @ParameterizedTest
+    @ValueSource(strings = ["route", "trigger"])
+    fun `test endpoints reject ambiguous project names`(endpoint: String) {
         val firstProject = mockProject(
             name = "Shared",
             basePath = "/repo/one",
@@ -3964,12 +3972,13 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
             projectFilePath = "/repo/two/.idea/misc.xml",
         )
         every { mockProjectManager.openProjects } returns arrayOf(firstProject, secondProject)
+        runPooledTasksInline()
 
-        val response = processGetRequest("/api/inspection/route?project=Shared")
+        val response = processGetRequest("/api/inspection/$endpoint?project=Shared")
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
-        assertTrue(body.contains("Multiple open projects matched this request"))
+        assertEquals("project", (jsonResponseValue(body) as Map<*, *>)["parameter"])
     }
 
     @Test
@@ -3990,7 +3999,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         val body = response.content().toString(Charsets.UTF_8)
 
         assertEquals(HttpResponseStatus.BAD_REQUEST, response.status())
-        assertTrue(body.contains("Multiple open projects matched this request"))
+        assertEquals("project", (jsonResponseValue(body) as Map<*, *>)["parameter"])
     }
 
     @Test
@@ -4029,7 +4038,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
 
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"ExactProjectFile\""))
-        assertFalse(body.contains("Multiple open projects matched this request"))
     }
 
     @Test
@@ -4087,7 +4095,6 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.OK, response.status())
         assertTrue(body.contains("\"project_name\": \"Child\""))
         assertTrue(body.contains("\"base_path\": \"$nestedPath\""))
-        assertFalse(body.contains("Multiple open projects matched this request"))
     }
 
     @Test

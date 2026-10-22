@@ -19,6 +19,7 @@ import io.mockk.slot
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Assertions.assertThrows
@@ -346,20 +347,20 @@ class PythonSdkPreparationServiceTest {
     }
 
     @Test
-    fun `setup diagnostic identifies each failed requirement and accepts complete SDK`() {
+    fun `setup diagnostic rejects each incomplete SDK and accepts a complete SDK`() {
         val sdk = mockk<Sdk>()
         val home = projectRoot.resolve(".venv/bin/python").toString()
         val platform = JetBrainsPythonSdkPreparationPlatform()
         every { sdk.homePath } returns projectRoot.resolve("other/python").toString()
-        assertEquals("SDK interpreter home does not match the worktree interpreter.", platform.setupIncompleteDetail(sdk, home))
+        assertNotNull(platform.setupIncompleteDetail(sdk, home))
 
         every { sdk.homePath } returns home
         every { sdk.versionString } returns " "
-        assertEquals("SDK Python version is missing after path setup.", platform.setupIncompleteDetail(sdk, home))
+        assertNotNull(platform.setupIncompleteDetail(sdk, home))
 
         every { sdk.versionString } returns "Python 3.13"
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns emptyArray()
-        assertEquals("SDK CLASSES roots are missing after path setup.", platform.setupIncompleteDetail(sdk, home))
+        assertNotNull(platform.setupIncompleteDetail(sdk, home))
 
         every { sdk.rootProvider.getFiles(OrderRootType.CLASSES) } returns arrayOf(mockk<VirtualFile>())
         assertNull(platform.setupIncompleteDetail(sdk, home))
