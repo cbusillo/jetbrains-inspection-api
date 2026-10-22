@@ -435,23 +435,21 @@ class SupportedInspectionExecutorPlatformTest {
 
             val cleanDescriptors = runWithCurrentParentIndicator(parent) {
                 InspectionHandler().runTargetInspectionEngineOnFile(
-                    file, LocalInspectionToolWrapper(CleanInspection()), parent.profile, parent.reportingWrappers,
+                    file, LocalInspectionToolWrapper(CleanInspection()), parent.profile,
                 )
             }
-            assertThat(cleanDescriptors.incompleteReason).isNull()
-            assertThat(cleanDescriptors.problems).isEmpty()
+            assertThat(cleanDescriptors).isEmpty()
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
                 .hasSize(runningContextCount)
 
             val findingDescriptors = runWithCurrentParentIndicator(parent) {
                 InspectionHandler().runTargetInspectionEngineOnFile(
-                    file, LocalInspectionToolWrapper(findingTool), parent.profile, parent.reportingWrappers,
+                    file, LocalInspectionToolWrapper(findingTool), parent.profile,
                 )
             }
 
-            assertThat(findingDescriptors.incompleteReason).isNull()
-            assertThat(findingDescriptors.problems).singleElement().extracting { it.descriptor.descriptionTemplate }
+            assertThat(findingDescriptors).singleElement().extracting { it.descriptor.descriptionTemplate }
                 .isEqualTo(SUPPORTED_FINDING)
             assertParentContextIntact(parent, parentTools)
             assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
@@ -500,7 +498,7 @@ class SupportedInspectionExecutorPlatformTest {
             assertThatThrownBy {
                 runWithCurrentParentIndicator(parent) {
                     InspectionHandler().runTargetInspectionEngineOnFile(
-                        file, LocalInspectionToolWrapper(CancellingInspection()), parent.profile, parent.reportingWrappers,
+                        file, LocalInspectionToolWrapper(CancellingInspection()), parent.profile,
                     )
                 }
             }.isInstanceOf(ProcessCanceledException::class.java)
@@ -512,9 +510,8 @@ class SupportedInspectionExecutorPlatformTest {
         }
     }
 
-    @ParameterizedTest
-    @ValueSource(booleans = [false, true])
-    fun `single-file fallback propagates mid-file caller cancellation and preserves caller state`(global: Boolean) {
+    @Test
+    fun `single-file fallback propagates mid-file caller cancellation and preserves caller state`() {
         val project = projectExtension.project
         val file = createPhysicalFile()
         val inspectionManager = InspectionManager.getInstance(project) as InspectionManagerEx
@@ -530,10 +527,8 @@ class SupportedInspectionExecutorPlatformTest {
             future = startWithCurrentParentIndicator(parent, failure) {
                 InspectionHandler().runTargetInspectionEngineOnFile(
                     file,
-                    if (global) GlobalInspectionToolWrapper(WritePriorityGlobalInspection())
-                    else LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
+                    LocalInspectionToolWrapper(WritePriorityBlockingInspection()),
                     parent.profile,
-                    parent.reportingWrappers,
                 )
             }
             assertThat(control.enteredTool.await(2, TimeUnit.SECONDS)).isTrue()
@@ -550,35 +545,6 @@ class SupportedInspectionExecutorPlatformTest {
             control.release.countDown()
             runCatching { future?.get(5, TimeUnit.SECONDS) }
             blockingInspectionControl.compareAndSet(control, null)
-            closeParentInspectionContext(parent)
-        }
-    }
-
-    @Test
-    fun `single-file global-simple fallback returns findings without consuming the parent context`() {
-        val project = projectExtension.project
-        val file = createPhysicalFile()
-        val parentTool = CleanInspection()
-        val parent = createCompletedParentInspectionContext(file, parentTool)
-        val parentTools = parent.context.toolGroups().map { it.shortName }
-        val runningContextCount = (InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts.size
-        try {
-            val descriptors = runWithCurrentParentIndicator(parent) {
-                InspectionHandler().runTargetInspectionEngineOnFile(
-                    file,
-                    GlobalInspectionToolWrapper(FindingGlobalSimpleInspection()),
-                    parent.profile,
-                    parent.reportingWrappers,
-                )
-            }
-
-            assertThat(descriptors.incompleteReason).isNull()
-            assertThat(descriptors.problems).singleElement().extracting { it.descriptor.descriptionTemplate }
-                .isEqualTo(GLOBAL_SIMPLE_FINDING)
-            assertParentContextIntact(parent, parentTools)
-            assertThat((InspectionManager.getInstance(project) as InspectionManagerEx).runningContexts)
-                .hasSize(runningContextCount)
-        } finally {
             closeParentInspectionContext(parent)
         }
     }
@@ -606,7 +572,7 @@ class SupportedInspectionExecutorPlatformTest {
                 assertThat(ProjectInspectionProfileManager.getInstance(project).currentProfile.getInspectionTool(tool.shortName, file))
                     .isNull()
                 method.invoke(
-                    InspectionHandler(), base, project, parent.profile, parent.reportingWrappers,
+                    InspectionHandler(), base, project, parent.profile,
                     setOf(tool.shortName), listOf(file), {},
                 ) as InspectionModelExtraction
             }
@@ -1535,25 +1501,8 @@ class SupportedInspectionExecutorPlatformTest {
         override fun isGlobalSimpleInspectionTool(): Boolean = true
     }
 
-    private class FindingGlobalSimpleInspection : GlobalSimpleInspectionTool() {
-        override fun getDisplayName(): String = shortName
-
-        override fun getGroupDisplayName(): String = "Supported inspection tests"
-
-        override fun checkFile(
-            file: PsiFile,
-            manager: InspectionManager,
-            holder: ProblemsHolder,
-            context: GlobalInspectionContext,
-            processor: com.intellij.codeInspection.ProblemDescriptionsProcessor,
-        ) {
-            holder.registerProblem(file, GLOBAL_SIMPLE_FINDING)
-        }
-    }
-
     companion object {
         private const val SUPPORTED_FINDING = "Supported finding"
-        private const val GLOBAL_SIMPLE_FINDING = "Global simple finding"
         private const val GLOBAL_COUNTERPART_NAME = "GlobalCounterpartProbe"
 
         @JvmField
@@ -1605,10 +1554,7 @@ class SupportedInspectionExecutorPlatformTest {
         val context: GlobalInspectionContextBoundary,
         val profile: InspectionProfileImpl,
         val currentIndicator: AtomicReference<ProgressWindow?> = AtomicReference(),
-    ) {
-        val reportingWrappers: Map<String, LocalInspectionToolWrapper>
-            get() = context.toolGroups().mapNotNull { it.tool as? LocalInspectionToolWrapper }.associateBy { it.shortName }
-    }
+    )
 
     class PluginLibraryRootAccessExtension : BeforeAllCallback, AfterAllCallback {
         private var disposable: Disposable? = null

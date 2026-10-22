@@ -19,10 +19,8 @@ import com.intellij.codeInspection.ex.InspectionToolsSupplier
 import com.intellij.codeInspection.ex.LocalInspectionToolWrapper
 import com.intellij.lang.annotation.ProblemGroup
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.project.DumbService
 import com.intellij.openapi.project.Project
-import com.intellij.openapi.util.Computable
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VfsUtil
 import com.intellij.profile.codeInspection.ProjectInspectionProfileManager
@@ -116,7 +114,7 @@ class StableBuildVerdictPlatformTest {
     @CsvSource("false", "true")
     fun `the platform Annotator runs on exact files`(syntaxError: Boolean) {
         val project = projectExtension.project
-        val tool = HighlightVisitorBasedInspection()
+        val tool = HighlightVisitorBasedInspection().setHighlightErrorElements(true)
         val profile = registerProfile(project, GlobalInspectionToolWrapper(tool))
         val root = createContentRoot("Checked.java", if (syntaxError) "class Checked { int x = ; }\n" else "class Checked {}\n")
         val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}"
@@ -132,12 +130,10 @@ class StableBuildVerdictPlatformTest {
     }
 
     @ParameterizedTest
-    @CsvSource("false,false,false", "false,true,false", "true,false,false", "true,true,false",
-        "false,false,true", "false,true,true", "true,false,true", "true,true,true")
+    @CsvSource("false,false", "false,true", "true,false", "true,true")
     fun `global-simple problem groups use the selected native reporting tools`(
         groupEnabled: Boolean,
         useProcessor: Boolean,
-        useFallback: Boolean,
     ) {
         val project = projectExtension.project
         val localTool = CleanInspection()
@@ -154,37 +150,12 @@ class StableBuildVerdictPlatformTest {
         val scope = "scope=files&file=${encode(Path.of(root, "Checked.java").toString())}"
 
         val shouldReport = groupEnabled || !useProcessor
-        val problems = if (useFallback) {
-            val handler = InspectionHandler()
-            val virtualFile = runInEdtAndGet {
-                requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(Path.of(root, "Checked.java")))
-            }
-            ProgressManager.getInstance().runProcess(
-                Computable {
-                    ApplicationManager.getApplication().runReadAction<List<Map<String, Any>>, Exception> {
-                        val file = requireNotNull(PsiManager.getInstance(project).findFile(virtualFile))
-                        val reportingWrappers = if (groupEnabled) {
-                            mapOf(localTool.shortName to LocalInspectionToolWrapper(localTool))
-                        } else {
-                            emptyMap()
-                        }
-                        handler.runTargetInspectionEngineOnFile(
-                            file, GlobalInspectionToolWrapper(globalTool), profile, reportingWrappers,
-                        ).problems.map { problem ->
-                            requireNotNull(handler.buildProblemMap(problem.descriptor, problem.reportingWrapper, profile, project))
-                        }
-                    }
-                },
-                InspectionProgressIndicator(),
-            )
-        } else {
-            val status = runScope(project, scope, profile)
-            assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo(if (shouldReport) "RED" else "GREEN")
-            assertThat(status["total_problems"]?.jsonPrimitive?.int).isEqualTo(if (shouldReport) 1 else 0)
-            val results = request(InspectionHandler(), "/api/inspection/problems?$scope&project=${encode(project.name)}")
-            requireNotNull(results["problems"]).jsonArray.map { problem ->
-                problem.jsonObject.mapValues { it.value.jsonPrimitive.content }
-            }
+        val status = runScope(project, scope, profile)
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo(if (shouldReport) "RED" else "GREEN")
+        assertThat(status["total_problems"]?.jsonPrimitive?.int).isEqualTo(if (shouldReport) 1 else 0)
+        val results = request(InspectionHandler(), "/api/inspection/problems?$scope&project=${encode(project.name)}")
+        val problems = requireNotNull(results["problems"]).jsonArray.map { problem ->
+            problem.jsonObject.mapValues { it.value.jsonPrimitive.content }
         }
         assertThat(problems).hasSize(if (shouldReport) 1 else 0)
         if (shouldReport) {

@@ -659,7 +659,7 @@ reporting tools, retaining the selected profile's inspection name and severity;
 disabled or unknown targets are dropped. An unavailable reporting map cannot
 prove a grouped result clean. Holder and start findings retain their originating
 tool's unfiltered presentation behavior. The grouped finding controls exercise
-both bounded proof and the fallback executor.
+the exact-file proof route through the API.
 Cross-file findings from either channel count as mapped, but affect the verdict
 only when their file belongs to the requested scope. A missing mapping still
 blocks clean proof. These checks share the same replay budget with local tools,

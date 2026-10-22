@@ -9980,7 +9980,6 @@ class InspectionHandler : HttpRequestHandler() {
             base = presentationExtraction,
             project = project,
             selectedProfile = selectedProfile,
-            reportingWrappers = resolveEnabledFileToolShortNames(globalContext, cancellationCheck).reportingWrappers,
             targetToolShortNames = targetToolShortNames,
             fallbackScopeFiles = fallbackScopeFiles,
             cancellationCheck = cancellationCheck,
@@ -10150,7 +10149,6 @@ class InspectionHandler : HttpRequestHandler() {
         base: InspectionModelExtraction,
         project: Project,
         selectedProfile: InspectionProfile?,
-        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
         targetToolShortNames: Set<String>,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         cancellationCheck: () -> Unit,
@@ -10172,7 +10170,6 @@ class InspectionHandler : HttpRequestHandler() {
                 runTargetInspectionEngineFallback(
                     project = project,
                     profile = selectedProfile,
-                    reportingWrappers = reportingWrappers,
                     toolShortName = toolShortName,
                     fallbackScopeFiles = fallbackScopeFiles,
                     targetToolState = state,
@@ -10221,7 +10218,6 @@ class InspectionHandler : HttpRequestHandler() {
     private fun runTargetInspectionEngineFallback(
         project: Project,
         profile: InspectionProfile?,
-        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
         toolShortName: String,
         fallbackScopeFiles: List<com.intellij.psi.PsiFile>,
         targetToolState: MutableMap<String, Any?>,
@@ -10252,9 +10248,7 @@ class InspectionHandler : HttpRequestHandler() {
                         continue
                     }
                     targetToolState["inspection_engine_wrapper_class"] = batchWrapper.javaClass.name
-                    val result = runTargetInspectionEngineOnFile(psiFile, batchWrapper, profile, reportingWrappers)
-                    descriptors += result.problems
-                    result.incompleteReason?.let { errors += "inspection_engine:${psiFile.virtualFile?.path}:$it" }
+                    descriptors += runTargetInspectionEngineOnFile(psiFile, batchWrapper, profile)
                     cancellationCheck()
                 } catch (e: Exception) {
                     rethrowIfCanceled(e)
@@ -10272,8 +10266,7 @@ class InspectionHandler : HttpRequestHandler() {
         psiFile: com.intellij.psi.PsiFile,
         batchWrapper: com.intellij.codeInspection.ex.InspectionToolWrapper<*, *>,
         profile: InspectionProfileImpl,
-        reportingWrappers: Map<String, com.intellij.codeInspection.ex.LocalInspectionToolWrapper>?,
-    ): FileInspectionResult {
+    ): List<FileInspectionProblem> {
         val project = psiFile.project
         val executionWrapper = synchronized(batchWrapper) {
             InspectionProfileImpl.copyToolSettings(batchWrapper)
@@ -10289,7 +10282,7 @@ class InspectionHandler : HttpRequestHandler() {
             ProgressManager.checkCanceled()
             val descriptors = if (executionContext == null) {
                 val localWrapper = executionWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                val problems = SupportedInspectionExecutor().executePreparedFile(
+                SupportedInspectionExecutor().executePreparedFile(
                     psiFile,
                     listOf(localWrapper),
                     requireNotNull(ProgressManager.getInstance().progressIndicator) {
@@ -10297,14 +10290,9 @@ class InspectionHandler : HttpRequestHandler() {
                     },
                 ).returnedDescriptorsByToolShortName[executionWrapper.shortName].orEmpty()
                     .map { FileInspectionProblem(it, executionWrapper) }
-                FileInspectionResult(problems)
-            } else if (executionWrapper is GlobalInspectionToolWrapper && executionWrapper.tool.isGlobalSimpleInspectionTool) {
-                runGlobalSimpleInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext(), profile, reportingWrappers)
             } else {
-                FileInspectionResult(
-                    InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
-                        .map { FileInspectionProblem(it, executionWrapper) },
-                )
+                InspectionEngine.runInspectionOnFile(psiFile, executionWrapper, executionContext.publicContext())
+                    .map { FileInspectionProblem(it, executionWrapper) }
             }
             engineCompleted = true
             ProgressManager.checkCanceled()
