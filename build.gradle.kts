@@ -391,8 +391,6 @@ tasks {
 
 intellijPlatform {
     pluginConfiguration {
-        name = "Inspection API"
-        description = "Exposes JetBrains IDE inspection results via HTTP API for automated tools and AI assistants"
         version = project.property("pluginVersion").toString()
         
         vendor {
