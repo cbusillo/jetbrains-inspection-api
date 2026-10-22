@@ -11121,7 +11121,10 @@ class InspectionHandler : HttpRequestHandler() {
                 cancellationCheck()
                 findings.add(finding)
             },
-            { false },
+            {
+                cancellationCheck()
+                false
+            },
             { true },
         )
         return findings
