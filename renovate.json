@@ -1,0 +1,11 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>cbusillo/odoo-devkit//renovate/default"],
+  "packageRules": [
+    {
+      "description": "CodeQL Java/Kotlin extraction rejects Kotlin 2.4.20 and later (CodeQL 2.27.0 supports versions below 2.4.20), which disables code scanning. Raise this bound when CodeQL supports a newer Kotlin.",
+      "matchDepNames": ["org.jetbrains.kotlin.jvm", "org.jetbrains.kotlin.plugin.serialization"],
+      "allowedVersions": "<2.4.20"
+    }
+  ]
+}
