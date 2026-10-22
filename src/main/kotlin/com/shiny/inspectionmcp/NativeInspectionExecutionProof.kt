@@ -1,12 +1,14 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionToolWrapper
 import com.intellij.openapi.project.Project
 import com.intellij.psi.PsiFile
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+internal const val STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON = "stable_build_cannot_prove_broad_scope"
+internal const val STABLE_BUILD_GLOBAL_SIMPLE_UNPROVEN_REASON = "stable_build_cannot_run_global_simple_inspections"
 
 internal data class NativeInspectionExecutionProofResult(
     val completedNormally: Boolean,
@@ -51,11 +53,15 @@ internal fun nativeInspectionProofNotEstablishedReason(
     else -> proof.proofBlockReason ?: "native_attestation_incomplete"
 }
 
-@Suppress("UnstableApiUsage")
+internal enum class NativeInspectionPass {
+    LOCAL,
+    GLOBAL,
+}
+
 internal class NativeInspectionExecutionProofCollector(
     private val project: Project,
     expectedFilePaths: Set<String>,
-) : InspectListener {
+) {
     val completionObservation = NativeInspectionCompletionObservation()
     private val expectedFiles = expectedFilePaths.toSet()
     private val completedNormally = AtomicBoolean(false)
@@ -88,22 +94,15 @@ internal class NativeInspectionExecutionProofCollector(
         return analyzedPsiFiles.values.toList()
     }
 
-    override fun inspectionFinished(
-        durationMillis: Long,
-        threadId: Long,
+    fun inspectionFinished(
         problemCount: Int,
         toolWrapper: InspectionToolWrapper<*, *>,
-        inspectionKind: InspectListener.InspectionKind,
+        pass: NativeInspectionPass,
         file: PsiFile?,
         eventProject: Project,
     ) {
         if (eventProject !== project) return
-        if (
-            inspectionKind != InspectListener.InspectionKind.LOCAL &&
-            inspectionKind != InspectListener.InspectionKind.LOCAL_PRIORITY
-        ) {
-            return
-        }
+        if (pass != NativeInspectionPass.LOCAL) return
         val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
         if (filePath !in expectedFiles) return
         completionObservation.recordCompletion(problemCount, toolWrapper, filePath)
@@ -125,16 +124,11 @@ internal class NativeInspectionExecutionProofCollector(
     fun recordExactInspectionFinished(
         problemCount: Int,
         toolWrapper: InspectionToolWrapper<*, *>,
-        inspectionKind: InspectListener.InspectionKind,
+        pass: NativeInspectionPass,
         eventProject: Project,
     ) {
         if (eventProject !== project) return
-        if (
-            inspectionKind == InspectListener.InspectionKind.LOCAL ||
-            inspectionKind == InspectListener.InspectionKind.LOCAL_PRIORITY
-        ) {
-            return
-        }
+        if (pass == NativeInspectionPass.LOCAL) return
         recordInspectionFinished(problemCount, toolWrapper)
     }
 
@@ -147,7 +141,7 @@ internal class NativeInspectionExecutionProofCollector(
         runCatching { toolWrapper.shortName }.getOrNull()?.let(completedTools::add)
     }
 
-    override fun inspectionFailed(
+    fun inspectionFailed(
         toolShortName: String,
         throwable: Throwable,
         file: PsiFile?,

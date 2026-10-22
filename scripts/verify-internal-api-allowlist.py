@@ -6,14 +6,13 @@ from collections import Counter
 from pathlib import Path
 
 REPORT_SUFFIX_MARKER = ". This "
+INTERNAL_API_REPORT_NAME = "internal-api-usages.txt"
 
 
 def read_manifest(path: Path) -> list[str]:
     entries = [
         line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.lstrip().startswith("#")
     ]
-    if not entries:
-        raise ValueError(f"Internal API allowlist is empty: {path}")
     unrecognized = [entry for entry in entries if not entry.startswith("Internal ")]
     if unrecognized:
         raise ValueError(
@@ -30,6 +29,11 @@ def read_manifest(path: Path) -> list[str]:
 
 
 def read_report(path: Path) -> list[str]:
+    if path.is_dir():
+        optional_internal_api_report = path / INTERNAL_API_REPORT_NAME
+        if not optional_internal_api_report.exists():
+            return []
+        path = optional_internal_api_report
     entries: list[str] = []
     for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         line = raw_line.strip()
@@ -63,18 +67,29 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Compare Plugin Verifier internal API reports with an exact allowlist.")
     parser.add_argument("--manifest", required=True, type=Path)
     parser.add_argument("--report", action="append", type=Path, default=[])
+    parser.add_argument(
+        "--report-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help="Plugin Verifier report directory for this plugin version",
+    )
     args = parser.parse_args()
 
     try:
         expected = read_manifest(args.manifest)
-        for report_path in args.report:
+        for report_dir in args.report_dir:
+            if not report_dir.is_dir():
+                raise ValueError(f"Plugin Verifier report directory does not exist: {report_dir}")
+        reports = [*args.report, *args.report_dir]
+        for report_path in reports:
             verify_report(expected, report_path)
     except (OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    if args.report:
-        print(f"Verified {len(args.report)} Plugin Verifier report(s) against {len(expected)} exact internal API finding(s).")
+    if reports:
+        print(f"Verified {len(reports)} Plugin Verifier report(s) against {len(expected)} exact internal API finding(s).")
     else:
         print(f"Validated {len(expected)} exact internal API allowlist entries.")
     return 0

@@ -134,6 +134,7 @@ for raw_line in build_info_path.read_text(encoding="utf-8").splitlines():
 
 expected_provenance = {
     "plugin.version": expected_version,
+    "plugin.build.edition": "stable",
     "plugin.build.commit": expected_source_sha,
     "plugin.build.short_commit": expected_source_sha[:12],
     "plugin.build.dirty": "false",

@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
+import org.jetbrains.intellij.platform.gradle.IntelliJPlatformType
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask
 import org.gradle.api.GradleException
@@ -31,12 +32,24 @@ jacoco {
 group = "com.jetbrains.inspection"
 version = project.property("pluginVersion").toString()
 
+// One codebase, two archives: "full" carries every proof feature; "stable" leaves out
+// internal IntelliJ APIs that Marketplace has not exempted for this plugin.
+val inspectionBuildEditions = setOf("full", "stable")
+val inspectionBuild: String = providers.gradleProperty("inspectionBuild").getOrElse("full")
+if (inspectionBuild !in inspectionBuildEditions) {
+    throw GradleException("inspectionBuild must be one of ${inspectionBuildEditions.sorted()}, got '$inspectionBuild'.")
+}
+val internalApiAllowlist = layout.projectDirectory.file("config/plugin-verifier/$inspectionBuild-internal-api-allowlist.txt")
+
 abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
     @get:Internal
     abstract val gitDirectory: DirectoryProperty
 
     @get:Input
     abstract val pluginVersion: Property<String>
+
+    @get:Input
+    abstract val buildEdition: Property<String>
 
     @get:OutputFile
     abstract val outputFile: RegularFileProperty
@@ -63,6 +76,7 @@ abstract class GenerateInspectionBuildInfoTask : DefaultTask() {
 
         val properties = Properties().apply {
             setProperty("plugin.version", pluginVersion.get())
+            setProperty("plugin.build.edition", buildEdition.get())
             setProperty("plugin.build.commit", commit)
             setProperty("plugin.build.short_commit", shortCommit)
             setProperty("plugin.build.dirty", dirty)
@@ -122,6 +136,7 @@ val generateInspectionBuildInfo = tasks.register<GenerateInspectionBuildInfoTask
     description = "Records the plugin version and source provenance in the packaged resources."
     gitDirectory.set(layout.projectDirectory)
     pluginVersion.set(project.property("pluginVersion").toString())
+    buildEdition.set(inspectionBuild)
     outputFile.set(generatedBuildInfoDir.map {
         it.file("com/shiny/inspectionmcp/inspection-build.properties")
     })
@@ -141,6 +156,8 @@ repositories {
     }
 }
 
+val targetIdeVersion = "2025.1.1"
+
 dependencies {
     implementation(project(":inspection-core"))
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
@@ -159,7 +176,7 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     
     intellijPlatform {
-        intellijIdea("2025.1.1")
+        intellijIdea(targetIdeVersion)
         bundledPlugin("JavaScript")
         pluginVerifier()
         zipSigner()
@@ -169,6 +186,10 @@ dependencies {
 
 kotlin {
     jvmToolchain(21)
+    sourceSets["main"].kotlin.srcDir("src/$inspectionBuild/kotlin")
+    if (inspectionBuild == "stable") {
+        sourceSets["test"].kotlin.srcDir("src/testStable/kotlin")
+    }
 }
 
 val platformTest by intellijPlatformTesting.testIde.registering {
@@ -253,17 +274,27 @@ tasks {
         }
         val allowlistScriptPath = project.layout.projectDirectory
             .file("scripts/verify-internal-api-allowlist.py").asFile.absolutePath
-        val allowlistManifestPath = project.layout.projectDirectory
-            .file("config/plugin-verifier/stable-internal-api-allowlist.txt").asFile.absolutePath
+        val allowlistManifestPath = internalApiAllowlist.asFile.absolutePath
         val workingDirectoryPath = project.layout.projectDirectory.asFile.absolutePath
+        val reportsDirectory = verificationReportsDirectory
         inputs.file(allowlistScriptPath).withPropertyName("internalApiAllowlistScript")
         inputs.file(allowlistManifestPath).withPropertyName("internalApiAllowlistManifest")
+        doFirst {
+            // Stale reports from another edition or version must never satisfy this gate.
+            reportsDirectory.get().asFile.deleteRecursively()
+        }
         doLast {
-            val internalApiReports = verificationReportsDirectory.get().asFileTree.matching {
-                include("**/plugins/com.shiny.inspection.api/$verifierPluginVersion/internal-api-usages.txt")
-            }.files.sortedBy { it.absolutePath }
-            if (internalApiReports.isEmpty()) {
-                throw GradleException("Plugin Verifier did not produce internal API usage reports for the known exemption.")
+            val pluginReportDirectories = reportsDirectory.get().asFile.walkTopDown()
+                .filter { candidate ->
+                    candidate.isDirectory &&
+                        candidate.name == verifierPluginVersion &&
+                        candidate.parentFile?.name == "com.shiny.inspection.api" &&
+                        candidate.parentFile?.parentFile?.name == "plugins"
+                }
+                .sortedBy { it.absolutePath }
+                .toList()
+            if (pluginReportDirectories.isEmpty()) {
+                throw GradleException("Plugin Verifier produced no report for com.shiny.inspection.api $verifierPluginVersion.")
             }
             val command = mutableListOf(
                 "python3",
@@ -271,9 +302,9 @@ tasks {
                 "--manifest",
                 allowlistManifestPath,
             )
-            internalApiReports.forEach { report ->
-                command.add("--report")
-                command.add(report.absolutePath)
+            pluginReportDirectories.forEach { directory ->
+                command.add("--report-dir")
+                command.add(directory.absolutePath)
             }
             val process = ProcessBuilder(command)
                 .directory(File(workingDirectoryPath))
@@ -358,6 +389,11 @@ tasks {
     
     publishPlugin {
         token.set(System.getenv("PUBLISH_TOKEN"))
+        // Publish only an archive whose internal API use matched its edition's allowlist on every recommended IDE.
+        dependsOn(named("verifyPlugin"))
+        val verifierIdeSelection = providers.gradleProperty("pluginVerifierIdes").orNull
+        val externalVerificationArchive = providers.gradleProperty("pluginVerificationArchive").orNull
+        val publishingEdition = inspectionBuild
         val marketplaceChannel = providers.gradleProperty("marketplaceChannel").orNull
         val publishingVersion = project.property("pluginVersion").toString()
         val publicationPolicyScriptPath = project.layout.projectDirectory
@@ -367,11 +403,19 @@ tasks {
             channels.set(listOf(marketplaceChannel))
         }
         doFirst {
+            if (verifierIdeSelection != null) {
+                throw GradleException("publishPlugin verifies every recommended IDE; remove -PpluginVerifierIdes.")
+            }
+            if (externalVerificationArchive != null) {
+                throw GradleException("publishPlugin verifies the archive it builds; remove -PpluginVerificationArchive.")
+            }
             val command = mutableListOf(
                 "bash",
                 publicationPolicyScriptPath,
                 "--version",
                 publishingVersion,
+                "--edition",
+                publishingEdition,
             )
             if (marketplaceChannel != null) {
                 command.add("--channel")
@@ -409,7 +453,12 @@ intellijPlatform {
     
     pluginVerification {
         ides {
-            recommended()
+            // "target" checks only the compile IDE, which is already downloaded; releases check the whole range.
+            if (providers.gradleProperty("pluginVerifierIdes").orNull == "target") {
+                create(IntelliJPlatformType.IntellijIdea, targetIdeVersion)
+            } else {
+                recommended()
+            }
         }
         failureLevel.set(listOf(
             VerifyPluginTask.FailureLevel.COMPATIBILITY_PROBLEMS,
