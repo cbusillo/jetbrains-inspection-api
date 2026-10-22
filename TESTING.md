@@ -661,10 +661,8 @@ every recommended IDE.
 Verifier downloads and extracted plugins stay in each worktree's
 `build/pluginVerifier`; reports stay in `build/reports/pluginVerifier`.
 IDE distributions remain in Gradle's shared dependency/transform cache.
-On Chris-Studio, use the host-approved worktrees on Developer-Artifacts and
-the Gradle user home under `/Volumes/Developer-Artifacts/host-caches/gradle`
-(the host's `~/.gradle` points there). Do not share a build directory between
-worktrees or clean another session's verifier home.
+Do not share a build directory between worktrees or clean another session's
+verifier home.
 
 The commit gate also runs a real verifier with a disposable fallback user home
 and fails if the verifier writes there. To exercise this regression directly:
@@ -673,11 +671,6 @@ and fails if the verifier writes there. To exercise this regression directly:
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin \
   -PpluginVerifierIdes=target -I scripts/test-plugin-verifier-isolation.init.gradle
 ```
-
-For concurrency acceptance, run `verifyPlugin` at the same time in two clean
-worktrees at the same commit. Both must pass their existing allowlist checks;
-their reports and verifier homes must be separate while their IDE paths use
-the shared Gradle cache. This needs no cleanup of an existing `~/.pluginVerifier`.
 
 All production `GlobalInspectionContextImpl` source references must stay in
 `src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt` (including

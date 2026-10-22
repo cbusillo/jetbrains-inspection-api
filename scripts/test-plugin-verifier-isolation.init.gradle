@@ -13,6 +13,7 @@ allprojects {
             if (fallbackHome.listFiles().length != 0) {
                 throw new GradleException("Plugin Verifier wrote outside the worktree's verifier home: ${fallbackHome}")
             }
+            Files.delete(fallbackHome.toPath())
         }
     }
 }
