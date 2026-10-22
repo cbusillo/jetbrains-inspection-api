@@ -61,9 +61,22 @@ def has_earlier_cancellation_catch(text: str, catch_start: int) -> bool:
         position = sibling.start()
 
 
+def outside_nested_blocks(body: str) -> str:
+    depth = 0
+    kept = []
+    for character in body:
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        elif depth == 0:
+            kept.append(character)
+    return "".join(kept)
+
+
 def handles_cancellation(name: str, body: str) -> bool:
     statements = body.strip()
-    if CANCELLATION_NOTE.search(body):
+    if CANCELLATION_NOTE.search(outside_nested_blocks(body)):
         return True
     if re.search(rf"\bthrow\s+{name}\s*$", statements):
         return True

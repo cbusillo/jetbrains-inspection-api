@@ -601,6 +601,19 @@ fun explainsNothing() {
         pending.set(error)
     }
 }
+fun explainsOnlyNested() {
+    try {
+        read()
+    } catch (error: Throwable) {
+        try {
+            close()
+        } catch (cleanup: Throwable) {
+            // Cancellation: carried to the waiting thread, which rethrows it.
+            pending.set(cleanup)
+        }
+        null
+    }
+}
 KOTLIN
   if uv run scripts/lint-cancellation-catches.py --sources "$sources" >"$temp_dir/output" 2>&1; then
     fail "cancellation linter accepted catches that swallow cancellation"
@@ -611,6 +624,7 @@ KOTLIN
   assert_contains "$temp_dir/output" "$source:17:"
   assert_contains "$temp_dir/output" "$source:18:"
   assert_contains "$temp_dir/output" "$source:22:"
+  assert_contains "$temp_dir/output" "$source:30:"
   rm -rf "$temp_dir"
   trap - RETURN
 }
