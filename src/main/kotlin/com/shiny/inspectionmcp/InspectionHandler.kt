@@ -7016,13 +7016,20 @@ class InspectionHandler : HttpRequestHandler() {
                 val tracker = initialFingerprint?.let { fingerprint ->
                     projectContentTrackerFactory(project, fingerprint)
                 }
-                val confirmedProfile = if (tracker != null) {
-                    resolveInspectionProfile(profileManager, requestedProfileName)
-                } else {
-                    null
-                }
-                val confirmedFingerprint = confirmedProfile?.let {
-                    projectInputsFingerprintProvider(project, requestedProfileName)
+                val confirmedProfile: InspectionProfileImpl?
+                val confirmedFingerprint: InspectionProjectInputsFingerprint?
+                try {
+                    confirmedProfile = if (tracker != null) {
+                        resolveInspectionProfile(profileManager, requestedProfileName)
+                    } else {
+                        null
+                    }
+                    confirmedFingerprint = confirmedProfile?.let {
+                        projectInputsFingerprintProvider(project, requestedProfileName)
+                    }
+                } catch (error: Throwable) {
+                    tracker?.close()
+                    throw error
                 }
                 val trackerChangedDuringPreflight = tracker?.hasChanges() ?: true
                 if (

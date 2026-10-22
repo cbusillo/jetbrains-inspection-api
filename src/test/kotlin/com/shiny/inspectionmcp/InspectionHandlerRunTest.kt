@@ -2336,6 +2336,33 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `test cancellation during preflight confirmation closes the content tracker`() {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        every { mockApplication.isDispatchThread } returns true
+        every { mockProfileManager.profiles } returns listOf(mockProfile)
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            firstArg<Runnable>().run()
+            mockk(relaxed = true)
+        }
+        mockInspectionPrerequisites(mockProject)
+        val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")
+        var fingerprintReads = 0
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            fingerprintReads += 1
+            if (fingerprintReads > 1) throw com.intellij.openapi.progress.ProcessCanceledException()
+            inputFingerprint
+        }
+        val tracker = FakeInspectionProjectContentTracker()
+        handler.projectContentTrackerFactory = { _, _ -> tracker }
+
+        runCatching { processTriggerRequest("/api/inspection/trigger?scope=whole_project") }
+
+        assertEquals(2, fingerprintReads)
+        assertTrue(tracker.closed)
+    }
+
+    @Test
     fun `test a failed run withdraws the clean verdict of the earlier run`() {
         seedCleanSnapshotFromEarlierRun()
         val verdictBeforeTheFailedRun = inspectionVerdict("/api/inspection/status")

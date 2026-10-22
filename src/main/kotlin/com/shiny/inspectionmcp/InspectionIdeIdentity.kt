@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
@@ -167,8 +168,8 @@ internal object InspectionIdeRegistry {
                 rethrowIfCanceled(e)
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
             }
-        } catch (e: Exception) {
-            rethrowIfCanceled(e)
+        } catch (_: ProcessCanceledException) {
+        } catch (_: Exception) {
         }
     }
 
