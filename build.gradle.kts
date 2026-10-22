@@ -392,6 +392,7 @@ tasks {
         // Publish only an archive whose internal API use matched its edition's allowlist on every recommended IDE.
         dependsOn(named("verifyPlugin"))
         val verifierIdeSelection = providers.gradleProperty("pluginVerifierIdes").orNull
+        val externalVerificationArchive = providers.gradleProperty("pluginVerificationArchive").orNull
         val publishingEdition = inspectionBuild
         val marketplaceChannel = providers.gradleProperty("marketplaceChannel").orNull
         val publishingVersion = project.property("pluginVersion").toString()
@@ -404,6 +405,9 @@ tasks {
         doFirst {
             if (verifierIdeSelection != null) {
                 throw GradleException("publishPlugin verifies every recommended IDE; remove -PpluginVerifierIdes.")
+            }
+            if (externalVerificationArchive != null) {
+                throw GradleException("publishPlugin verifies the archive it builds; remove -PpluginVerificationArchive.")
             }
             val command = mutableListOf(
                 "bash",
