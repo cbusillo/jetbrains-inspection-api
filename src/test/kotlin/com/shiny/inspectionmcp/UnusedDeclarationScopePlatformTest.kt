@@ -30,11 +30,8 @@ class UnusedDeclarationScopePlatformTest {
     @Test
     fun `directory run reports declarations the global unused pass finds`() {
         val project = projectExtension.project
-        val profile = registerProfile(project, "unused", "DataFlowIssue")
-        val root = createSourceRoot(
-            "Correct.java",
-            "public class Correct {\n    public int length(String value) {\n        return value.length();\n    }\n}\n",
-        )
+        val profile = registerUnusedAndDataFlowProfile(project)
+        val root = createCorrectJavaSourceRoot()
         val selector = "scope=directory&dir=${encode(root)}&project=${encode(project.name)}&profile=${encode(profile.name)}"
         val handler = InspectionHandler()
         val previousExtractorFactory = enhancedTreeExtractorFactory
@@ -81,7 +78,7 @@ class UnusedDeclarationScopePlatformTest {
             while (response == null && System.nanoTime() < deadline) {
                 channel.runPendingTasks()
                 Thread.sleep(10)
-                response = channel.readOutbound<Any>()
+                response = channel.readOutbound()
             }
             val content = (response as? FullHttpResponse)?.content() ?: response as ByteBuf
             return content.toString(Charsets.UTF_8)
@@ -92,7 +89,7 @@ class UnusedDeclarationScopePlatformTest {
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 
-    private fun registerProfile(project: Project, vararg enabledShortNames: String): InspectionProfileImpl {
+    private fun registerUnusedAndDataFlowProfile(project: Project): InspectionProfileImpl {
         val manager = ProjectInspectionProfileManager.getInstance(project)
         val profile = InspectionProfileImpl(
             "unused-scope-${profileCounter.incrementAndGet()}",
@@ -107,14 +104,17 @@ class UnusedDeclarationScopePlatformTest {
             InspectionProfileImpl.INIT_INSPECTIONS = previousInitInspections
         }
         profile.disableAllTools(project)
-        enabledShortNames.forEach { profile.enableTool(it, project) }
+        listOf("unused", "DataFlowIssue").forEach { profile.enableTool(it, project) }
         manager.addProfile(profile)
         return profile
     }
 
-    private fun createSourceRoot(fileName: String, content: String): String {
+    private fun createCorrectJavaSourceRoot(): String {
         val root = Files.createTempDirectory("unused-declaration-scope-")
-        Files.writeString(root.resolve(fileName), content)
+        Files.writeString(
+            root.resolve("Correct.java"),
+            "public class Correct {\n    public int length(String value) {\n        return value.length();\n    }\n}\n",
+        )
         runInEdtAndGet {
             val directory = requireNotNull(LocalFileSystem.getInstance().refreshAndFindFileByNioFile(root))
             VfsUtil.markDirtyAndRefresh(false, true, true, directory)
