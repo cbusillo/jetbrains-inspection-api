@@ -1,0 +1,18 @@
+import java.nio.file.Files
+
+allprojects {
+    tasks.matching { it.name == 'verifyPlugin' }.configureEach {
+        def testDirectory = layout.buildDirectory.dir('tmp/verifier-isolation-test').get().asFile
+        doFirst {
+            Files.createDirectories(testDirectory.toPath())
+            def fallbackHome = Files.createTempDirectory(testDirectory.toPath(), 'user-home-').toFile()
+            systemProperty('user.home', fallbackHome.absolutePath)
+        }
+        doLast {
+            def fallbackHome = new File(systemProperties['user.home'].toString())
+            if (fallbackHome.listFiles().length != 0) {
+                throw new GradleException("Plugin Verifier wrote outside the worktree's verifier home: ${fallbackHome}")
+            }
+        }
+    }
+}
