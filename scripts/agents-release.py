@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
-"""Version, publish and deliver a clean full-build release to GitHub and the Marketplace agents channel."""
 
 import argparse
-from datetime import datetime, timedelta, timezone
 import hashlib
 import io
 import json
 import os
 import re
-from pathlib import Path
 import subprocess
 import tempfile
-from urllib.parse import urlsplit
 import xml.etree.ElementTree as ET
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 from zipfile import ZipFile
 
 MARKETPLACE = "https://plugins.jetbrains.com"
@@ -46,8 +46,7 @@ def plugin_descriptor(archive: Path, version: str, source_sha: str) -> ET.Elemen
             raise ValueError("The plugin jar must contain unique descriptor and provenance files")
         descriptor = ET.fromstring(jar.read("META-INF/plugin.xml"))
         metadata = dict(
-            line.split("=", 1) for line in jar.read(metadata_name).decode().splitlines()
-            if line and not line.startswith(("#", "!"))
+            line.split("=", 1) for line in jar.read(metadata_name).decode().splitlines() if line and not line.startswith(("#", "!"))
         )
     if descriptor.findtext("id") != "com.shiny.inspection.api" or descriptor.findtext("version") != version:
         raise ValueError("Plugin identity/version does not match the release")
@@ -71,9 +70,15 @@ def update_feed(archive: Path, version: str, source_sha: str, download_url: str)
         raise ValueError("The plugin download URL must use HTTPS")
     descriptor = plugin_descriptor(archive, version, source_sha)
     root = ET.Element("plugins")
-    plugin = ET.SubElement(root, "plugin", {
-        "id": descriptor.findtext("id"), "version": version, "url": download_url,
-    })
+    plugin = ET.SubElement(
+        root,
+        "plugin",
+        {
+            "id": descriptor.findtext("id"),
+            "version": version,
+            "url": download_url,
+        },
+    )
     ET.SubElement(plugin, "idea-version", dict(descriptor.find("idea-version").attrib))
     ET.SubElement(plugin, "name").text = descriptor.findtext("name")
     for dependency in descriptor.findall("depends"):
@@ -89,16 +94,12 @@ def gh(*args: str) -> str:
     return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
 
 
-def release_record(repo: str, tag: str) -> dict | None:
+def release_record(repo: str, tag: str) -> dict[str, Any] | None:
     try:
         response = gh("api", "--include", f"repos/{repo}/releases/tags/{tag.replace('/', '%2F')}")
     except subprocess.CalledProcessError as error:
         if re.match(r"HTTP/\S+ 404\b", error.stdout or ""):
-            pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
-            matches = [record for page in pages for record in page if record["tag_name"] == tag]
-            if len(matches) > 1:
-                raise ValueError("Multiple releases for this tag require reconciliation")
-            return matches[0] if matches else None
+            return find_release_in_pages(repo, tag)
         raise
     return json.loads(response.replace("\r\n", "\n").split("\n\n", 1)[1])
 
@@ -144,8 +145,21 @@ def publish_release(directory: Path, repo: str, version: str, source_sha: str, n
             if reuse_release(Path(scratch), repo, version, source_sha):
                 return
     if record is None:
-        gh("release", "create", tag, "--repo", repo, "--target", source_sha,
-           "--title", f"Full build {version}", "--notes-file", str(notes), "--draft", "--latest=false")
+        gh(
+            "release",
+            "create",
+            tag,
+            "--repo",
+            repo,
+            "--target",
+            source_sha,
+            "--title",
+            f"Full build {version}",
+            "--notes-file",
+            str(notes),
+            "--draft",
+            "--latest=false",
+        )
         record = {"draft": True, "assets": []}
     existing = {asset["name"] for asset in record["assets"]}
     with tempfile.TemporaryDirectory() as scratch:
@@ -164,15 +178,16 @@ class MarketplaceError(RuntimeError):
     pass
 
 
-def marketplace(path: str, *form: str) -> object:
+def marketplace(path: str, *form: str) -> Any:
     token = os.environ.get("PUBLISH_TOKEN")
     if not token:
         raise ValueError("PUBLISH_TOKEN is required for Marketplace requests")
     command = ["curl", "--fail-with-body", "--silent", "--show-error", "--header", "@-"]
     for field in form:
         command += ["--form", field]
-    result = subprocess.run([*command, f"{MARKETPLACE}{path}"], input=f"Authorization: Bearer {token}\n",
-                            capture_output=True, text=True)
+    result = subprocess.run(
+        [*command, f"{MARKETPLACE}{path}"], input=f"Authorization: Bearer {token}\n", capture_output=True, text=True
+    )
     if result.returncode:
         detail = (result.stdout.strip() or result.stderr.strip())[:2000]
         raise MarketplaceError(f"Marketplace request {path.split('?')[0]} failed: {detail}")
@@ -183,26 +198,24 @@ def version_key(version: str) -> tuple[int, ...]:
     return tuple(int(part) for part in version.split("."))
 
 
-def is_listed(update: dict) -> bool:
+def is_listed(update: dict[str, Any]) -> bool:
     return bool(update.get("approve") and update.get("listed") and not update.get("hidden"))
 
 
-def auto_approval_ends(stable_updates: list[dict]) -> datetime | None:
+def auto_approval_ends(stable_updates: list[dict[str, Any]]) -> datetime | None:
     approved = [int(update["cdate"]) for update in stable_updates if is_listed(update)]
     if not approved:
         return None
-    return datetime.fromtimestamp(max(approved) / 1000, timezone.utc) + AUTO_APPROVAL_WINDOW
+    return datetime.fromtimestamp(max(approved) / 1000, UTC) + AUTO_APPROVAL_WINDOW
 
 
-def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha: str,
-                           now: datetime) -> list[str]:
-    """Upload the published GitHub archive to the agents channel once; return report lines."""
+def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha: str, now: datetime) -> list[str]:
     if not reuse_release(directory, repo, version, source_sha):
         raise ValueError("The GitHub release must be published and verified before the Marketplace upload")
     archive = directory / bundle_files(version)[0]
     updates = f"/api/plugins/{MARKETPLACE_PLUGIN}/updates"
     channel = marketplace(f"{updates}?channel={MARKETPLACE_CHANNEL}&size=100")
-    report = []
+    report: list[str] = []
     existing = [update for update in channel if update["version"] == version]
     newest = max((update["version"] for update in channel), key=version_key, default=None)
     if existing:
@@ -211,16 +224,19 @@ def deliver_to_marketplace(directory: Path, repo: str, version: str, source_sha:
     elif newest and version_key(newest) > version_key(version):
         return [f"Skipped {version}: {MARKETPLACE_CHANNEL} already has newer build {newest}."]
     else:
-        update = marketplace("/api/updates/upload", f"xmlId={MARKETPLACE_XML_ID}",
-                             f"file=@{archive}", f"channel={MARKETPLACE_CHANNEL}")
+        update = marketplace(
+            "/api/updates/upload", f"xmlId={MARKETPLACE_XML_ID}", f"file=@{archive}", f"channel={MARKETPLACE_CHANNEL}"
+        )
         if update.get("version") != version or update.get("channel") != MARKETPLACE_CHANNEL:
             raise MarketplaceError(f"Marketplace recorded an unexpected update: {update.get('id')}")
         report.append(f"Uploaded {version} to {MARKETPLACE_CHANNEL} as update {update['id']}.")
     if is_listed(update):
         report.append(f"Update {update['id']} is approved and listed on {MARKETPLACE_CHANNEL}.")
     else:
-        report.append(f"::warning::Update {update['id']} ({version}) is waiting for JetBrains moderation "
-                      f"and is not yet listed on {MARKETPLACE_CHANNEL}. The GitHub release is unaffected.")
+        report.append(
+            f"::warning::Update {update['id']} ({version}) is waiting for JetBrains moderation "
+            f"and is not yet listed on {MARKETPLACE_CHANNEL}. The GitHub release is unaffected."
+        )
     return report
 
 
@@ -231,17 +247,31 @@ def auto_approval_report(now: datetime) -> list[str]:
         return [f"::warning::Could not read the Stable approval state for agents auto-approval: {error}"]
     ends = auto_approval_ends(stable)
     if ends is None or ends <= now:
-        return [f"::warning::Agents auto-approval no longer applies: no approved Stable update in the "
-                f"last {AUTO_APPROVAL_WINDOW.days} days. New agents uploads go to normal moderation."]
+        return [
+            f"::warning::Agents auto-approval no longer applies: no approved Stable update in the "
+            f"last {AUTO_APPROVAL_WINDOW.days} days. New agents uploads go to normal moderation."
+        ]
     if ends - now <= AUTO_APPROVAL_NOTICE:
-        return [f"::warning::Agents auto-approval ends {ends:%B} {ends.day}, {ends.year}, "
-                f"{AUTO_APPROVAL_WINDOW.days} days after the latest approved Stable update. "
-                "Later uploads go to normal moderation."]
+        return [
+            f"::warning::Agents auto-approval ends {ends:%B} {ends.day}, {ends.year}, "
+            f"{AUTO_APPROVAL_WINDOW.days} days after the latest approved Stable update. "
+            "Later uploads go to normal moderation."
+        ]
     return []
 
 
+def find_release_in_pages(repo: str, tag: str) -> dict[str, Any] | None:
+    pages = json.loads(gh("api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"))
+    matches = [record for page in pages for record in page if record["tag_name"] == tag]
+    if len(matches) > 1:
+        raise ValueError("Multiple releases for this tag require reconciliation")
+    return matches[0] if matches else None
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description="Version, publish and deliver a clean full-build release to GitHub and the Marketplace agents channel."
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     version_parser = commands.add_parser("version")
     version_parser.add_argument("--properties", type=Path, default=Path("gradle.properties"))
@@ -268,9 +298,8 @@ def main() -> None:
     elif args.command == "reuse":
         print(str(reuse_release(args.directory, args.repo, args.version, args.source_sha)).lower())
     elif args.command == "marketplace":
-        now = datetime.now(timezone.utc)
-        print("\n".join(deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha, now)),
-              flush=True)
+        now = datetime.now(UTC)
+        print("\n".join(deliver_to_marketplace(args.directory, args.repo, args.version, args.source_sha, now)), flush=True)
         print("\n".join(auto_approval_report(now)))
     else:
         publish_release(args.directory, args.repo, args.version, args.source_sha, args.notes)

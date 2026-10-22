@@ -3,7 +3,6 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-"""Install a verified local payload within an explicitly coordinated IDE window."""
 
 import argparse
 import hashlib
@@ -18,24 +17,25 @@ import sys
 import tempfile
 import time
 import zipfile
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import ModuleType
+from typing import Any
 
 PLUGIN = "jetbrains-inspection-api"
 
 
 @contextmanager
-def helper_errors(helper):
+def helper_errors(helper: ModuleType) -> Iterator[None]:
     try:
         yield
     except helper.InspectError as error:
-        raise ValueError(
-            f"Inspection helper could not establish the maintenance window: {error}"
-        ) from error
+        raise ValueError(f"Inspection helper could not establish the maintenance window: {error}") from error
 
 
-def load_helper(path):
+def load_helper(path: Path) -> ModuleType:
     spec = importlib.util.spec_from_file_location("local_inspection_helper", path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
@@ -43,7 +43,7 @@ def load_helper(path):
     return module
 
 
-def app_config_dir(app, helper):
+def app_config_dir(app: Path, helper: ModuleType) -> Path:
     candidate = helper.ide_app_candidate(app)
     if candidate is None:
         raise ValueError("The exact app is not a supported JetBrains bundle.")
@@ -55,39 +55,25 @@ def app_config_dir(app, helper):
         or not re.fullmatch(r"[A-Za-z0-9._-]+", selector)
         or not selector.startswith(product.config_prefixes)
     ):
-        raise ValueError(
-            "Bundle metadata does not prove the product's config selector."
-        )
+        raise ValueError("Bundle metadata does not prove the product's config selector.")
     config = Path.home() / "Library/Application Support/JetBrains" / selector
     if not (config / "options").is_dir():
-        raise ValueError(
-            "Start the exact app once to create its configuration, then quit normally."
-        )
+        raise ValueError("Start the exact app once to create its configuration, then quit normally.")
     return config
 
 
-def require_idle_status(status):
+def require_idle_status(status: dict[str, Any]) -> None:
     raw = status.get("raw")
     if (
         not isinstance(raw, dict)
-        or any(
-            raw.get(field) is not False
-            for field in ("indexing", "is_scanning", "inspection_in_progress")
-        )
-        or any(
-            status.get(field)
-            for field in ("session_drift", "ambiguous", "unavailable", "timed_out")
-        )
+        or any(raw.get(field) is not False for field in ("indexing", "is_scanning", "inspection_in_progress"))
+        or any(status.get(field) for field in ("session_drift", "ambiguous", "unavailable", "timed_out"))
     ):
         raise ValueError("An exact target project is busy or its idleness is unproven.")
 
 
-def require_no_target_leases(leases, identities):
-    sessions = {
-        identity.get("session_id")
-        for identity in identities
-        if identity.get("session_id")
-    }
+def require_no_target_leases(leases: Iterable[tuple[Path, dict[str, Any]]], identities: list[dict[str, Any]]) -> None:
+    sessions = {identity.get("session_id") for identity in identities if identity.get("session_id")}
     pids = {identity.get("pid") for identity in identities if identity.get("pid")}
     projects = {
         Path(project["base_path"]).resolve()
@@ -112,20 +98,18 @@ def require_no_target_leases(leases, identities):
             )
 
 
-def inventory(root):
-    result = {}
+def inventory(root: Path) -> dict[str, str | None]:
+    result: dict[str, str | None] = {}
     if root.is_symlink() or not root.is_dir():
         raise ValueError(f"Payload is not a plain directory: {root}")
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or not (path.is_file() or path.is_dir()):
             raise ValueError(f"Unsupported payload entry: {path}")
-        result[path.relative_to(root).as_posix()] = (
-            hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
-        )
+        result[path.relative_to(root).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
     return result
 
 
-def stage_archive(archive, destination, source_sha):
+def stage_archive(archive: Path, destination: Path, source_sha: str) -> Path:
     if not re.fullmatch("[0-9a-f]{40}", source_sha):
         raise ValueError("Require the full source SHA.")
     with zipfile.ZipFile(archive) as zipped:
@@ -144,7 +128,7 @@ def stage_archive(archive, destination, source_sha):
             names.add(item.filename)
         zipped.extractall(destination)
     payload = destination / PLUGIN
-    proofs = []
+    proofs: list[dict[str, str]] = []
     for jar in payload.rglob("*.jar"):
         with zipfile.ZipFile(jar) as zipped:
             name = "com/shiny/inspectionmcp/inspection-build.properties"
@@ -168,13 +152,11 @@ def stage_archive(archive, destination, source_sha):
     return payload
 
 
-def process_inventory():
-    return subprocess.check_output(
-        ["ps", "-axww", "-o", "pid=", "-o", "command="], text=True
-    )
+def process_inventory() -> str:
+    return subprocess.check_output(["ps", "-axww", "-o", "pid=", "-o", "command="], text=True)
 
 
-def active_helpers(processes):
+def active_helpers(processes: str) -> bool:
     for row in processes.splitlines():
         fields = row.strip().split(None, 1)
         if len(fields) != 2:
@@ -184,33 +166,30 @@ def active_helpers(processes):
         tokens.commenters = ""
         try:
             executable = next(tokens, None)
-            if not executable or not re.fullmatch(
-                r"(?:uv|python[0-9.]*)", Path(executable).name
-            ):
+            if not executable or not re.fullmatch(r"(?:uv|python[0-9.]*)", Path(executable).name):
                 continue
             args = list(tokens)
         except ValueError:
             return True
-        # The first script belongs to the interpreter; later --helper arguments do not.
-        scripts = [arg for arg in args if arg.endswith(".py")]
-        if scripts and Path(scripts[0]).name == "jb-inspect.py":
+        interpreter_scripts = [arg for arg in args if arg.endswith(".py")]
+        if interpreter_scripts and Path(interpreter_scripts[0]).name == "jb-inspect.py":
             return True
     return False
 
 
-def main_processes(processes, executable):
-    result = []
+def main_processes(processes: str, executable: Path) -> list[int]:
+    result: list[int] = []
     for row in processes.splitlines():
         fields = row.strip().split(None, 1)
         if len(fields) != 2:
             continue
-        # Wide command output preserves the complete bundle path, including spaces.
-        if fields[1].startswith(str(executable) + " ") or fields[1] == str(executable):
+        full_command = fields[1]
+        if full_command.startswith(str(executable) + " ") or full_command == str(executable):
             result.append(int(fields[0]))
     return result
 
 
-def wait_no_helpers(timeout):
+def wait_no_helpers(timeout: float) -> None:
     deadline = time.monotonic() + timeout
     while active_helpers(process_inventory()):
         if time.monotonic() >= deadline:
@@ -218,7 +197,7 @@ def wait_no_helpers(timeout):
         time.sleep(1)
 
 
-def running_apps():
+def running_apps() -> list[dict[str, Any]]:
     script = """ObjC.import('AppKit');
 var apps = $.NSWorkspace.sharedWorkspace.runningApplications, rows = [];
 for (var i = 0; i < apps.count; i++) {
@@ -226,26 +205,19 @@ for (var i = 0; i < apps.count; i++) {
     if (path) rows.push({pid: Number(app.processIdentifier), path: path});
 }
 JSON.stringify(rows);"""
-    rows = json.loads(
-        subprocess.check_output(
-            ["osascript", "-l", "JavaScript", "-e", script], text=True, timeout=10
-        )
-    )
+    rows = json.loads(subprocess.check_output(["osascript", "-l", "JavaScript", "-e", script], text=True, timeout=10))
     if not isinstance(rows, list) or any(
-        not isinstance(row, dict)
-        or not isinstance(row.get("pid"), int)
-        or not isinstance(row.get("path"), str)
-        for row in rows
+        not isinstance(row, dict) or not isinstance(row.get("pid"), int) or not isinstance(row.get("path"), str) for row in rows
     ):
         raise ValueError("Native running-app inventory is unproven.")
     return rows
 
 
-def app_is_running(app):
+def app_is_running(app: Path) -> bool:
     return any(Path(row["path"]).resolve() == app.resolve() for row in running_apps())
 
 
-def require_no_config_peer(app):
+def require_no_config_peer(app: Path) -> None:
     metadata_path = app / "Contents/Resources/product-info.json"
     if not metadata_path.is_file():
         raise ValueError("Target bundle config selector is unproven.")
@@ -257,16 +229,11 @@ def require_no_config_peer(app):
         if peer == app.resolve():
             continue
         metadata = peer / "Contents/Resources/product-info.json"
-        if (
-            metadata.is_file()
-            and json.loads(metadata.read_text()).get("dataDirectoryName") == selector
-        ):
-            raise ValueError(
-                f"Another running IDE shares the target config; quit it normally first: {peer}"
-            )
+        if metadata.is_file() and json.loads(metadata.read_text()).get("dataDirectoryName") == selector:
+            raise ValueError(f"Another running IDE shares the target config; quit it normally first: {peer}")
 
 
-def require_stopped(executable):
+def require_stopped(executable: Path) -> None:
     if main_processes(process_inventory(), executable):
         raise ValueError("Exact target IDE is still running; payload retained.")
     app = executable.parents[2]
@@ -275,18 +242,12 @@ def require_stopped(executable):
     require_no_config_peer(app)
 
 
-def quit_normally(app, executable, timeout):
+def quit_normally(app: Path, executable: Path, timeout: float) -> None:
     require_no_config_peer(app)
     pids = main_processes(process_inventory(), executable)
-    native = [
-        row["pid"]
-        for row in running_apps()
-        if Path(row["path"]).resolve() == app.resolve()
-    ]
+    native = [row["pid"] for row in running_apps() if Path(row["path"]).resolve() == app.resolve()]
     if len(pids) > 1 or pids != native:
-        raise ValueError(
-            "Exact target process and native bundle identity disagree; quit normally by hand."
-        )
+        raise ValueError("Exact target process and native bundle identity disagree; quit normally by hand.")
     if not pids:
         return
     script = """ObjC.import('AppKit');
@@ -303,31 +264,23 @@ function run(argv) {
     deadline = time.monotonic() + timeout
     while main_processes(process_inventory(), executable) or app_is_running(app):
         if time.monotonic() >= deadline:
-            raise ValueError(
-                "Normal quit unresolved (possibly unsaved documents or a modal); install aborted."
-            )
+            raise ValueError("Normal quit unresolved (possibly unsaved documents or a modal); install aborted.")
         time.sleep(1)
 
 
-def replace_payload(candidate, target, evidence, executable):
+def replace_payload(candidate: Path, target: Path, evidence: Path, executable: Path) -> dict[str, Any]:
     if target.is_symlink():
         raise ValueError("Installed payload must not be a symlink.")
     candidate_manifest = inventory(candidate)
     prior_manifest = inventory(target) if target.exists() else None
-    (evidence / "candidate-manifest.json").write_text(
-        json.dumps(candidate_manifest, indent=2)
-    )
-    (evidence / "rollback-manifest.json").write_text(
-        json.dumps(prior_manifest, indent=2)
-    )
+    (evidence / "candidate-manifest.json").write_text(json.dumps(candidate_manifest, indent=2))
+    (evidence / "rollback-manifest.json").write_text(json.dumps(prior_manifest, indent=2))
     if prior_manifest is not None:
         shutil.copytree(target, evidence / "rollback")
         if inventory(evidence / "rollback") != prior_manifest:
             raise ValueError("Rollback copy verification failed.")
     target.parent.mkdir(parents=True, exist_ok=True)
-    sibling = Path(
-        tempfile.mkdtemp(prefix=".inspection-candidate-", dir=target.parent.parent)
-    )
+    sibling = Path(tempfile.mkdtemp(prefix=".inspection-candidate-", dir=target.parent.parent))
     (evidence / "staging.json").write_text(
         json.dumps(
             {
@@ -366,14 +319,7 @@ def replace_payload(candidate, target, evidence, executable):
         if inventory(target) != candidate_manifest:
             raise ValueError("Installed candidate verification failed.")
     except BaseException:
-        # If an IDE restarted, keep both copies and require a new stopped window.
-        require_stopped(executable)
-        if moved_candidate:
-            target.rename(sibling / "failed-candidate")
-        if moved_previous:
-            previous.rename(target)
-        if prior_manifest is not None and inventory(target) != prior_manifest:
-            raise ValueError("Rollback verification failed; retain all evidence.")
+        restore_payload_in_stopped_window(executable, target, sibling, previous, moved_candidate, moved_previous, prior_manifest)
         raise
     return {
         "status": "installed",
@@ -383,11 +329,9 @@ def replace_payload(candidate, target, evidence, executable):
     }
 
 
-def install(args):
+def install(args: argparse.Namespace) -> None:
     if sys.platform != "darwin":
-        raise ValueError(
-            "Local installer supports macOS; portable smoke uses the inspection helper."
-        )
+        raise ValueError("Local installer supports macOS; portable smoke uses the inspection helper.")
     app = args.ide_app.resolve(strict=True)
     with (app / "Contents/Info.plist").open("rb") as stream:
         info = plistlib.load(stream)
@@ -396,42 +340,18 @@ def install(args):
     helper = load_helper(args.helper.resolve(strict=True))
     plugins = app_config_dir(app, helper).resolve() / "plugins"
     if args.plugin_dir and args.plugin_dir.resolve() != plugins:
-        raise ValueError(
-            "Plugin directory does not match the selected app configuration."
-        )
+        raise ValueError("Plugin directory does not match the selected app configuration.")
     if plugins.is_symlink():
         raise ValueError("Plugin directory must not be redirected.")
     artifact_root = args.artifact_root.resolve(strict=True)
     if artifact_root == plugins or artifact_root.is_relative_to(plugins):
         raise ValueError("Keep evidence outside installed plugins.")
-    # On Chris-Studio an existing validated task worktree supplies the artifact volume identity.
-    import platform
-
-    if platform.node().split(".")[0].lower() == "chris-studio":
-        root = Path("/Volumes/Developer-Artifacts")
-        if not artifact_root.is_relative_to(root) or not (root / "worktrees").is_dir():
-            raise ValueError(
-                "Use the host-approved, mounted Developer-Artifacts evidence root."
-            )
-        manager = Path.home() / ".local/bin/dev-worktree"
-        subprocess.run(
-            [str(manager), "retire", "--dry-run", str(args.repo.resolve())], check=True
-        )
+    require_host_artifact_root(args, artifact_root)
     evidence = Path(tempfile.mkdtemp(prefix="local-plugin-", dir=artifact_root))
-    (evidence / ".retain-until").write_text(
-        str(datetime.now(UTC).date() + timedelta(days=7)) + "\n"
-    )
+    (evidence / ".retain-until").write_text(str(datetime.now(UTC).date() + timedelta(days=7)) + "\n")
     print(f"Retained installation evidence: {evidence}", flush=True)
     candidate = stage_archive(args.archive, evidence, args.source_sha)
-    # Do not depend on any ambient branch/version: check live provenance on the acting path.
-    actual = subprocess.check_output(
-        ["git", "-C", str(args.repo), "rev-parse", "HEAD"], text=True
-    ).strip()
-    dirty = subprocess.check_output(
-        ["git", "-C", str(args.repo), "status", "--porcelain"], text=True
-    ).strip()
-    if actual != args.source_sha or dirty:
-        raise ValueError("Build source must be the exact clean source checkout.")
+    require_clean_source_checkout(args.repo, args.source_sha)
     wait_no_helpers(args.timeout)
     with (
         helper_errors(helper),
@@ -440,34 +360,12 @@ def install(args):
     ):
         wait_no_helpers(args.timeout)
         identities = helper.discover_identities(None)
-        pids = main_processes(process_inventory(), executable)
-        targets = [identity for identity in identities if identity.get("pid") in pids]
-        if pids and len(targets) != 1:
+        normally_quit_pids = main_processes(process_inventory(), executable)
+        targets = [identity for identity in identities if identity.get("pid") in normally_quit_pids]
+        if normally_quit_pids and len(targets) != 1:
             raise ValueError("Cannot prove plugin identity for the exact running IDE.")
         require_no_target_leases(helper.read_local_leases(), targets)
-        for identity in targets:
-            for project in identity.get("open_projects") or []:
-                if not project.get("base_path"):
-                    raise ValueError("An open project has no exact route identity.")
-                status_args = helper.parse_cli_args(
-                    helper.build_parser(),
-                    [
-                        "get-status",
-                        "--repo",
-                        project["base_path"],
-                        "--session-id",
-                        identity["session_id"],
-                        "--port",
-                        str(identity["port"]),
-                        "--json",
-                    ],
-                )
-                status_args.client_run_id = "local-plugin-maintenance"
-                status = helper.command_status(
-                    status_args, helper.build_context(status_args)
-                )
-                # The outer operation holds outcome routing; avoid a second process's emit/log lock.
-                require_idle_status(status)
+        require_idle_projects_under_routing_lock(helper, targets)
         quit_normally(app, executable, args.timeout)
         require_stopped(executable)
         receipt = replace_payload(candidate, plugins / PLUGIN, evidence, executable)
@@ -478,23 +376,77 @@ def install(args):
                 "acceptance": "pending_runtime_smokes",
             }
         )
-        (evidence / "installation.json").write_text(
-            json.dumps(receipt, indent=2) + "\n"
-        )
+        (evidence / "installation.json").write_text(json.dumps(receipt, indent=2) + "\n")
         print(json.dumps(receipt))
-    # Preserve a stopped target; relaunch only an app this operation normally quit.
-    if pids:
+    if normally_quit_pids:
         subprocess.run(["open", "-a", str(app)], check=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+def require_host_artifact_root(args: argparse.Namespace, artifact_root: Path) -> None:
+    import platform
+
+    if platform.node().split(".")[0].lower() == "chris-studio":
+        root = Path("/Volumes/Developer-Artifacts")
+        if not artifact_root.is_relative_to(root) or not (root / "worktrees").is_dir():
+            raise ValueError("Use the host-approved, mounted Developer-Artifacts evidence root.")
+        manager = Path.home() / ".local/bin/dev-worktree"
+        subprocess.run([str(manager), "retire", "--dry-run", str(args.repo.resolve())], check=True)
+
+
+def require_clean_source_checkout(repo: Path, source_sha: str) -> None:
+    actual = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    dirty = subprocess.check_output(["git", "-C", str(repo), "status", "--porcelain"], text=True).strip()
+    if actual != source_sha or dirty:
+        raise ValueError("Build source must be the exact clean source checkout.")
+
+
+def require_idle_projects_under_routing_lock(helper: ModuleType, targets: list[dict[str, Any]]) -> None:
+    for identity in targets:
+        for project in identity.get("open_projects") or []:
+            if not project.get("base_path"):
+                raise ValueError("An open project has no exact route identity.")
+            status_args = helper.parse_cli_args(
+                helper.build_parser(),
+                [
+                    "get-status",
+                    "--repo",
+                    project["base_path"],
+                    "--session-id",
+                    identity["session_id"],
+                    "--port",
+                    str(identity["port"]),
+                    "--json",
+                ],
+            )
+            status_args.client_run_id = "local-plugin-maintenance"
+            status = helper.command_status(status_args, helper.build_context(status_args))
+            require_idle_status(status)
+
+
+def restore_payload_in_stopped_window(
+    executable: Path,
+    target: Path,
+    sibling: Path,
+    previous: Path,
+    moved_candidate: bool,
+    moved_previous: bool,
+    prior_manifest: dict[str, str | None] | None,
+) -> None:
+    require_stopped(executable)
+    if moved_candidate:
+        target.rename(sibling / "failed-candidate")
+    if moved_previous:
+        previous.rename(target)
+    if prior_manifest is not None and inventory(target) != prior_manifest:
+        raise ValueError("Rollback verification failed; retain all evidence.")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Install a verified local payload within an explicitly coordinated IDE window.")
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--source-sha", required=True)
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument(
-        "--ide-app", type=Path, required=True, help="Exact .app bundle path"
-    )
+    parser.add_argument("--ide-app", type=Path, required=True, help="Exact .app bundle path")
     parser.add_argument("--plugin-dir", type=Path)
     parser.add_argument(
         "--artifact-root",

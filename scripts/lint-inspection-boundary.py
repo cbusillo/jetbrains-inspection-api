@@ -3,9 +3,9 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-from pathlib import Path
 import argparse
 import sys
+from pathlib import Path
 
 
 def main() -> int:
@@ -21,7 +21,7 @@ def main() -> int:
     if not boundary.is_file():
         print(f"{boundary}: boundary source is missing", file=sys.stderr)
         return 1
-    failures = []
+    failures: list[str] = []
     for source in sorted(args.sources.rglob("*.kt")):
         if source == boundary:
             continue

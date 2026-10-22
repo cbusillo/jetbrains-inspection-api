@@ -15,7 +15,8 @@ import unittest
 import zipfile
 from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
@@ -23,10 +24,8 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def load(name):
-    spec = importlib.util.spec_from_file_location(
-        name.replace("-", "_"), ROOT / "scripts" / (name + ".py")
-    )
+def load(name: str) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(name.replace("-", "_"), ROOT / "scripts" / (name + ".py"))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -38,15 +37,13 @@ trust = load("retire-smoke-trust")
 
 
 class SmokeLifecycle(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.source = self.root / "source"
         self.source.mkdir()
-        subprocess.run(
-            ["git", "init", "-q", "-b", "main", str(self.source)], check=True
-        )
+        subprocess.run(["git", "init", "-q", "-b", "main", str(self.source)], check=True)
         (self.source / "source.py").write_text('print("fixture")\n')
         (self.source / "scripts").mkdir()
         (self.source / "scripts/maintenance.py").write_text('print("maintenance")\n')
@@ -67,15 +64,13 @@ class SmokeLifecycle(unittest.TestCase):
             check=True,
         )
         with patch.object(smoke.platform, "node", return_value="portable"):
-            self.receipt = smoke.create(
-                self.source, "smoke", self.root / "worktrees", self.root / "manager"
-            )
+            self.receipt = smoke.create(self.source, "smoke", self.root / "worktrees", self.root / "manager")
         self.worktree = Path(self.receipt["root"])
         self.evidence = self.root / "evidence"
         self.evidence.mkdir()
-        self.calls = []
+        self.calls: list[tuple[str, ...]] = []
 
-    def helper_run(self, *args):
+    def helper_run(self, *args: str) -> str:
         if args[0] != "uv":
             return smoke.run_original(*args)
         self.calls.append(args)
@@ -95,30 +90,24 @@ class SmokeLifecycle(unittest.TestCase):
             return json.dumps({"status": "ok", "worktree_removed": True})
         return json.dumps({"status": "ok", "dry_run": True})
 
-    def retire(self, payload):
+    def retire(self, payload: dict[str, Any]) -> dict[str, Any]:
         smoke.run_original = smoke.run
         with patch.object(smoke, "run", side_effect=self.helper_run):
-            return smoke.retire(
-                self.receipt, payload, Path("/maintained/jb-inspect.py"), self.evidence
-            )
+            return smoke.retire(self.receipt, payload, Path("/maintained/jb-inspect.py"), self.evidence)
 
-    def test_failed_lifecycle_preserves_exact_worktree_and_branch(self):
+    def test_failed_lifecycle_preserves_exact_worktree_and_branch(self) -> None:
         for status in ["failed", "deferred", "not_needed", "skipped", None]:
             with self.subTest(status=status):
                 result = self.retire({"cleanup": {"status": status}})
                 self.assertEqual(result["reason"], "lifecycle_cleanup_unresolved")
-                self.assertEqual(
-                    smoke.manifest(self.worktree), self.receipt["manifest"]
-                )
+                self.assertEqual(smoke.manifest(self.worktree), self.receipt["manifest"])
                 self.assertEqual(self.calls, [])
                 self.assertEqual(
-                    smoke.run(
-                        "git", "-C", str(self.worktree), "branch", "--show-current"
-                    ),
+                    smoke.run("git", "-C", str(self.worktree), "branch", "--show-current"),
                     "work/smoke",
                 )
 
-    def test_replaced_directory_is_preserved_even_with_identical_git_contents(self):
+    def test_replaced_directory_is_preserved_even_with_identical_git_contents(self) -> None:
         moved = self.root / "original-worktree"
         self.worktree.rename(moved)
         shutil.copytree(moved, self.worktree)
@@ -129,7 +118,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertTrue(moved.is_dir())
         self.assertEqual(self.calls, [])
 
-    def test_closed_project_retires_sdk_before_nonforce_removal(self):
+    def test_closed_project_retires_sdk_before_nonforce_removal(self) -> None:
         unrelated = self.root / "unrelated"
         unrelated.mkdir()
         (unrelated / "evidence").write_text("keep")
@@ -141,7 +130,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertFalse(self.worktree.exists())
         self.assertEqual((unrelated / "evidence").read_text(), "keep")
 
-    def test_ignored_mutation_is_retained(self):
+    def test_ignored_mutation_is_retained(self) -> None:
         exclude = self.source / ".git/info/exclude"
         exclude.write_text(".idea/\n")
         (self.worktree / ".idea").mkdir()
@@ -151,7 +140,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue((self.worktree / ".idea/private-notes.xml").exists())
 
-    def test_generated_workspace_is_preserved_before_successful_removal(self):
+    def test_generated_workspace_is_preserved_before_successful_removal(self) -> None:
         (self.source / ".git/info/exclude").write_text(".idea/\n")
         (self.worktree / ".idea").mkdir()
         workspace = self.worktree / ".idea/workspace.xml"
@@ -159,16 +148,12 @@ class SmokeLifecycle(unittest.TestCase):
         result = self.retire({"cleanup": {"status": "closed"}})
         self.assertEqual(result["status"], "removed")
         self.assertEqual(
-            (
-                Path(result["generated_state_archive"]) / ".idea/workspace.xml"
-            ).read_bytes(),
+            (Path(result["generated_state_archive"]) / ".idea/workspace.xml").read_bytes(),
             b"per-run workspace bytes",
         )
         self.assertFalse(self.worktree.exists())
 
-    def test_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(
-        self,
-    ):
+    def test_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(self) -> None:
         (self.source / ".git/info/exclude").write_text(".idea/\n.venv/\n")
         (self.worktree / ".idea").mkdir()
         (self.worktree / ".idea/misc.xml").write_bytes(b"prepared project model")
@@ -187,20 +172,12 @@ class SmokeLifecycle(unittest.TestCase):
         result = self.retire(payload)
         self.assertEqual(result["status"], "removed")
         archive = Path(result["generated_state_archive"])
-        self.assertEqual(
-            (archive / ".venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config"
-        )
-        self.assertEqual(
-            (archive / ".venv/bin/python").readlink(), Path("/fixture/interpreter")
-        )
-        self.assertEqual(
-            (archive / ".idea/misc.xml").read_bytes(), b"prepared project model"
-        )
+        self.assertEqual((archive / ".venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config")
+        self.assertEqual((archive / ".venv/bin/python").readlink(), Path("/fixture/interpreter"))
+        self.assertEqual((archive / ".idea/misc.xml").read_bytes(), b"prepared project model")
         self.assertTrue(any("--no-dry-run" in call for call in self.calls))
 
-    def test_nested_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(
-        self,
-    ):
+    def test_nested_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(self) -> None:
         (self.source / ".git/info/exclude").write_text(".idea/\n.venv/\n")
         (self.worktree / "scripts/.idea").mkdir()
         (self.worktree / "scripts/.idea/misc.xml").write_bytes(b"prepared project model")
@@ -219,18 +196,12 @@ class SmokeLifecycle(unittest.TestCase):
         result = self.retire(payload)
         self.assertEqual(result["status"], "removed")
         archive = Path(result["generated_state_archive"])
-        self.assertEqual(
-            (archive / "scripts/.venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config"
-        )
-        self.assertEqual(
-            (archive / "scripts/.venv/bin/python").readlink(), Path("/fixture/interpreter")
-        )
-        self.assertEqual(
-            (archive / "scripts/.idea/misc.xml").read_bytes(), b"prepared project model"
-        )
+        self.assertEqual((archive / "scripts/.venv/pyvenv.cfg").read_bytes(), b"fixture interpreter config")
+        self.assertEqual((archive / "scripts/.venv/bin/python").readlink(), Path("/fixture/interpreter"))
+        self.assertEqual((archive / "scripts/.idea/misc.xml").read_bytes(), b"prepared project model")
         self.assertTrue(any("--no-dry-run" in call for call in self.calls))
 
-    def test_preparation_cannot_authorize_generated_roots_outside_the_worktree(self):
+    def test_preparation_cannot_authorize_generated_roots_outside_the_worktree(self) -> None:
         outside = self.root / "outside"
         outside.mkdir()
         escaped = self.worktree / "scripts/.venv"
@@ -246,7 +217,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertTrue(escaped.is_symlink())
         self.assertEqual(self.calls, [])
 
-    def test_unproven_preparation_keeps_interpreter(self):
+    def test_unproven_preparation_keeps_interpreter(self) -> None:
         (self.source / ".git/info/exclude").write_text(".venv/\n")
         (self.worktree / ".venv").mkdir()
         (self.worktree / ".venv/pyvenv.cfg").write_text("local interpreter")
@@ -255,12 +226,10 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual(self.calls, [])
         self.assertTrue((self.worktree / ".venv/pyvenv.cfg").exists())
 
-    def test_tracked_environment_template_is_not_local_private_state(self):
+    def test_tracked_environment_template_is_not_local_private_state(self) -> None:
         sample = self.worktree / ".env.sample"
         sample.write_text("PUBLIC_EXAMPLE=value\n")
-        subprocess.run(
-            ["git", "-C", str(self.worktree), "add", str(sample)], check=True
-        )
+        subprocess.run(["git", "-C", str(self.worktree), "add", str(sample)], check=True)
         subprocess.run(
             [
                 "git",
@@ -276,15 +245,13 @@ class SmokeLifecycle(unittest.TestCase):
             ],
             check=True,
         )
-        self.receipt["head"] = smoke.run(
-            "git", "-C", str(self.worktree), "rev-parse", "HEAD"
-        )
+        self.receipt["head"] = smoke.run("git", "-C", str(self.worktree), "rev-parse", "HEAD")
         self.receipt["manifest"] = smoke.manifest(self.worktree)
         result = self.retire({"cleanup": {"status": "closed"}})
         self.assertEqual(result["status"], "removed")
         self.assertFalse(self.worktree.exists())
 
-    def test_managed_apply_failure_restores_original_lock(self):
+    def test_managed_apply_failure_restores_original_lock(self) -> None:
         self.receipt["managed"] = True
         reason = "fixture host lock"
         smoke.run(
@@ -298,9 +265,9 @@ class SmokeLifecycle(unittest.TestCase):
             str(self.worktree),
         )
         original = smoke.run
-        manager_calls = []
+        manager_calls: list[tuple[str, ...]] = []
 
-        def guarded(*args):
+        def guarded(*args: str) -> str:
             if args[0] == self.receipt["manager"]:
                 manager_calls.append(args)
                 return "host preview accepted"
@@ -332,9 +299,7 @@ class SmokeLifecycle(unittest.TestCase):
                 self.evidence,
             )
         lock = Path(
-            original(
-                "git", "-C", str(self.worktree), "rev-parse", "--absolute-git-dir"
-            ),
+            original("git", "-C", str(self.worktree), "rev-parse", "--absolute-git-dir"),
             "locked",
         )
         self.assertEqual(lock.read_text().strip(), reason)
@@ -344,7 +309,7 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertTrue(self.worktree.exists())
 
-    def test_fixture_workspace_is_ignored_while_source_changes_remain_dirty(self):
+    def test_fixture_workspace_is_ignored_while_source_changes_remain_dirty(self) -> None:
         fixtures = self.source / "test-fixtures"
         fixtures.mkdir()
         for name in [
@@ -371,9 +336,7 @@ class SmokeLifecycle(unittest.TestCase):
         )
         for directory in fixtures.iterdir():
             (directory / ".idea/workspace.xml").write_text("generated IDE workspace")
-        self.assertEqual(
-            smoke.run("git", "-C", str(self.source), "status", "--porcelain"), ""
-        )
+        self.assertEqual(smoke.run("git", "-C", str(self.source), "status", "--porcelain"), "")
         source = next((fixtures / "inspection-red-lane-pycharm/src").glob("*.py"))
         source.write_text(source.read_text() + "\nprint('source changed')\n")
         self.assertIn(
@@ -381,7 +344,7 @@ class SmokeLifecycle(unittest.TestCase):
             smoke.run("git", "-C", str(self.source), "status", "--porcelain"),
         )
 
-    def test_sdk_apply_failure_keeps_private_stdout_and_stderr_evidence(self):
+    def test_sdk_apply_failure_keeps_private_stdout_and_stderr_evidence(self) -> None:
         receipt = self.evidence / "worktree.json"
         payload = self.evidence / "payload.json"
         output = self.evidence / "retirement.json"
@@ -427,7 +390,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual((records / "stdout.txt").stat().st_mode & 0o777, 0o600)
         self.assertTrue(self.worktree.exists())
 
-    def test_malformed_successful_sdk_apply_keeps_stdout_and_reports_presence(self):
+    def test_malformed_successful_sdk_apply_keeps_stdout_and_reports_presence(self) -> None:
         receipt = self.evidence / "worktree.json"
         payload = self.evidence / "payload.json"
         output = self.evidence / "retirement.json"
@@ -436,7 +399,7 @@ class SmokeLifecycle(unittest.TestCase):
         original = smoke.run
         smoke.run_original = original
 
-        def malformed(*args):
+        def malformed(*args: str) -> str:
             if args[0] == "uv":
                 result = self.helper_run(*args)
                 return "malformed apply output" if "--no-dry-run" in args else result
@@ -470,27 +433,23 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertFalse(self.worktree.exists())
         self.assertEqual(
-            smoke.run(
-                "git", "-C", str(self.source), "rev-parse", self.receipt["branch"]
-            ),
+            smoke.run("git", "-C", str(self.source), "rev-parse", self.receipt["branch"]),
             self.receipt["head"],
         )
 
-    def test_matrix_retirement_calls_preserve_each_sdk_response(self):
+    def test_matrix_retirement_calls_preserve_each_sdk_response(self) -> None:
         receipt = self.evidence / "worktree.json"
         payload = self.evidence / "payload.json"
         output = self.evidence / "retirement.json"
         receipt.write_text(json.dumps(self.receipt))
         payload.write_text(json.dumps({"cleanup": {"status": "closed"}}))
         original = smoke.run
-        responses = iter(
-            ["first malformed SDK response", "second malformed SDK response"]
-        )
+        responses = iter(["first malformed SDK response", "second malformed SDK response"])
 
-        def native(*args):
+        def native(*args: str) -> str:
             return next(responses) if args[0] == "uv" else original(*args)
 
-        results = []
+        results: list[dict[str, Any]] = []
         with (
             patch.object(smoke, "run", side_effect=native),
             patch.object(
@@ -513,18 +472,16 @@ class SmokeLifecycle(unittest.TestCase):
             for _ in range(2):
                 self.assertEqual(smoke.main(), 1)
                 results.append(json.loads(output.read_text()))
-        first, second = [
-            Path(result["evidence"]) / "sdk-preview-stdout.txt" for result in results
-        ]
+        first, second = [Path(result["evidence"]) / "sdk-preview-stdout.txt" for result in results]
         self.assertNotEqual(first.parent, second.parent)
         self.assertEqual(first.read_text(), "first malformed SDK response")
         self.assertEqual(second.read_text(), "second malformed SDK response")
         self.assertTrue(self.worktree.exists())
 
-    def test_preview_failure_keeps_worktree(self):
+    def test_preview_failure_keeps_worktree(self) -> None:
         original = smoke.run
 
-        def refused(*args):
+        def refused(*args: str) -> str:
             if args[0] == "uv":
                 raise subprocess.CalledProcessError(3, args)
             return original(*args)
@@ -541,10 +498,10 @@ class SmokeLifecycle(unittest.TestCase):
             )
         self.assertTrue(self.worktree.is_dir())
 
-    def test_mutation_during_sdk_preview_preserves_worktree(self):
+    def test_mutation_during_sdk_preview_preserves_worktree(self) -> None:
         original = smoke.run
 
-        def changed(*args):
+        def changed(*args: str) -> str:
             if args[0] == "uv":
                 (self.worktree / "unexpected").write_text("retain")
                 return json.dumps({"status": "ok", "dry_run": True})
@@ -560,7 +517,7 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual(result["reason"], "project_changed_during_preview")
         self.assertEqual((self.worktree / "unexpected").read_text(), "retain")
 
-    def test_host_creation_uses_manager_and_refuses_root_override(self):
+    def test_host_creation_uses_manager_and_refuses_root_override(self) -> None:
         identity = self.worktree.stat()
         with (
             patch.object(smoke.platform, "node", return_value="Chris-Studio"),
@@ -576,9 +533,7 @@ class SmokeLifecycle(unittest.TestCase):
                 self.receipt["common_git_dir"],
             ]
             with (
-                patch.object(
-                    Path, "resolve", autospec=True, side_effect=lambda path, **_: path
-                ),
+                patch.object(Path, "resolve", autospec=True, side_effect=lambda path, **_: path),
                 patch.object(smoke, "manifest", return_value={}),
                 patch.object(Path, "stat", return_value=identity),
             ):
@@ -591,7 +546,7 @@ class SmokeLifecycle(unittest.TestCase):
 
 
 class LocalInstaller(unittest.TestCase):
-    def setUp(self):
+    def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -606,24 +561,18 @@ class LocalInstaller(unittest.TestCase):
         (self.target / "nested/prior-only").write_bytes(b"prior only")
         self.old = installer.inventory(self.target)
 
-    def test_success_matches_complete_candidate_and_retains_exact_prior(self):
+    def test_success_matches_complete_candidate_and_retains_exact_prior(self) -> None:
         with patch.object(installer, "require_stopped"):
-            result = installer.replace_payload(
-                self.candidate, self.target, self.evidence, Path("/IDE/launcher")
-            )
-        self.assertEqual(
-            installer.inventory(self.target), installer.inventory(self.candidate)
-        )
+            result = installer.replace_payload(self.candidate, self.target, self.evidence, Path("/IDE/launcher"))
+        self.assertEqual(installer.inventory(self.target), installer.inventory(self.candidate))
         self.assertEqual(installer.inventory(Path(result["rollback"])), self.old)
-        self.assertEqual(
-            installer.inventory(Path(result["preserved_previous"])), self.old
-        )
+        self.assertEqual(installer.inventory(Path(result["preserved_previous"])), self.old)
 
-    def test_failed_candidate_restores_prior_files_and_bytes_across_versions(self):
+    def test_failed_candidate_restores_prior_files_and_bytes_across_versions(self) -> None:
         original = installer.inventory
         checked = 0
 
-        def broken(root):
+        def broken(root: Path) -> dict[str, str | None]:
             nonlocal checked
             if root == self.target and (root / "new-version.jar").exists():
                 checked += 1
@@ -635,14 +584,12 @@ class LocalInstaller(unittest.TestCase):
             patch.object(installer, "inventory", side_effect=broken),
             self.assertRaises(ValueError),
         ):
-            installer.replace_payload(
-                self.candidate, self.target, self.evidence, Path("/IDE/launcher")
-            )
+            installer.replace_payload(self.candidate, self.target, self.evidence, Path("/IDE/launcher"))
         self.assertEqual(checked, 1)
         self.assertEqual(installer.inventory(self.target), self.old)
         self.assertFalse((self.target / "new-version.jar").exists())
 
-    def test_running_ide_aborts_before_payload_replacement(self):
+    def test_running_ide_aborts_before_payload_replacement(self) -> None:
         with (
             patch.object(
                 installer,
@@ -651,12 +598,10 @@ class LocalInstaller(unittest.TestCase):
             ),
             self.assertRaises(ValueError),
         ):
-            installer.replace_payload(
-                self.candidate, self.target, self.evidence, Path("/IDE/launcher")
-            )
+            installer.replace_payload(self.candidate, self.target, self.evidence, Path("/IDE/launcher"))
         self.assertEqual(installer.inventory(self.target), self.old)
 
-    def test_alias_running_app_cannot_be_treated_as_stopped(self):
+    def test_alias_running_app_cannot_be_treated_as_stopped(self) -> None:
         executable = Path("/IDE.app/Contents/MacOS/idea")
         with (
             patch.object(
@@ -680,7 +625,7 @@ class LocalInstaller(unittest.TestCase):
         ):
             installer.quit_normally(Path("/IDE.app"), executable, 1)
 
-    def test_bundle_config_selector_keeps_editions_separate(self):
+    def test_bundle_config_selector_keeps_editions_separate(self) -> None:
         selectors = [
             "IntelliJIdea2026.2",
             "IdeaIC2026.2",
@@ -697,11 +642,7 @@ class LocalInstaller(unittest.TestCase):
                     "productCode": "fixture-product",
                 }
                 (resources / "product-info.json").write_text(json.dumps(metadata))
-                expected = (
-                    self.root
-                    / "Library/Application Support/JetBrains"
-                    / metadata["dataDirectoryName"]
-                )
+                expected = self.root / "Library/Application Support/JetBrains" / metadata["dataDirectoryName"]
                 (expected / "options").mkdir(parents=True)
                 product = SimpleNamespace(
                     product_codes=(metadata["productCode"],),
@@ -715,7 +656,7 @@ class LocalInstaller(unittest.TestCase):
                     actual = installer.app_config_dir(app, helper)
                 self.assertEqual(actual, expected)
 
-    def test_target_lease_matching_preserves_foreign_lease(self):
+    def test_target_lease_matching_preserves_foreign_lease(self) -> None:
         target = {
             "session_id": "target-session",
             "pid": 42,
@@ -735,9 +676,7 @@ class LocalInstaller(unittest.TestCase):
                 self.subTest(lease=lease),
                 self.assertRaisesRegex(ValueError, "helper lease remains"),
             ):
-                installer.require_no_target_leases(
-                    [(Path("/lease.json"), lease)], [target]
-                )
+                installer.require_no_target_leases([(Path("/lease.json"), lease)], [target])
         foreign = {
             "session_id": "foreign-session",
             "route": {"ide": {"pid": 73}},
@@ -745,7 +684,7 @@ class LocalInstaller(unittest.TestCase):
         }
         installer.require_no_target_leases([(Path("/foreign.json"), foreign)], [target])
 
-    def test_reopened_project_lease_matches_physical_path_alias(self):
+    def test_reopened_project_lease_matches_physical_path_alias(self) -> None:
         project = self.root / "project"
         project.mkdir()
         alias = self.root / "alias"
@@ -759,14 +698,12 @@ class LocalInstaller(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "helper lease remains"):
             installer.require_no_target_leases([(Path("/lease.json"), lease)], [target])
 
-    def test_installer_never_quits_an_idle_ide_with_an_outstanding_target_lease(self):
+    def test_installer_never_quits_an_idle_ide_with_an_outstanding_target_lease(self) -> None:
         app = self.root / "IDE.app"
         (app / "Contents/MacOS").mkdir(parents=True)
         executable = app / "Contents/MacOS/idea"
         executable.write_text("fixture launcher")
-        (app / "Contents/Info.plist").write_bytes(
-            plistlib.dumps({"CFBundleExecutable": "idea"})
-        )
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "idea"}))
         target = {
             "session_id": "held-session",
             "pid": 42,
@@ -788,9 +725,7 @@ class LocalInstaller(unittest.TestCase):
                     "inspection_in_progress": False,
                 }
             },
-            read_local_leases=lambda: [
-                (Path("/lease.json"), {"session_id": "held-session"})
-            ],
+            read_local_leases=lambda: [(Path("/lease.json"), {"session_id": "held-session"})],
         )
         args = SimpleNamespace(
             ide_app=app,
@@ -806,13 +741,9 @@ class LocalInstaller(unittest.TestCase):
             patch.object(installer.sys, "platform", "darwin"),
             patch("platform.node", return_value="portable"),
             patch.object(installer, "load_helper", return_value=helper),
-            patch.object(
-                installer, "app_config_dir", return_value=self.root / "config"
-            ),
+            patch.object(installer, "app_config_dir", return_value=self.root / "config"),
             patch.object(installer, "stage_archive", return_value=self.candidate),
-            patch.object(
-                installer.subprocess, "check_output", side_effect=[args.source_sha, ""]
-            ),
+            patch.object(installer.subprocess, "check_output", side_effect=[args.source_sha, ""]),
             patch.object(
                 installer,
                 "process_inventory",
@@ -820,9 +751,7 @@ class LocalInstaller(unittest.TestCase):
             ),
             patch.object(installer, "wait_no_helpers"),
             patch.object(installer, "quit_normally") as quit_ide,
-            patch.object(
-                installer, "replace_payload", return_value={"status": "installed"}
-            ) as replace,
+            patch.object(installer, "replace_payload", return_value={"status": "installed"}) as replace,
             patch.object(installer, "require_stopped"),
             patch.object(installer.subprocess, "run"),
             self.assertRaisesRegex(ValueError, "helper lease remains"),
@@ -831,7 +760,7 @@ class LocalInstaller(unittest.TestCase):
         quit_ide.assert_not_called()
         replace.assert_not_called()
 
-    def test_idle_project_needs_no_previous_inspection_verdict(self):
+    def test_idle_project_needs_no_previous_inspection_verdict(self) -> None:
         raw = {"indexing": False, "is_scanning": False, "inspection_in_progress": False}
         installer.require_idle_status({"raw": raw, "verdict": "UNKNOWN"})
         for field in raw:
@@ -840,7 +769,7 @@ class LocalInstaller(unittest.TestCase):
         with self.assertRaises(ValueError):
             installer.require_idle_status({"raw": {}})
 
-    def test_helper_error_reports_maintenance_failure(self):
+    def test_helper_error_reports_maintenance_failure(self) -> None:
         class InspectError(Exception):
             pass
 
@@ -851,44 +780,32 @@ class LocalInstaller(unittest.TestCase):
         ):
             raise InspectError("lock unavailable")
 
-    def test_exact_executable_and_helper_process_guards(self):
+    def test_exact_executable_and_helper_process_guards(self) -> None:
         text = "1 /IDE/launcher /IDE/launcher\n2 /foreign/launcher /foreign/launcher\n3 /bin/codex prompt python jb-inspect.py\n"
         self.assertEqual(installer.main_processes(text, Path("/IDE/launcher")), [1])
         self.assertFalse(installer.active_helpers(text))
-        self.assertTrue(
-            installer.active_helpers("4 /bin/uv uv run /skills/jb-inspect.py inspect\n")
-        )
+        self.assertTrue(installer.active_helpers("4 /bin/uv uv run /skills/jb-inspect.py inspect\n"))
 
-    def test_installer_helper_argument_does_not_block_its_own_window(self):
+    def test_installer_helper_argument_does_not_block_its_own_window(self) -> None:
         for script in ["install-local-plugin.py", "retire-smoke-trust.py"]:
             for interpreter in ["/bin/uv run", "/bin/python3"]:
                 with self.subTest(script=script, interpreter=interpreter):
                     self.assertFalse(
-                        installer.active_helpers(
-                            f"4 {interpreter} /repo/scripts/{script} --helper /skills/jb-inspect.py\n"
-                        )
+                        installer.active_helpers(f"4 {interpreter} /repo/scripts/{script} --helper /skills/jb-inspect.py\n")
                     )
-        self.assertTrue(
-            installer.active_helpers(
-                "5 /bin/python3 /skills/jb-inspect.py get-status --json\n"
-            )
-        )
+        self.assertTrue(installer.active_helpers("5 /bin/python3 /skills/jb-inspect.py get-status --json\n"))
 
-    def test_non_interpreter_prompt_quotes_do_not_block_helper_quiescence(self):
-        processes = '4 codex --remote unix:// -C /repo --prompt "owner\'s request\n'
+    def test_non_interpreter_prompt_quotes_do_not_block_helper_quiescence(self) -> None:
+        processes = "4 codex --remote unix:// -C /repo --prompt \"owner's request\n"
         with patch.object(installer, "process_inventory", return_value=processes):
             installer.wait_no_helpers(1)
 
-    def test_unparseable_interpreter_arguments_still_block_installation(self):
+    def test_unparseable_interpreter_arguments_still_block_installation(self) -> None:
         for interpreter in ["/bin/uv run", "/bin/python3"]:
             with self.subTest(interpreter=interpreter):
-                self.assertTrue(
-                    installer.active_helpers(
-                        f'5 {interpreter} /skills/jb-inspect.py --repo "/work/project\n'
-                    )
-                )
+                self.assertTrue(installer.active_helpers(f'5 {interpreter} /skills/jb-inspect.py --repo "/work/project\n'))
 
-    def test_running_peer_with_shared_config_blocks_cold_bundle(self):
+    def test_running_peer_with_shared_config_blocks_cold_bundle(self) -> None:
         app = self.root / "stable.app"
         peer = self.root / "eap.app"
         metadata = {"dataDirectoryName": "FixtureSelector"}
@@ -896,23 +813,17 @@ class LocalInstaller(unittest.TestCase):
             resources = bundle / "Contents/Resources"
             resources.mkdir(parents=True)
             (resources / "product-info.json").write_text(json.dumps(metadata))
-        with patch.object(
-            installer, "running_apps", return_value=[{"pid": 73, "path": str(peer)}]
-        ):
+        with patch.object(installer, "running_apps", return_value=[{"pid": 73, "path": str(peer)}]):
             with self.assertRaisesRegex(ValueError, "shares the target config"):
                 installer.require_no_config_peer(app)
             metadata["dataDirectoryName"] = "OtherSelector"
-            (peer / "Contents/Resources/product-info.json").write_text(
-                json.dumps(metadata)
-            )
+            (peer / "Contents/Resources/product-info.json").write_text(json.dumps(metadata))
             installer.require_no_config_peer(app)
 
-    def test_normal_quit_refuses_pid_bundle_disagreement(self):
+    def test_normal_quit_refuses_pid_bundle_disagreement(self) -> None:
         with (
             patch.object(installer, "require_no_config_peer"),
-            patch.object(
-                installer, "process_inventory", return_value="42 /IDE/launcher\n"
-            ),
+            patch.object(installer, "process_inventory", return_value="42 /IDE/launcher\n"),
             patch.object(
                 installer,
                 "running_apps",
@@ -924,7 +835,7 @@ class LocalInstaller(unittest.TestCase):
             installer.quit_normally(Path("/IDE.app"), Path("/IDE/launcher"), 1)
         command.assert_not_called()
 
-    def test_helper_wait_expires_without_quitting(self):
+    def test_helper_wait_expires_without_quitting(self) -> None:
         with (
             patch.object(
                 installer,
@@ -936,7 +847,7 @@ class LocalInstaller(unittest.TestCase):
         ):
             installer.wait_no_helpers(1)
 
-    def test_normal_quit_timeout_keeps_unsaved_ide(self):
+    def test_normal_quit_timeout_keeps_unsaved_ide(self) -> None:
         with (
             patch.object(
                 installer,
@@ -957,7 +868,7 @@ class LocalInstaller(unittest.TestCase):
         self.assertEqual(command.call_count, 1)
         self.assertEqual(command.call_args.args[0][-2:], ["42", "/IDE.app"])
 
-    def test_trust_retirement_preserves_other_roots_and_preferences(self):
+    def test_trust_retirement_preserves_other_roots_and_preferences(self) -> None:
         from xml.etree import ElementTree
 
         tree = ElementTree.ElementTree(
@@ -970,27 +881,21 @@ class LocalInstaller(unittest.TestCase):
         self.assertEqual(trust.trust_entries(tree, "/dedicated/smoke"), [])
         self.assertEqual(len(trust.trust_entries(tree, "/other/work")), 2)
         self.assertEqual(
-            tree.getroot()
-            .find("component[@name='GeneralSettings']/option")
-            .get("value"),
+            tree.getroot().find("component[@name='GeneralSettings']/option").get("value"),
             "-1",
         )
 
-    def test_trust_apply_refuses_running_ide_and_preserves_settings(self):
+    def test_trust_apply_refuses_running_ide_and_preserves_settings(self) -> None:
         app = self.root / "IDE.app"
         (app / "Contents").mkdir(parents=True)
-        (app / "Contents/Info.plist").write_bytes(
-            plistlib.dumps({"CFBundleExecutable": "idea"})
-        )
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "idea"}))
         config = self.root / "config"
         (config / "options").mkdir(parents=True)
         settings = config / "options/trusted-paths.xml"
         before = b'<application><component name="Trusted.Paths.Settings"><option name="TRUSTED_PATHS"><list><option value="/dedicated/smoke"/></list></option></component></application>'
         settings.write_bytes(before)
         helper = SimpleNamespace(
-            resolve_ide_selection=lambda _: SimpleNamespace(
-                config_dir=config, app_path=app
-            ),
+            resolve_ide_selection=lambda _: SimpleNamespace(config_dir=config, app_path=app),
             outcome_routing_lock=nullcontext,
             lifecycle_lock=nullcontext,
             read_local_leases=list,
@@ -1018,28 +923,22 @@ class LocalInstaller(unittest.TestCase):
         ]
         with (
             patch.object(sys, "argv", args),
-            patch.object(
-                trust.importlib.util, "spec_from_file_location", return_value=fake_spec
-            ),
-            patch.object(
-                trust.importlib.util, "module_from_spec", return_value=fake_installer
-            ),
+            patch.object(trust.importlib.util, "spec_from_file_location", return_value=fake_spec),
+            patch.object(trust.importlib.util, "module_from_spec", return_value=fake_installer),
             self.assertRaisesRegex(ValueError, "IDE running"),
         ):
             trust.main()
         self.assertEqual(settings.read_bytes(), before)
 
-    def test_symlinked_installed_payload_is_preserved(self):
+    def test_symlinked_installed_payload_is_preserved(self) -> None:
         link = self.root / "plugins/linked-plugin"
         link.symlink_to(self.target, target_is_directory=True)
         with patch.object(installer, "require_stopped"), self.assertRaises(ValueError):
-            installer.replace_payload(
-                self.candidate, link, self.evidence, Path("/IDE/launcher")
-            )
+            installer.replace_payload(self.candidate, link, self.evidence, Path("/IDE/launcher"))
         self.assertTrue(link.is_symlink())
         self.assertEqual(installer.inventory(self.target), self.old)
 
-    def test_archive_requires_exact_clean_build_and_rejects_traversal(self):
+    def test_archive_requires_exact_clean_build_and_rejects_traversal(self) -> None:
         sha = "a" * 40
         jar = io.BytesIO()
         with zipfile.ZipFile(jar, "w") as zipped:

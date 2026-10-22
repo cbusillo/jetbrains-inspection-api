@@ -3,20 +3,22 @@
 # requires-python = ">=3.12"
 # dependencies = []
 # ///
-from importlib.util import module_from_spec, spec_from_file_location
-from pathlib import Path
-import json
 import hashlib
-import subprocess
-import tempfile
-import unittest
-import sys
-import zipfile
+import json
 import os
 import signal
+import subprocess
+import sys
+import tempfile
 import time
-from unittest.mock import patch
+import unittest
+import zipfile
 from argparse import Namespace
+from contextlib import suppress
+from importlib.util import module_from_spec, spec_from_file_location
+from pathlib import Path
+from typing import Any
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 
@@ -26,30 +28,44 @@ spec.loader.exec_module(reproduction)
 
 
 class RetentionReproductionTest(unittest.TestCase):
-    def exercise(self, root: Path, properties: str, *, memory_reason=None, reported_pid=123,
-                 registry=None, port=12345, timeout=False, verdict="GREEN", disposed=True,
-                 missing_class=False, project_instances=1, older_helper=False):
+    def exercise(
+        self,
+        root: Path,
+        properties: str,
+        *,
+        memory_reason: str | None = None,
+        reported_pid: int = 123,
+        registry: Path | None = None,
+        port: int = 12345,
+        timeout: bool = False,
+        verdict: str = "GREEN",
+        disposed: bool = True,
+        missing_class: bool = False,
+        project_instances: int = 1,
+        older_helper: bool = False,
+    ) -> list[dict[str, Any]]:
         helper = root / "helper.py"
-        helper.write_text(f'''
+        helper.write_text(f"""
 from argparse import ArgumentParser, Namespace
+from typing import Any
 class InspectError(Exception):
-    def __init__(self, reason):
+    def __init__(self, reason: str) -> None:
         self.payload = {{"error_reason": reason}}
 DEFAULT_PORT_RANGE = range(10000, 10010)
-def build_parser():
+def build_parser() -> ArgumentParser:
     parser = ArgumentParser()
     command = parser.add_subparsers().add_parser("inspect-closeout")
     if not {older_helper!r}:
         command.add_argument("--no-ide-launch", action="store_true")
     return parser
-def identity_for_port(port):
+def identity_for_port(port: int) -> dict[str, Any]:
     return {{"pid": {reported_pid}, "session_id": "fixture", "plugin_build_fingerprint": "fixture-build",
              "open_projects": [{{"base_path": {str(root / "startup")!r}, "project_key": "startup"}}]}}
-def http_get(port, endpoint, params):
+def http_get(port: int, endpoint: str, params: dict[str, Any]) -> Namespace:
     return Namespace(body={{"registry": {{"instances_dir": {str(registry or root / "registry")!r}}}}})
-def ide_memory_failure(identity):
+def ide_memory_failure(identity: dict[str, Any]) -> InspectError | None:
     return {f"InspectError({memory_reason!r})" if memory_reason else "None"}
-''')
+""")
         (root / "plugins").mkdir(exist_ok=True)
         with zipfile.ZipFile(root / "plugins" / "plugin.jar", "w") as archive:
             archive.writestr("com/shiny/inspectionmcp/inspection-build.properties", "plugin.build.fingerprint=fixture-build\n")
@@ -57,17 +73,29 @@ def ide_memory_failure(identity):
                 for name in reproduction.COUNTED_CLASSES:
                     if name.startswith("com.shiny."):
                         archive.writestr(name.replace(".", "/") + ".class", b"")
-        args = Namespace(instance_root=root, output=root / "measurements", helper=helper,
-                         jcmd=Path("fixture-jcmd"), pid=123, port=port, cycles=1, ide="Fixture IDE")
-        native = {"agent_result": {"verdict": verdict},
-                  "cleanup": {"status": "closed", "close_attempts": [{"project_disposed": disposed}]}}
+        args = Namespace(
+            instance_root=root,
+            output=root / "measurements",
+            helper=helper,
+            jcmd=Path("fixture-jcmd"),
+            pid=123,
+            port=port,
+            cycles=1,
+            ide="Fixture IDE",
+        )
+        native = {
+            "agent_result": {"verdict": verdict},
+            "cleanup": {"status": "closed", "close_attempts": [{"project_disposed": disposed}]},
+        }
         snapshot_class = next(name for name, key in reproduction.COUNTED_CLASSES.items() if key == "snapshots")
         project_class = next(name for name, key in reproduction.COUNTED_CLASSES.items() if key == "projects")
         project_bytes = project_instances * 32
-        histogram = (f" 1: 2 128 {snapshot_class}\n 2: {project_instances} {project_bytes} {project_class}\n"
-                     f"Total {2 + project_instances} {128 + project_bytes}\n")
+        histogram = (
+            f" 1: 2 128 {snapshot_class}\n 2: {project_instances} {project_bytes} {project_class}\n"
+            f"Total {2 + project_instances} {128 + project_bytes}\n"
+        )
 
-        def command(argv, **kwargs):
+        def command(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
             if "VM.system_properties" in argv:
                 text = properties
             elif "GC.class_histogram" in argv:
@@ -88,43 +116,52 @@ def ide_memory_failure(identity):
                     raise subprocess.TimeoutExpired(argv, 300)
             return subprocess.CompletedProcess(argv, 0, stdout=text, stderr="")
 
-        with (patch.object(reproduction.subprocess, "run", side_effect=command),
-              patch.object(reproduction, "run_helper", side_effect=command)):
+        with (
+            patch.object(reproduction.subprocess, "run", side_effect=command),
+            patch.object(reproduction, "run_helper", side_effect=command),
+        ):
             return reproduction.run(args)
 
-    def test_foreign_or_partially_isolated_ide_is_refused_before_open(self):
+    def test_foreign_or_partially_isolated_ide_is_refused_before_open(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            properties = "\n".join(f"idea.{key}.path={root / value}" for key, value in
-                                   (("config", "config"), ("system", "system"), ("log", "logs")))
+            properties = "\n".join(
+                f"idea.{key}.path={root / value}" for key, value in (("config", "config"), ("system", "system"), ("log", "logs"))
+            )
             properties += "\nidea.plugins.path=/shared/plugins\n"
             with self.assertRaises(ValueError):
                 self.exercise(root, properties)
             self.assertFalse((root / "measurements").exists())
 
-    def test_exhaustion_stops_the_batch_without_opening_another_project(self):
+    def test_exhaustion_stops_the_batch_without_opening_another_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            properties = "\n".join(f"idea.{key}.path={root / value}" for key, value in
-                                   (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins")))
+            properties = "\n".join(
+                f"idea.{key}.path={root / value}"
+                for key, value in (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins"))
+            )
             with self.assertRaises(ValueError):
                 self.exercise(root, properties, memory_reason="ide_memory_exhausted")
             self.assertFalse((root / "measurements/fixtures").exists())
 
-    def test_a_port_owned_by_another_pid_is_refused(self):
+    def test_a_port_owned_by_another_pid_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            properties = "\n".join(f"idea.{key}.path={root / value}" for key, value in
-                                   (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins")))
+            properties = "\n".join(
+                f"idea.{key}.path={root / value}"
+                for key, value in (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins"))
+            )
             with self.assertRaises(ValueError):
                 self.exercise(root, properties, reported_pid=124)
             self.assertFalse((root / "measurements").exists())
 
-    def test_completed_cycle_preserves_native_payload_and_retained_counts(self):
+    def test_completed_cycle_preserves_native_payload_and_retained_counts(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
-            properties = "\n".join(f"idea.{key}.path={root / value}" for key, value in
-                                   (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins")))
+            properties = "\n".join(
+                f"idea.{key}.path={root / value}"
+                for key, value in (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins"))
+            )
             rows = self.exercise(root, properties)
             saved = json.loads((root / "measurements/measurements.json").read_text())
             self.assertEqual(saved["rows"], rows)
@@ -133,17 +170,19 @@ def ide_memory_failure(identity):
             payload = json.loads((root / "measurements/cycle-01.json").read_text())
             self.assertEqual(payload["cleanup"]["status"], "closed")
 
-    def test_low_memory_context_does_not_abort_native_cycle(self):
+    def test_low_memory_context_does_not_abort_native_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             rows = self.exercise(root, self.properties(root), memory_reason="ide_memory_pressure")
             self.assertEqual(rows[-1]["cycle"], 1)
 
-    def properties(self, root):
-        return "\n".join(f"idea.{key}.path={root / value}" for key, value in
-                         (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins")))
+    def properties(self, root: Path) -> str:
+        return "\n".join(
+            f"idea.{key}.path={root / value}"
+            for key, value in (("config", "config"), ("system", "system"), ("log", "logs"), ("plugins", "plugins"))
+        )
 
-    def test_shared_registry_discovery_port_or_missing_classes_prevents_open(self):
+    def test_shared_registry_discovery_port_or_missing_classes_prevents_open(self) -> None:
         for kwargs in ({"registry": Path("/shared/registry")}, {"port": 10005}, {"missing_class": True}):
             with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -151,7 +190,7 @@ def ide_memory_failure(identity):
                     self.exercise(root, self.properties(root), **kwargs)
                 self.assertFalse((root / "measurements").exists())
 
-    def test_timeout_preserves_partial_output_without_measurement_for_incomplete_cycle(self):
+    def test_timeout_preserves_partial_output_without_measurement_for_incomplete_cycle(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             with self.assertRaises(subprocess.TimeoutExpired):
@@ -161,7 +200,7 @@ def ide_memory_failure(identity):
             saved = json.loads((root / "measurements/measurements.json").read_text())
             self.assertEqual(len(saved["rows"]), 1)
 
-    def test_unproven_native_result_or_disposal_stops_before_next_observation(self):
+    def test_unproven_native_result_or_disposal_stops_before_next_observation(self) -> None:
         for kwargs in ({"verdict": "UNKNOWN"}, {"disposed": False}):
             with self.subTest(kwargs=kwargs), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory).resolve()
@@ -170,12 +209,12 @@ def ide_memory_failure(identity):
                 self.assertTrue((root / "measurements/cycle-01.json").is_file())
                 self.assertFalse((root / "measurements/cycle-01.histo").exists())
 
-    def test_same_class_in_multiple_classloaders_is_summed(self):
+    def test_same_class_in_multiple_classloaders_is_summed(self) -> None:
         name, key = next(iter(reproduction.COUNTED_CLASSES.items()))
         counts = reproduction.histogram_counts(f"1: 2 32 {name}\n2: 3 48 {name}\nTotal 5 80\n")
         self.assertEqual(counts[key], 5)
 
-    def test_missing_platform_project_class_stops_before_helper_open(self):
+    def test_missing_platform_project_class_stops_before_helper_open(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             with self.assertRaises(ValueError):
@@ -183,14 +222,14 @@ def ide_memory_failure(identity):
             self.assertTrue((root / "measurements/cycle-00.histo").is_file())
             self.assertFalse((root / "measurements/fixtures").exists())
 
-    def test_older_helper_is_refused_before_measurements_or_fixtures_are_created(self):
+    def test_older_helper_is_refused_before_measurements_or_fixtures_are_created(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             with self.assertRaises(ValueError):
                 self.exercise(root, self.properties(root), older_helper=True)
             self.assertFalse((root / "measurements").exists())
 
-    def test_artifact_bytes_distinguish_builds_with_the_same_fingerprint(self):
+    def test_artifact_bytes_distinguish_builds_with_the_same_fingerprint(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory).resolve()
             self.exercise(root, self.properties(root))
@@ -204,7 +243,7 @@ def ide_memory_failure(identity):
             self.assertNotEqual(changed, digests)
 
     @unittest.skipUnless(hasattr(os, "killpg"), "POSIX process groups")
-    def test_helper_timeout_terminates_the_real_child_beneath_its_launcher(self):
+    def test_helper_timeout_terminates_the_real_child_beneath_its_launcher(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             ready = root / "ready"
@@ -224,7 +263,7 @@ def ide_memory_failure(identity):
             original_wait = subprocess.Popen.wait
             forced_timeout = False
 
-            def expired(process, timeout=None):
+            def expired(process: subprocess.Popen[str], timeout: float | None = None) -> int:
                 nonlocal forced_timeout
                 if not forced_timeout:
                     forced_timeout = True
@@ -239,8 +278,9 @@ def ide_memory_failure(identity):
                 with (root / "stdout").open("w") as stdout, (root / "stderr").open("w") as stderr:
                     with patch.object(subprocess.Popen, "wait", expired):
                         with self.assertRaises(subprocess.TimeoutExpired):
-                            reproduction.run_helper([sys.executable, "-c", launcher_code],
-                                                    env=dict(os.environ), stdout=stdout, stderr=stderr)
+                            reproduction.run_helper(
+                                [sys.executable, "-c", launcher_code], env=dict(os.environ), stdout=stdout, stderr=stderr
+                            )
                 deadline = time.monotonic() + 5
                 while not terminated.exists() and time.monotonic() < deadline:
                     time.sleep(0.01)
@@ -248,10 +288,8 @@ def ide_memory_failure(identity):
                 self.assertEqual((root / "stdout").read_text(), "partial diagnostic\n")
             finally:
                 if ready.exists() and not terminated.exists():
-                    try:
+                    with suppress(ProcessLookupError):
                         os.killpg(int(ready.read_text()), signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
 
 
 if __name__ == "__main__":
