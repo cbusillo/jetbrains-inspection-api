@@ -2,6 +2,7 @@ package com.shiny.inspectionmcp
 
 import com.intellij.codeInspection.ex.InspectListener
 import com.intellij.codeInspection.ex.InspectionToolWrapper
+import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.psi.PsiFile
@@ -9,6 +10,7 @@ import io.mockk.every
 import io.mockk.mockk
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 class NativeInspectionCompletionObservationTest {
     private val path = "/project/app.py"
@@ -74,6 +76,18 @@ class NativeInspectionCompletionObservationTest {
         assertThat(diagnostic["enumeration_complete"]).isEqualTo(false)
         assertThat(diagnostic["candidate_rule_would_block_clean"]).isNull()
         assertThat(diagnostic["unavailable_reason"]).isEqualTo(IllegalStateException::class.java.simpleName)
+    }
+
+    @Test
+    fun `cancellation during enumeration or classification propagates instead of becoming a diagnostic`() {
+        val observation = NativeInspectionCompletionObservation()
+        assertThrows<ProcessCanceledException> {
+            observation.observeCandidates { throw ProcessCanceledException() }
+        }
+        observation.observeCandidates { it.candidate(tool(), path) }
+        assertThrows<ProcessCanceledException> {
+            observation.classifyMissingCompletions { throw ProcessCanceledException() }
+        }
     }
 
     @Test

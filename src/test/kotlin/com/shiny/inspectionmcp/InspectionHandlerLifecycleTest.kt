@@ -944,6 +944,27 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @Test
+    fun `test Python SDK preparation worker reports cancellation as cancelled rather than failed`() {
+        every { mockProject.basePath } returns "/repo/app"
+        every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"
+        val instanceId = projectInstanceId(mockProject)
+        registerLifecycleOpenOwnership(mockProject)
+        val claim = processGetRequest(
+            "/api/inspection/lifecycle/claim?worktree_path=/repo/app&project_instance_id=$instanceId&lease_id=test-lease"
+        ).content().toString(Charsets.UTF_8)
+        val token = requireNotNull(Regex("\"close_token\": \"([^\"]+)\"").find(claim)?.groupValues?.get(1))
+        handler.pythonSdkPreparationExecutor = { worker -> worker.run() }
+        handler.schedulePythonSdkPreparationTimeout = { _, _ -> {} }
+        handler.pythonSdkPreparationRunner = { throw com.intellij.openapi.progress.ProcessCanceledException() }
+
+        val response = processRequest(pythonSdkPreparationUri(instanceId, token), HttpMethod.POST)
+
+        val body = response.content().toString(Charsets.UTF_8)
+        assertTrue(body.contains("\"reason\": \"python_sdk_preparation_cancelled\""), body)
+        assertTrue(body.contains("\"classification\": \"legitimate_fail_closed\""), body)
+    }
+
+    @Test
     fun `test Python SDK preparation refuses missing ownership and forbidden interpreter input`() {
         every { mockProject.basePath } returns "/repo/app"
         every { mockProject.projectFilePath } returns "/repo/app/.idea/misc.xml"

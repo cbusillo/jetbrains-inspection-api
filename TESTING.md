@@ -636,10 +636,12 @@ execution, direct presentation access, lifecycle cleanup, and native
 attestation that the supported bounded `inspectEx` path cannot provide.
 
 Plugin code must not turn a cancelled read action or progress into a fallback
-value. `scripts/lint-cancellation-catches.py` accepts a `catch (e: Exception)`
-only when it passes the exception to `rethrowIfCanceled` (or another named
-cancellation handler), ends by throwing it, keeps it for a later throw, or
-follows a `ProcessCanceledException` catch.
+value. `scripts/lint-cancellation-catches.py` accepts a catch of `Exception`,
+`RuntimeException`, or `Throwable` only when it passes the exception to
+`rethrowIfCanceled` (or another named cancellation handler), ends by throwing
+it, keeps it for a later throw, follows a `ProcessCanceledException` catch, or
+explains in a `// Cancellation:` comment why it is safe, such as a failure
+carried to another thread that rethrows it.
 
 When an intentional Stable implementation change alters verifier findings,
 review the complete `missing`/`unexpected` diff from `verifyPlugin`, update the

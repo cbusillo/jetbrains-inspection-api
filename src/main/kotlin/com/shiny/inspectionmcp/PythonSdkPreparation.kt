@@ -733,6 +733,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
                     }
                 }
             } catch (error: Throwable) {
+                rethrowIfCanceled(error)
                 return PythonSdkCommitResult(
                     false,
                     "python_sdk_preparation_registration_failed",
@@ -747,6 +748,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
                 ApplicationManager.getApplication().getService(HelperSdkOwnershipRegistry::class.java)
                     .recordAddedSdk(sdk, worktreeRoot)
             } catch (error: Throwable) {
+                rethrowIfCanceled(error)
                 return PythonSdkCommitResult(
                     false,
                     "python_sdk_preparation_registration_failed",
@@ -768,6 +770,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             ProjectRootManager.getInstance(project).projectSdk = sdk
         } catch (error: Throwable) {
             models.forEach { model -> runCatching { model.dispose() } }
+            rethrowIfCanceled(error)
             return PythonSdkCommitResult(
                 false,
                 "python_sdk_preparation_assignment_failed",
