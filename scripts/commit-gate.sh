@@ -36,8 +36,9 @@ done
 
 if lane_selected contracts; then
     uv run scripts/lint-workflow-action-pins.py .github/workflows
-    uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --manifest config/plugin-verifier/stable-internal-api-allowlist.txt
+    uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --sources src/full/kotlin --sources src/stable/kotlin --boundary src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt --manifest config/plugin-verifier/full-internal-api-allowlist.txt
     uv run scripts/lint-cancellation-catches.py --sources src/main/kotlin
+    ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/full-internal-api-allowlist.txt >/dev/null
     ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt >/dev/null
     ./scripts/test-changed-file-lanes.sh
     uv run scripts/test-ide-retention.py
@@ -54,6 +55,10 @@ fi
 
 source "$ROOT/scripts/java21.sh"
 use_java21
+
+# Stable build: no internal API use beyond its exempted allowlist, and truthful verdicts without them.
+./gradlew buildPlugin verifyPlugin -PinspectionBuild=stable -PpluginVerifierIdes=target
+./gradlew :platformTest -PinspectionBuild=stable --tests '*.StableBuildVerdictPlatformTest'
 
 ./gradlew :test
 ./gradlew :inspection-core:jacocoTestCoverageVerification

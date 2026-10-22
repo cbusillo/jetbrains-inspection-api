@@ -45,5 +45,6 @@ rm -rf build/reports/pluginVerifier
   --no-build-cache \
   --no-daemon \
   verifyPlugin \
+  -PinspectionBuild=stable \
   "-PpluginVersion=$VERSION" \
   "-PpluginVerificationArchive=$ARCHIVE"

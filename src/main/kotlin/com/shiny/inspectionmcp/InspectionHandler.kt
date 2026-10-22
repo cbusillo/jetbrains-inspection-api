@@ -5,7 +5,7 @@ import com.intellij.codeInsight.daemon.HighlightDisplayKey
 import com.intellij.codeInspection.InspectionEngine
 import com.intellij.codeInspection.InspectionProfile
 import com.intellij.codeInspection.InspectionManager
-import com.intellij.codeInspection.ex.GlobalInspectionContextEx
+import com.intellij.codeInspection.ex.GlobalInspectionToolWrapper
 import com.intellij.codeInspection.ex.InspectionManagerEx
 import com.intellij.codeInspection.ex.InspectionProfileImpl
 import com.intellij.ide.DataManager
@@ -2260,6 +2260,10 @@ class InspectionHandler : HttpRequestHandler() {
                     "Inspection execution exhausted its proof budget. Stop retrying and report the exact-proof tool, file, and worker diagnostic; do not report GREEN."
                 UNPROVEN_C_FAMILY_BATCH_ANNOTATOR_REASON, UNPROVEN_BATCH_ANNOTATOR_REASON ->
                     unprovenBatchAnnotatorNextAction(diagnostic?.get("execution_proof_unproven_batch_annotators") as? List<*>)
+                STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON ->
+                    "This is the Marketplace Stable build. It cannot prove that a whole-project or directory inspection is clean, because that proof needs IntelliJ APIs not yet approved for Stable. Any findings it reports are real. For a clean verdict, inspect files with the current_file, files, or changed_files scope, or use the full build. Do not report GREEN."
+                STABLE_BUILD_GLOBAL_SIMPLE_UNPROVEN_REASON ->
+                    "This is the Marketplace Stable build. The inspection profile enables inspections that run only in the IDE's full per-file pass, which Stable cannot run, so it cannot prove these files are clean. Any findings it reports are real. Use the full build for a clean verdict. Do not report GREEN."
                 "native_attestation_context_creation_failed" ->
                     "Update or reinstall the inspection plugin, restart the IDE, and include execution_proof diagnostics if native attestation remains unavailable."
                 "native_inspection_failures", "native_inspection_reported_problems" ->
@@ -7222,13 +7226,15 @@ class InspectionHandler : HttpRequestHandler() {
             } else {
                 null
             }
+            val nativeAttestationUnavailableReason = InspectionBuildEdition.nativeAttestationUnavailableReason
             val globalContext = if (nativeProofCollector == null) {
+                GlobalInspectionContextBoundary.create(inspectionManager)
+            } else if (nativeAttestationUnavailableReason != null) {
+                nativeProofCollector.markUnavailable(nativeAttestationUnavailableReason)
                 GlobalInspectionContextBoundary.create(inspectionManager)
             } else {
                 try {
-                    nativeProofConnection = project.messageBus.connect().apply {
-                        subscribe(GlobalInspectionContextEx.INSPECT_TOPIC, nativeProofCollector)
-                    }
+                    nativeProofConnection = InspectionBuildEdition.subscribeNativeProofEvents(project, nativeProofCollector)
                     nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                 } catch (error: Throwable) {
                     runCatching { nativeProofConnection?.disconnect() }
@@ -7439,6 +7445,8 @@ class InspectionHandler : HttpRequestHandler() {
                                         }
                                         boundedProof = unprovenBatchAnnotators?.let {
                                             proofRun.copy(skippedReason = it.reason, unprovenBatchAnnotatorExamples = it.examples)
+                                        } ?: unprovenFilePassReason(proofRun, globalContext)?.let {
+                                            proofRun.copy(skippedReason = it)
                                         } ?: proofRun
                                         proofFindings = proofRun.proofProblems
                                     } catch (e: Exception) {
@@ -10522,6 +10530,27 @@ class InspectionHandler : HttpRequestHandler() {
         val errorCount: Int,
         val errorExamples: List<Map<String, Any?>>,
     )
+
+    // Exact proof runs local tools only; global-simple tools run in the native per-file pass.
+    private fun unprovenFilePassReason(
+        proof: BoundedExecutionProofResult,
+        globalContext: GlobalInspectionContextBoundary,
+    ): String? {
+        val reason = InspectionBuildEdition.nativeFilePassUnavailableReason ?: return null
+        if (!proof.proofEstablished) return null
+        val enabledGlobalSimpleTool = try {
+            globalContext.toolGroups().any { toolGroup ->
+                toolGroup.tools.any { state ->
+                    val wrapper = state.tool
+                    state.isEnabled && wrapper is GlobalInspectionToolWrapper && wrapper.tool.isGlobalSimpleInspectionTool
+                }
+            }
+        } catch (error: Exception) {
+            rethrowIfCanceled(error)
+            true
+        }
+        return reason.takeIf { enabledGlobalSimpleTool }
+    }
 
     private fun resolveEnabledLocalToolShortNames(
         globalContext: GlobalInspectionContextBoundary,

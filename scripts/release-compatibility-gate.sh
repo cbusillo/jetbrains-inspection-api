@@ -8,4 +8,5 @@ cd "$ROOT"
 source "$ROOT/scripts/java21.sh"
 use_java21
 
-./gradlew buildPlugin verifyPluginStructure verifyPlugin
+./gradlew buildPlugin verifyPluginStructure verifyPlugin -PinspectionBuild=stable
+./gradlew buildPlugin verifyPluginStructure verifyPlugin -PinspectionBuild=full
