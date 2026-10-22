@@ -592,7 +592,7 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 - `shellcheck --severity=warning scripts/*.sh`
 - `./scripts/commit-gate.sh --ci`
 
-The commit gate sync-checks `plugin.xml` against `gradle.properties`, runs the
+The commit gate runs the
 action-pin and inspection-boundary linters, the exact internal-API manifest
 validator, and fixture-based release contract tests. It requires Java 21, then
 runs plugin tests,

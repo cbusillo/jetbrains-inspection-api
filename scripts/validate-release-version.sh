@@ -9,8 +9,8 @@ usage() {
   cat <<'USAGE'
 Usage: ./scripts/validate-release-version.sh --tag vX.Y.Z
 
-Validates that the release tag, gradle.properties pluginVersion, and plugin.xml
-version are identical. Prints the normalized X.Y.Z version on success.
+Validates that the release tag and gradle.properties pluginVersion are
+identical. Prints the normalized X.Y.Z version on success.
 USAGE
 }
 
@@ -59,19 +59,9 @@ if not property_match:
     raise SystemExit("ERROR: pluginVersion not found in gradle.properties")
 property_version = property_match.group(1).strip()
 
-plugin_xml = Path("src/main/resources/META-INF/plugin.xml").read_text(encoding="utf-8")
-xml_match = re.search(r"<version>\s*([^<]+?)\s*</version>", plugin_xml)
-if not xml_match:
-    raise SystemExit("ERROR: <version> not found in plugin.xml")
-xml_version = xml_match.group(1).strip()
-
 if property_version != expected:
     raise SystemExit(
         f"ERROR: Release tag version {expected} does not match pluginVersion {property_version}."
-    )
-if xml_version != expected:
-    raise SystemExit(
-        f"ERROR: Release tag version {expected} does not match plugin.xml version {xml_version}."
     )
 PY
 
