@@ -23,15 +23,18 @@ permissions.
 
 The local/CI commands are declared in `.github/github.json`. Replace the
 local placeholders with the affected module task and test class or method,
-for example `./gradlew :mcp-server-jvm:test --tests '*McpServerTest'`.
+for example `./gradlew :mcp-server-jvm:test --tests '*McpServerTest' -x :platformTest`.
+Plain plugin unit tests use `:test` with that exclusion; `:test` otherwise
+depends on the entire platform suite. For platform fixtures, use
+`./gradlew :platformTest --tests '*SelectedPlatformTest'` instead. These run
+in a separate JVM from plugin unit tests to isolate the real test application.
 Maintenance helpers use their focused Python or shell fixture module directly.
 Run workflow and shell lint alongside the selected tests. Safety changes also
 run the complete affected modules described in `AGENTS.md`.
 
-Do not run `test-all.sh` or the full commit gate locally for routine readiness.
+Do not run the full commit gate locally.
 CI runs that complete gate on every PR head, main push and train branch; all
-required checks must pass before `ready`. The full gate scripts remain the
-entrypoints for CI and release automation. Installed IDE smoke and licensed
+required checks must pass before `ready`. The full gate remains the entrypoint for CI and release automation. Installed IDE smoke and licensed
 SDK qualification below remain separate evidence, not substitutes for CI.
 
 ## Isolated Python/uv SDK controls

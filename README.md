@@ -1062,7 +1062,7 @@ Release notes live on GitHub Releases:
 
 Release publishing is tag-based, but release preparation must go through a pull
 request. `scripts/release.sh` creates a `release/vX.Y.Z` task branch, runs the
-full release gates, pushes that branch, and opens a PR into the protected
+release-specific gates, pushes that branch, and opens a PR into the protected
 default branch. After the PR merges, its separate `tag` mode verifies that the
 tag and `pluginVersion` match before pushing the tag.
 The tag-triggered GitHub Actions workflow also proves the tag points at the
