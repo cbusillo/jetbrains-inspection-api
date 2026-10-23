@@ -958,20 +958,12 @@ JETBRAINS_INSPECTION_REGISTRY_DIR=/tmp/inspection-ides java -jar /path/to/plugin
 JETBRAINS_INSPECTION_PORTS=63340-63350 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
-## Optional commit gate
+## Test gates
 
-This repo ships a shared commit gate script in `scripts/commit-gate.sh`.
-To use it as a git hook:
-
-```bash
-ln -s "$(git rev-parse --show-toplevel)/scripts/commit-gate.sh" "$(git rev-parse --git-path hooks)/pre-commit"
-```
-
-Notes:
-- Install `uv` for the gate linters and their behavioral fixture tests.
-- Set `JAVA_HOME_21` if `/usr/libexec/java_home -v 21` is unavailable.
-- CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
-- Documentation-only commits skip the Gradle lanes; see `TESTING.md` for how lanes are chosen.
+Use the focused local command and complete CI command declared in
+`.github/github.json`; [testing](TESTING.md#local-commands) explains selection,
+required safety modules and the optional legacy commit hook. The full gate runs
+on every PR head and must pass before `ready` or merge.
 
 ## Known Limitations
 

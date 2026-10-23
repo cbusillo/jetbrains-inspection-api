@@ -21,35 +21,18 @@ permissions.
 
 ## Local commands
 
-```bash
-# Plugin tests
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew test
+The local/CI commands are declared in `.github/github.json`. Replace the
+local placeholders with the affected module task and test class or method,
+for example `./gradlew :mcp-server-jvm:test --tests '*McpServerTest'`.
+Maintenance helpers use their focused Python or shell fixture module directly.
+Run workflow and shell lint alongside the selected tests. Safety changes also
+run the complete affected modules described in `AGENTS.md`.
 
-# Real-fixture plugin tests only (*PlatformTest); `:test` runs these first, in their own JVM,
-# because a real test Application and mockkStatic(ApplicationManager) classes must not share one
-JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest
-
-# Core tests
-./gradlew :inspection-core:test
-
-# MCP server tests
-./gradlew :mcp-server-jvm:test
-
-# Focused MCP auto-routing coverage lives in McpServerTest and covers
-# inspection_list_projects, project_path routing, duplicate-name ambiguity,
-# accepted-run pinning, run replacement, and triggered-scope carry-forward.
-
-# MCP server jar
-./gradlew :mcp-server-jvm:mcpServerJar
-
-# Full commit gate (script contracts, plugin/core/MCP tests, coverage gates and plugin build)
-./scripts/test-all.sh
-```
-
-`test-all.sh` delegates to `commit-gate.sh --ci`, so release preparation and the
-Test All run configuration run the complete gate even with no staged changes.
-For local plugin rollout, rollback, and diagnosis techniques, see
-[the maintainer guide](MAINTAINING.md).
+Do not run `test-all.sh` or the full commit gate locally for routine readiness.
+CI runs that complete gate on every PR head, main push and train branch; all
+required checks must pass before `ready`. The full gate scripts remain the
+entrypoints for CI and release automation. Installed IDE smoke and licensed
+SDK qualification below remain separate evidence, not substitutes for CI.
 
 ## Isolated Python/uv SDK controls
 
@@ -603,16 +586,14 @@ verification task depends on its module's tests and report, so tests are not run
 twice. The plugin module has a JaCoCo report but no coverage threshold, because
 IntelliJ classloader isolation prevents reliable plugin instrumentation.
 
-The gate runs only the lanes the change needs. `scripts/changed-file-lanes.sh`
-maps changed paths to lanes: documentation-only changes skip both lanes;
-workflow and script changes normally run the contract tests
-without Gradle. Changes to the gate's own inputs, as listed in that script,
-run both lanes; anything else (including an unknown change set) runs everything.
-The local hook classifies staged files; CI passes the pull request's file list
-through `COMMIT_GATE_CHANGED_FILES`. Pushes to `main`, merge-train branches,
-and the tag-triggered release workflow always run the full gate. The CI job
-reports its duration against a 300-second budget in the job summary and raises
-a warning annotation when it is exceeded.
+CI always runs both contract and Gradle lanes. The optional legacy local
+hook still classifies staged paths with `scripts/changed-file-lanes.sh`; it can
+run broad Gradle tests and is not the focused local command. If it would run
+the complete suite or launch a prohibited IDE process, run the selected local
+checks explicitly and use Git's `--no-verify` for that commit, recording the
+checks and missing platform evidence in the PR. No CI check is bypassed.
+The CI job reports its duration against a 300-second budget in the job summary
+and raises a warning annotation when it is exceeded.
 
 The required status check is `commit-gate`. CodeQL is enforced separately by
 the code-scanning ruleset and thresholds recorded in `.github/github.json`;
