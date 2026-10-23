@@ -45,6 +45,24 @@ workflows, and cleanup policy.
 
 ## Test rules
 
+- Use `qualityGate.test.local` in `.github/github.json` for focused tests of
+  changed behavior, plus required workflow/shell lint and IDE inspection.
+  Substitute a unit-test task and class/method filter; use the separate focused
+  platform-test command documented in `TESTING.md` for platform fixtures. Run
+  maintenance-Python or shell fixture modules directly when those helpers change. The complete
+  `qualityGate.test.ci` gate runs only in CI and must pass for the current PR
+  head before `ready` or merge. See `TESTING.md` for test surfaces.
+- For safety, authorization, approval rules, destructive helpers and shared
+  infrastructure,
+  also run the complete local test modules exercising the changed area and its
+  callers. Trace inspection trust/cancellation to plugin/core/MCP tests,
+  installation/recovery to smoke-lifecycle and red-lane fixtures, retention to
+  IDE-retention fixtures, and release/publication to release-contract and
+  agents-release fixtures. Also run `cancellationCatchLint`,
+  `inspectionBoundaryLint` and `internalApiManifest` for their respective
+  changed boundaries, plus `stableBuild` for Stable internal-API/verdict changes,
+  using the commands in `.github/github.json`. Preserve required platform
+  evidence as missing when it cannot run; green CI does not waive a required local module.
 - A test stays only if it fails when the product is broken and passes when
   someone makes an intended change. Before adding or keeping a doubtful test,
   plant the fault it claims to guard against and confirm it fails.

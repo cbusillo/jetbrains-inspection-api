@@ -266,8 +266,6 @@ PY
 
 run_release_validation() {
   local version="$1"
-  ./scripts/test-all.sh
-
   if [ "$ASSUME_YES" -ne 1 ]; then
     echo ""
     echo "This will inspect the configured test project without installing or restarting the IDE."
@@ -300,7 +298,6 @@ open_release_pr() {
 
 ## Validation
 
-- \`./scripts/test-all.sh\`
 - \`./scripts/test-automated.sh\`
 - \`./scripts/release-compatibility-gate.sh\`
 EOF

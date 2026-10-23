@@ -12,12 +12,7 @@ if [ "$MODE" = "--ci" ] || [ "${CI:-}" = "true" ]; then
 fi
 
 selected_lanes() {
-    if [ -n "${COMMIT_GATE_CHANGED_FILES:-}" ]; then
-        if [ -r "$COMMIT_GATE_CHANGED_FILES" ]; then
-            ./scripts/changed-file-lanes.sh < "$COMMIT_GATE_CHANGED_FILES"
-            return
-        fi
-    elif [ "$CI_MODE" -eq 0 ]; then
+    if [ "$CI_MODE" -eq 0 ]; then
         git diff --cached --name-only --no-renames | ./scripts/changed-file-lanes.sh
         return
     fi

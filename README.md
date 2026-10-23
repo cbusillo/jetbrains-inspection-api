@@ -958,20 +958,12 @@ JETBRAINS_INSPECTION_REGISTRY_DIR=/tmp/inspection-ides java -jar /path/to/plugin
 JETBRAINS_INSPECTION_PORTS=63340-63350 java -jar /path/to/plugin/lib/jetbrains-inspection-mcp.jar
 ```
 
-## Optional commit gate
+## Test gates
 
-This repo ships a shared commit gate script in `scripts/commit-gate.sh`.
-To use it as a git hook:
-
-```bash
-ln -s "$(git rev-parse --show-toplevel)/scripts/commit-gate.sh" "$(git rev-parse --git-path hooks)/pre-commit"
-```
-
-Notes:
-- Install `uv` for the gate linters and their behavioral fixture tests.
-- Set `JAVA_HOME_21` if `/usr/libexec/java_home -v 21` is unavailable.
-- CI uses `./scripts/commit-gate.sh --ci` to enforce the same checks.
-- Documentation-only commits skip the Gradle lanes; see `TESTING.md` for how lanes are chosen.
+Use the focused local command and complete CI command declared in
+`.github/github.json`; [testing](TESTING.md#local-commands) explains selection,
+required safety modules and the optional legacy commit hook. The full gate runs
+on every PR head and must pass before `ready` or merge.
 
 ## Known Limitations
 
@@ -1070,7 +1062,7 @@ Release notes live on GitHub Releases:
 
 Release publishing is tag-based, but release preparation must go through a pull
 request. `scripts/release.sh` creates a `release/vX.Y.Z` task branch, runs the
-full release gates, pushes that branch, and opens a PR into the protected
+release-specific gates, pushes that branch, and opens a PR into the protected
 default branch. After the PR merges, its separate `tag` mode verifies that the
 tag and `pluginVersion` match before pushing the tag.
 The tag-triggered GitHub Actions workflow also proves the tag points at the
@@ -1138,9 +1130,10 @@ Shortcut:
 ```
 
 Prepare mode never commits or pushes directly to `main` and never creates a
-tag. Use `--no-push` to keep the release branch local. It runs the comprehensive
-test suite, automated IDE test, commit gate, and release compatibility gate; the
-release script prompts before the inspection-only IDE test unless you pass
+tag. Use `--no-push` to keep the release branch local. It runs the automated
+IDE test, release compatibility gate and version validation. The full test
+gate runs in CI on the release PR and tag. The release script prompts before
+the inspection-only IDE test unless you pass
 `--yes`; that test does not install the plugin or restart the IDE. Tag mode
 requires a clean local default branch that exactly matches the remote default
 branch and refuses existing or version-mismatched tags.
