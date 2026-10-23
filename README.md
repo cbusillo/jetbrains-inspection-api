@@ -1130,9 +1130,10 @@ Shortcut:
 ```
 
 Prepare mode never commits or pushes directly to `main` and never creates a
-tag. Use `--no-push` to keep the release branch local. It runs the comprehensive
-test suite, automated IDE test, commit gate, and release compatibility gate; the
-release script prompts before the inspection-only IDE test unless you pass
+tag. Use `--no-push` to keep the release branch local. It runs the automated
+IDE test, release compatibility gate and version validation. The full test
+gate runs in CI on the release PR and tag. The release script prompts before
+the inspection-only IDE test unless you pass
 `--yes`; that test does not install the plugin or restart the IDE. Tag mode
 requires a clean local default branch that exactly matches the remote default
 branch and refuses existing or version-mismatched tags.
