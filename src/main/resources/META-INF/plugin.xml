@@ -1,7 +1,6 @@
 <idea-plugin>
     <id>com.shiny.inspection.api</id>
     <name>Inspection API</name>
-    <vendor email="info@shinycomputers.com" url="https://github.com/cbusillo/jetbrains-inspection-api">Shiny Computers (Chris Busillo)</vendor>
     <resource-bundle>messages.InspectionApiBundle</resource-bundle>
     
     <description><![CDATA[
