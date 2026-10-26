@@ -39,6 +39,9 @@ if lane_selected contracts; then
     uv run scripts/test-smoke-lifecycle.py
     ./scripts/test-red-lane-smoke-script.sh
     uv run scripts/test-ide-retention.py
+    for desktop_client_test in scripts/desktop-client/test_*.py; do
+        uv run "$desktop_client_test"
+    done
     ./scripts/test-release-contracts.sh
     uv run scripts/test-agents-release.py
 else

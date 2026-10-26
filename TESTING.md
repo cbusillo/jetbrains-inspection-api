@@ -99,11 +99,11 @@ evidence.
    For an owned test copy outside the configured trusted roots, set
    `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
    command. Leave the original fixture unchanged.
-2. Ask the agent to run `jb-inspect.py agent-inspect --json` on that exact copy
+2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
    `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
-   `--ide-version 2026.2`. Use the installed helper path and its normal trusted
+   `--ide-version 2026.2`. Use the in-repo desktop client and its normal trusted
    project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
    assurance comes from the helper's enforced worktree match. The compact JSON
    does not include the route base path, so retain the exact command to show
@@ -123,15 +123,17 @@ The configured assessment prepares the ignored `scripts/.venv` and
 `scripts/.idea` through the maintained generator, with dependency metadata
 from `install-local-plugin.py`. All current maintenance scripts use the
 standard library; extend that PEP 723 input set if their dependencies change.
-The root Java/Gradle bindings are preserved. This uses the nested structured
-preparation added in [codex-skills#2034](https://github.com/cbusillo/codex-skills/issues/2034);
-use a catalog containing that change. Start `agent-inspect` directly from the
-linked worktree; it runs each selected lane against its own project and SDK.
-Preparation alone does not prove IDE readiness or a decisive inspection.
+The root Java/Gradle bindings are preserved. The in-repo desktop client's
+`inspect-closeout` runs this preparation and each selected lane against its own
+project and SDK. Preparation alone does not prove IDE readiness or a decisive
+inspection.
 
-The external `jetbrains-inspection` skill uses `scripts/jb-inspect.py` as the
-primary agent-facing wrapper around this plugin's HTTP API (preferred for agent
-workflows while MCP remains supported).
+Agents inspect code through the catalog `jetbrains-inspection` skill's isolated
+native workers, which never call this plugin. This plugin's own smokes use
+`scripts/desktop-client/jb-inspect.py`, the catalog helper's desktop client as
+it stood before that route was retired
+([codex-skills#2804](https://github.com/cbusillo/codex-skills/issues/2804)).
+Its unit tests live beside it.
 
 ### Project-retention reproduction
 
@@ -218,27 +220,16 @@ for source-to-runtime recovery.
 
 ### Running the helper
 
-Run the helper from the
-installed or checked-out skill when validating behavior the agents rely on:
+Run the in-repo desktop client when validating the plugin's HTTP behavior:
 
 ```bash
-# Set this to the jetbrains-inspection skill directory reported by your agent.
-HELPER="/path/to/jetbrains-inspection/scripts/jb-inspect.py"
-uv run "$HELPER" agent-inspect \
-  --repo "$PWD" \
-  --scope changed_files
-```
-
-For agent readiness, `agent-inspect` reports a compact verdict and explicit
-cleanup status. Use `inspect-closeout` when fuller diagnostics are needed:
-
-```bash
+HELPER="scripts/desktop-client/jb-inspect.py"
 uv run "$HELPER" inspect-closeout \
   --repo "$PWD" \
   --scope changed_files
 ```
 
-Both commands serialize helper-owned IDE opens, require an exact
+It serializes helper-owned IDE opens, require an exact
 current-worktree route, run inspection, and call the plugin lifecycle close
 endpoint only for projects opened by the helper. Projects that were open before
 the helper started are left open. On macOS, lifecycle opens use `open -g` by
@@ -336,7 +327,7 @@ Agent-facing reports from plugin endpoint responses should use
 and `inspection_verdict_next_action`. `GREEN` means the inspection worked and
 found no actionable findings for the selected scope/filter, `RED` means the
 inspection worked and returned actionable findings, and `UNKNOWN` means the
-tooling did not prove either state. The external `jb-inspect.py` helper may wrap
+tooling did not prove either state. The in-repo desktop client may wrap
 these fields in its own compact `agent_result` envelope with retry policy for
 agent workflows.
 Snapshot-less `/problems` calls return `no_results`/`UNKNOWN` rather than using a
@@ -388,7 +379,7 @@ workstream.
 Use `./scripts/dogfood-red-lane-smoke.sh` when changing verdict semantics,
 capture behavior, extraction, helper readiness inspection, or release readiness.
 It copies a maintained known-bad project fixture to a disposable local project,
-runs the external `jb-inspect.py inspect-closeout`, and requires `VERDICT=RED`,
+runs the in-repo desktop client's `inspect-closeout`, and requires `VERDICT=RED`,
 `total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
 `RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
 still fails on invalid JSON or missing cleanup.
@@ -424,14 +415,13 @@ but must still end in a trustworthy RED with cleanup `closed`.
   --json-out tmp/dogfood-red-lane-webstorm.json
 ```
 
-Set `HELPER` to the maintained skill path as above.
+Set `HELPER` to the in-repo desktop client as above.
 The smoke checks out a linked worktree and opens only the selected fixture
 subproject. On Chris-Studio, omit `--work-root`: `dev-worktree` validates the
 Developer-Artifacts volume and chooses the canonical worktree path. Portable
-hosts must pass their approved parent with `--work-root`. Source helper lookup
-uses `codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py`; it never
-silently falls back to another installed revision. Set `JB_INSPECT_HELPER` or
-pass `--helper` to select a different maintained installation explicitly.
+hosts must pass their approved parent with `--work-root`. The smoke uses the
+in-repo `scripts/desktop-client/jb-inspect.py`; set `JB_INSPECT_HELPER` or pass
+`--helper` to select another client explicitly.
 
 The report records the exact project, worktree, helper command, evidence directory,
 native `plugin_build_fingerprint`, and `worktree_retirement`. Without
@@ -534,7 +524,7 @@ validation.
 ## Dogfood smoke matrix
 
 `./scripts/dogfood-smoke-matrix.sh` wraps
-`jb-inspect.py inspect-closeout`, includes this repo by default, includes
+the in-repo desktop client's `inspect-closeout`, includes this repo by default, includes
 `~/Developer/mediaforce` when present, and runs both preexisting-project and
 helper-opened worktree cases.
 

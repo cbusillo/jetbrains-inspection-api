@@ -5,7 +5,7 @@ set -uo pipefail
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 1
 
-HELPER="${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}"
+HELPER="${JB_INSPECT_HELPER:-$ROOT/scripts/desktop-client/jb-inspect.py}"
 WORKTREE_TOOL="$ROOT/scripts/smoke-worktree.py"
 
 CASE_FILTER="all"

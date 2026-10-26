@@ -102,4 +102,4 @@ mcp-server/coverage/
 # Generated Python inspection project; root Gradle bindings stay shared.
 /scripts/.venv/
 /scripts/.idea/
-/scripts/__pycache__/
+/scripts/**/__pycache__/

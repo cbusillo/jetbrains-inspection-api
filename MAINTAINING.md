@@ -148,8 +148,8 @@ accepted solely from an installation receipt.
    requiring available identity fields to agree. The smoke wrapper reports the native
    `.identity.plugin_build_fingerprint`; require it to agree with the payload. Run the product-specific
    [red-lane dogfood](TESTING.md#red-lane-dogfood) once per target IDE, using an
-   approved/trusted `SMOKE_ROOT`, an explicit `--helper "$HELPER"` selecting the
-   maintained skill, `--keep-project` (and `--work-root` on portable hosts), and a separate
+   approved/trusted `SMOKE_ROOT`, the in-repo desktop client (or an explicit `--helper`),
+   `--keep-project` (and `--work-root` on portable hosts), and a separate
    JSON evidence file for each product. Require the intended fingerprint,
    actionable `RED` with `agent_result.bucket=actionable_findings`, positive
    findings, exact fixture route, helper exit code at most 1, and cleanup `closed`.

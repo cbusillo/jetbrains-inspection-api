@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+DESKTOP_CLIENT = Path(__file__).resolve().parent / "desktop-client" / "jb-inspect.py"
 HOST_ROOT = Path("/Volumes/Developer-Artifacts/worktrees")
 
 
@@ -337,7 +338,7 @@ def main() -> int:
     delete = commands.add_parser("retire")
     delete.add_argument("--receipt", type=Path, required=True)
     delete.add_argument("--payload", type=Path, required=True)
-    delete.add_argument("--helper", type=Path, required=True)
+    delete.add_argument("--helper", type=Path, default=DESKTOP_CLIENT)
     delete.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
     try:

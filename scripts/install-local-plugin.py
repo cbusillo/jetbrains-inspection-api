@@ -24,6 +24,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+DESKTOP_CLIENT = Path(__file__).resolve().parent / "desktop-client" / "jb-inspect.py"
 PLUGIN = "jetbrains-inspection-api"
 
 
@@ -454,7 +455,7 @@ def main() -> None:
         required=True,
         help="Existing host-approved evidence directory",
     )
-    parser.add_argument("--helper", type=Path, required=True)
+    parser.add_argument("--helper", type=Path, default=DESKTOP_CLIENT)
     parser.add_argument(
         "--maintenance-window",
         action="store_true",
