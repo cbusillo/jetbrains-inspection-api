@@ -625,6 +625,25 @@ class LocalInstaller(unittest.TestCase):
         ):
             installer.quit_normally(Path("/IDE.app"), executable, 1)
 
+    def test_in_repo_desktop_client_resolves_a_bundle_config(self) -> None:
+        helper = installer.load_helper(installer.DESKTOP_CLIENT)
+        app = self.root / "PyCharm.app"
+        (app / "Contents/Resources").mkdir(parents=True)
+        (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleName": "PyCharm",
+            "CFBundleIdentifier": "com.jetbrains.pycharm",
+            "CFBundleShortVersionString": "2026.2",
+        }))
+        selector = "PyCharm2026.2"
+        product = helper.IDE_PRODUCTS["pycharm"]
+        (app / "Contents/Resources/product-info.json").write_text(
+            json.dumps({"dataDirectoryName": selector, "productCode": product.product_codes[0]})
+        )
+        expected = self.root / "Library/Application Support/JetBrains" / selector
+        (expected / "options").mkdir(parents=True)
+        with patch.object(Path, "home", return_value=self.root):
+            self.assertEqual(installer.app_config_dir(app, helper), expected)
+
     def test_bundle_config_selector_keeps_editions_separate(self) -> None:
         selectors = [
             "IntelliJIdea2026.2",

@@ -22,6 +22,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, TextIO
 
+DESKTOP_CLIENT = Path(__file__).resolve().parent / "desktop-client" / "jb-inspect.py"
 COUNTED_CLASSES = {
     "com.intellij.openapi.project.impl.ProjectImpl": "projects",
     "com.shiny.inspectionmcp.NativeAttestedGlobalInspectionContext": "native_contexts",
@@ -257,7 +258,7 @@ def main() -> int:
     parser.add_argument("--pid", type=int, required=True)
     parser.add_argument("--port", type=int, required=True)
     parser.add_argument("--jcmd", type=Path, required=True)
-    parser.add_argument("--helper", type=Path, required=True)
+    parser.add_argument("--helper", type=Path, default=DESKTOP_CLIENT)
     parser.add_argument("--ide", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cycles", type=int, default=20)

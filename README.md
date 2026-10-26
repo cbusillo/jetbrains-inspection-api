@@ -891,8 +891,8 @@ companion `inspection_verdict_reason`, `inspection_verdict_message`, and
 worked and found no actionable findings for the selected scope/filter, `RED`
 when inspection worked and returned actionable current findings, and `UNKNOWN`
 when the IDE/plugin/helper did not produce a trustworthy result. `UNKNOWN` is
-not clean and not red; report the included reason and next action. The external
-`jb-inspect.py` helper may wrap these fields in its own compact `agent_result`
+not clean and not red; report the included reason and next action. The in-repo
+desktop client (`scripts/desktop-client/jb-inspect.py`) may wrap these fields in its own compact `agent_result`
 envelope for agent workflows.
 
 ### Freshness Notes

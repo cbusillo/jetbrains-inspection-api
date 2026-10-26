@@ -13,6 +13,8 @@ from pathlib import Path
 from types import ModuleType
 from xml.etree import ElementTree
 
+DESKTOP_CLIENT = Path(__file__).resolve().parent / "desktop-client" / "jb-inspect.py"
+
 
 def trust_entries(tree: ElementTree.ElementTree, token: str) -> list[tuple[ElementTree.Element, ElementTree.Element]]:
     selected: list[tuple[ElementTree.Element, ElementTree.Element]] = []
@@ -68,7 +70,7 @@ def main() -> None:
     )
     parser.add_argument("--smoke-root", type=Path, required=True)
     parser.add_argument("--ide-app", type=Path, required=True)
-    parser.add_argument("--helper", type=Path, required=True)
+    parser.add_argument("--helper", type=Path, default=DESKTOP_CLIENT)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--artifact-root", type=Path)
     parser.add_argument("--maintenance-window", action="store_true")

@@ -2,7 +2,7 @@
 set -euo pipefail
 ROOT=$(git rev-parse --show-toplevel)
 cd "$ROOT"
-HELPER="${JB_INSPECT_HELPER:-$HOME/Developer/codex-skills/skills/jetbrains-inspection/scripts/jb-inspect.py}"
+HELPER="${JB_INSPECT_HELPER:-$ROOT/scripts/desktop-client/jb-inspect.py}"
 if [ "${1:-}" = "--install" ]; then
 	shift
 	exec uv run "$ROOT/scripts/install-local-plugin.py" --helper "$HELPER" "$@"

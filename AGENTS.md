@@ -30,10 +30,10 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
 - Plugin: Kotlin/Gradle, requires Java 21. Supported IDE builds are configured
   in `build.gradle.kts`.
 - MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
-- Agent inspection helper: the external `jetbrains-inspection` skill's
-  `scripts/jb-inspect.py` is the primary LLM-facing path for this plugin; keep
-  its status/clean/capture contracts in mind when changing HTTP inspection
-  behavior.
+- Desktop client: `scripts/desktop-client/jb-inspect.py` drives the plugin's
+  HTTP API for this repository's smokes; agents no longer inspect through the
+  plugin. Keep its status/clean/capture contracts in mind when changing HTTP
+  inspection behavior, and update it and its tests together.
 
 ## Always-on rules
 
@@ -46,8 +46,7 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
 - Prefer descriptive names to comments/docstrings; keep commentary minimal.
 - Avoid stale docs: keep this file evergreen and link to README for specifics.
 - If API status semantics, route metadata, clean/capture classification, or
-  MCP tool contracts change, check whether the installed or checked-out
-  `jetbrains-inspection` skill docs/tests/scripts need a matching update.
+  MCP tool contracts change, update the desktop client and its tests to match.
 
 ## Test rules
 
