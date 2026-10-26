@@ -8,11 +8,12 @@ other source is corrected or closed. Issues are a work list, not instructions.
 
 ## Purpose
 
-Let people and their coding agents ask the IDE "is this code clean?" and trust
-the answer. Use one codebase for two builds now: a Marketplace Stable build
-that keeps the exact internal-API uses JetBrains has exempted for this plugin,
-and a full build with all proof and recovery features that the Director runs
-for Odoo work. Publish
+Let people and their own tools ask the IDE "is this code clean?" and trust
+the answer. Agents in the Director's catalog inspect through isolated headless
+native IDE workers, not this plugin. Use one codebase for two builds now: a
+Marketplace Stable build that keeps the exact internal-API uses JetBrains has
+exempted for this plugin, and a full build with all proof and recovery
+features for people who need them. Publish
 the full build on a separate Marketplace channel and on GitHub releases.
 Add a build switch that leaves only the non-exempted internal-API parts out of
 Stable. As IntelliJ ships public APIs for those parts, move them onto public
@@ -43,9 +44,10 @@ Everything else is ordinary engineering and needs no ceremony.
 Someone finds and installs the plugin from the normal Marketplace Stable
 listing and gets a true clean or findings verdict when public APIs and exempted
 internal uses allow it. Someone who needs the full proof and recovery features
-gets the full build from its Marketplace channel or GitHub releases. The
-Director's agent inspects an Odoo worktree with that full build and gets a
-decisive clean or findings verdict that is true. Both builds say UNKNOWN when
+gets the full build from its Marketplace channel or GitHub releases. Release
+smokes drive each build through the in-repository desktop client
+(`scripts/desktop-client`) and get a decisive clean or findings verdict that
+is true. Both builds say UNKNOWN when
 proof is missing. The Stable-exception
 follow-up in [#401](https://github.com/cbusillo/jetbrains-inspection-api/issues/401)
 still goes out so newly exempted uses can move into Stable; the two-build plan
