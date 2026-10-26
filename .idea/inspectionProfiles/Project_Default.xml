@@ -13,9 +13,7 @@
     <inspection_tool class="CssUnusedSymbol" enabled="true" level="WARNING" enabled_by_default="true">
       <scope name="Odoo SCSS" level="WARNING" enabled="false" />
     </inspection_tool>
-    <inspection_tool class="DuplicatedCode" enabled="true" level="WEAK WARNING" enabled_by_default="true">
-      <scope name="Generated" level="WEAK WARNING" enabled="false" />
-    </inspection_tool>
+    <inspection_tool class="DuplicatedCode" enabled="false" level="WEAK WARNING" enabled_by_default="false" />
     <inspection_tool class="PyArgumentEqualDefaultInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
     <inspection_tool class="PyAugmentAssignmentInspection" enabled="true" level="WEAK WARNING" enabled_by_default="true" />
     <inspection_tool class="PyClassicStyleClassInspection" enabled="true" level="WARNING" enabled_by_default="true" />
