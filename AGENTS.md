@@ -19,6 +19,12 @@ Use `.github/github.json` for non-secret repo workflow facts,
 validation commands, GitHub signal availability, docs routing, important
 workflows, and cleanup policy.
 
+## What Inspection API does
+
+Inspection API lets coding tools ask a JetBrains IDE to inspect code and read its findings through HTTP and MCP.
+It must report UNKNOWN when it cannot prove the requested inspection completed; Stable and full builds have different API constraints.
+Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
+
 ## Tooling
 
 - Plugin: Kotlin/Gradle, requires Java 21. Supported IDE builds are configured
