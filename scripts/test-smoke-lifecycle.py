@@ -153,6 +153,18 @@ class SmokeLifecycle(unittest.TestCase):
         )
         self.assertFalse(self.worktree.exists())
 
+    def test_finder_and_per_user_ide_files_are_preserved_before_successful_removal(self) -> None:
+        (self.source / ".git/info/exclude").write_text(".DS_Store\n.idea/\n")
+        (self.worktree / ".DS_Store").write_bytes(b"finder metadata")
+        (self.worktree / ".idea").mkdir()
+        (self.worktree / ".idea/noctule.xml").write_bytes(b"per-user plugin settings")
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["status"], "removed")
+        archive = Path(result["generated_state_archive"])
+        self.assertEqual((archive / ".DS_Store").read_bytes(), b"finder metadata")
+        self.assertEqual((archive / ".idea/noctule.xml").read_bytes(), b"per-user plugin settings")
+        self.assertFalse(self.worktree.exists())
+
     def test_prepared_interpreter_and_project_model_are_preserved_before_sdk_removal(self) -> None:
         (self.source / ".git/info/exclude").write_text(".idea/\n.venv/\n")
         (self.worktree / ".idea").mkdir()

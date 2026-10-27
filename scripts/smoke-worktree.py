@@ -106,7 +106,7 @@ def generated_path(relative: str, prepared_roots: Iterable[Path] = ()) -> bool:
     parts = Path(relative).parts
     if any(part.startswith(".env") or part in {"id_rsa", "id_ed25519"} or part.endswith((".key", ".p12", ".pfx")) for part in parts):
         return False
-    if any(Path(relative).is_relative_to(path) for path in prepared_roots):
+    if any(Path(relative).is_relative_to(path) for path in prepared_roots) or Path(relative).name == ".DS_Store":
         return True
     if ".idea" in parts:
         suffix = parts[parts.index(".idea") + 1 :]
@@ -122,6 +122,7 @@ def generated_path(relative: str, prepared_roots: Iterable[Path] = ()) -> bool:
                 "misc.xml",
                 "modules.xml",
                 "vcs.xml",
+                "noctule.xml",
             }
         )
     return bool(parts) and any(part in {".gradle", ".kotlin", "build", "out", ".intellijPlatform"} for part in parts)
