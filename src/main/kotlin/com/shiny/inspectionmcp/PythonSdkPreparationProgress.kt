@@ -38,7 +38,7 @@ internal class PythonSdkPreparationProgress(
             "elapsed_ms" to (observedAtMs - startedAtMs).coerceAtLeast(0),
             "worker_thread" to thread?.name?.take(160),
             "worker_state" to sampledWorker?.state?.name,
-            "worker_stack" to runCatching {
+            "worker_stack" to runCatchingCancellable {
                 sampledWorker?.stackTrace?.take(64)?.map { it.toString().take(512) }.orEmpty()
             }.getOrDefault(emptyList()),
         ).filterValues { it != null }

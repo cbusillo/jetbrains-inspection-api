@@ -378,7 +378,7 @@ internal class PythonSdkPreparationService(
     }
 
     private fun normalize(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)?.let { raw ->
-        runCatching { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
+        runCatchingCancellable { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
     }
 
     private fun failureWithReadback(
@@ -558,7 +558,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     override fun sdkTypeName(sdk: Sdk): String = sdk.sdkType.name
 
     override fun isValidSdk(sdk: Sdk): Boolean = sdk.homePath?.let { path ->
-        runCatching { Files.exists(Paths.get(path)) }.getOrDefault(false)
+        runCatchingCancellable { Files.exists(Paths.get(path)) }.getOrDefault(false)
     } ?: false
 
     override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk {
@@ -769,8 +769,13 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             }
             ProjectRootManager.getInstance(project).projectSdk = sdk
         } catch (error: Throwable) {
-            models.forEach { model -> runCatching { model.dispose() } }
-            rethrowIfCanceled(error)
+            try {
+                runCatchingCancellable {
+                    runAllCleanupActions(*models.map { model -> { model.dispose() } }.toTypedArray())
+                }
+            } finally {
+                rethrowIfCanceled(error)
+            }
             return PythonSdkCommitResult(
                 false,
                 "python_sdk_preparation_assignment_failed",
@@ -814,6 +819,6 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         }
 
     private fun normalizedHome(sdk: Sdk): String? = sdk.homePath?.let { raw ->
-        runCatching { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
+        runCatchingCancellable { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
     }
 }
