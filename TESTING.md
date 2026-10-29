@@ -133,10 +133,13 @@ native workers, which never call this plugin. This plugin's own smokes use
 it stood before that route was retired
 ([codex-skills#2804](https://github.com/cbusillo/codex-skills/issues/2804)).
 Its unit tests live beside it.
-The smoke entrypoints pass `--skip-preparation`: their target projects must
-already have the SDKs and dependencies the smoke needs. When calling the
-desktop client directly, pass that option too; the repository's preparation
-declaration is for native snapshots and must not replace the tracked IDE model.
+The smoke entrypoints pass `--skip-preparation` for this checkout's projects;
+the matrix and default smoke still prepare projects from other repositories.
+When calling the desktop client directly on this repository, pass that option
+too; its preparation is for native snapshots and must not replace the tracked
+IDE model. Legacy nested environment ignores remain for prepared older checkouts.
+Preexisting matrix cases use `--no-open`; a missing project returns without
+sending an open request, while other lifecycle calls still open by default.
 
 ### Project-retention reproduction
 

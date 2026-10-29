@@ -16,39 +16,30 @@ cat >"$HELPER" <<'STUB'
 #!/usr/bin/env python3
 import json
 import os
+import runpy
 import sys
 from pathlib import Path
 
-if "--skip-preparation" not in sys.argv:
+options = runpy.run_path(os.environ["JB_SMOKE_DESKTOP_CLIENT"])["build_parser"]().parse_args(sys.argv[1:])
+if options.skip_preparation != (os.environ.get("JB_SMOKE_PREPARATION_REQUIRED") != "1"):
     print(json.dumps({"status": "error", "error_reason": "repository_preparation_command_failed"}))
     sys.exit(3)
 
 if os.environ.get("JB_INSPECT_STUB_MULTIPLE") == "1":
     print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": "not_needed"}}))
 
-if "--profile" not in sys.argv:
-    repo = sys.argv[sys.argv.index("--repo") + 1]
-    cleanup = "not_needed" if "--no-open" in sys.argv else os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed")
+if not options.profile:
+    repo = options.repo
+    cleanup = os.environ.get("JB_INSPECT_STUB_CLEANUP", "closed") if options.open else "not_needed"
     print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": cleanup},
                       "native_detail": "x" * int(os.environ.get("JB_INSPECT_STUB_SIZE", "0")),
                       "route": {"ide": {"plugin_build_fingerprint": "native-matrix-clean"}},
-                      "prepared": {"lease": {"opened_by_helper": "--no-open" not in sys.argv}}}))
+                      "prepared": {"lease": {"opened_by_helper": options.open}}}))
     sys.exit(0)
-repo = ""
-ide = ""
-ide_channel = ""
-ide_version = ""
-args = sys.argv[1:]
-while args:
-    arg = args.pop(0)
-    if arg == "--repo" and args:
-        repo = args.pop(0)
-    elif arg == "--ide" and args:
-        ide = args.pop(0)
-    elif arg == "--ide-channel" and args:
-        ide_channel = args.pop(0)
-    elif arg == "--ide-version" and args:
-        ide_version = args.pop(0)
+repo = options.repo
+ide = options.ide
+ide_channel = options.ide_channel
+ide_version = options.ide_version
 
 fixtures = [
     ("IntelliJ IDEA", "src/main/java/com/example/redlane/DefinitelyRed.java", "redLaneField"),
@@ -113,6 +104,7 @@ print(json.dumps({
 }))
 STUB
 chmod +x "$HELPER"
+export JB_SMOKE_DESKTOP_CLIENT="$ROOT/scripts/desktop-client/jb-inspect.py"
 mkdir -p "$TMP_DIR/bin"
 cat >"$TMP_DIR/bin/uv" <<'UV'
 #!/usr/bin/env bash
@@ -303,4 +295,16 @@ mkdir "$TMP_DIR/plain-repo"
 git -C "$TMP_DIR/plain-repo" init -q
 (cd "$TMP_DIR/plain-repo" && JB_INSPECT_HELPER="$HELPER" /bin/bash "$ROOT/scripts/test-automated.sh" --repo "$ROOT") >"$TMP_DIR/delegation.json"
 jq -e '.status == "clean"' "$TMP_DIR/delegation.json" >/dev/null
+mkdir "$TMP_DIR/plain-repo/test-fixtures"
+JB_SMOKE_PREPARATION_REQUIRED=1 ./scripts/dogfood-smoke-matrix.sh --helper "$HELPER" --repo "foreign=$TMP_DIR/plain-repo" --ide PyCharm --case all --worktree-root "$TMP_DIR/work" --json-out "$matrix_report"
+jq -e '.status == "ok" and (.rows | length) == 2' "$matrix_report" >/dev/null
+JB_SMOKE_PREPARATION_REQUIRED=1 JB_INSPECT_HELPER="$HELPER" /bin/bash ./scripts/test-automated.sh --repo "$ROOT" --repo="$TMP_DIR/plain-repo" >"$TMP_DIR/foreign.json"
+jq -e '.status == "clean"' "$TMP_DIR/foreign.json" >/dev/null
+JB_INSPECT_HELPER="$HELPER" /bin/bash ./scripts/test-automated.sh --repo "$TMP_DIR/plain-repo" --repo="$ROOT" >"$TMP_DIR/self.json"
+jq -e '.status == "clean"' "$TMP_DIR/self.json" >/dev/null
+(cd "$TMP_DIR/plain-repo" && JB_SMOKE_PREPARATION_REQUIRED=1 JB_INSPECT_HELPER="$HELPER" /bin/bash "$ROOT/scripts/test-automated.sh") >"$TMP_DIR/foreign-cwd.json"
+jq -e '.status == "clean"' "$TMP_DIR/foreign-cwd.json" >/dev/null
+printf 'TEST_PROJECT_PATH="%s"\n' "$TMP_DIR/plain-repo" >"$TMP_DIR/plain-repo/AGENTS.local.md"
+(cd "$TMP_DIR/plain-repo" && JB_INSPECT_HELPER="$HELPER" /bin/bash "$ROOT/scripts/test-automated.sh" --repo "$ROOT") >"$TMP_DIR/config-override.json"
+jq -e '.status == "clean"' "$TMP_DIR/config-override.json" >/dev/null
 echo "red-lane and matrix smoke script contracts passed"

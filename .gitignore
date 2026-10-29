@@ -100,4 +100,6 @@ mcp-server/coverage/
 /handoff*.md
 
 /.venv/
+/scripts/.venv/
+/scripts/.idea/
 /scripts/**/__pycache__/
