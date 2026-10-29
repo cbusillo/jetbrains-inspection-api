@@ -63,8 +63,8 @@ Expected behavior:
 
 Use this when validating worktree readiness inspection behavior from the
 external helper.
-Use a host-approved linked worktree. On Chris-Studio, create it with `dev-worktree` under Developer-Artifacts. Retain
-the project/worktree if cleanup is unresolved; do not delete it while the IDE
+Follow the shared [task worktree procedure](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/worktrees.md).
+Retain the project/worktree if cleanup is unresolved; do not delete it while the IDE
 still owns it.
 
 1. Pick a repo worktree that is not currently open in the target IDE.
