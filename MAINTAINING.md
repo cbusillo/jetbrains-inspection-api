@@ -217,7 +217,7 @@ retain their provenance, and distinguish trial evidence from landed-build data.
   named profile, scope, inputs and runtime fingerprint across before/after runs.
 - **Test removals:** plant the fault a candidate test claims to catch in an
   isolated task worktree based on current `main`, then confirm a behavioral
-  failure. Do not modify `main` directly. A duplicate/delete candidate may expose
+  failure. A duplicate/delete candidate may expose
   missing coverage; rewrite it when the fault survives, rather than deleting the
   only behavioral intent. Restore the product before the passing verification.
 - **Inlined Kotlin constants:** `const val` values are inlined into tests. For a
