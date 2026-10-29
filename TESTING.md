@@ -99,7 +99,7 @@ evidence.
    For an owned test copy outside the configured trusted roots, set
    `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
    command. Leave the original fixture unchanged.
-2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout` on that exact copy
+2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout --skip-preparation` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
    `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
@@ -231,6 +231,7 @@ Run the in-repo desktop client when validating the plugin's HTTP behavior:
 ```bash
 HELPER="scripts/desktop-client/jb-inspect.py"
 uv run "$HELPER" inspect-closeout \
+  --skip-preparation \
   --repo "$PWD" \
   --scope changed_files
 ```
@@ -556,6 +557,7 @@ helper directly:
 
 ```bash
 uv run "$HELPER" inspect-closeout \
+  --skip-preparation \
   --ide "IntelliJ IDEA" --scope changed_files --repo "$PWD"
 ```
 

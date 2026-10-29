@@ -14,6 +14,10 @@ trap cleanup EXIT
 HELPER="$TMP_DIR/jb-inspect.py"
 cat >"$HELPER" <<'STUB'
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
 import json
 import os
 import runpy
