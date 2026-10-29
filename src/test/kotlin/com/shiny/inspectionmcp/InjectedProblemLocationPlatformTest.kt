@@ -20,6 +20,7 @@ import com.intellij.lang.injection.MultiHostInjector
 import com.intellij.lang.injection.MultiHostRegistrar
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.fileTypes.PlainTextLanguage
 import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.EmptyProgressIndicator
@@ -46,6 +47,9 @@ import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Future
 import java.util.concurrent.atomic.AtomicBoolean
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -196,6 +200,93 @@ class InjectedProblemLocationPlatformTest {
                 }
             }.isInstanceOf(ProcessCanceledException::class.java)
             assertThat(indicator.isCanceled).isTrue()
+        }
+    }
+
+    @Test
+    @Timeout(20)
+    fun `language discovery yields to an IDE write and resumes its proof`() {
+        withBlockingInjection { host, state ->
+            state.proofTask = ApplicationManager.getApplication().executeOnPooledThread<BoundedExecutionProofResult> {
+                runProof(host, InjectedFindingInspection())
+            }
+            assertThat(state.started.await(5, TimeUnit.SECONDS)).isTrue()
+            val written = CompletableFuture<Unit>()
+            ApplicationManager.getApplication().invokeLater {
+                WriteAction.run<RuntimeException> {
+                    state.release.set(true)
+                    written.complete(Unit)
+                }
+            }
+            written.get(5, TimeUnit.SECONDS)
+            val proof = requireNotNull(state.proofTask).get(5, TimeUnit.SECONDS)
+            assertThat(state.interrupted.get()).isTrue()
+            assertThat(proof.writePreemptionCount).isPositive()
+            assertThat(proof.proofEstablished).describedAs(proof.toString()).isTrue()
+            assertThat(proof.proofProblems).hasSize(1)
+        }
+    }
+
+    @Test
+    @Timeout(20)
+    fun `proof deadline cancels an injector during language discovery`() {
+        withBlockingInjection { host, state ->
+            val handler = InspectionHandler().apply { boundedExecutionProofTimeoutMs = 500 }
+            state.proofTask = ApplicationManager.getApplication().executeOnPooledThread<BoundedExecutionProofResult> {
+                runProof(host, InjectedFindingInspection(), handler = handler)
+            }
+            assertThat(state.started.await(5, TimeUnit.SECONDS)).isTrue()
+            val proof = requireNotNull(state.proofTask).get(5, TimeUnit.SECONDS)
+            assertThat(state.interrupted.get()).isTrue()
+            assertThat(proof.hitTimeLimit).describedAs(proof.toString()).isTrue()
+            assertThat(proof.proofEstablished).isFalse()
+            assertThat(proof.proofProblems).isEmpty()
+        }
+    }
+
+    private class BlockingInjectionState {
+        val started = CountDownLatch(1)
+        val release = AtomicBoolean()
+        val interrupted = AtomicBoolean()
+        var proofTask: Future<BoundedExecutionProofResult>? = null
+    }
+
+    private fun withBlockingInjection(action: (PsiFile, BlockingInjectionState) -> Unit) {
+        val host = createPhysicalXmlFile("<root><item value=\"blocked\"/></root>")
+        IndexingTestUtil.waitUntilIndexesAreReady(projectExtension.project)
+        val state = BlockingInjectionState()
+        val registration = Disposer.newDisposable("blocking-injection")
+        val injector = object : MultiHostInjector, DumbAware {
+            override fun getLanguagesToInject(registrar: MultiHostRegistrar, context: PsiElement) {
+                val value = context as? PsiLanguageInjectionHost ?: return
+                if (value !is XmlAttributeValue) return
+                state.started.countDown()
+                try {
+                    while (!state.release.get()) {
+                        ProgressManager.checkCanceled()
+                        Thread.yield()
+                    }
+                } catch (error: ProcessCanceledException) {
+                    state.interrupted.set(true)
+                    throw error
+                }
+                registrar.startInjecting(PlainTextLanguage.INSTANCE)
+                    .addPlace(null, null, value, TextRange(1, value.textLength - 1))
+                    .doneInjecting()
+            }
+
+            override fun elementsToInjectIn(): List<Class<out PsiElement>> = listOf(XmlAttributeValue::class.java)
+        }
+        InjectedLanguageManager.getInstance(projectExtension.project).registerMultiHostInjector(injector, registration)
+        try {
+            action(host, state)
+        } finally {
+            state.release.set(true)
+            try {
+                state.proofTask?.get(5, TimeUnit.SECONDS)
+            } finally {
+                Disposer.dispose(registration)
+            }
         }
     }
 

@@ -10806,6 +10806,21 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
 
+        fun <T> runProofRead(
+            candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
+            action: (ProgressIndicator) -> T,
+        ): T = retryWritePreemptedInspectionRead(::checkProofBudget) {
+            runDeadlineAwareProofProcess(candidate) { indicator ->
+                runWritePriorityInspectionRead(indicator, {
+                    writePreemptionCount.incrementAndGet()
+                    firstWritePreemption.compareAndSet(
+                        null,
+                        mapOf("short_name" to candidate.shortName, "file" to candidate.filePath),
+                    )
+                }) { action(indicator) }
+            }
+        }
+
         if (enabledTools.fileToolShortNames.isEmpty() && enabledTools.errorCount == 0) {
             return BoundedExecutionProofResult(
                 proofProblems = emptyList(),
@@ -10897,7 +10912,7 @@ class InspectionHandler : HttpRequestHandler() {
             override fun isLanguageApplicable(
                 candidate: ExactFileProofCandidate<com.intellij.psi.PsiFile>,
                 sourceWrapper: ExactFileInspectionExecutionWrapper,
-            ): Boolean = app.runReadAction<Boolean, Exception> {
+            ): Boolean = runProofRead(candidate) {
                 val localWrapper = sourceWrapper.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
                 sourceWrapper.resolvedBatchWrapper = if (localWrapper != null) {
                     com.intellij.codeInspection.ex.LocalInspectionToolWrapper.findTool2RunInBatch(
@@ -11035,46 +11050,36 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                     }.map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
                 }
-                return retryWritePreemptedInspectionRead(::checkProofBudget) {
-                    runDeadlineAwareProofProcess(candidate) { indicator ->
-                        runWritePriorityInspectionRead(indicator, {
-                            writePreemptionCount.incrementAndGet()
-                            firstWritePreemption.compareAndSet(
-                                null,
-                                mapOf("short_name" to candidate.shortName, "file" to candidate.filePath),
-                            )
-                        }) {
-                            if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
-                                val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                                SupportedInspectionExecutor().executePreparedFile(
-                                    candidate.value,
-                                    listOf(localWrapper),
-                                    indicator,
-                                ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
-                                    .map { FileInspectionProblem(it, localWrapper) }
-                            } else if (batchWrapper.toolWrapper is GlobalInspectionToolWrapper) {
-                                if (batchWrapper.engineContextUsed) {
-                                    cleanupExactFileExecutionWrapper(batchWrapper)
-                                    batchWrapper.context = createExactFileExecutionContext(project, profile, candidate.value)
-                                }
-                                batchWrapper.engineContextUsed = true
-                                val context = requireNotNull(batchWrapper.context).publicContext()
-                                if (batchWrapper.toolWrapper.tool.isGlobalSimpleInspectionTool) {
-                                    runGlobalSimpleInspectionOnFile(
-                                        candidate.value, batchWrapper.toolWrapper, context, profile, enabledTools.reportingWrappers,
-                                    ).also { batchWrapper.executionFailure = it.incompleteReason }.problems
-                                } else {
-                                    InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
-                                        .map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
-                                }
-                            } else {
-                                InspectionEngine.runInspectionOnFile(
-                                    candidate.value,
-                                    batchWrapper.toolWrapper,
-                                    requireNotNull(batchWrapper.context).publicContext(),
-                                ).map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
-                            }
+                return runProofRead(candidate) { indicator ->
+                    if (canExecuteWithInspectEx(batchWrapper.toolWrapper)) {
+                        val localWrapper = batchWrapper.toolWrapper as com.intellij.codeInspection.ex.LocalInspectionToolWrapper
+                        SupportedInspectionExecutor().executePreparedFile(
+                            candidate.value,
+                            listOf(localWrapper),
+                            indicator,
+                        ).returnedDescriptorsByToolShortName[localWrapper.shortName].orEmpty()
+                            .map { FileInspectionProblem(it, localWrapper) }
+                    } else if (batchWrapper.toolWrapper is GlobalInspectionToolWrapper) {
+                        if (batchWrapper.engineContextUsed) {
+                            cleanupExactFileExecutionWrapper(batchWrapper)
+                            batchWrapper.context = createExactFileExecutionContext(project, profile, candidate.value)
                         }
+                        batchWrapper.engineContextUsed = true
+                        val context = requireNotNull(batchWrapper.context).publicContext()
+                        if (batchWrapper.toolWrapper.tool.isGlobalSimpleInspectionTool) {
+                            runGlobalSimpleInspectionOnFile(
+                                candidate.value, batchWrapper.toolWrapper, context, profile, enabledTools.reportingWrappers,
+                            ).also { batchWrapper.executionFailure = it.incompleteReason }.problems
+                        } else {
+                            InspectionEngine.runInspectionOnFile(candidate.value, batchWrapper.toolWrapper, context)
+                                .map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
+                        }
+                    } else {
+                        InspectionEngine.runInspectionOnFile(
+                            candidate.value,
+                            batchWrapper.toolWrapper,
+                            requireNotNull(batchWrapper.context).publicContext(),
+                        ).map { FileInspectionProblem(it, batchWrapper.toolWrapper) }
                     }
                 }
             }
