@@ -44,17 +44,12 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
 
 Follow the shared [Tests rules](https://github.com/cbusillo/codex-skills/blob/main/instructions/global.md#tests).
 
-- Use `qualityGate.test.local` in `.github/github.json` for focused tests of
-  changed behavior, plus required workflow/shell lint and IDE inspection.
-  Substitute a unit-test task and class/method filter; use the separate focused
+- For `qualityGate.test.local` in `.github/github.json`, substitute a unit-test
+  task and class/method filter; use the separate focused
   platform-test command documented in `TESTING.md` for platform fixtures. Run
-  maintenance-Python or shell fixture modules directly when those helpers change. The complete
-  `qualityGate.test.ci` gate runs only in CI and must pass for the current PR
-  head before `ready` or merge. See `TESTING.md` for test surfaces.
-- For safety, authorization, approval rules, destructive helpers and shared
-  infrastructure,
-  also run the complete local test modules exercising the changed area and its
-  callers. Trace inspection trust/cancellation to plugin/core/MCP tests,
+  maintenance-Python or shell fixture modules directly when those helpers change.
+  See `TESTING.md` for test surfaces.
+- Trace inspection trust/cancellation to plugin/core/MCP tests,
   installation/recovery to smoke-lifecycle and red-lane fixtures, retention to
   IDE-retention fixtures, and release/publication to release-contract and
   agents-release fixtures. Also run `cancellationCatchLint`,
