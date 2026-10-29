@@ -49,7 +49,8 @@ Follow the shared [Tests rules](https://github.com/cbusillo/codex-skills/blob/ma
   platform-test command documented in `TESTING.md` for platform fixtures. Run
   maintenance-Python or shell fixture modules directly when those helpers change.
   See `TESTING.md` for test surfaces.
-- Trace inspection trust/cancellation to plugin/core/MCP tests,
+- Safety-module selection includes the changed area and its callers. Trace
+  inspection trust/cancellation to plugin/core/MCP tests,
   installation/recovery to smoke-lifecycle and red-lane fixtures, retention to
   IDE-retention fixtures, and release/publication to release-contract and
   agents-release fixtures. Also run `cancellationCatchLint`,
