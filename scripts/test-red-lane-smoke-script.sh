@@ -6,6 +6,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT"
 
 TMP_DIR=$(mktemp -d)
+export TMPDIR="$TMP_DIR"
 cleanup() {
 	rm -rf "$TMP_DIR"
 }
@@ -63,6 +64,16 @@ if not repo or selected is None:
     print(json.dumps({"status": "error", "error_reason": "missing_fixture", "repo": repo}))
     sys.exit(3)
 
+if os.environ.get("JB_EXPECT_SINGLE_FIXTURE") == "1":
+    trusted = os.environ.get("JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS", "")
+    if not trusted or not Path(repo).resolve().is_relative_to(Path(trusted).resolve()):
+        print(json.dumps({"status": "error", "error_reason": "untrusted_auto_open_root"}))
+        sys.exit(3)
+    siblings = {path for path in Path(repo).parent.iterdir() if path.is_dir()}
+    if siblings != {Path(repo)}:
+        print(json.dumps({"status": "error", "error_reason": "unselected_fixtures_materialized"}))
+        sys.exit(3)
+
 expected_ide, fixture, marker = selected
 if ide != expected_ide:
     print(json.dumps({"status": "error", "error_reason": "wrong_ide", "expected_ide": expected_ide, "actual_ide": ide}))
@@ -117,10 +128,10 @@ if [[ "$2" == */smoke-worktree.py ]]; then
     shift 2
     command=$1
     shift
-    source=""; parent=""; slug=""; receipt=""; payload=""; out=""
+    source=""; parent=""; slug=""; receipt=""; payload=""; out=""; fixture=""
     while [ $# -gt 0 ]; do
         case "$1" in
-        --source) source=$2;; --slug) slug=$2;; --parent) parent=$2;;
+        --source) source=$2;; --slug) slug=$2;; --parent) parent=$2;; --fixture) fixture=$2;;
         --receipt) receipt=$2;; --payload) payload=$2;; --out) out=$2;; --helper) :;;
         *) exit 2;;
         esac
@@ -129,7 +140,12 @@ if [[ "$2" == */smoke-worktree.py ]]; then
     if [ "$command" = create ]; then
         project="$parent/$slug"
         mkdir -p "$project/test-fixtures"
-        cp -R "$source/test-fixtures"/. "$project/test-fixtures"/
+        if [ -n "$fixture" ]; then
+            mkdir -p "$project/$(dirname "$fixture")"
+            cp -R "$source/$fixture" "$project/$fixture"
+        else
+            cp -R "$source/test-fixtures"/. "$project/test-fixtures"/
+        fi
         jq -n --arg root "$project" '{root:$root}' > "$receipt"
         printf '%s\n' "$project"
     else
@@ -167,7 +183,7 @@ run_case() {
 	local expected_marker=$3
 	local json_out="$TMP_DIR/$product-report.json"
 
-	./scripts/dogfood-red-lane-smoke.sh \
+	JB_EXPECT_SINGLE_FIXTURE=1 ./scripts/dogfood-red-lane-smoke.sh \
 		--product "$product" \
 		--helper "$HELPER" \
 		--work-root "$TMP_DIR/work" \
