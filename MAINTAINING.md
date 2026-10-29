@@ -5,11 +5,10 @@ run against the installed plugin; their `plugin_build_fingerprint` remains on
 that build until a local rollout is verified.
 
 Use this procedure for a behavior change's authorized local rollout.
-A brief that
-excludes deployments or IDE restarts leaves runtime installation pending; record
-that boundary on the PR. This guide does not authorize Marketplace publication,
-production changes, or restarting another worker's active IDE session. Follow
-[DIRECTION.md](DIRECTION.md) and the current task's authorization.
+A brief that excludes deployments or IDE restarts leaves runtime installation
+pending; record that boundary on the PR. This guide does not authorize Marketplace
+publication, production changes, or restarting another worker's active IDE session.
+Follow [DIRECTION.md](DIRECTION.md) and the current task's authorization.
 
 ## Local plugin rollout
 
