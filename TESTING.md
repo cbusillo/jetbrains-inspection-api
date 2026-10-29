@@ -125,6 +125,7 @@ lane, which imports Gradle and ignores Python preparation. Neither route
 changes the source worktree's Java/Gradle bindings or creates a source-worktree
 Python environment. Inspect each product's files in a separate assessment;
 preparation alone does not prove a decisive inspection.
+The root `.venv` ignore is required inside that snapshot as well.
 
 Agents inspect code through the catalog `jetbrains-inspection` skill's isolated
 native workers, which never call this plugin. This plugin's own smokes use
@@ -132,6 +133,10 @@ native workers, which never call this plugin. This plugin's own smokes use
 it stood before that route was retired
 ([codex-skills#2804](https://github.com/cbusillo/codex-skills/issues/2804)).
 Its unit tests live beside it.
+The smoke entrypoints pass `--skip-preparation`: their target projects must
+already have the SDKs and dependencies the smoke needs. When calling the
+desktop client directly, pass that option too; the repository's preparation
+declaration is for native snapshots and must not replace the tracked IDE model.
 
 ### Project-retention reproduction
 

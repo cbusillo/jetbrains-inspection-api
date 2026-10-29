@@ -26,7 +26,7 @@ if [ -f "$ROOT/AGENTS.local.md" ]; then
 	IDE_VERSION=$(sed -n 's/^IDE_VERSION="\([^"]*\)".*/\1/p' "$ROOT/AGENTS.local.md" | head -n 1)
 	IDE_TYPE=$(sed -n 's/^IDE_TYPE="\([^"]*\)".*/\1/p' "$ROOT/AGENTS.local.md" | head -n 1)
 fi
-OPTIONS=()
+OPTIONS=(--skip-preparation)
 [ -z "$TEST_PROJECT_PATH" ] || OPTIONS+=(--repo "$TEST_PROJECT_PATH")
 [ -z "$IDE_TYPE" ] || OPTIONS+=(--ide "$IDE_TYPE")
 [ -z "$IDE_VERSION" ] || OPTIONS+=(--ide-version "$IDE_VERSION")

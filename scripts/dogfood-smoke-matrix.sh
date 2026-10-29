@@ -482,7 +482,7 @@ run_case() {
 		target_repo=$worktree_path
 	fi
 
-	local cmd=(uv run "$HELPER" --json inspect-closeout --repo "$target_repo" --ide "$ide" --scope "$SCOPE" --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+	local cmd=(uv run "$HELPER" --json inspect-closeout --skip-preparation --repo "$target_repo" --ide "$ide" --scope "$SCOPE" --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 	if [ "$scenario" = "preexisting" ]; then
 		cmd+=(--no-open)
 	fi

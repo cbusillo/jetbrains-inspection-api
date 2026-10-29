@@ -19,6 +19,10 @@ import os
 import sys
 from pathlib import Path
 
+if "--skip-preparation" not in sys.argv:
+    print(json.dumps({"status": "error", "error_reason": "repository_preparation_command_failed"}))
+    sys.exit(3)
+
 if os.environ.get("JB_INSPECT_STUB_MULTIPLE") == "1":
     print(json.dumps({"status": "clean", "clean": True, "cleanup": {"status": "not_needed"}}))
 
