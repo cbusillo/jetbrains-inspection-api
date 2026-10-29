@@ -1053,7 +1053,7 @@ release. This is a manual downgrade, not an automatic downgrade policy.
 
 Before release preparation or publication, read [DIRECTION.md](DIRECTION.md)
 for the current release direction and stop boundaries. The commands below
-describe the release mechanics; Marketplace publication requires the Director's decision.
+describe the release mechanics.
 Pushing a release tag starts the publication workflow described below.
 
 Release notes live on GitHub Releases:

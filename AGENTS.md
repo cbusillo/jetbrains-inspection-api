@@ -2,22 +2,14 @@
 
 This repo contains the Inspection API plugin and its bundled MCP server.
 
-Read the Director's [overall direction](https://github.com/cbusillo/direction/blob/main/DIRECTION.md)
-first, then this repository's [DIRECTION.md](DIRECTION.md), for priorities,
-stop boundaries, and retired work. Use the maintained skills' [executing loop](https://github.com/cbusillo/codex-skills/blob/main/skills/references/executing-loop.md)
-for issue claims, isolated worktrees, bot commits, validation, and landing.
+Follow the shared [executing loop](https://github.com/cbusillo/codex-skills/blob/main/skills/references/executing-loop.md).
 This repository uses a normal merge commit after green CI and any required
 other-model review; weigh findings under [reviews by another model](https://github.com/cbusillo/codex-skills/blob/main/skills/references/model-review.md).
-AGENTS.md is the agent-instruction file; local configuration below supplies
-machine-specific values, not a separate instruction set.
 
 User-facing setup, API usage, and release details live in [README.md](README.md).
 Testing details live in [TESTING.md](TESTING.md) and manual IDE smoke recipes
 live in [TESTING_INSTRUCTIONS.md](TESTING_INSTRUCTIONS.md).
 Local plugin rollout and diagnosis guidance lives in [MAINTAINING.md](MAINTAINING.md).
-Use `.github/github.json` for non-secret repo workflow facts,
-validation commands, GitHub signal availability, docs routing, important
-workflows, and cleanup policy.
 
 ## What Inspection API does
 
@@ -50,6 +42,8 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
 
 ## Test rules
 
+Follow the shared [Tests rules](https://github.com/cbusillo/codex-skills/blob/main/instructions/global.md#tests).
+
 - Use `qualityGate.test.local` in `.github/github.json` for focused tests of
   changed behavior, plus required workflow/shell lint and IDE inspection.
   Substitute a unit-test task and class/method filter; use the separate focused
@@ -68,12 +62,8 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
   changed boundaries, plus `stableBuild` for Stable internal-API/verdict changes,
   using the commands in `.github/github.json`. Preserve required platform
   evidence as missing when it cannot run; green CI does not waive a required local module.
-- A test stays only if it fails when the product is broken and passes when
-  someone makes an intended change. Before adding or keeping a doubtful test,
+- Before adding or keeping a doubtful test,
   plant the fault it claims to guard against and confirm it fails.
-- No test may assert a literal defined elsewhere (versions, build numbers,
-  toolchain, counts, hashes); assert agreement with the single source of truth
-  or nothing.
 - No test may assert workflow, config, script, or documentation text. Enforce
   the rule where it executes: the workflow itself, a helper script with its own
   behavioural test, or `actionlint`.
