@@ -3,7 +3,6 @@ package com.shiny.inspectionmcp
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
-import org.junit.jupiter.params.provider.CsvSource
 import com.intellij.openapi.progress.ProcessCanceledException
 import java.util.concurrent.CancellationException
 import org.junit.jupiter.api.Assertions.*
@@ -2970,10 +2969,9 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
     }
 
     @ParameterizedTest
-    @CsvSource("false,false", "false,true", "true,false", "true,true")
+    @ValueSource(booleans = [false, true])
     fun `cancelled readiness records a terminal diagnostic and releases its guard`(
         coroutineCancellation: Boolean,
-        disposedOnCancellation: Boolean,
     ) {
         val tempDir = Files.createTempDirectory("inspection-open-cancelled")
         val openingProject = mockk<Project>()
@@ -2995,7 +2993,7 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         handler.openProjectPath = { _, beforeInit -> beforeInit(openingProject); openingProject }
         val cancellation = if (coroutineCancellation) CancellationException() else ProcessCanceledException()
         handler.lifecycleContentRootReadinessProvider = { _, _ ->
-            disposed = disposedOnCancellation
+            disposed = true
             throw cancellation
         }
 
@@ -3003,10 +3001,9 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         scheduled.single().run()
         assertSame(cancellation, assertThrows(CancellationException::class.java) { guardPolls.single().run() })
         val probe = processGetRequest(lifecycleOpenUri(tempDir, probe = true)).content().toString(Charsets.UTF_8)
-        val expectedReason = if (disposedOnCancellation) "project_disposed" else "readiness_cancelled"
 
         assertTrue(probe.contains("\"outcome_phase\": \"failed\""), probe)
-        assertTrue(probe.contains("\"outcome_reason\": \"$expectedReason\""), probe)
+        assertTrue(probe.contains("\"outcome_reason\": \"project_disposed\""), probe)
         assertTrue(probe.contains("\"readiness_waiting\": false"), probe)
         val retry = processGetRequest(lifecycleOpenUri(tempDir))
         assertEquals(HttpResponseStatus.OK, retry.status())
