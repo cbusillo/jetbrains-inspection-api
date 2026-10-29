@@ -80,7 +80,7 @@ internal class NativeInspectionExecutionProofCollector(
     fun recordExactFileAnalyzed(file: PsiFile, eventProject: Project) {
         if (eventProject !== project) return
         fileAnalyzedCount.incrementAndGet()
-        runCatching { file.virtualFile?.path }.getOrNull()?.let { path ->
+        runCatchingCancellable { file.virtualFile?.path }.getOrNull()?.let { path ->
             analyzedFiles.add(path)
             if (path in expectedFiles) analyzedPsiFiles[path] = file
         }
@@ -102,7 +102,7 @@ internal class NativeInspectionExecutionProofCollector(
     ) {
         if (eventProject !== project) return
         if (pass != NativeInspectionPass.LOCAL) return
-        val filePath = runCatching { file?.virtualFile?.path }.getOrNull() ?: return
+        val filePath = runCatchingCancellable { file?.virtualFile?.path }.getOrNull() ?: return
         if (filePath !in expectedFiles) return
         completionObservation.recordCompletion(problemCount, toolWrapper, filePath)
         recordInspectionFinished(problemCount, toolWrapper)
@@ -115,7 +115,7 @@ internal class NativeInspectionExecutionProofCollector(
         eventProject: Project,
     ) {
         if (eventProject !== project) return
-        val filePath = runCatching { file?.virtualFile?.path }.getOrNull()
+        val filePath = runCatchingCancellable { file?.virtualFile?.path }.getOrNull()
         if (file != null && filePath !in expectedFiles) return
         completionObservation.recordCompletion(problemCount, toolWrapper, filePath)
     }
@@ -137,7 +137,7 @@ internal class NativeInspectionExecutionProofCollector(
     ) {
         inspectionFinishedCount.incrementAndGet()
         reportedProblemCount.addAndGet(problemCount.coerceAtLeast(0))
-        runCatching { toolWrapper.shortName }.getOrNull()?.let(completedTools::add)
+        runCatchingCancellable { toolWrapper.shortName }.getOrNull()?.let(completedTools::add)
     }
 
     fun inspectionFailed(

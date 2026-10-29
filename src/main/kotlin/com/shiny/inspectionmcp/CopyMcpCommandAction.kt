@@ -158,13 +158,13 @@ internal fun resolveMcpJarResult(
             ?: CopyMcpCommandAction::class.java.getResource("/com/shiny/inspectionmcp/CopyMcpCommandAction.class")
     },
     pathManagerJarPathProvider: () -> String? = {
-        runCatching { PathManager.getJarPathForClass(CopyMcpCommandAction::class.java) }.getOrNull()
+        runCatchingCancellable { PathManager.getJarPathForClass(CopyMcpCommandAction::class.java) }.getOrNull()
     },
     pluginsPathProvider: () -> Path? = {
-        runCatching { Paths.get(PathManager.getPluginsPath()) }.getOrNull()
+        runCatchingCancellable { Paths.get(PathManager.getPluginsPath()) }.getOrNull()
     },
     jarUrlConnectionOpener: (URL) -> URL? = { url ->
-        runCatching { (url.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
+        runCatchingCancellable { (url.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
     }
 ): McpJarDiscoveryResult {
     val attempts = mutableListOf<StrategyAttempt>()
@@ -277,7 +277,7 @@ internal fun resolveMcpJarResult(
             )
         )
     } else {
-        val pathManagerPath = runCatching { Paths.get(pathManagerJarPath) }.getOrNull()
+        val pathManagerPath = runCatchingCancellable { Paths.get(pathManagerJarPath) }.getOrNull()
         if (pathManagerPath == null) {
             attempts.add(
                 StrategyAttempt(
@@ -354,7 +354,7 @@ internal fun resolveMcpJarResult(
 internal fun parseResourceUrlToPath(
     url: URL,
     jarUrlConnectionOpener: (URL) -> URL? = { u ->
-        runCatching { (u.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
+        runCatchingCancellable { (u.openConnection() as? JarURLConnection)?.jarFileURL }.getOrNull()
     }
 ): Path? {
     val jarFileUrl = jarUrlConnectionOpener(url)
@@ -393,7 +393,7 @@ internal fun parseResourceUrlToPath(
     return when {
         pathStr.endsWith(classSuffix) -> {
             val baseDirStr = pathStr.dropLast(classSuffix.length).trimEnd('/', '\\')
-            runCatching { Paths.get(baseDirStr) }.getOrNull()
+            runCatchingCancellable { Paths.get(baseDirStr) }.getOrNull()
         }
         pathStr.endsWith(".class") -> parsedPath.parent
         else -> parsedPath
@@ -401,18 +401,18 @@ internal fun parseResourceUrlToPath(
 }
 
 internal fun parsePathFromUriOrString(uriOrPath: String): Path? {
-    return runCatching {
+    return runCatchingCancellable {
         val uri = URI(uriOrPath)
         Paths.get(uri)
     }.getOrElse {
-        runCatching {
+        runCatchingCancellable {
             val rawPath = if (uriOrPath.startsWith("file:")) {
-                runCatching { URI.create(uriOrPath).path }.getOrNull()
+                runCatchingCancellable { URI.create(uriOrPath).path }.getOrNull()
                     ?: uriOrPath.substringAfter("file:")
             } else {
                 uriOrPath
             }
-            val decodedPath = runCatching { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+            val decodedPath = runCatchingCancellable { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
             Paths.get(decodedPath)
         }.getOrNull()
     }
@@ -423,7 +423,7 @@ internal fun scanPluginsDirForMcpJar(pluginsPath: Path): Path? {
 
     resolveMcpJarPathFromPluginPath(pluginsPath)?.let { return it }
 
-    return runCatching {
+    return runCatchingCancellable {
         Files.list(pluginsPath).use { stream ->
             stream.asSequence()
                 .filter { Files.isDirectory(it) }
@@ -435,7 +435,7 @@ internal fun scanPluginsDirForMcpJar(pluginsPath: Path): Path? {
 internal fun resolveCodeSourcePath(location: URL): Path? {
     val fileLocation = when (location.protocol.lowercase()) {
         "file" -> location
-        "jar" -> runCatching {
+        "jar" -> runCatchingCancellable {
             (location.openConnection() as? JarURLConnection)?.jarFileURL
         }.getOrNull()
         else -> null

@@ -3,6 +3,8 @@ package com.shiny.inspectionmcp
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import com.intellij.openapi.progress.ProcessCanceledException
+import java.util.concurrent.CancellationException
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
 import com.intellij.ide.DataManager
@@ -2964,6 +2966,48 @@ internal class InspectionHandlerLifecycleTest : InspectionHandlerTestSupport() {
         assertEquals(HttpResponseStatus.OK, second.status(), secondBody)
         assertFalse(secondBody.contains("\"reason\": \"already_opening\""), secondBody)
         assertEquals(2, scheduled.size, secondBody)
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `cancelled readiness records a terminal diagnostic and releases its guard`(
+        coroutineCancellation: Boolean,
+    ) {
+        val tempDir = Files.createTempDirectory("inspection-open-cancelled")
+        val openingProject = mockk<Project>()
+        var disposed = false
+        every { openingProject.isDefault } returns false
+        every { openingProject.isDisposed } answers { disposed }
+        every { openingProject.isInitialized } returns false
+        every { openingProject.name } returns "inspection-open-cancelled"
+        every { openingProject.basePath } returns tempDir.toString()
+        every { openingProject.projectFilePath } returns tempDir.resolve(".idea/misc.xml").toString()
+        every { mockProjectManager.openProjects } returns emptyArray()
+        val scheduled = mutableListOf<Runnable>()
+        val guardPolls = mutableListOf<Runnable>()
+        every { mockApplication.invokeLater(any()) } answers { scheduled += firstArg<Runnable>() }
+        every { mockApplication.executeOnPooledThread(any<Runnable>()) } answers {
+            guardPolls += firstArg<Runnable>()
+            mockk(relaxed = true)
+        }
+        handler.openProjectPath = { _, beforeInit -> beforeInit(openingProject); openingProject }
+        val cancellation = if (coroutineCancellation) CancellationException() else ProcessCanceledException()
+        handler.lifecycleContentRootReadinessProvider = { _, _ ->
+            disposed = true
+            throw cancellation
+        }
+
+        processGetRequest(lifecycleOpenUri(tempDir))
+        scheduled.single().run()
+        assertSame(cancellation, assertThrows(CancellationException::class.java) { guardPolls.single().run() })
+        val probe = processGetRequest(lifecycleOpenUri(tempDir, probe = true)).content().toString(Charsets.UTF_8)
+
+        assertTrue(probe.contains("\"outcome_phase\": \"failed\""), probe)
+        assertTrue(probe.contains("\"outcome_reason\": \"project_disposed\""), probe)
+        assertTrue(probe.contains("\"readiness_waiting\": false"), probe)
+        val retry = processGetRequest(lifecycleOpenUri(tempDir))
+        assertEquals(HttpResponseStatus.OK, retry.status())
+        assertEquals(2, scheduled.size)
     }
 
     @Test

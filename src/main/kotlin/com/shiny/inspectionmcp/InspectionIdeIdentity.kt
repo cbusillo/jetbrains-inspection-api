@@ -2,7 +2,6 @@ package com.shiny.inspectionmcp
 
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
@@ -10,6 +9,7 @@ import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
+import java.util.concurrent.CancellationException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -125,12 +125,13 @@ internal object InspectionIdeRegistry {
             return
         }
 
-        runCatching { InspectionIdeMemory.ensureObserving() }
+        runCatchingCancellable { InspectionIdeMemory.ensureObserving() }
 
         AppExecutorUtil.getAppExecutorService().execute {
             try {
                 waitForBuiltInServerStart()
-            } catch (_: ProcessCanceledException) {
+            } catch (_: CancellationException) {
+                // Cancellation: a cancelled server wait still permits registry discovery and heartbeat setup.
             }
             writeRegistryFile()
             heartbeat = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
@@ -173,7 +174,7 @@ internal object InspectionIdeRegistry {
                 rethrowIfCanceled(e)
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
             }
-        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
         } catch (_: Exception) {
         }
     }
@@ -221,17 +222,16 @@ internal object LifecycleOpenRouteVisibility {
     }
 
     private fun lifecycleProjectTargetKeys(project: Project): Set<String> {
-        val basePath = runCatching { project.basePath }.getOrNull()
-        val projectFilePath = runCatching { project.projectFilePath }.getOrNull()
+        val basePath = runCatchingCancellable { project.basePath }.getOrNull()
+        val projectFilePath = runCatchingCancellable { project.projectFilePath }.getOrNull()
         return listOfNotNull(basePath, projectRootFromProjectFilePath(projectFilePath))
             .mapNotNull(::canonicalTargetKey)
             .toSet()
     }
 
     private fun canonicalTargetKey(path: String): String? {
-        return runCatching { Paths.get(path).toRealPath().toString() }
-            .recoverCatching { Paths.get(path).normalize().toAbsolutePath().toString() }
-            .getOrNull()
+        return runCatchingCancellable { Paths.get(path).toRealPath().toString() }
+            .getOrElse { runCatchingCancellable { Paths.get(path).normalize().toAbsolutePath().toString() }.getOrNull() }
     }
 }
 
@@ -239,9 +239,9 @@ internal fun openProjectIdentity(project: Project): Map<String, Any?> {
     return mapOf(
         "project_key" to projectKey(project),
         "project_instance_id" to projectInstanceId(project),
-        "name" to runCatching { project.name }.getOrDefault(""),
-        "base_path" to runCatching { project.basePath }.getOrNull(),
-        "project_file_path" to runCatching { project.projectFilePath }.getOrNull(),
+        "name" to runCatchingCancellable { project.name }.getOrDefault(""),
+        "base_path" to runCatchingCancellable { project.basePath }.getOrNull(),
+        "project_file_path" to runCatchingCancellable { project.projectFilePath }.getOrNull(),
         "focused" to isFocusedProject(project),
     )
 }
@@ -251,16 +251,16 @@ internal fun projectInstanceId(project: Project): String {
 }
 
 private fun isFocusedProject(project: Project): Boolean {
-    val focusedProject = runCatching { IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project }.getOrNull()
+    val focusedProject = runCatchingCancellable { IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project }.getOrNull()
     if (focusedProject == project) {
         return true
     }
-    return runCatching { WindowManager.getInstance().suggestParentWindow(project)?.isActive == true }
+    return runCatchingCancellable { WindowManager.getInstance().suggestParentWindow(project)?.isActive == true }
         .getOrDefault(false)
 }
 
 private fun resolveIdeProductCode(appInfo: ApplicationInfo): String? {
-    return runCatching {
+    return runCatchingCancellable {
         val build = appInfo.build
         val getter = build.javaClass.methods.firstOrNull { method ->
             method.name == "getProductCode" && method.parameterCount == 0

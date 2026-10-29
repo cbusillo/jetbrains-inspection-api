@@ -8,7 +8,6 @@ import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.injected.editor.DocumentWindow
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.injection.InjectedLanguageManager
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
@@ -93,7 +92,7 @@ fun severityFromHighlightType(highlightType: ProblemHighlightType): String {
 }
 
 internal fun severityFromHighlightDisplayLevel(level: HighlightDisplayLevel?): String? =
-    severityFromHighlightSeverityName(runCatching { level?.severity?.name }.getOrNull())
+    severityFromHighlightSeverityName(runCatchingCancellable { level?.severity?.name }.getOrNull())
 
 internal fun severityFromHighlightSeverityName(name: String?): String? {
     val severityName = name?.lowercase()?.replace(' ', '_') ?: return null
@@ -118,8 +117,6 @@ internal fun resolveProblemSeverity(
     }
     val profileSeverity = try {
         selectedProfile.getErrorLevel(displayKey, psiElement)
-    } catch (error: ProcessCanceledException) {
-        throw error
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
@@ -156,9 +153,9 @@ internal fun normalizeProblemDescription(descriptionTemplate: String, refText: S
 }
 
 internal fun problemDescriptorRefText(descriptor: ProblemDescriptor): String? {
-    val element = runCatching { descriptor.psiElement }.getOrNull()?.takeIf { it.isValid } ?: return null
-    val elementText = runCatching { element.text }.getOrNull() ?: return null
-    val rangeText = runCatching { descriptor.textRangeInElement }.getOrNull()?.let { range ->
+    val element = runCatchingCancellable { descriptor.psiElement }.getOrNull()?.takeIf { it.isValid } ?: return null
+    val elementText = runCatchingCancellable { element.text }.getOrNull() ?: return null
+    val rangeText = runCatchingCancellable { descriptor.textRangeInElement }.getOrNull()?.let { range ->
         if (range.startOffset >= 0 && range.endOffset <= elementText.length && !range.isEmpty) {
             range.substring(elementText)
         } else {

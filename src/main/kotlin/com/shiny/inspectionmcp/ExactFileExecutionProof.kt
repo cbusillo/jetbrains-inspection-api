@@ -40,7 +40,7 @@ internal enum class ExactFileProofBatchCapability(val diagnosticValue: String) {
 }
 
 internal fun exactFileProofNormalizedPath(filePath: String): String =
-    runCatching { Paths.get(filePath).normalize().toAbsolutePath().toString() }
+    runCatchingCancellable { Paths.get(filePath).normalize().toAbsolutePath().toString() }
         .getOrDefault(filePath)
 
 internal fun exactFileProofProblemMatchesCandidate(

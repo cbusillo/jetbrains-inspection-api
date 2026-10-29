@@ -457,8 +457,6 @@ For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete
 
 Injected-language discovery uses the same deadline-aware, write-priority read as replay. The injected-PSI platform tests hold an injector active while an IDE write or the proof deadline interrupts it; a write permits replay to resume, while an expired deadline keeps proof incomplete.
 
-For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`. This native attestation is in the full build only; see [Stable and full builds](#stable-and-full-builds).
-
 The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. `inspectEx` descriptors still carry `ProblemHighlightType` rather than the selected profile's display level, so the mapper resolves the tool's `HighlightDisplayKey` against the selected profile and may raise the descriptor-derived severity. It never lowers descriptor severity, and missing keys, PSI elements, or profile lookup failures retain the descriptor-derived value.
 
 Broad native execution no longer initializes or polls `InspectionResultsView`. Direct presentation descriptors remain the primary broad-scope model. Exact bounded execution proof can independently confirm an empty result after every applicable tool/file obligation completes, including in a fresh IDE session where no Inspection Results or Problems surface has been created; an unreadable model or a model with unmapped descriptors still remains `UNKNOWN`, and native broad-scope proof still requires a readable empty model. Stable successful tool-window extraction remains an alternate empty-result observation when available. Missing proof or incomplete semantic scope coverage remains `UNKNOWN`. The generic Problems/inspection tool-window fallback stays available, but the capture path no longer depends on `GlobalInspectionContextImpl.getView()` or `initializeViewIfNeeded()`.
@@ -477,7 +475,8 @@ Run the focused regression suite:
 
 ```bash
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest \
-  --tests "*.SupportedInspectionExecutorPlatformTest"
+  --tests "*.SupportedInspectionExecutorPlatformTest" \
+  --tests "*.NativeCompletionProofVerdictPlatformTest"
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :test \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
@@ -485,7 +484,8 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :test \
   --tests "*.InspectionHandlerRunTest" \
   --tests "*.InspectionHandlerResultsTest" \
   --tests "*.InspectionHandlerLifecycleTest" \
-  --tests "*.NativeInspectionExecutionProofTest"
+  --tests "*.NativeInspectionExecutionProofTest" \
+  --tests "*.NativeInspectionCompletionObservationTest" -x :platformTest
 ```
 
 Key expectations:
@@ -508,7 +508,7 @@ Key expectations:
 - unpaired unfair wrappers with no batch wrapper → excluded from the batch denominator with explicit evidence, never counted as execution or clean evidence
 - every requested file still requires at least one successfully executed batch obligation; all-excluded files remain `execution_not_proven`
 - current mapped findings remain RED when clean execution proof is incomplete
-- `whole_project`/`directory` normal native completion with file traversal, file-scoped tool completions, no failures, and zero findings → GREEN
+- `whole_project`/`directory` meeting the [broad-scope completion requirements](README.md#result-schema) → GREEN
 - `whole_project`/`directory` aborted, failed, zero-file, zero-file-scoped-tool, stale, or mismatched native execution → `execution_not_proven`, not GREEN
 - native problem counts without mapped findings → `execution_not_proven`, not GREEN; mapped current findings remain RED
 - filtering an unproven finding snapshot to zero matching findings → `execution_not_proven`, not `no_matching_findings`
@@ -686,10 +686,12 @@ cannot provide.
 ### Linters and release contract tests
 
 Plugin code must not turn a cancelled read action or progress into a fallback
-value. `scripts/lint-cancellation-catches.py` accepts a catch of `Exception`,
-`RuntimeException`, or `Throwable` only when it passes the exception to
+value. Use `runCatchingCancellable` for result fallbacks; the lint rejects
+unguarded `runCatching`, `recoverCatching` and `mapCatching` calls unless a
+`// Cancellation:` note explains deferred handling. The lint accepts a catch of
+`Exception`, `RuntimeException`, `IllegalStateException`, or `Throwable` only when it passes the exception to
 `rethrowIfCanceled` (or another named cancellation handler), ends by throwing
-it, keeps it for a later throw, follows a `ProcessCanceledException` catch, or
+it, keeps it for a later throw, follows a `CancellationException` catch, or
 explains in a `// Cancellation:` comment why it is safe, such as a failure
 carried to another thread that rethrows it.
 
