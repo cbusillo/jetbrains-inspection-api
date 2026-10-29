@@ -33,8 +33,8 @@ Run workflow and shell lint alongside the selected tests. Safety changes also
 run the complete affected modules described in `AGENTS.md`.
 
 Do not run the full commit gate locally.
-CI runs that complete gate on every PR head, main push and train branch; all
-required checks must pass before `ready`. The full gate remains the entrypoint for CI and release automation. Installed IDE smoke and licensed
+CI runs that complete gate on every PR head, main push and train branch.
+The full gate remains the entrypoint for CI and release automation. Installed IDE smoke and licensed
 SDK qualification below remain separate evidence, not substitutes for CI.
 
 ## Isolated Python/uv SDK controls

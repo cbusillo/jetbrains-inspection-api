@@ -963,7 +963,7 @@ JETBRAINS_INSPECTION_PORTS=63340-63350 java -jar /path/to/plugin/lib/jetbrains-i
 Use the focused local command and complete CI command declared in
 `.github/github.json`; [testing](TESTING.md#local-commands) explains selection,
 required safety modules and the optional legacy commit hook. The full gate runs
-on every PR head and must pass before `ready` or merge.
+on every PR head.
 
 ## Known Limitations
 
