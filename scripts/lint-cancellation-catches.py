@@ -8,10 +8,10 @@ import re
 import sys
 from pathlib import Path
 
-BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*(?:Exception|RuntimeException|Throwable)\s*\)\s*\{")
+BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*(?:Exception|RuntimeException|IllegalStateException|Throwable)\s*\)\s*\{")
 CATCHING_RESULT = re.compile(r"\b(?:runCatching|recoverCatching|mapCatching)\s*(?:<[^>]+>\s*)?([({])")
 CANCELLATION_NOTE = re.compile(r"^[ \t]*//[ \t]*Cancellation:[ \t]*\S", re.MULTILINE)
-CANCELLATION_CATCH = re.compile(r"\bcatch\s*\(\s*\w+\s*:\s*ProcessCanceledException\s*\)\s*$")
+CANCELLATION_CATCH = re.compile(r"\bcatch\s*\(\s*\w+\s*:\s*CancellationException\s*\)\s*$")
 SIBLING_CATCH = re.compile(r"\bcatch\s*\([^()]*\)\s*$")
 CANCELLATION_HANDLERS = (
     "rethrowIfCanceled",
@@ -114,7 +114,7 @@ def main() -> int:
         return 1
     failures = [
         f"{source}:{line}: preserve cancellation with rethrowIfCanceled or runCatchingCancellable, "
-        "end with throw, follow a ProcessCanceledException catch, or explain deferred handling in a '// Cancellation:' comment"
+        "end with throw, follow a CancellationException catch, or explain deferred handling in a '// Cancellation:' comment"
         for source in sorted(args.sources.rglob("*.kt"))
         for line in swallowing_catches(source)
     ]

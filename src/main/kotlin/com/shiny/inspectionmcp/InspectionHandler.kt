@@ -87,6 +87,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import org.jdom.Element
 import org.jetbrains.ide.HttpRequestHandler
+import java.util.concurrent.CancellationException
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dialog
@@ -3783,18 +3784,21 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         if (submitted.isFailure) {
-            openingProjectRequests.remove(key, request)
-            if (isUnresolvedLifecycleOpenActive(project)) {
-                unresolvedLifecycleOpenProjects[key] = project
-                recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_wait_not_submitted", project) {
-                    it.copy(readinessWaiting = false, unresolved = true)
+            try {
+                if (isUnresolvedLifecycleOpenActive(project)) {
+                    unresolvedLifecycleOpenProjects[key] = project
+                    recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_wait_not_submitted", project) {
+                        it.copy(readinessWaiting = false, unresolved = true)
+                    }
+                } else {
+                    recordLifecycleOpenDiagnostic(key, "failed", "readiness_wait_not_submitted", project) {
+                        it.copy(readinessWaiting = false)
+                    }
                 }
-            } else {
-                recordLifecycleOpenDiagnostic(key, "failed", "readiness_wait_not_submitted", project) {
-                    it.copy(readinessWaiting = false)
-                }
+            } finally {
+                openingProjectRequests.remove(key, request)
+                submitted.exceptionOrNull()?.let(::rethrowIfCanceled)
             }
-            submitted.exceptionOrNull()?.let(::rethrowIfCanceled)
         }
     }
 
@@ -4502,7 +4506,7 @@ class InspectionHandler : HttpRequestHandler() {
                     deadlineDiagnostic = control.progress.diagnostic()
                 }
                 prepared
-            } catch (_: ProcessCanceledException) {
+            } catch (_: CancellationException) {
                 PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
             } catch (error: Throwable) {
                 PythonSdkPreparationResult(
@@ -7296,9 +7300,8 @@ class InspectionHandler : HttpRequestHandler() {
                             )
                         }
                     }
-                } catch (error: ProcessCanceledException) {
-                    throw error
                 } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     batchPrerequisiteReadFailure = if (error is NativeInspectionObservationUnavailable &&
                         error.message == BATCH_INSPECTION_WRITE_PREEMPTED_REASON
                     ) BATCH_INSPECTION_WRITE_PREEMPTED_REASON else error.javaClass.simpleName
@@ -7361,9 +7364,8 @@ class InspectionHandler : HttpRequestHandler() {
                             )
                         }
                     }
-                } catch (error: ProcessCanceledException) {
-                    throw error
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     UnprovenBatchAnnotators(UNPROVEN_BATCH_ANNOTATOR_REASON, emptyList())
                 }
             }
@@ -7936,7 +7938,7 @@ class InspectionHandler : HttpRequestHandler() {
                                 )
                             },
                         )
-                        } catch (e: ProcessCanceledException) {
+                        } catch (e: CancellationException) {
                             try {
                                 recordInspectionRunFailureDiagnostic(
                                     key = key,
@@ -7974,14 +7976,13 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                 }
                 captureScheduled = true
-            } catch (e: ProcessCanceledException) {
-                throw e
             } catch (error: Exception) {
+                rethrowIfCanceled(error)
                 logger.warn("Inspection setup or capture scheduling failed for ${project.name}", error)
                 publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
                 finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
             }
-        } catch (e: ProcessCanceledException) {
+        } catch (e: CancellationException) {
             try {
                 recordInspectionRunFailureDiagnostic(
                     key = key,

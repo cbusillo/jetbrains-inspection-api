@@ -10,6 +10,7 @@ import com.intellij.openapi.wm.WindowManager
 import com.intellij.util.concurrency.AppExecutorUtil
 import com.shiny.inspectionmcp.core.formatJsonManually
 import com.shiny.inspectionmcp.core.projectRootFromProjectFilePath
+import java.util.concurrent.CancellationException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -173,7 +174,7 @@ internal object InspectionIdeRegistry {
                 rethrowIfCanceled(e)
                 Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING)
             }
-        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
         } catch (_: Exception) {
         }
     }

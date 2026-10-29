@@ -578,6 +578,8 @@ fun cancelledFirst() {
         read()
     } catch (e: ProcessCanceledException) {
         throw e
+    } catch (e: CancellationException) {
+        throw e
     } catch (e: java.io.IOException) {
         null
     } catch (e: Exception) {
@@ -650,6 +652,8 @@ fun swallowsResult() = runCatching { read() }.getOrNull()
 fun swallowsReference() = runCatching(::read).getOrNull()
 fun swallowsRecovery() = result.recoverCatching { read() }.getOrNull()
 fun swallowsMapping() = result.mapCatching { read() }.getOrNull()
+fun swallowsSibling() = try { read() } catch (e: ProcessCanceledException) { throw e } catch (_: Exception) { null }
+fun swallowsState() = try { read() } catch (_: IllegalStateException) { null }
 KOTLIN
   if uv run scripts/lint-cancellation-catches.py --sources "$sources" >"$temp_dir/output" 2>&1; then
     fail "cancellation linter accepted catches that swallow cancellation"
@@ -665,6 +669,8 @@ KOTLIN
   assert_contains "$temp_dir/output" "$sources/Results.kt:2:"
   assert_contains "$temp_dir/output" "$sources/Results.kt:3:"
   assert_contains "$temp_dir/output" "$sources/Results.kt:4:"
+  assert_contains "$temp_dir/output" "$sources/Results.kt:5:"
+  assert_contains "$temp_dir/output" "$sources/Results.kt:6:"
   rm -rf "$temp_dir"
   trap - RETURN
 }

@@ -684,10 +684,12 @@ cannot provide.
 ### Linters and release contract tests
 
 Plugin code must not turn a cancelled read action or progress into a fallback
-value. `scripts/lint-cancellation-catches.py` accepts a catch of `Exception`,
-`RuntimeException`, or `Throwable` only when it passes the exception to
+value. Use `runCatchingCancellable` for result fallbacks; the lint rejects
+unguarded `runCatching`, `recoverCatching` and `mapCatching` calls unless a
+`// Cancellation:` note explains deferred handling. The lint accepts a catch of
+`Exception`, `RuntimeException`, `IllegalStateException`, or `Throwable` only when it passes the exception to
 `rethrowIfCanceled` (or another named cancellation handler), ends by throwing
-it, keeps it for a later throw, follows a `ProcessCanceledException` catch, or
+it, keeps it for a later throw, follows a `CancellationException` catch, or
 explains in a `// Cancellation:` comment why it is safe, such as a failure
 carried to another thread that rethrows it.
 
