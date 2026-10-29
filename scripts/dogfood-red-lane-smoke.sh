@@ -187,7 +187,7 @@ fi
 CMD+=(--native-project-scope --scope whole_project --profile RedLane --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
 jq -n '$ARGS.positional' --args -- "${CMD[@]}" >"$COMMAND_FILE"
 
-"${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
+JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS="$WORKTREE" "${CMD[@]}" >"$RAW_OUT" 2>"$ERR_OUT"
 EXIT_CODE=$?
 
 if jq -se 'length == 1 and (.[0] | type == "object")' "$RAW_OUT" >/dev/null 2>&1; then

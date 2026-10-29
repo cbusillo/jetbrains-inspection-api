@@ -50,9 +50,13 @@ def create(source: Path, slug: str, parent: Path | None, manager: Path, *, fixtu
     if fixture is not None:
         if fixture.is_absolute() or ".." in fixture.parts:
             raise ValueError("The fixture must be a tracked directory relative to the source repository.")
-        if run("git", "-C", str(source), "cat-file", "-t", f"{commit}:{fixture.as_posix()}") != "tree":
+        try:
+            fixture_type = run("git", "-C", str(source), "cat-file", "-t", f"{commit}:{fixture.as_posix()}")
+        except subprocess.CalledProcessError as error:
+            raise ValueError("The fixture must be a tracked directory relative to the source repository.") from error
+        if fixture_type != "tree":
             raise ValueError("The fixture must be a tracked directory relative to the source repository.")
-        if parent is not None and parent.resolve().is_relative_to(HOST_ROOT):
+        if parent is not None and (parent.resolve().is_relative_to(HOST_ROOT) or parent.resolve().is_relative_to(source)):
             raise ValueError("Fixture output belongs in a temporary or task-evidence parent, outside the task-worktree root.")
     if fixture is None and platform.node().split(".")[0].lower() == "chris-studio":
         if parent:
@@ -68,22 +72,33 @@ def create(source: Path, slug: str, parent: Path | None, manager: Path, *, fixtu
             parent.mkdir(parents=True, exist_ok=True)
         if fixture is not None:
             root = Path(tempfile.mkdtemp(prefix=f"{slug}-", dir=parent)).resolve()
+            if root.is_relative_to(HOST_ROOT) or root.is_relative_to(source):
+                root.rmdir()
+                raise ValueError("Fixture output must be outside the source checkout and task-worktree root.")
         elif parent:
             root = parent / slug
         else:
             raise ValueError("Portable hosts require an explicit --worktree-root/--work-root.")
-        run(
-            "git",
-            "-C",
-            str(source),
-            "worktree",
-            "add",
-            *(["--no-checkout"] if fixture is not None else []),
-            "-b",
-            f"work/{slug}",
-            str(root),
-            commit,
-        )
+        try:
+            run(
+                "git",
+                "-C",
+                str(source),
+                "worktree",
+                "add",
+                *(["--no-checkout"] if fixture is not None else []),
+                "-b",
+                f"work/{slug}",
+                str(root),
+                commit,
+            )
+        except subprocess.CalledProcessError:
+            if fixture is not None:
+                try:
+                    root.rmdir()
+                except OSError:
+                    print(f"Failed creation retained output: {root}", file=sys.stderr)
+            raise
         managed = False
     try:
         if fixture is not None:

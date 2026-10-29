@@ -431,12 +431,13 @@ by the maintained helper's live SDK preview and apply. Unresolved lifecycle or
 SDK cleanup, dirty projects and interrupted runs preserve the worktree and
 registration. There is no force removal or directory-deletion fallback.
 Evidence remains outside the project in the printed retained evidence directory.
-Keep acceptance evidence in the task-evidence location for the run.
+Pass `--json-out` under the run's task-evidence location to retain the complete
+report. For a kept or interrupted run that must survive system temporary-file
+cleanup, also pass `--work-root` under task-evidence.
 
-For a dedicated smoke parent outside configured trusted roots, set
-`JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that parent for the command.
-The helper persists that root in the selected IDE's Trusted Locations. After
-retiring every project, an empty dedicated parent can be removed from a normally
+The smoke sets `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to its exact owned
+checkout for the inspection command. The helper persists that root in the
+selected IDE's Trusted Locations. After retirement, that exact path can be removed from a normally
 stopped IDE's trust configuration using the preview/apply command in
 [Smoke trust retirement](MAINTAINING.md#smoke-trust-retirement). Leave shared
 trusted worktree roots in place.

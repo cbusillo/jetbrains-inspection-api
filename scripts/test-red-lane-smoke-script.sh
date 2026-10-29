@@ -65,6 +65,10 @@ if not repo or selected is None:
     sys.exit(3)
 
 if os.environ.get("JB_EXPECT_SINGLE_FIXTURE") == "1":
+    trusted = os.environ.get("JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS", "")
+    if not trusted or not Path(repo).resolve().is_relative_to(Path(trusted).resolve()):
+        print(json.dumps({"status": "error", "error_reason": "untrusted_auto_open_root"}))
+        sys.exit(3)
     siblings = {path for path in Path(repo).parent.iterdir() if path.is_dir()}
     if siblings != {Path(repo)}:
         print(json.dumps({"status": "error", "error_reason": "unselected_fixtures_materialized"}))

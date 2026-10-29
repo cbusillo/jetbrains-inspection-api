@@ -42,11 +42,10 @@ class SmokeLifecycle(unittest.TestCase):
         configuration_before = smoke.run("git", "-C", str(self.source), "config", "--local", "--list")
         registrations_before = smoke.run("git", "-C", str(self.source), "worktree", "list", "--porcelain")
         with patch.object(smoke.platform, "node", return_value="Chris-Studio"):
-            self.receipt = smoke.create(self.source, "fixture-only", None, self.root / "must-not-run", fixture=Path("scripts"))
+            self.receipt = smoke.create(self.source, "fixture-only", self.root / "fixtures", self.root / "must-not-run", fixture=Path("scripts"))
         self.worktree = Path(self.receipt["root"])
         self.assertTrue((self.worktree / "scripts/maintenance.py").is_file())
         self.assertFalse((self.worktree / "source.py").exists())
-        self.assertFalse(self.worktree.is_relative_to(smoke.HOST_ROOT))
         self.assertEqual(smoke.run("git", "-C", str(self.worktree), "status", "--porcelain"), "")
         result = self.retire({"cleanup": {"status": "closed"}})
         self.assertEqual(result["status"], "removed")
@@ -54,6 +53,30 @@ class SmokeLifecycle(unittest.TestCase):
         self.assertEqual(smoke.manifest(self.source), source_before)
         self.assertEqual(smoke.run("git", "-C", str(self.source), "config", "--local", "--list"), configuration_before)
         self.assertEqual(smoke.run("git", "-C", str(self.source), "worktree", "list", "--porcelain"), registrations_before)
+
+    def test_fixture_rejects_source_and_worktree_namespace_parents(self) -> None:
+        for parent in (self.source / "scratch", smoke.HOST_ROOT / "fixture-probe"):
+            with self.subTest(parent=parent), self.assertRaises(ValueError):
+                smoke.create(self.source, "invalid-parent", parent, Path("unused"), fixture=Path("scripts"))
+        self.assertFalse((self.source / "scratch").exists())
+
+    def test_fixture_rejects_inherited_temporary_root_inside_source(self) -> None:
+        parent = self.source / "temporary"
+        parent.mkdir()
+        with patch.object(smoke.tempfile, "tempdir", str(parent)), self.assertRaises(ValueError):
+            smoke.create(self.source, "invalid-temporary", None, Path("unused"), fixture=Path("scripts"))
+        self.assertEqual(list(parent.iterdir()), [])
+
+    def test_fixture_requires_tracked_relative_directory(self) -> None:
+        for fixture in (Path('/absolute'), Path('../outside'), Path('source.py'), Path('missing')):
+            with self.subTest(fixture=fixture), self.assertRaises(ValueError):
+                smoke.create(self.source, "invalid-fixture", self.root / "fixtures", Path("unused"), fixture=fixture)
+
+    def test_fixture_branch_collision_leaves_no_empty_output_directory(self) -> None:
+        parent = self.root / "fixtures"
+        with self.assertRaises(subprocess.CalledProcessError):
+            smoke.create(self.source, "smoke", parent, Path("unused"), fixture=Path("scripts"))
+        self.assertEqual(list(parent.iterdir()), [])
 
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
