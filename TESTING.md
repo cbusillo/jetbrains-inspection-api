@@ -117,16 +117,14 @@ evidence.
 
 ## Agent inspection helper
 
-Maintenance Python scripts use a nested PyCharm project under `scripts/`;
-Kotlin/Java/Gradle and the remaining files retain the root IntelliJ project.
-The configured assessment prepares the ignored `scripts/.venv` and
-`scripts/.idea` through the maintained generator, with dependency metadata
-from `install-local-plugin.py`. All current maintenance scripts use the
-standard library; extend that PEP 723 input set if their dependencies change.
-The root Java/Gradle bindings are preserved. The in-repo desktop client's
-`inspect-closeout` runs this preparation and each selected lane against its own
-project and SDK. Preparation alone does not prove IDE readiness or a decisive
-inspection.
+Maintenance Python scripts use the root PyCharm lane with structured Python
+preparation inside the native worker's private snapshot. Dependency metadata
+comes from `scripts/install-local-plugin.py`; extend that PEP 723 input set if
+the scripts' dependencies change. Kotlin/Java uses a separate root IntelliJ
+lane, which imports Gradle and ignores Python preparation. Neither route
+changes the source worktree's Java/Gradle bindings or creates a source-worktree
+Python environment. Inspect each product's files in a separate assessment;
+preparation alone does not prove a decisive inspection.
 
 Agents inspect code through the catalog `jetbrains-inspection` skill's isolated
 native workers, which never call this plugin. This plugin's own smokes use
