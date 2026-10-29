@@ -36,7 +36,7 @@ Options:
   --ide-version VERSION      Exact IDE version selector, e.g. 2026.2.
   --timeout-ms MS            Helper wait timeout. Default: 180000.
   --prepare-timeout-ms MS    Helper prepare/open timeout. Default: 180000.
-  --work-root PATH           Portable hosts: explicit worktree parent; omit on Chris-Studio.
+  --work-root PATH           Optional temporary fixture parent outside the task-worktree root.
   --json-out PATH            Write JSON report to PATH.
   --keep-project             Leave the disposable fixture project on disk.
   -h, --help                 Show this help.
@@ -159,17 +159,9 @@ EVIDENCE=$(mktemp -d)
 echo "Retained smoke evidence: $EVIDENCE" >&2
 RUN_ID=$(date -u +%Y%m%dT%H%M%SZ)-$$
 RECEIPT="$EVIDENCE/worktree.json"
-CREATE=(uv run "$WORKTREE_TOOL" create --source "$ROOT" --slug "smoke-$PROJECT_SLUG-$RUN_ID" --receipt "$RECEIPT")
+CREATE=(uv run "$WORKTREE_TOOL" create --source "$ROOT" --slug "smoke-$PROJECT_SLUG-$RUN_ID" --fixture "${FIXTURE#"$ROOT/"}" --receipt "$RECEIPT")
 [ -z "$WORK_ROOT" ] || CREATE+=(--parent "$WORK_ROOT")
 WORKTREE=$("${CREATE[@]}") || exit 2
-if [[ "$WORKTREE" == /Volumes/Developer-Artifacts/worktrees/* ]]; then
-	EVIDENCE_PARENT="/Volumes/Developer-Artifacts/task-evidence/jetbrains-inspection-api/smoke"
-	mkdir -p "$EVIDENCE_PARENT"
-	MOVED_EVIDENCE="$EVIDENCE_PARENT/$(basename "$WORKTREE")"
-	mv "$EVIDENCE" "$MOVED_EVIDENCE"
-	EVIDENCE=$MOVED_EVIDENCE
-	RECEIPT="$EVIDENCE/worktree.json"
-fi
 PROJECT="$WORKTREE/${FIXTURE#"$ROOT/"}"
 RAW_OUT="$EVIDENCE/raw.json"
 ERR_OUT="$EVIDENCE/stderr.txt"

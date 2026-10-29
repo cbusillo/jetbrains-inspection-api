@@ -37,6 +37,24 @@ trust = load("retire-smoke-trust")
 
 
 class SmokeLifecycle(unittest.TestCase):
+    def test_fixture_only_smoke_uses_temporary_sparse_checkout_and_existing_retirement(self) -> None:
+        source_before = smoke.manifest(self.source)
+        configuration_before = smoke.run("git", "-C", str(self.source), "config", "--local", "--list")
+        registrations_before = smoke.run("git", "-C", str(self.source), "worktree", "list", "--porcelain")
+        with patch.object(smoke.platform, "node", return_value="Chris-Studio"):
+            self.receipt = smoke.create(self.source, "fixture-only", None, self.root / "must-not-run", fixture=Path("scripts"))
+        self.worktree = Path(self.receipt["root"])
+        self.assertTrue((self.worktree / "scripts/maintenance.py").is_file())
+        self.assertFalse((self.worktree / "source.py").exists())
+        self.assertFalse(self.worktree.is_relative_to(smoke.HOST_ROOT))
+        self.assertEqual(smoke.run("git", "-C", str(self.worktree), "status", "--porcelain"), "")
+        result = self.retire({"cleanup": {"status": "closed"}})
+        self.assertEqual(result["status"], "removed")
+        self.assertFalse(self.worktree.exists())
+        self.assertEqual(smoke.manifest(self.source), source_before)
+        self.assertEqual(smoke.run("git", "-C", str(self.source), "config", "--local", "--list"), configuration_before)
+        self.assertEqual(smoke.run("git", "-C", str(self.source), "worktree", "list", "--porcelain"), registrations_before)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

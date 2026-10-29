@@ -391,8 +391,7 @@ visible. A warm IDE red-lane run should normally be
 but must still end in a trustworthy RED with cleanup `closed`.
 
 ```bash
-# On portable hosts, add --work-root /path/to/approved/smoke-parent.
-# Chris-Studio uses dev-worktree; omit the parent override.
+# Optionally select a temporary or task-evidence parent with --work-root.
 ./scripts/dogfood-red-lane-smoke.sh \
   --helper "$HELPER" --keep-project \
   --product intellij \
@@ -416,12 +415,12 @@ but must still end in a trustworthy RED with cleanup `closed`.
 ```
 
 Set `HELPER` to the in-repo desktop client as above.
-The smoke checks out a linked worktree and opens only the selected fixture
-subproject. On Chris-Studio, omit `--work-root`: `dev-worktree` validates the
-Developer-Artifacts volume and chooses the canonical worktree path. Portable
-hosts must pass their approved parent with `--work-root`. The smoke uses the
-in-repo `scripts/desktop-client/jb-inspect.py`; set `JB_INSPECT_HELPER` or pass
-`--helper` to select another client explicitly.
+The smoke materializes only the selected tracked fixture from the source HEAD
+in an owned temporary linked checkout, on every host. It leaves the source's
+Git configuration unchanged. `--work-root` optionally selects a temporary or
+task-evidence parent outside the task-worktree root. The smoke uses the in-repo
+`scripts/desktop-client/jb-inspect.py`; set `JB_INSPECT_HELPER` or pass `--helper`
+to select another client explicitly.
 
 The report records the exact project, worktree, helper command, evidence directory,
 native `plugin_build_fingerprint`, and `worktree_retirement`. Without
@@ -431,8 +430,8 @@ IDE/build state outside the project, and no unknown ignored changes, followed
 by the maintained helper's live SDK preview and apply. Unresolved lifecycle or
 SDK cleanup, dirty projects and interrupted runs preserve the worktree and
 registration. There is no force removal or directory-deletion fallback.
-Evidence remains outside the project; Chris-Studio evidence goes under
-Developer-Artifacts/task-evidence after validated worktree creation.
+Evidence remains outside the project in the printed retained evidence directory.
+Keep acceptance evidence in the task-evidence location for the run.
 
 For a dedicated smoke parent outside configured trusted roots, set
 `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that parent for the command.
@@ -469,7 +468,7 @@ necessary: public path profiling skips out-of-scope files before recording a
 path and cannot preserve the unexpected-file check. Activity and per-kind
 completion counters are diagnostics only and are no longer collected.
 
-Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates isolated linked worktrees containing the maintained fixtures; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
+Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates temporary linked checkouts containing only the selected maintained fixture; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
 
 Run the focused regression suite:
 
