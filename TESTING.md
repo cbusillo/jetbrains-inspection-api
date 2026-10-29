@@ -455,8 +455,6 @@ requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change
 
 For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; local obligations use `InspectionEngine.inspectEx` and global-simple obligations use the public single-file route described below, with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. Current mapped findings remain decisive RED even when clean proof is incomplete. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
 
-For `whole_project` and `directory`, the plugin uses the JetBrains native inspection run instead of repeating every local tool against every file. `InspectionEngine.inspectEx` accepts local inspection wrappers only, so it does not replace the remaining global and global-simple execution evidence. The plugin opens the platform's synchronous file-traversal gate and installs a run-bounded `InspectListener` subscription on the same inspection event topic used by local and global tools. GREEN requires a normal native return, at least one traversed physical file, at least one completed local or global-simple file inspection, zero inspection failures, zero unmapped native problem counts, and unchanged run/session/scope/profile/input evidence. Global-only completion or lifecycle activity without file traversal remains `UNKNOWN`/`execution_not_proven`. This native attestation is in the full build only; see [Stable and full builds](#stable-and-full-builds).
-
 The #296 evidence suite drives the real bounded adapter with a synthetic non-default `InspectionProfileImpl`. It proves profile-disabled obligations are excluded without hiding enabled findings, a zero deadline remains fail-closed, and `AnalysisScope` traversal agrees between native expected-file accounting and supported submission for exact files, directories, and the whole test project. `inspectEx` descriptors still carry `ProblemHighlightType` rather than the selected profile's display level, so the mapper resolves the tool's `HighlightDisplayKey` against the selected profile and may raise the descriptor-derived severity. It never lowers descriptor severity, and missing keys, PSI elements, or profile lookup failures retain the descriptor-derived value.
 
 Broad native execution no longer initializes or polls `InspectionResultsView`. Direct presentation descriptors remain the primary broad-scope model. Exact bounded execution proof can independently confirm an empty result after every applicable tool/file obligation completes, including in a fresh IDE session where no Inspection Results or Problems surface has been created; an unreadable model or a model with unmapped descriptors still remains `UNKNOWN`, and native broad-scope proof still requires a readable empty model. Stable successful tool-window extraction remains an alternate empty-result observation when available. Missing proof or incomplete semantic scope coverage remains `UNKNOWN`. The generic Problems/inspection tool-window fallback stays available, but the capture path no longer depends on `GlobalInspectionContextImpl.getView()` or `initializeViewIfNeeded()`.
@@ -475,7 +473,8 @@ Run the focused regression suite:
 
 ```bash
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :platformTest \
-  --tests "*.SupportedInspectionExecutorPlatformTest"
+  --tests "*.SupportedInspectionExecutorPlatformTest" \
+  --tests "*.NativeCompletionProofVerdictPlatformTest"
 JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :test \
   --tests "*.ExactFileExecutionProofTest" \
   --tests "*.InspectionSnapshotStateTest.*Proof*" \
@@ -483,7 +482,8 @@ JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew :test \
   --tests "*.InspectionHandlerRunTest" \
   --tests "*.InspectionHandlerResultsTest" \
   --tests "*.InspectionHandlerLifecycleTest" \
-  --tests "*.NativeInspectionExecutionProofTest"
+  --tests "*.NativeInspectionExecutionProofTest" \
+  --tests "*.NativeInspectionCompletionObservationTest" -x :platformTest
 ```
 
 Key expectations:
@@ -506,7 +506,7 @@ Key expectations:
 - unpaired unfair wrappers with no batch wrapper → excluded from the batch denominator with explicit evidence, never counted as execution or clean evidence
 - every requested file still requires at least one successfully executed batch obligation; all-excluded files remain `execution_not_proven`
 - current mapped findings remain RED when clean execution proof is incomplete
-- `whole_project`/`directory` normal native completion with file traversal, file-scoped tool completions, no failures, and zero findings → GREEN
+- `whole_project`/`directory` meeting the [broad-scope completion requirements](README.md#result-schema) → GREEN
 - `whole_project`/`directory` aborted, failed, zero-file, zero-file-scoped-tool, stale, or mismatched native execution → `execution_not_proven`, not GREEN
 - native problem counts without mapped findings → `execution_not_proven`, not GREEN; mapped current findings remain RED
 - filtering an unproven finding snapshot to zero matching findings → `execution_not_proven`, not `no_matching_findings`
