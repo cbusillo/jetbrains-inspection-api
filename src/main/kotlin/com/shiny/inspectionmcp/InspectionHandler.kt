@@ -3772,6 +3772,12 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                         lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                     }
+                } catch (cancelled: CancellationException) {
+                    val reason = if (project.isDisposed) "project_disposed" else "readiness_cancelled"
+                    recordLifecycleOpenDiagnostic(key, "failed", reason, project) {
+                        it.copy(readinessWaiting = false)
+                    }
+                    throw cancelled
                 } finally {
                     try {
                         if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
@@ -6820,7 +6826,7 @@ class InspectionHandler : HttpRequestHandler() {
                 try {
                     runCatchingCancellable { control.indicator.cancel() }
                 } finally {
-                    val outcome = if (error is ProcessCanceledException) {
+                    val outcome = if (error is CancellationException) {
                         InspectionRunTerminalOutcome.CANCELLED
                     } else {
                         InspectionRunTerminalOutcome.FAILED

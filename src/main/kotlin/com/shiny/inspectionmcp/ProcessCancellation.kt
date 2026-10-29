@@ -1,12 +1,11 @@
 package com.shiny.inspectionmcp
 
-import com.intellij.openapi.progress.ProcessCanceledException
 import java.lang.reflect.InvocationTargetException
 import java.util.concurrent.CancellationException
 
 internal fun rethrowIfCanceled(error: Throwable) {
     val cause = (error as? InvocationTargetException)?.targetException ?: error
-    if (cause is ProcessCanceledException || cause is CancellationException) throw cause
+    if (cause is CancellationException) throw cause
 }
 
 internal inline fun <T> runCatchingCancellable(block: () -> T): Result<T> = try {

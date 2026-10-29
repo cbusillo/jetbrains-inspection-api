@@ -2,7 +2,6 @@ package com.shiny.inspectionmcp
 
 import com.intellij.openapi.application.ApplicationInfo
 import com.intellij.openapi.application.ApplicationManager
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.wm.IdeFocusManager
@@ -131,7 +130,8 @@ internal object InspectionIdeRegistry {
         AppExecutorUtil.getAppExecutorService().execute {
             try {
                 waitForBuiltInServerStart()
-            } catch (_: ProcessCanceledException) {
+            } catch (_: CancellationException) {
+                // Cancellation: a cancelled server wait still permits registry discovery and heartbeat setup.
             }
             writeRegistryFile()
             heartbeat = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(

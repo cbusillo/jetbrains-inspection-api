@@ -8,7 +8,6 @@ import com.intellij.codeInspection.ProblemHighlightType
 import com.intellij.injected.editor.DocumentWindow
 import com.intellij.injected.editor.VirtualFileWindow
 import com.intellij.lang.injection.InjectedLanguageManager
-import com.intellij.openapi.progress.ProcessCanceledException
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.util.TextRange
 import com.intellij.psi.PsiElement
@@ -118,8 +117,6 @@ internal fun resolveProblemSeverity(
     }
     val profileSeverity = try {
         selectedProfile.getErrorLevel(displayKey, psiElement)
-    } catch (error: ProcessCanceledException) {
-        throw error
     } catch (error: CancellationException) {
         throw error
     } catch (_: Exception) {
