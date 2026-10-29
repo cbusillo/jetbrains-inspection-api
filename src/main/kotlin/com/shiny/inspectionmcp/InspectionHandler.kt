@@ -87,6 +87,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.longOrNull
 import org.jdom.Element
 import org.jetbrains.ide.HttpRequestHandler
+import java.util.concurrent.CancellationException
 import java.awt.Component
 import java.awt.Container
 import java.awt.Dialog
@@ -1256,12 +1257,15 @@ internal data class BoundedProcessOutput(
 )
 
 private fun destroyProcessTree(process: Process) {
-    runCatching {
-        process.descendants().use { descendants ->
-            descendants.forEach { descendant -> descendant.destroyForcibly() }
+    try {
+        runCatchingCancellable {
+            process.descendants().use { descendants ->
+                descendants.forEach { descendant -> descendant.destroyForcibly() }
+            }
         }
+    } finally {
+        process.destroyForcibly()
     }
-    process.destroyForcibly()
 }
 
 internal fun collectBoundedProcessOutput(
@@ -1313,7 +1317,7 @@ internal fun collectBoundedProcessOutput(
         throw readerFailure.get()!!
     }
     return BoundedProcessOutput(
-        exitCode = if (completed) runCatching { process.exitValue() }.getOrNull() else null,
+        exitCode = if (completed) runCatchingCancellable { process.exitValue() }.getOrNull() else null,
         output = if (exceeded) captured.copyOf(maxOutputBytes) else captured,
         timedOut = !completed || reader.isAlive,
         outputLimitExceeded = exceeded,
@@ -1332,10 +1336,10 @@ internal class InspectionRunConflictException(
 ) : RuntimeException("Inspection run $runId is already in progress for this project.")
 
 internal fun projectKey(project: Project): String {
-    val basePath = runCatching { project.basePath }.getOrNull()
+    val basePath = runCatchingCancellable { project.basePath }.getOrNull()
     normalizeFileSystemPath(basePath)?.let { return "path:$it" }
 
-    val projectFilePath = runCatching { project.projectFilePath }.getOrNull()
+    val projectFilePath = runCatchingCancellable { project.projectFilePath }.getOrNull()
     normalizeFileSystemPath(projectFilePath)?.let { return "file:$it" }
 
     return "name:${project.name}"
@@ -1358,7 +1362,7 @@ private fun normalizeFileSystemPath(value: String?): String? {
 }
 
 internal fun inspectionPathWithinDirectory(filePath: String, directoryPath: String): Boolean {
-    return runCatching {
+    return runCatchingCancellable {
         Paths.get(filePath).startsWith(Paths.get(directoryPath))
     }.getOrDefault(false)
 }
@@ -1381,7 +1385,7 @@ internal fun inspectionCaptureScopeCoversRequest(
     }
 
     fun isWithinDirectory(path: String, directory: String): Boolean {
-        return runCatching {
+        return runCatchingCancellable {
             Paths.get(path).normalize().toAbsolutePath().startsWith(
                 Paths.get(directory).normalize().toAbsolutePath(),
             )
@@ -2678,7 +2682,7 @@ class InspectionHandler : HttpRequestHandler() {
         request: InspectionRequestAttribution,
         parameters: Map<String, List<String>>,
     ): String {
-        val payload = runCatching {
+        val payload = runCatchingCancellable {
             INSPECTION_RESPONSE_JSON.parseToJsonElement(jsonContent) as? JsonObject
         }.getOrNull() ?: return jsonContent
         val verdict = (payload["inspection_verdict"] as? JsonPrimitive)?.contentOrNull
@@ -2739,7 +2743,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     override fun isSupported(request: FullHttpRequest): Boolean {
-        val path = runCatching { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
+        val path = runCatchingCancellable { QueryStringDecoder(request.uri()).path() }.getOrNull() ?: return false
         return when {
             path in setOf("/api/inspection/lifecycle/prepare-python-sdk", "/api/inspection/lifecycle/unregister-python-sdk", "/api/inspection/lifecycle/retire-project-caches") -> request.method() == HttpMethod.POST
             path.startsWith("/api/inspection") -> request.method() == HttpMethod.GET
@@ -2809,7 +2813,7 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                 }
                 "/api/inspection/lifecycle/close" -> {
-                    val schedulingFailure = runCatching {
+                    val schedulingFailure = runCatchingCancellable {
                         lifecycleCloseExecutor(Runnable {
                             processLifecycleCloseRequest(parameters, context, requestAttribution)
                         })
@@ -3159,9 +3163,12 @@ class InspectionHandler : HttpRequestHandler() {
                     )
                 }
             } catch (error: Throwable) {
-                runCatching { runControl.indicator.cancel() }
-                inspectionRunControlsByProject.remove(key, runControl)
-                finishInspectionRunWithOutcome(key, runState.runId, InspectionRunTerminalOutcome.FAILED)
+                try {
+                    runCatchingCancellable { runControl.indicator.cancel() }
+                } finally {
+                    inspectionRunControlsByProject.remove(key, runControl)
+                    finishInspectionRunWithOutcome(key, runState.runId, InspectionRunTerminalOutcome.FAILED)
+                }
                 throw error
             }
             val details = mutableMapOf(
@@ -3536,6 +3543,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         val scheduled = runCatching {
+            // Cancellation: rethrown after the opening guard is cleared below.
             ApplicationManager.getApplication().invokeLater {
                 var keepOpeningGuard = false
                 var routeHidden = false
@@ -3610,10 +3618,11 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                 }
             }
-        }.isSuccess
-        if (!scheduled) {
+        }
+        if (scheduled.isFailure) {
             openingProjectRequests.remove(target.key, request)
             recordLifecycleOpenDiagnostic(target.key, "failed", "open_schedule_failed")
+            scheduled.exceptionOrNull()?.let(::rethrowIfCanceled)
             return mapOf(
                 "status" to "failed",
                 "opened" to false,
@@ -3683,6 +3692,7 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         val submitted = runCatching {
+            // Cancellation: rethrown after unresolved state and the opening guard are reconciled below.
             ApplicationManager.getApplication().executeOnPooledThread {
                 var unresolvedOpenState = false
                 try {
@@ -3698,7 +3708,7 @@ class InspectionHandler : HttpRequestHandler() {
                         recordLifecycleOpenDiagnostic(key, "readiness_wait", "waiting_for_readiness", project) {
                             it.copy(readinessWaiting = true)
                         }
-                        val lifecycleComplete = runCatching {
+                        val lifecycleComplete = runCatchingCancellable {
                             val readiness = lifecycleContentRootReadinessProvider(project, key)
                             val isOpenProject = readiness.reason != "project_not_open"
                             observedOpenProject = observedOpenProject || isOpenProject
@@ -3762,26 +3772,39 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                         lifecycleOpenGuardSleep(lifecycleOpenGuardPollMs)
                     }
-                } finally {
-                    if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
-                        unresolvedLifecycleOpenProjects[key] = project
+                } catch (cancelled: CancellationException) {
+                    val reason = if (project.isDisposed) "project_disposed" else "readiness_cancelled"
+                    recordLifecycleOpenDiagnostic(key, "failed", reason, project) {
+                        it.copy(readinessWaiting = false)
                     }
-                    openingProjectRequests.remove(key, request)
+                    throw cancelled
+                } finally {
+                    try {
+                        if (unresolvedOpenState && isUnresolvedLifecycleOpenActive(project)) {
+                            unresolvedLifecycleOpenProjects[key] = project
+                        }
+                    } finally {
+                        openingProjectRequests.remove(key, request)
+                    }
                 }
             }
-        }.isSuccess
-        if (!submitted) {
-            if (isUnresolvedLifecycleOpenActive(project)) {
-                unresolvedLifecycleOpenProjects[key] = project
-                recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_wait_not_submitted", project) {
-                    it.copy(readinessWaiting = false, unresolved = true)
+        }
+        if (submitted.isFailure) {
+            try {
+                if (isUnresolvedLifecycleOpenActive(project)) {
+                    unresolvedLifecycleOpenProjects[key] = project
+                    recordLifecycleOpenDiagnostic(key, "unresolved", "readiness_wait_not_submitted", project) {
+                        it.copy(readinessWaiting = false, unresolved = true)
+                    }
+                } else {
+                    recordLifecycleOpenDiagnostic(key, "failed", "readiness_wait_not_submitted", project) {
+                        it.copy(readinessWaiting = false)
+                    }
                 }
-            } else {
-                recordLifecycleOpenDiagnostic(key, "failed", "readiness_wait_not_submitted", project) {
-                    it.copy(readinessWaiting = false)
-                }
+            } finally {
+                openingProjectRequests.remove(key, request)
+                submitted.exceptionOrNull()?.let(::rethrowIfCanceled)
             }
-            openingProjectRequests.remove(key, request)
         }
     }
 
@@ -3845,7 +3868,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
     }
 
-    private fun lifecycleOpenModalBlocker(): String? = runCatching {
+    private fun lifecycleOpenModalBlocker(): String? = runCatchingCancellable {
         val dialogs = Window.getWindows().filterIsInstance<Dialog>().filter { it.isShowing && it.isModal }
         dialogs.firstNotNullOfOrNull { dialog ->
             when {
@@ -3874,7 +3897,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun isUnresolvedLifecycleOpenActive(project: Project): Boolean {
-        return runCatching {
+        return runCatchingCancellable {
             ApplicationManager.getApplication().runReadAction<Boolean, Exception> {
                 !project.isDisposed
             }
@@ -3898,11 +3921,11 @@ class InspectionHandler : HttpRequestHandler() {
     private fun installLifecycleFallbackContentRoot(project: Project, targetKey: String): Boolean {
         val request = openingProjectRequests[targetKey] ?: return false
         if (!hasExactLifecycleFallbackOwnership(project, targetKey, request)) return false
-        val targetPath = runCatching { canonicalTrustPath(Paths.get(targetKey)) }.getOrNull() ?: return false
+        val targetPath = runCatchingCancellable { canonicalTrustPath(Paths.get(targetKey)) }.getOrNull() ?: return false
         if (!Files.isDirectory(targetPath)) return false
         val targetRoot = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(targetPath) ?: return false
         val application = ApplicationManager.getApplication()
-        return runCatching {
+        return runCatchingCancellable {
             application.invokeLater {
                 val activeRequest = openingProjectRequests[targetKey]
                 if (
@@ -3968,7 +3991,7 @@ class InspectionHandler : HttpRequestHandler() {
         if (project.isDisposed) {
             return LifecycleContentRootReadiness(false, "project_disposed", targetKey)
         }
-        return runCatching {
+        return runCatchingCancellable {
             ApplicationManager.getApplication().runReadAction<LifecycleContentRootReadiness, Exception> {
                 when {
                     project.isDisposed -> LifecycleContentRootReadiness(false, "project_disposed", targetKey)
@@ -3990,7 +4013,7 @@ class InspectionHandler : HttpRequestHandler() {
                             .asSequence()
                             .filterNot { module -> module.name.startsWith(LIFECYCLE_FALLBACK_MODULE_PREFIX) }
                             .flatMap { module ->
-                                runCatching {
+                                runCatchingCancellable {
                                     ModuleRootManager.getInstance(module).contentRoots.asSequence()
                                 }.getOrElse { emptySequence() }
                             }
@@ -4005,24 +4028,24 @@ class InspectionHandler : HttpRequestHandler() {
                             .size
                         val targetPath = canonicalTrustPath(Paths.get(targetKey))
                         val targetInsideContent = contentRoots.any { contentRoot ->
-                            runCatching {
+                            runCatchingCancellable {
                                 targetPath.startsWith(canonicalTrustPath(Paths.get(contentRoot)))
                             }.getOrDefault(false)
                         }
                         val contentRootInsideTarget = contentRoots.any { contentRoot ->
-                            runCatching {
+                            runCatchingCancellable {
                                 canonicalTrustPath(Paths.get(contentRoot)).startsWith(targetPath)
                             }.getOrDefault(false)
                         }
                         val unrelatedContentRoot = contentRoots.any { contentRoot ->
-                            runCatching {
+                            runCatchingCancellable {
                                 val canonicalContentRoot = canonicalTrustPath(Paths.get(contentRoot))
                                 !targetPath.startsWith(canonicalContentRoot) &&
                                     !canonicalContentRoot.startsWith(targetPath)
                             }.getOrDefault(true)
                         }
                         val nonFallbackTargetCoverage = nonFallbackContentRoots.any { contentRoot ->
-                            runCatching {
+                            runCatchingCancellable {
                                 val canonicalContentRoot = canonicalTrustPath(Paths.get(contentRoot))
                                 targetPath.startsWith(canonicalContentRoot) ||
                                     canonicalContentRoot.startsWith(targetPath)
@@ -4190,19 +4213,19 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun canonicalLifecycleOpenKey(path: Path): String {
-        return runCatching { path.toRealPath().toString() }
+        return runCatchingCancellable { path.toRealPath().toString() }
             .getOrElse { path.normalize().toAbsolutePath().toString() }
     }
 
     private fun canonicalTrustPath(path: Path): Path {
-        return runCatching { path.toRealPath() }
+        return runCatchingCancellable { path.toRealPath() }
             .getOrElse { path.normalize().toAbsolutePath() }
     }
 
     @Suppress("SameReturnValue")
     private fun findOpenProjectForLifecycleOpen(path: String): Project? {
         val normalized = normalizeFileSystemPath(path) ?: return null
-        val canonical = runCatching { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
+        val canonical = runCatchingCancellable { canonicalLifecycleOpenKey(Paths.get(normalized)) }.getOrNull()
         return ApplicationManager.getApplication().runReadAction<Project?, Exception> {
             for (project in ProjectManager.getInstance().openProjects) {
                 if (!isInitializedOpenProject(project)) continue
@@ -4212,7 +4235,7 @@ class InspectionHandler : HttpRequestHandler() {
                 }
                 val matchesCanonicalPath = canonical?.let { key ->
                     candidatePaths.any { candidatePath ->
-                        runCatching { canonicalLifecycleOpenKey(Paths.get(candidatePath)) }.getOrNull() == key
+                        runCatchingCancellable { canonicalLifecycleOpenKey(Paths.get(candidatePath)) }.getOrNull() == key
                     }
                 } == true
                 if (matchesNormalizedPath || matchesCanonicalPath) {
@@ -4237,7 +4260,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun lifecycleOpenKeys(project: Project): Set<String> {
         return projectCandidatePaths(project)
-            .mapNotNull { path -> runCatching { canonicalLifecycleOpenKey(Paths.get(path)) }.getOrNull() }
+            .mapNotNull { path -> runCatchingCancellable { canonicalLifecycleOpenKey(Paths.get(path)) }.getOrNull() }
             .toSet()
     }
 
@@ -4377,7 +4400,7 @@ class InspectionHandler : HttpRequestHandler() {
             return
         }
         val projectRoot = lease.basePath?.let { path ->
-            runCatching { Paths.get(path).normalize().toAbsolutePath() }.getOrNull()
+            runCatchingCancellable { Paths.get(path).normalize().toAbsolutePath() }.getOrNull()
         }
         if (projectRoot == null) {
             sendPythonSdkPreparationFailure(
@@ -4489,7 +4512,7 @@ class InspectionHandler : HttpRequestHandler() {
                     deadlineDiagnostic = control.progress.diagnostic()
                 }
                 prepared
-            } catch (_: ProcessCanceledException) {
+            } catch (_: CancellationException) {
                 PythonSdkPreparationResult(false, "python_sdk_preparation_cancelled")
             } catch (error: Throwable) {
                 PythonSdkPreparationResult(
@@ -4500,7 +4523,7 @@ class InspectionHandler : HttpRequestHandler() {
             } finally {
                 control.progress.finishWorker()
                 pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
-                runCatching { cancelTimeout() }
+                runCatchingCancellable { cancelTimeout() }
             }
             if (control.responseSent.compareAndSet(false, true)) {
                 sendPythonSdkPreparationResult(context, parameters, requestAttribution, result, deadlineDiagnostic)
@@ -4509,9 +4532,12 @@ class InspectionHandler : HttpRequestHandler() {
         try {
             pythonSdkPreparationExecutor(worker)
         } catch (error: Throwable) {
-            runCatching { cancelTimeout() }
-            pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
-            rethrowIfCanceled(error)
+            try {
+                runCatchingCancellable { cancelTimeout() }
+            } finally {
+                pythonSdkPreparationsByProjectInstance.remove(expectedProjectInstanceId, control)
+                rethrowIfCanceled(error)
+            }
             if (control.responseSent.compareAndSet(false, true)) {
                 sendPythonSdkPreparationFailure(
                     context,
@@ -4884,9 +4910,9 @@ class InspectionHandler : HttpRequestHandler() {
         return if (refusal != null) {
             LifecycleCloseInvocation.Refused(refusal)
         } else {
-            val closed = runCatching { forceCloseProject(project, false) }.getOrDefault(false)
+            val closed = runCatchingCancellable { forceCloseProject(project, false) }.getOrDefault(false)
             val cacheRecordingStatus = if (project.isDisposed) {
-                runCatching { recordClosedHelperProjectCaches(project, helperWorktreeRoot(worktreeRoot)) }
+                runCatchingCancellable { recordClosedHelperProjectCaches(project, helperWorktreeRoot(worktreeRoot)) }
                     .fold({ "completed" }, { error ->
                         logger.warn("Closed helper cache could not be sealed; preserving it", error)
                         "unavailable"
@@ -5091,13 +5117,13 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun safeInspectionIdentity(): Map<String, Any?> {
-        return runCatching { buildInspectionIdentity() }.getOrElse {
+        return runCatchingCancellable { buildInspectionIdentity() }.getOrElse {
             mapOf(
                 "session_id" to InspectionIdeSession.sessionId,
                 "started_at_ms" to InspectionIdeSession.startedAtMs,
                 "heartbeat_ms" to currentTimeMs(),
                 "pid" to ProcessHandle.current().pid(),
-                "port" to runCatching { resolveIdePort() }.getOrNull(),
+                "port" to runCatchingCancellable { resolveIdePort() }.getOrNull(),
                 "ide_name" to null,
                 "ide_version" to null,
                 "ide_product_code" to null,
@@ -5112,7 +5138,7 @@ class InspectionHandler : HttpRequestHandler() {
                 "python_sdk_preparation_version" to PYTHON_SDK_PREPARATION_VERSION,
                 "helper_sdk_lifecycle_version" to HELPER_SDK_LIFECYCLE_VERSION,
                 "helper_project_cache_lifecycle_version" to HELPER_PROJECT_CACHE_LIFECYCLE_VERSION,
-                "open_projects" to runCatching { openProjectIdentities() }.getOrDefault(emptyList()),
+                "open_projects" to runCatchingCancellable { openProjectIdentities() }.getOrDefault(emptyList()),
             )
         }
     }
@@ -6797,13 +6823,16 @@ class InspectionHandler : HttpRequestHandler() {
             )
         } catch (error: Throwable) {
             if (!taskStarted.get()) {
-                runCatching { control.indicator.cancel() }
-                val outcome = if (error is ProcessCanceledException) {
-                    InspectionRunTerminalOutcome.CANCELLED
-                } else {
-                    InspectionRunTerminalOutcome.FAILED
+                try {
+                    runCatchingCancellable { control.indicator.cancel() }
+                } finally {
+                    val outcome = if (error is CancellationException) {
+                        InspectionRunTerminalOutcome.CANCELLED
+                    } else {
+                        InspectionRunTerminalOutcome.FAILED
+                    }
+                    finishInspectionRunWithOutcome(key, runId, outcome)
                 }
-                finishInspectionRunWithOutcome(key, runId, outcome)
             }
             throw error
         } finally {
@@ -7237,9 +7266,12 @@ class InspectionHandler : HttpRequestHandler() {
                     nativeProofConnection = InspectionBuildEdition.subscribeNativeProofEvents(project, nativeProofCollector)
                     nativeGlobalInspectionContextFactory(inspectionManager, project, nativeProofCollector)
                 } catch (error: Throwable) {
-                    runCatching { nativeProofConnection?.disconnect() }
-                    nativeProofConnection = null
-                    rethrowIfCanceled(error)
+                    try {
+                        runCatchingCancellable { nativeProofConnection?.disconnect() }
+                    } finally {
+                        nativeProofConnection = null
+                        rethrowIfCanceled(error)
+                    }
                     nativeProofCollector.markUnavailable("native_attestation_context_creation_failed")
                     logger.warn("Native inspection attestation context was unavailable; inspection remains fail-closed.", error)
                     GlobalInspectionContextBoundary.create(inspectionManager)
@@ -7274,9 +7306,8 @@ class InspectionHandler : HttpRequestHandler() {
                             )
                         }
                     }
-                } catch (error: ProcessCanceledException) {
-                    throw error
                 } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     batchPrerequisiteReadFailure = if (error is NativeInspectionObservationUnavailable &&
                         error.message == BATCH_INSPECTION_WRITE_PREEMPTED_REASON
                     ) BATCH_INSPECTION_WRITE_PREEMPTED_REASON else error.javaClass.simpleName
@@ -7293,9 +7324,12 @@ class InspectionHandler : HttpRequestHandler() {
                 nativeProofCollector?.markUnavailable("native_inspection_aborted")
                 throw error
             } finally {
-                runCatching { nativeProofConnection?.disconnect() }
-                    .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
-                nativeProofConnection = null
+                try {
+                    runCatchingCancellable { nativeProofConnection?.disconnect() }
+                        .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
+                } finally {
+                    nativeProofConnection = null
+                }
             }
             fun withinObservationBudget(reason: String): () -> Unit {
                 val deadline = System.nanoTime() + 2_000_000_000L
@@ -7336,9 +7370,8 @@ class InspectionHandler : HttpRequestHandler() {
                             )
                         }
                     }
-                } catch (error: ProcessCanceledException) {
-                    throw error
-                } catch (_: Exception) {
+                } catch (error: Exception) {
+                    rethrowIfCanceled(error)
                     UnprovenBatchAnnotators(UNPROVEN_BATCH_ANNOTATOR_REASON, emptyList())
                 }
             }
@@ -7911,14 +7944,17 @@ class InspectionHandler : HttpRequestHandler() {
                                 )
                             },
                         )
-                        } catch (e: ProcessCanceledException) {
-                            recordInspectionRunFailureDiagnostic(
-                                key = key,
-                                runId = runId,
-                                project = project,
-                                source = InspectionRunFailureSource.CANCELLATION,
-                            )
-                            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
+                        } catch (e: CancellationException) {
+                            try {
+                                recordInspectionRunFailureDiagnostic(
+                                    key = key,
+                                    runId = runId,
+                                    project = project,
+                                    source = InspectionRunFailureSource.CANCELLATION,
+                                )
+                            } finally {
+                                finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
+                            }
                             throw e
                         } catch (error: Exception) {
                             logger.warn("Inspection result capture failed for ${project.name}", error)
@@ -7946,51 +7982,64 @@ class InspectionHandler : HttpRequestHandler() {
                         }
                 }
                 captureScheduled = true
-            } catch (e: ProcessCanceledException) {
-                throw e
             } catch (error: Exception) {
+                rethrowIfCanceled(error)
                 logger.warn("Inspection setup or capture scheduling failed for ${project.name}", error)
                 publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
                 finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
             }
-        } catch (e: ProcessCanceledException) {
-            recordInspectionRunFailureDiagnostic(
-                key = key,
-                runId = runId,
-                project = project,
-                source = InspectionRunFailureSource.CANCELLATION,
-            )
-            finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
+        } catch (e: CancellationException) {
+            try {
+                recordInspectionRunFailureDiagnostic(
+                    key = key,
+                    runId = runId,
+                    project = project,
+                    source = InspectionRunFailureSource.CANCELLATION,
+                )
+            } finally {
+                finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.CANCELLED)
+            }
             throw e
         } catch (error: Exception) {
             logger.warn("Inspection execution failed for ${project.name}", error)
             publishCaptureFailureIfCurrent(key, runId, project, captureScope, error)
             finishInspectionRunWithOutcome(key, runId, InspectionRunTerminalOutcome.FAILED)
         } finally {
-            runCatching { nativeProofConnection?.disconnect() }
-                .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
-            ownedGlobalContext?.let { context ->
-                val closeSucceeded = runCatching {
-                    val closeAction = Runnable { context.close() }
-                    val application = ApplicationManager.getApplication()
-                    if (application.isDispatchThread) {
-                        closeAction.run()
-                    } else {
-                        application.invokeAndWait(closeAction)
+            runAllCleanupActions(
+                {
+                    runCatchingCancellable { nativeProofConnection?.disconnect() }
+                        .onFailure { error -> logger.warn("Native inspection event subscription cleanup failed for ${project.name}", error) }
+                },
+                {
+                    ownedGlobalContext?.let { context ->
+                        try {
+                            val closeAction = Runnable { context.close() }
+                            val application = ApplicationManager.getApplication()
+                            if (application.isDispatchThread) {
+                                closeAction.run()
+                            } else {
+                                application.invokeAndWait(closeAction)
+                            }
+                        } catch (error: Throwable) {
+                            try {
+                                runCatchingCancellable { context.cleanup() }
+                                    .onFailure { failure -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", failure) }
+                            } finally {
+                                rethrowIfCanceled(error)
+                            }
+                            logger.warn("Native inspection context cleanup failed for ${project.name}", error)
+                        } finally {
+                            context.removeFromRunningContexts()
+                        }
                     }
-                }
-                    .onFailure { error -> logger.warn("Native inspection context cleanup failed for ${project.name}", error) }
-                    .isSuccess
-                if (!closeSucceeded) {
-                    runCatching { context.cleanup() }
-                        .onFailure { error -> logger.warn("Native inspection context fallback cleanup failed for ${project.name}", error) }
-                }
-                context.removeFromRunningContexts()
-            }
-            projectContentTracker?.close()
-            if (!captureScheduled) {
-                finishInspectionRun(key, runId)
-            }
+                },
+                { projectContentTracker?.close() },
+                {
+                    if (!captureScheduled) {
+                        finishInspectionRun(key, runId)
+                    }
+                },
+            )
         }
     }
 
@@ -8067,7 +8116,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun transitionInspectionRunStage(key: String, runId: Long, stage: InspectionRunStage) {
-        runCatching {
+        runCatchingCancellable {
             val nowNanos = currentInspectionRunNanos()
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId != runId || !state.inProgress || state.stage == stage) {
@@ -8106,18 +8155,18 @@ class InspectionHandler : HttpRequestHandler() {
         source: InspectionRunFailureSource,
         proofContext: ExactProofFailureContext?,
     ): InspectionRunFailureDiagnostic? {
-        return runCatching {
+        return runCatchingCancellable {
             val nowNanos = currentInspectionRunNanos()
             val runControl = inspectionRunControlsByProject[key]
             val workerThread = proofContext?.workerThread
                 ?: runControl?.takeIf { it.runId == runId }?.workerThread?.get()
             val workerStack = workerThread?.let { thread ->
-                runCatching { inspectionWorkerStackProvider(thread) }
+                runCatchingCancellable { inspectionWorkerStackProvider(thread) }
                     .onFailure { error -> logger.warn("Failed to capture inspection worker stack for run $runId", error) }
                     .getOrDefault(emptyList())
                     .take(MAX_INSPECTION_WORKER_STACK_FRAMES)
             }.orEmpty()
-            val dumbMode = runCatching { DumbService.getInstance(project).isDumb }.getOrNull()
+            val dumbMode = runCatchingCancellable { DumbService.getInstance(project).isDumb }.getOrNull()
             var recorded: InspectionRunFailureDiagnostic? = null
             inspectionRunStatesByProject.computeIfPresent(key) { _, state ->
                 if (state.runId != runId || !state.inProgress) {
@@ -8187,7 +8236,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun currentInspectionRunNanos(): Long {
-        return runCatching(inspectionRunNowNanos).getOrElse { error ->
+        return runCatchingCancellable(inspectionRunNowNanos).getOrElse { error ->
             logger.warn("Inspection run monotonic clock failed; using the system monotonic clock", error)
             System.nanoTime()
         }
@@ -8527,7 +8576,7 @@ class InspectionHandler : HttpRequestHandler() {
                 reason = "project_disposed",
             )
         }
-        return runCatching {
+        return runCatchingCancellable {
             val localInterpreterPaths = resolvedLocalInterpreterPaths
                 ?: localPythonInterpreterPathsProvider(project)
             ApplicationManager.getApplication().runReadAction<InspectionProjectAnalysisReadiness, Exception> {
@@ -8640,7 +8689,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun worktreeLocalPythonInterpreterPaths(project: Project): Set<String> {
-        return runCatching {
+        return runCatchingCancellable {
             val projectRoot = project.basePath?.let(::normalizeFileSystemPath) ?: return emptySet()
             val virtualEnvironmentRoot = Paths.get(projectRoot, ".venv")
             listOf(
@@ -8849,7 +8898,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun pythonSdkUpdateScheduled(sdk: Sdk): Boolean? {
         val updaterClassName = "com.jetbrains.python.sdk.PythonSdkUpdater"
-        val updaterClass = runCatching {
+        val updaterClass = runCatchingCancellable {
             Class.forName(updaterClassName, false, sdk.sdkType.javaClass.classLoader)
         }.getOrNull()
             ?: return null
@@ -8858,7 +8907,7 @@ class InspectionHandler : HttpRequestHandler() {
         } catch (_: NoSuchMethodException) {
             return false
         }
-        return runCatching { method.invoke(null, sdk) as? Boolean }.getOrNull()
+        return runCatchingCancellable { method.invoke(null, sdk) as? Boolean }.getOrNull()
     }
 
     private fun captureModuleSdkStates(project: Project): List<String> {
@@ -8942,8 +8991,8 @@ class InspectionHandler : HttpRequestHandler() {
                     .sorted()
                 val sdk = rootManager.projectSdk
                 selectedProfile.initInspectionTools(project)
-                val resolvedProfileName = runCatching { selectedProfile.name }.getOrNull()
-                val toolStates = runCatching { selectedProfile.allTools }
+                val resolvedProfileName = runCatchingCancellable { selectedProfile.name }.getOrNull()
+                val toolStates = runCatchingCancellable { selectedProfile.allTools }
                     .getOrElse { return@runReadAction null }
                 val profileToolStates = toolStates.map { state ->
                         listOf(
@@ -8968,16 +9017,16 @@ class InspectionHandler : HttpRequestHandler() {
                             scope?.value?.text ?: "<missing>",
                         ).joinToString("\u0000")
                     }
-                val profileConfigurationHash = runCatching {
+                val profileConfigurationHash = runCatchingCancellable {
                     inspectionProfileConfigurationHash(selectedProfile)
                 }.getOrElse { return@runReadAction null }
                 InspectionProjectInputsFingerprint(
                     rootPaths = rootPaths,
                     excludedRootPaths = excludedRootPaths,
-                    projectSdkName = runCatching { sdk?.name }.getOrNull(),
-                    projectSdkTypeName = runCatching { sdk?.sdkType?.name }.getOrNull(),
-                    projectSdkVersion = runCatching { sdk?.versionString }.getOrNull(),
-                    projectSdkHomePath = runCatching { sdk?.homePath }.getOrNull()?.let(::normalizeFileSystemPath),
+                    projectSdkName = runCatchingCancellable { sdk?.name }.getOrNull(),
+                    projectSdkTypeName = runCatchingCancellable { sdk?.sdkType?.name }.getOrNull(),
+                    projectSdkVersion = runCatchingCancellable { sdk?.versionString }.getOrNull(),
+                    projectSdkHomePath = runCatchingCancellable { sdk?.homePath }.getOrNull()?.let(::normalizeFileSystemPath),
                     moduleSdkStates = captureModuleSdkStates(project),
                     requestedProfileName = profileName,
                     resolvedProfileName = resolvedProfileName,
@@ -9238,7 +9287,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun resolveRequestedFiles(project: Project, files: List<String>): List<VirtualFile> {
         val base = project.basePath
-        val localFileSystem = runCatching { LocalFileSystem.getInstance() }.getOrNull() ?: return emptyList()
+        val localFileSystem = runCatchingCancellable { LocalFileSystem.getInstance() }.getOrNull() ?: return emptyList()
         return files.mapNotNull { p ->
             val absolute = try {
                 val path = Paths.get(p)
@@ -9418,11 +9467,11 @@ class InspectionHandler : HttpRequestHandler() {
             val basePath = project.basePath
             when {
                 rawDirectory.isNullOrBlank() -> null
-                runCatching { Paths.get(rawDirectory).isAbsolute }.getOrDefault(false) -> rawDirectory
+                runCatchingCancellable { Paths.get(rawDirectory).isAbsolute }.getOrDefault(false) -> rawDirectory
                 !basePath.isNullOrBlank() -> Paths.get(basePath, rawDirectory).normalize().toString()
                 else -> rawDirectory
             }?.let(::normalizeFileSystemPath)?.takeIf { directory ->
-                runCatching { LocalFileSystem.getInstance().findFileByPath(directory)?.isDirectory == true }
+                runCatchingCancellable { LocalFileSystem.getInstance().findFileByPath(directory)?.isDirectory == true }
                     .getOrDefault(false)
             }
         } else {
@@ -9689,24 +9738,24 @@ class InspectionHandler : HttpRequestHandler() {
             return resolveProjectSelector(resolvedProjectName)
         }
 
-        val projectFromFrame = runCatching {
+        val projectFromFrame = runCatchingCancellable {
             IdeFocusManager.getGlobalInstance().lastFocusedFrame?.project
         }.getOrNull()
         if (isUsableProject(projectFromFrame)) {
             return projectFromFrame
         }
 
-        val dataContext = runCatching {
+        val dataContext = runCatchingCancellable {
             DataManager.getInstance().dataContextFromFocusAsync.blockingGet(1000, TimeUnit.MILLISECONDS)
         }.getOrNull()
-        val projectFromDataContext = runCatching {
+        val projectFromDataContext = runCatchingCancellable {
             dataContext?.let { CommonDataKeys.PROJECT.getData(it) }
         }.getOrNull()
         if (isUsableProject(projectFromDataContext)) {
             return projectFromDataContext
         }
 
-        val validProjects = runCatching {
+        val validProjects = runCatchingCancellable {
             ProjectManager.getInstance().openProjects.filter(::isUsableProject)
         }.getOrElse { emptyList() }
         if (validProjects.isEmpty()) {
@@ -9714,7 +9763,7 @@ class InspectionHandler : HttpRequestHandler() {
         }
 
         for (project in validProjects) {
-            val isActiveWindow = runCatching {
+            val isActiveWindow = runCatchingCancellable {
                 WindowManager.getInstance().suggestParentWindow(project)?.isActive == true
             }.getOrDefault(false)
             if (isActiveWindow) {
@@ -9843,7 +9892,7 @@ class InspectionHandler : HttpRequestHandler() {
 
     private fun pathMatchScore(selectorPath: String, projectPath: String): Int {
         val normalizedProjectPath = normalizeProjectPath(projectPath) ?: return 0
-        return runCatching {
+        return runCatchingCancellable {
             val selector = Paths.get(selectorPath).normalize().toAbsolutePath()
             val project = Paths.get(normalizedProjectPath).normalize().toAbsolutePath()
             when {
@@ -9855,7 +9904,7 @@ class InspectionHandler : HttpRequestHandler() {
     }
 
     private fun pathMatchesProject(selectorPath: String, projectPath: String): Boolean {
-        return runCatching {
+        return runCatchingCancellable {
             val selector = Paths.get(selectorPath).normalize().toAbsolutePath()
             val project = Paths.get(projectPath).normalize().toAbsolutePath()
             selector == project || selector.startsWith(project)
@@ -10642,7 +10691,7 @@ class InspectionHandler : HttpRequestHandler() {
             context.configure(profile, AnalysisScope(psiFile))
             context
         } catch (error: Exception) {
-            runCatching { cleanupExactFileExecutionContext(context) }
+            runCatchingCancellable { cleanupExactFileExecutionContext(context) }
                 .exceptionOrNull()
                 ?.let(error::addSuppressed)
             throw error
@@ -10701,12 +10750,18 @@ class InspectionHandler : HttpRequestHandler() {
         ): T {
             val indicator = ProgressIndicatorBase()
             val context = ExactProofFailureContext(candidate.shortName, candidate.filePath, Thread.currentThread())
+            val externalCancellation = AtomicReference<RuntimeException?>()
             fun observeFailure(source: InspectionRunFailureSource) {
-                runCatching { failureObserver(source, context) }
-                    .onFailure { logger.warn("Failed to capture exact inspection proof interruption", it) }
+                try {
+                    runCatchingCancellable { failureObserver(source, context) }
+                        .onFailure { logger.warn("Failed to capture exact inspection proof interruption", it) }
+                } catch (error: RuntimeException) {
+                    // Cancellation: carried to the proof thread, which rethrows externalCancellation.
+                    externalCancellation.compareAndSet(null, error)
+                    indicator.cancel()
+                }
             }
             val deadlineTriggered = AtomicBoolean(false)
-            val externalCancellation = AtomicReference<RuntimeException?>()
             val monitor = AppExecutorUtil.getAppScheduledExecutorService().scheduleWithFixedDelay(
                 {
                     try {
@@ -10940,7 +10995,7 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     ExactFileInspectionExecutionWrapper(copiedWrapper, executionContext)
                 } catch (error: Exception) {
-                    runCatching { copiedWrapper.cleanup(project) }
+                    runCatchingCancellable { copiedWrapper.cleanup(project) }
                         .exceptionOrNull()
                         ?.let(error::addSuppressed)
                     throw error
@@ -11060,7 +11115,7 @@ class InspectionHandler : HttpRequestHandler() {
                 detail: String?,
             ): Map<String, Any?> {
                 val sourceLocal = sourceWrapper?.toolWrapper as? com.intellij.codeInspection.ex.LocalInspectionToolWrapper
-                val sourceTool = runCatching { sourceLocal?.tool }.getOrNull()
+                val sourceTool = runCatchingCancellable { sourceLocal?.tool }.getOrNull()
                 val missingBatchWrapperMetadata = sourceLocal
                     ?.takeIf {
                         batchWrapper == null &&
@@ -11071,11 +11126,11 @@ class InspectionHandler : HttpRequestHandler() {
                     }
                     ?.let(::classifyMissingBatchWrapperPlatformMetadata)
                 val pairedBatchShortName = missingBatchWrapperMetadata?.pairedBatchShortName
-                    ?: runCatching {
+                    ?: runCatchingCancellable {
                         (sourceTool as? com.intellij.codeInspection.ex.PairedUnfairLocalInspectionTool)
                             ?.inspectionForBatchShortName
                     }.getOrNull()
-                val languageIds = runCatching {
+                val languageIds = runCatchingCancellable {
                     fileLanguages[candidate.value to (sourceWrapper?.resolvedBatchWrapper?.let(::canInspectInjectedPsi) ?: true)]
                         ?.map { it.id }
                         ?.sorted()
@@ -11091,15 +11146,15 @@ class InspectionHandler : HttpRequestHandler() {
                     "current_profile" to currentProfile.name,
                     "source_wrapper_class" to sourceWrapper?.toolWrapper?.javaClass?.name,
                     "source_tool_class" to sourceTool?.javaClass?.name,
-                    "source_declared_language" to runCatching { sourceWrapper?.toolWrapper?.language }.getOrNull(),
+                    "source_declared_language" to runCatchingCancellable { sourceWrapper?.toolWrapper?.language }.getOrNull(),
                     "source_is_unfair" to (
                         missingBatchWrapperMetadata?.sourceIsUnfair
-                            ?: runCatching { sourceLocal?.isUnfair }.getOrNull()
+                            ?: runCatchingCancellable { sourceLocal?.isUnfair }.getOrNull()
                         ),
                     "source_is_paired_unfair" to missingBatchWrapperMetadata?.sourceIsPairedUnfair,
                     "paired_batch_short_name" to pairedBatchShortName,
                     "batch_wrapper_class" to batchWrapper?.toolWrapper?.javaClass?.name,
-                    "batch_short_name" to runCatching { batchWrapper?.toolWrapper?.shortName }.getOrNull(),
+                    "batch_short_name" to runCatchingCancellable { batchWrapper?.toolWrapper?.shortName }.getOrNull(),
                 ).filterValues { it != null }
                 return diagnostic + (missingBatchWrapperMetadata?.diagnosticFields().orEmpty())
             }
@@ -11147,7 +11202,7 @@ class InspectionHandler : HttpRequestHandler() {
             descriptionTemplate,
             (descriptor as? com.intellij.codeInspection.ProblemDescriptor)?.let(::problemDescriptorRefText),
         )
-        val inspectionType = runCatching { wrapper.shortName }.getOrNull() ?: return null
+        val inspectionType = runCatchingCancellable { wrapper.shortName }.getOrNull() ?: return null
         val category = wrapper.groupDisplayName
 
         var filePath = "unknown"
@@ -11216,7 +11271,7 @@ class InspectionHandler : HttpRequestHandler() {
             .takeIf { it.isNotBlank() } ?: return null
         val problemClass = finding.getChild("problem_class")
         val inspectionType = problemClass?.getAttributeValue("id")?.takeIf { it.isNotBlank() }
-            ?: runCatching { wrapper.shortName }.getOrNull()
+            ?: runCatchingCancellable { wrapper.shortName }.getOrNull()
             ?: return null
         val filePath = finding.getChildText("file")?.trim()?.takeIf { it.isNotEmpty() }?.let { url ->
             VirtualFileManager.getInstance().findFileByUrl(url)?.path ?: VirtualFileManager.extractPath(url)

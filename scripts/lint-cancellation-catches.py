@@ -8,9 +8,10 @@ import re
 import sys
 from pathlib import Path
 
-BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*(?:Exception|RuntimeException|Throwable)\s*\)\s*\{")
+BROAD_CATCH = re.compile(r"\bcatch\s*\(\s*(\w+)\s*:\s*(?:Exception|RuntimeException|IllegalStateException|Throwable)\s*\)\s*\{")
+CATCHING_RESULT = re.compile(r"\b(?:runCatching|recoverCatching|mapCatching)\s*(?:<[^>]+>\s*)?([({])")
 CANCELLATION_NOTE = re.compile(r"^[ \t]*//[ \t]*Cancellation:[ \t]*\S", re.MULTILINE)
-CANCELLATION_CATCH = re.compile(r"\bcatch\s*\(\s*\w+\s*:\s*ProcessCanceledException\s*\)\s*$")
+CANCELLATION_CATCH = re.compile(r"\bcatch\s*\(\s*\w+\s*:\s*CancellationException\s*\)\s*$")
 SIBLING_CATCH = re.compile(r"\bcatch\s*\([^()]*\)\s*$")
 CANCELLATION_HANDLERS = (
     "rethrowIfCanceled",
@@ -94,6 +95,13 @@ def swallowing_catches(source: Path) -> list[int]:
         if handles_cancellation(match.group(1), body) or has_earlier_cancellation_catch(text, match.start()):
             continue
         lines.append(text.count("\n", 0, match.start()) + 1)
+    for match in CATCHING_RESULT.finditer(text):
+        body_open = match.end() - 1
+        if match.group(1) == "{":
+            body = text[body_open + 1 : matching_close(text, body_open)]
+            if CANCELLATION_NOTE.search(outside_nested_blocks(body)):
+                continue
+        lines.append(text.count("\n", 0, match.start()) + 1)
     return lines
 
 
@@ -105,8 +113,8 @@ def main() -> int:
         print(f"{args.sources}: source directory does not exist", file=sys.stderr)
         return 1
     failures = [
-        f"{source}:{line}: broad catch must pass its exception to rethrowIfCanceled, end with throw, "
-        "follow a ProcessCanceledException catch, or explain in a '// Cancellation:' comment why it is safe"
+        f"{source}:{line}: preserve cancellation with rethrowIfCanceled or runCatchingCancellable, "
+        "end with throw, follow a CancellationException catch, or explain deferred handling in a '// Cancellation:' comment"
         for source in sorted(args.sources.rglob("*.kt"))
         for line in swallowing_catches(source)
     ]

@@ -132,7 +132,7 @@ private fun hasPairedExternalAnnotator(tool: ExternalAnnotatorBatchInspection, f
  * that replaces it (clion-radler, ESLint) can return nothing without having analysed the file: a live IntelliJ run of
  * clion-radler returned no descriptors for C++ with a missing return and an unused variable.
  */
-internal fun usesPlatformCheckFile(tool: ExternalAnnotatorBatchInspection): Boolean = runCatching {
+internal fun usesPlatformCheckFile(tool: ExternalAnnotatorBatchInspection): Boolean = runCatchingCancellable {
     tool.javaClass.getMethod("checkFile", PsiFile::class.java, GlobalInspectionContext::class.java, InspectionManager::class.java)
         .declaringClass == ExternalAnnotatorBatchInspection::class.java
 }.getOrDefault(false)

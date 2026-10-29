@@ -304,7 +304,7 @@ internal fun classifyMissingNativeCompletions(
                     listOf(probe), file, file.textRange, file.textRange, false, false, false, indicator, PairProcessor.alwaysTrue(),
                 )
             } finally {
-                runCatching { copy.cleanup(project) }
+                runCatchingCancellable { copy.cleanup(project) }
             }
             checkBudget()
             observation.classify(
