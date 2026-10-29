@@ -3,6 +3,7 @@ package com.shiny.inspectionmcp
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
+import java.util.concurrent.CancellationException
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
 import com.intellij.openapi.project.DumbService
@@ -2296,19 +2297,23 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
     }
 
-    @Test
-    fun `test runner setup failure releases inspection run`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `test runner setup failure releases inspection run`(cancelled: Boolean) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
         runPooledTasksInline()
-        handler.inspectionProcessRunner = { _, _ -> throw IllegalStateException("runner failed") }
+        handler.inspectionProcessRunner = { _, _ ->
+            if (cancelled) throw CancellationException()
+            throw IllegalStateException("runner failed")
+        }
 
         val response = processTriggerRequest("/api/inspection/trigger")
         val state = inspectionRunState(projectKey(mockProject))
 
         assertEquals(HttpResponseStatus.INTERNAL_SERVER_ERROR, response.status())
         assertEquals(false, state?.inProgress)
-        assertEquals(InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
+        assertEquals(if (cancelled) InspectionRunTerminalOutcome.CANCELLED else InspectionRunTerminalOutcome.FAILED, state?.terminalOutcome)
     }
 
     @Test

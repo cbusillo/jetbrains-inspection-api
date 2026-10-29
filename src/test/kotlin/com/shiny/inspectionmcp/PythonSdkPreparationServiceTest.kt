@@ -26,6 +26,9 @@ import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
+import java.util.concurrent.CancellationException
 import org.junit.jupiter.api.io.TempDir
 import java.nio.file.Files
 import java.nio.file.Path
@@ -499,12 +502,13 @@ class PythonSdkPreparationServiceTest {
         assertEquals(0, platform.commitQueries)
     }
 
-    @Test
-    fun `cancellation during failure readback remains cancellation`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `cancellation during failure readback remains cancellation`(coroutineCancellation: Boolean) {
         val interpreter = createVenv()
         platform.registered += sdk("first", interpreter.toString())
         platform.registered += sdk("second", interpreter.toString())
-        platform.readbackFailure = ProcessCanceledException()
+        platform.readbackFailure = if (coroutineCancellation) CancellationException() else ProcessCanceledException()
 
         val result = prepare()
 
@@ -579,10 +583,11 @@ class PythonSdkPreparationServiceTest {
         assertEquals(1, platform.pythonTypeQueries)
     }
 
-    @Test
-    fun `cancellation during SDK setup leaves the registry untouched`() {
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun `cancellation during SDK setup leaves the registry untouched`(coroutineCancellation: Boolean) {
         createVenv()
-        platform.setupFailure = ProcessCanceledException()
+        platform.setupFailure = if (coroutineCancellation) CancellationException() else ProcessCanceledException()
 
         val result = prepare()
 

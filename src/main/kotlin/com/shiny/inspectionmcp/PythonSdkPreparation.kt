@@ -21,6 +21,7 @@ import com.intellij.openapi.util.SystemInfo
 import com.intellij.openapi.util.JDOMUtil
 import com.intellij.openapi.util.io.FileUtil
 import org.jdom.Element
+import java.util.concurrent.CancellationException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -288,7 +289,7 @@ internal class PythonSdkPreparationService(
             )
         } catch (_: PythonSdkPreparationDeadlineExceededException) {
             failure("python_sdk_preparation_timeout", interpreterHome)
-        } catch (_: ProcessCanceledException) {
+        } catch (_: CancellationException) {
             failure("python_sdk_preparation_cancelled", interpreterHome)
         } catch (_: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -378,7 +379,7 @@ internal class PythonSdkPreparationService(
     }
 
     private fun normalize(value: String?): String? = value?.trim()?.takeIf(String::isNotEmpty)?.let { raw ->
-        runCatching { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
+        runCatchingCancellable { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
     }
 
     private fun failureWithReadback(
@@ -405,9 +406,8 @@ internal class PythonSdkPreparationService(
     ): PythonSdkReadback? = try {
         request.progress.enterStage("readback")
         platform.readback(request.project, expectedModules, interpreterHome)
-    } catch (error: ProcessCanceledException) {
-        throw error
-    } catch (_: Throwable) {
+    } catch (error: Throwable) {
+        rethrowIfCanceled(error)
         null
     }
 
@@ -558,7 +558,7 @@ internal class JetBrainsPythonSdkPreparationPlatform(
     override fun sdkTypeName(sdk: Sdk): String = sdk.sdkType.name
 
     override fun isValidSdk(sdk: Sdk): Boolean = sdk.homePath?.let { path ->
-        runCatching { Files.exists(Paths.get(path)) }.getOrDefault(false)
+        runCatchingCancellable { Files.exists(Paths.get(path)) }.getOrDefault(false)
     } ?: false
 
     override fun createDetachedSdk(existingSdks: Collection<Sdk>, interpreterHome: String, type: SdkType): Sdk {
@@ -653,9 +653,8 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         return try {
             application.saveSettings()
             PythonSdkPersistenceResult(true, "python_sdk_preparation_persisted")
-        } catch (error: ProcessCanceledException) {
-            throw error
         } catch (error: Throwable) {
+            rethrowIfCanceled(error)
             PythonSdkPersistenceResult(
                 false,
                 "python_sdk_preparation_persistence_failed",
@@ -769,8 +768,13 @@ internal class JetBrainsPythonSdkPreparationPlatform(
             }
             ProjectRootManager.getInstance(project).projectSdk = sdk
         } catch (error: Throwable) {
-            models.forEach { model -> runCatching { model.dispose() } }
-            rethrowIfCanceled(error)
+            try {
+                runCatchingCancellable {
+                    runAllCleanupActions(*models.map { model -> { model.dispose() } }.toTypedArray())
+                }
+            } finally {
+                rethrowIfCanceled(error)
+            }
             return PythonSdkCommitResult(
                 false,
                 "python_sdk_preparation_assignment_failed",
@@ -814,6 +818,6 @@ internal class JetBrainsPythonSdkPreparationPlatform(
         }
 
     private fun normalizedHome(sdk: Sdk): String? = sdk.homePath?.let { raw ->
-        runCatching { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
+        runCatchingCancellable { Paths.get(raw).normalize().toAbsolutePath().toString() }.getOrNull()
     }
 }

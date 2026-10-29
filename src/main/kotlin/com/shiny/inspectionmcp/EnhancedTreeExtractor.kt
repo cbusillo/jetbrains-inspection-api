@@ -644,7 +644,7 @@ class EnhancedTreeExtractor {
     }
 
     private fun resolveTreeFilePath(fileText: String, project: Project): String {
-        val rawPath = runCatching { Paths.get(fileText) }.getOrNull()
+        val rawPath = runCatchingCancellable { Paths.get(fileText) }.getOrNull()
         if (rawPath != null && rawPath.isAbsolute) {
             return rawPath.normalize().toString()
         }
@@ -656,7 +656,7 @@ class EnhancedTreeExtractor {
     }
 
     private fun findProjectFileByName(basePath: String, fileName: String): String? {
-        val base = runCatching { Paths.get(basePath) }.getOrNull() ?: return null
+        val base = runCatchingCancellable { Paths.get(basePath) }.getOrNull() ?: return null
         return try {
             Files.walk(base).use { stream ->
                 stream
