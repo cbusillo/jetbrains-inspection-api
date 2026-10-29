@@ -44,10 +44,21 @@ def manifest(root: Path) -> dict[str, dict[str, str | bool]]:
     return result
 
 
-def create(source: Path, slug: str, parent: Path | None, manager: Path) -> dict[str, Any]:
+def create(source: Path, slug: str, parent: Path | None, manager: Path, *, fixture: Path | None = None) -> dict[str, Any]:
     source = source.resolve(strict=True)
     commit = run("git", "-C", str(source), "rev-parse", "--verify", "HEAD^{commit}")
-    if platform.node().split(".")[0].lower() == "chris-studio":
+    if fixture is not None:
+        if fixture.is_absolute() or ".." in fixture.parts:
+            raise ValueError("The fixture must be a tracked directory relative to the source repository.")
+        try:
+            fixture_type = run("git", "-C", str(source), "cat-file", "-t", f"{commit}:{fixture.as_posix()}")
+        except subprocess.CalledProcessError as error:
+            raise ValueError("The fixture must be a tracked directory relative to the source repository.") from error
+        if fixture_type != "tree":
+            raise ValueError("The fixture must be a tracked directory relative to the source repository.")
+        if parent is not None and (parent.resolve().is_relative_to(HOST_ROOT) or parent.resolve().is_relative_to(source)):
+            raise ValueError("Fixture output belongs in a temporary or task-evidence parent, outside the task-worktree root.")
+    if fixture is None and platform.node().split(".")[0].lower() == "chris-studio":
         if parent:
             raise ValueError("Chris-Studio worktrees use dev-worktree routing; omit --worktree-root/--work-root.")
         created = run(str(manager), str(source), slug, commit).splitlines()[-1]
@@ -56,24 +67,45 @@ def create(source: Path, slug: str, parent: Path | None, manager: Path) -> dict[
             raise ValueError("Worktree manager returned a path outside the approved root; retain it.")
         managed = True
     else:
-        if not parent:
+        if parent:
+            parent = parent.resolve()
+            parent.mkdir(parents=True, exist_ok=True)
+        if fixture is not None:
+            root = Path(tempfile.mkdtemp(prefix=f"{slug}-", dir=parent)).resolve()
+            if root.is_relative_to(HOST_ROOT) or root.is_relative_to(source):
+                root.rmdir()
+                raise ValueError("Fixture output must be outside the source checkout and task-worktree root.")
+        elif parent:
+            root = parent / slug
+        else:
             raise ValueError("Portable hosts require an explicit --worktree-root/--work-root.")
-        parent = parent.resolve()
-        parent.mkdir(parents=True, exist_ok=True)
-        root = parent / slug
-        run(
-            "git",
-            "-C",
-            str(source),
-            "worktree",
-            "add",
-            "-b",
-            f"work/{slug}",
-            str(root),
-            commit,
-        )
+        try:
+            run(
+                "git",
+                "-C",
+                str(source),
+                "worktree",
+                "add",
+                *(["--no-checkout"] if fixture is not None else []),
+                "-b",
+                f"work/{slug}",
+                str(root),
+                commit,
+            )
+        except subprocess.CalledProcessError:
+            if fixture is not None:
+                try:
+                    root.rmdir()
+                except OSError:
+                    print(f"Failed creation retained output: {root}", file=sys.stderr)
+            raise
         managed = False
     try:
+        if fixture is not None:
+            gitdir = Path(run("git", "-C", str(root), "rev-parse", "--absolute-git-dir"))
+            (gitdir / "info").mkdir(exist_ok=True)
+            (gitdir / "info/sparse-checkout").write_text(f"/{fixture.as_posix()}/\n")
+            run("git", "-C", str(root), "-c", "core.sparseCheckout=true", "-c", "core.sparseCheckoutCone=false", "read-tree", "-mu", "HEAD")
         return {
             "root": str(root),
             "source": str(source),
@@ -334,6 +366,7 @@ def main() -> int:
     new.add_argument("--source", type=Path, required=True)
     new.add_argument("--slug", required=True)
     new.add_argument("--parent", type=Path)
+    new.add_argument("--fixture", type=Path, help="materialize only this tracked directory in an owned temporary checkout")
     new.add_argument("--manager", type=Path, default=Path.home() / ".local/bin/dev-worktree")
     new.add_argument("--receipt", type=Path, required=True)
     delete = commands.add_parser("retire")
@@ -344,7 +377,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "create":
-            receipt = create(args.source, args.slug, args.parent, args.manager)
+            receipt = create(args.source, args.slug, args.parent, args.manager, fixture=args.fixture)
             args.receipt.write_text(json.dumps(receipt, indent=2) + "\n")
             print(receipt["root"])
         else:
