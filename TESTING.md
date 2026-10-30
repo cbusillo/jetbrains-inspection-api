@@ -581,12 +581,8 @@ verification task depends on its module's tests and report, so tests are not run
 twice. The plugin module has a JaCoCo report but no coverage threshold, because
 IntelliJ classloader isolation prevents reliable plugin instrumentation.
 
-CI always runs both contract and Gradle lanes. The optional legacy local
-hook still classifies staged paths with `scripts/changed-file-lanes.sh`; it can
-run broad Gradle tests and is not the focused local command. If it would run
-the complete suite or launch a prohibited IDE process, run the selected local
-checks explicitly and use Git's `--no-verify` for that commit, recording the
-checks and missing platform evidence in the PR. No CI check is bypassed.
+The commit gate is CI's complete suite and refuses to run without `--ci`. Do
+not install it as a Git hook; run the focused local checks instead.
 The CI job reports its duration against a 300-second budget in the job summary
 and raises a warning annotation when it is exceeded.
 
