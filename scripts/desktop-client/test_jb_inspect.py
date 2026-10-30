@@ -1426,7 +1426,7 @@ class ParserCommandAliasTest(unittest.TestCase):
         for command in ("list", "route", "prepare", "prepare-worktree", "run", "closeout", "status", "problems", "trigger", "wait", "claim", "cleanup-leases"):
             self.assertNotIn(command, choices)
 
-    def test_lifecycle_commands_always_open(self):
+    def test_lifecycle_commands_open_by_default(self):
         parser = jb_inspect.build_parser()
 
         args = parser.parse_args(["inspect", "--repo", "/tmp/repo", "--scope", "changed_files"])
@@ -1436,8 +1436,8 @@ class ParserCommandAliasTest(unittest.TestCase):
         self.assertEqual(args.scope, "changed_files")
         self.assertTrue(args.open)
         for command in ("open-worktree", "inspect", "inspect-closeout"):
-            with self.subTest(command=command), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                parser.parse_args([command, "--no-open"])
+            with self.subTest(command=command):
+                self.assertTrue(parser.parse_args([command]).open)
 
     def test_assessment_commands_accept_text_only_coverage_override(self):
         parser = jb_inspect.build_parser()
@@ -4687,7 +4687,7 @@ class LifecycleTest(unittest.TestCase):
         ):
             with self.assertRaises(jb_inspect.InspectError) as raised:
                 jb_inspect.prepare_lifecycle_details(
-                    helper_args(open=False),
+                    jb_inspect.build_parser().parse_args(["inspect-closeout", "--repo", "/tmp/worktree", "--no-open"]),
                     {"worktree_root": "/tmp/worktree", "project_path": "/tmp/worktree"},
                 )
 

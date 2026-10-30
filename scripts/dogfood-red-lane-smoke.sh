@@ -177,7 +177,7 @@ for tool in "${REQUIRED_PROFILE_TOOLS[@]}"; do
 		die "fixture profile does not enable required inspection tool: $tool"
 done
 
-CMD=(uv run "$HELPER" --json inspect-closeout --repo "$PROJECT" --ide "$IDE" --ide-app "$IDE_APP")
+CMD=(uv run "$HELPER" --json inspect-closeout --skip-preparation --repo "$PROJECT" --ide "$IDE" --ide-app "$IDE_APP")
 if [ -n "$IDE_CHANNEL" ]; then
 	CMD+=(--ide-channel "$IDE_CHANNEL")
 fi

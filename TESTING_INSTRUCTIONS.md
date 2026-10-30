@@ -68,7 +68,7 @@ Retain the project/worktree if cleanup is unresolved; do not delete it while the
 still owns it.
 
 1. Pick a repo worktree that is not currently open in the target IDE.
-2. Run `scripts/desktop-client/jb-inspect.py inspect-closeout --repo <worktree> --scope changed_files`.
+2. Run `scripts/desktop-client/jb-inspect.py inspect-closeout --repo <worktree> --scope changed_files`; add `--skip-preparation` when testing this repository's worktree.
 3. Confirm the helper reports an exact route with `opened_by_helper=true` and a
    cleanup status of `closed` after inspection.
 4. Confirm no Trust Project, Safe Mode, or Open Project mode prompt appears; the

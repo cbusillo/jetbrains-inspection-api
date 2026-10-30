@@ -99,7 +99,7 @@ evidence.
    For an owned test copy outside the configured trusted roots, set
    `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
    command. Leave the original fixture unchanged.
-2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout` on that exact copy
+2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout --skip-preparation` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
    `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
@@ -117,16 +117,15 @@ evidence.
 
 ## Agent inspection helper
 
-Maintenance Python scripts use a nested PyCharm project under `scripts/`;
-Kotlin/Java/Gradle and the remaining files retain the root IntelliJ project.
-The configured assessment prepares the ignored `scripts/.venv` and
-`scripts/.idea` through the maintained generator, with dependency metadata
-from `install-local-plugin.py`. All current maintenance scripts use the
-standard library; extend that PEP 723 input set if their dependencies change.
-The root Java/Gradle bindings are preserved. The in-repo desktop client's
-`inspect-closeout` runs this preparation and each selected lane against its own
-project and SDK. Preparation alone does not prove IDE readiness or a decisive
-inspection.
+Maintenance Python scripts use the root PyCharm lane with structured Python
+preparation inside the native worker's private snapshot. Dependency metadata
+comes from `scripts/install-local-plugin.py`; extend that PEP 723 input set if
+the scripts' dependencies change. Kotlin/Java uses a separate root IntelliJ
+lane, which imports Gradle and ignores Python preparation. Neither route
+changes the source worktree's Java/Gradle bindings or creates a source-worktree
+Python environment. Inspect each product's files in a separate assessment;
+preparation alone does not prove a decisive inspection.
+The root `.venv` ignore is required inside that snapshot as well.
 
 Agents inspect code through the catalog `jetbrains-inspection` skill's isolated
 native workers, which never call this plugin. This plugin's own smokes use
@@ -134,6 +133,13 @@ native workers, which never call this plugin. This plugin's own smokes use
 it stood before that route was retired
 ([codex-skills#2804](https://github.com/cbusillo/codex-skills/issues/2804)).
 Its unit tests live beside it.
+The smoke entrypoints pass `--skip-preparation` for this checkout's projects;
+the matrix and default smoke still prepare projects from other repositories.
+When calling the desktop client directly on this repository, pass that option
+too; its preparation is for native snapshots and must not replace the tracked
+IDE model. Legacy nested environment ignores remain for prepared older checkouts.
+Preexisting matrix cases use `--no-open`; a missing project returns without
+sending an open request, while other lifecycle calls still open by default.
 
 ### Project-retention reproduction
 
@@ -225,6 +231,7 @@ Run the in-repo desktop client when validating the plugin's HTTP behavior:
 ```bash
 HELPER="scripts/desktop-client/jb-inspect.py"
 uv run "$HELPER" inspect-closeout \
+  --skip-preparation \
   --repo "$PWD" \
   --scope changed_files
 ```
@@ -552,6 +559,7 @@ helper directly:
 
 ```bash
 uv run "$HELPER" inspect-closeout \
+  --skip-preparation \
   --ide "IntelliJ IDEA" --scope changed_files --repo "$PWD"
 ```
 
