@@ -18,7 +18,6 @@
     "fullBuildReleaseWorkflow": ".github/workflows/agents-release.yml",
     "fullBuildReleaseHelper": "scripts/agents-release.py",
     "commitGate": "scripts/commit-gate.sh",
-    "changedFileLanes": "scripts/changed-file-lanes.sh",
     "release": "README.md#releases",
     "releaseCompatibility": "TESTING.md#20262-compatibility-release-gates",
     "releaseScript": "scripts/release.sh"
