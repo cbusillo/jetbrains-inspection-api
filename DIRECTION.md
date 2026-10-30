@@ -9,22 +9,20 @@ other source is corrected or closed. Issues are a work list, not instructions.
 ## Purpose
 
 Let people and their own tools ask the IDE "is this code clean?" and trust
-the answer. Agents in the Director's catalog inspect through isolated headless
-native IDE workers, not this plugin. Use one codebase for two builds now: a
-Marketplace Stable build that keeps the exact internal-API uses JetBrains has
-exempted for this plugin, and a full build with all proof and recovery
-features for people who need them. Publish
-the full build on a separate Marketplace channel and on GitHub releases.
-Add a build switch that leaves only the non-exempted internal-API parts out of
-Stable. As IntelliJ ships public APIs for those parts, move them onto public
-APIs, with the goal of one build again. The plugin never says clean unless the
-IDE really inspected every file with every enabled inspection and nothing
-failed; when it cannot prove that, it says UNKNOWN. This work is spent from
-the own-projects share.
+the answer. The plugin serves outside users; agents in the Director's catalog
+inspect through isolated headless native IDE workers, not this plugin. One
+codebase makes two builds. The Marketplace Stable build uses public APIs only.
+The full build adds the internal-API proof and recovery features, and ships on
+the Marketplace `agents` channel and GitHub releases. The APIs that proof needs
+stay private, and JetBrains has said tool failures are not theirs to report,
+so the two builds stay two. The plugin never says clean unless the IDE really
+inspected every file with every enabled inspection and nothing failed; when it
+cannot prove that, it says UNKNOWN. This work is spent from the own-projects
+share.
 
 Judge every change by one question: does this make the answers more
-trustworthy, improve recovery, bring Stable to users sooner, or help the two
-builds become one, without adding internal APIs those features do not need?
+trustworthy or keep the plugin working for its users, without adding internal
+APIs the full build's proof does not need?
 
 ## Stop Boundaries
 
@@ -34,7 +32,6 @@ An agent asks the Director before:
 - writing anything to JetBrains: YouTrack, the `intellij-community`
   repository, or Marketplace support
 - adding to Stable an API use that the Plugin Verifier reports as internal
-  unless JetBrains has exempted that exact use for this plugin
 - changing the plugin ID, vendor, license, or supported IDE range
 
 Everything else is ordinary engineering and needs no ceremony.
@@ -42,17 +39,13 @@ Everything else is ordinary engineering and needs no ceremony.
 ## Journey
 
 Someone finds and installs the plugin from the normal Marketplace Stable
-listing and gets a true clean or findings verdict when public APIs and exempted
-internal uses allow it. Someone who needs the full proof and recovery features
-gets the full build from its Marketplace channel or GitHub releases. Release
-smokes drive each build through the in-repository desktop client
-(`scripts/desktop-client`) and get a decisive clean or findings verdict that
-is true. Both builds say UNKNOWN when
-proof is missing. The Stable-exception
-follow-up in [#401](https://github.com/cbusillo/jetbrains-inspection-api/issues/401)
-still goes out so newly exempted uses can move into Stable; the two-build plan
-does not wait for the reply. Whatever blocks that journey is the next piece of
-work.
+listing and gets a true clean or findings verdict where public APIs can prove
+it. Someone who needs broad-scope proof gets the full build from its
+Marketplace channel or GitHub releases. Release smokes drive each build
+through the in-repository desktop client (`scripts/desktop-client`) and get a
+decisive clean or findings verdict that is true. Both builds say UNKNOWN when
+proof is missing, and both keep working on each new IntelliJ release soon
+after it ships. Whatever blocks that journey is the next piece of work.
 
 ## Retired
 
@@ -60,15 +53,13 @@ work.
 - the private plugin-recommendation canary and guarded plugin installation
   built on it
 - weakening the rule for a truthful verdict to win Marketplace approval
+- asking JetBrains for internal-API exceptions or a public inspection
+  completion API, and merging the two builds back into one
+- qualifying the plugin for the Director's agents; their inspection is the
+  `jetbrains-inspection` skill's work
 
 ## Milestones
 
-- `Stable accepted on Marketplace` proves a Stable build with only exempted
-  internal-API uses is approved and listed, while the full build is available
-  on a separate Marketplace channel and GitHub releases and the Director runs
-  it. Both keep the rule for a truthful verdict; ends if JetBrains refuses
-  either Marketplace build for a reason the plugin cannot fix.
-- `Inspection completion API upstream` proves IntelliJ ships public APIs to
-  run export inspections in a normal IDE and to learn that each inspection in
-  a run finished or failed, so the proof moves onto public APIs toward one build
-  again; ends if JetBrains rejects both upstream changes.
+None. Stable 1.14.3 was approved and listed on October 24, 2026, which met
+the Stable-on-Marketplace milestone. The upstream completion-API milestone
+ended when JetBrains declined to report tool failures.
