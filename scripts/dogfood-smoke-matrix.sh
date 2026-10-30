@@ -2,6 +2,7 @@
 
 set -uo pipefail
 
+SCRIPT_GIT_DIR=$(git -C "$(dirname "${BASH_SOURCE[0]}")" rev-parse --path-format=absolute --git-common-dir) || exit 2
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
 cd "$ROOT" || exit 1
 
@@ -483,6 +484,9 @@ run_case() {
 	fi
 
 	local cmd=(uv run "$HELPER" --json inspect-closeout --repo "$target_repo" --ide "$ide" --scope "$SCOPE" --timeout-ms "$TIMEOUT_MS" --prepare-timeout-ms "$PREPARE_TIMEOUT_MS")
+	if [ "$SCRIPT_GIT_DIR" = "$(git -C "$source_repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ]; then
+		cmd+=(--skip-preparation)
+	fi
 	if [ "$scenario" = "preexisting" ]; then
 		cmd+=(--no-open)
 	fi

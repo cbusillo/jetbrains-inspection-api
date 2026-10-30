@@ -58,13 +58,8 @@
         "python": {
           "version": "3.12",
           "moduleName": "inspection-api-scripts",
-          "projectPath": "scripts",
           "pep723Scripts": [
-            "install-local-plugin.py"
-          ],
-          "requiredGeneratedState": [
-            ".venv",
-            ".idea"
+            "scripts/install-local-plugin.py"
           ]
         }
       },
@@ -103,8 +98,7 @@
           "include": [
             "scripts/*.py",
             "scripts/**/*.py"
-          ],
-          "projectPath": "scripts"
+          ]
         },
         {
           "id": "jvm",

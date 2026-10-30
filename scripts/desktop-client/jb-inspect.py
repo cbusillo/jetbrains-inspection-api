@@ -795,7 +795,7 @@ def add_common(command: argparse.ArgumentParser, include_scope: bool) -> None:
     command.add_argument("--cwd", help="Cwd selector passed to the route API.")
     command.add_argument("--project", help="Project name selector. Prefer project-key/path when possible.")
     command.add_argument("--session-id", help="Expected IDE session id for drift detection.")
-    command.add_argument("--open", action="store_true", help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
+    command.add_argument("--open", action=argparse.BooleanOptionalAction, default=False, help="Open the repo in the preferred IDE if no route is available, then retry briefly.")
     command.add_argument("--ide-launch", dest="ide_launch", action="store_true", help="Allow launching the IDE app when none is running; never launches or activates an app that is already running.")
     command.add_argument("--no-ide-launch", dest="ide_launch", action="store_false", help="Require a running IDE; the default.")
     command.add_argument("--no-worktree-check", action="store_true", help="Allow routes outside the current worktree.")
