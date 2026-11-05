@@ -11377,7 +11377,7 @@ class HumanOutputTest(unittest.TestCase):
             },
         ):
             with self.subTest(evidence=evidence):
-                payload = {
+                payload: dict[str, Any] = {
                     "status": "results_available",
                     "total_problems": 1,
                     "problems": [{"file": "/tmp/App.kt", "line": 3, "description": "Unresolved reference"}],
@@ -11407,7 +11407,7 @@ class HumanOutputTest(unittest.TestCase):
             ({"inspection_in_progress": True}, "inspection_still_running"),
         ):
             with self.subTest(evidence=evidence):
-                payload = {
+                payload: dict[str, Any] = {
                     "total_problems": 1,
                     "problems": [{"description": "Retained finding"}],
                     "capture_diagnostic": {"execution_proof_established": False},
@@ -11437,7 +11437,7 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict_reason"], "inspection_proof_failed")
 
     def test_compact_unknown_result_preserves_incomplete_proof_metadata(self) -> None:
-        payload = {
+        payload: dict[str, Any] = {
             "status": "results_available",
             "clean": False,
             "total_problems": 1,
