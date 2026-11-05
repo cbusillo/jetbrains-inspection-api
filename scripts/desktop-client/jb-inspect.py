@@ -6737,11 +6737,7 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
         return {
             "verdict": "UNKNOWN",
             "verdict_reason": blocker_reason,
-            "verdict_message": (
-                "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
-                if blocker_reason == "execution_not_proven"
-                else "Inspection did not produce a trustworthy GREEN or RED result."
-            ),
+            "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
             "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
         }
 
@@ -6790,10 +6786,15 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
 
     proof_failure_reason = proof_failure_unknown_reason(payload)
     if proof_failure_reason is not None:
+        message = "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result."
+        if proof_failure_reason == "execution_not_proven":
+            message = "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+        if plugin_verdict == "UNKNOWN" and payload.get("inspection_verdict_reason") == proof_failure_reason:
+            message = str(payload.get("inspection_verdict_message") or message)
         return {
             "verdict": "UNKNOWN",
             "verdict_reason": proof_failure_reason,
-            "verdict_message": "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
+            "verdict_message": message,
             "verdict_next_action": next_action_for_unknown(proof_failure_reason, payload),
         }
 
@@ -6879,13 +6880,6 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         expected_run_id = inspection_run_id(trigger) or positive_run_id(wait.get("expected_inspection_run_id"))
         if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
             return "run_changed"
-    diagnostic = dict_field(payload, "capture_diagnostic")
-    if (
-        "execution_not_proven" in (payload.get("proof_failures") or [])
-        or diagnostic.get("execution_proof_established") is False
-        or diagnostic.get("execution_proof_skipped") is True
-    ):
-        return "execution_not_proven"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
         if text_only_coverage_wait_timeout_is_recoverable(payload, wait):
             return None
@@ -6941,9 +6935,18 @@ def text_only_coverage_wait_timeout_is_recoverable(payload: dict[str, Any], wait
 
 def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
     failures = payload.get("proof_failures")
-    if not isinstance(failures, list) or not failures:
+    normalized_failures = [normalize_reason(str(reason)) for reason in failures] if isinstance(failures, list) else []
+    diagnostic = dict_field(payload, "capture_diagnostic")
+    if diagnostic.get("execution_proof_established") is False or diagnostic.get("execution_proof_skipped") is True:
+        normalized_failures.append("execution_not_proven")
+    if not normalized_failures:
         return None
-    normalized_failures = [normalize_reason(str(reason)) for reason in failures]
+    if "execution_not_proven" in normalized_failures:
+        return (
+            "execution_not_proven"
+            if set(normalized_failures) <= RED_COMPATIBLE_PROOF_FAILURES | {"execution_not_proven"}
+            else "inspection_proof_failed"
+        )
     total_problems = payload.get("total_problems")
     problems = payload.get("problems")
     has_current_findings = bool(problems) or (isinstance(total_problems, int) and total_problems > 0)
@@ -7069,6 +7072,15 @@ def next_action_for_unknown(reason: str, payload: dict[str, Any]) -> str:
     if reason == "plugin_deployment_mismatch":
         return "Install a plugin with native broad-scope execution proof, restart the IDE, resolve the route again, and rerun inspection."
     if reason == "execution_not_proven":
+        action = payload.get("inspection_verdict_next_action")
+        if (
+            payload.get("inspection_verdict") == "UNKNOWN"
+            and payload.get("inspection_verdict_reason") == reason
+            and isinstance(action, str) and action.strip()
+        ):
+            return action.strip()
+        if execution_proof_reason == "stable_build_cannot_prove_broad_scope":
+            return "Execution coverage is unproven in Marketplace Stable. Inspect files with current_file, files, or changed_files, or use the full build."
         if execution_proof_reason == "batch_inspection_delegated_to_editor_service":
             action = payload.get("inspection_verdict_next_action")
             if isinstance(action, str) and action.strip():
@@ -7569,12 +7581,7 @@ def apply_agent_result(payload: dict[str, Any]) -> dict[str, Any]:
         reason_bucket = outcome_bucket({
             "verdict": "UNKNOWN", "capture_diagnostic": payload.get("capture_diagnostic"),
         }, reason)
-        diagnostic = payload.get("capture_diagnostic")
-        delegated_batch_recovery = reason == "execution_not_proven" and isinstance(diagnostic, dict) and (
-            normalize_reason(diagnostic.get("execution_proof_block_reason") or diagnostic.get("execution_proof_skipped_reason"))
-            == "batch_inspection_delegated_to_editor_service"
-        )
-        if (plugin_action_used and not delegated_batch_recovery) or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
+        if (plugin_action_used and reason != "execution_not_proven") or retry_policy_for("UNKNOWN", reason_bucket, reason)["retry"]:
             next_action = UNKNOWN_TERMINAL_ACTION
             payload["verdict_next_action"] = next_action
     next_action = guidance_for_command(next_action, payload.get("command"))
@@ -7696,6 +7703,7 @@ def outcome_bucket(payload: dict[str, Any], reason: str) -> str:
         if execution_proof_reason in {
             "whole_project_execution_not_proven",
             "directory_execution_not_proven",
+            "stable_build_cannot_prove_broad_scope",
             "native_attestation_context_creation_failed",
             "native_inspection_no_tools_completed",
             "native_inspection_no_files_analyzed",

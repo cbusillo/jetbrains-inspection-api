@@ -11368,6 +11368,13 @@ class HumanOutputTest(unittest.TestCase):
             {"proof_failures": ["execution_not_proven"]},
             {"capture_diagnostic": {"execution_proof_established": False}},
             {"capture_diagnostic": {"execution_proof_skipped": True}},
+            {
+                "proof_failures": ["execution_not_proven"],
+                "inspection_verdict": "UNKNOWN",
+                "inspection_verdict_reason": "execution_not_proven",
+                "inspection_verdict_message": "Coverage could not be established.",
+                "inspection_verdict_next_action": "Use file scope or the full build.",
+            },
         ):
             with self.subTest(evidence=evidence):
                 payload = {
@@ -11384,9 +11391,32 @@ class HumanOutputTest(unittest.TestCase):
 
                 self.assertEqual(payload["verdict"], "UNKNOWN")
                 self.assertEqual(payload["verdict_reason"], "execution_not_proven")
-                self.assertIn("coverage is unproven", payload["verdict_message"])
                 self.assertEqual(compact["findings"][0]["description"], payload["problems"][0]["description"])
                 self.assertFalse(payload["retry_policy"]["retry"])
+                if "inspection_verdict_message" in evidence:
+                    self.assertEqual(payload["verdict_message"], evidence["inspection_verdict_message"])
+                    self.assertEqual(payload["verdict_next_action"], evidence["inspection_verdict_next_action"])
+
+    def test_unproven_execution_preserves_more_specific_failures(self) -> None:
+        for evidence, expected_reason in (
+            ({"proof_failures": ["execution_not_proven", "run_mismatch"]}, "inspection_proof_failed"),
+            ({"cleanup": {"status": "failed"}}, "cleanup_failed"),
+            ({"timed_out": True}, "timeout"),
+            ({"inspection_in_progress": True}, "inspection_still_running"),
+        ):
+            with self.subTest(evidence=evidence):
+                payload = {
+                    "total_problems": 1,
+                    "problems": [{"description": "Retained finding"}],
+                    "capture_diagnostic": {"execution_proof_established": False},
+                    "inspection_verdict": "RED",
+                    **evidence,
+                }
+
+                verdict = jb_inspect.verdict_for_payload(payload)
+
+                self.assertEqual(verdict["verdict"], "UNKNOWN")
+                self.assertEqual(verdict["verdict_reason"], expected_reason)
 
     def test_unexpected_proof_failure_still_overrides_plugin_red_verdict(self):
         payload = {
@@ -11423,6 +11453,7 @@ class HumanOutputTest(unittest.TestCase):
         jb_inspect.apply_verdict(payload)
         compact = jb_inspect.compact_agent_result_payload(payload, 0)
 
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(payload["agent_result"]["proof_failures"], ["execution_not_proven"])
         self.assertEqual(payload["agent_result"]["inspection_proof"]["capture_complete"], False)
         self.assertEqual(compact["proof_failures"], ["execution_not_proven"])

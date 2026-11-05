@@ -2153,17 +2153,6 @@ class InspectionHandler : HttpRequestHandler() {
     private fun inspectionVerdict(payload: Map<String, Any?>): InspectionVerdict {
         val status = payload["status"] as? String
         val completionReason = payload["completion_reason"] as? String
-        val unknownReason = unknownVerdictReason(payload)
-        if (unknownReason != null) {
-            return InspectionVerdict(
-                verdict = "UNKNOWN",
-                reason = unknownReason,
-                message = if (unknownReason == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue) {
-                    "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
-                } else "Inspection did not produce a trustworthy GREEN or RED result.",
-                nextAction = unknownVerdictNextAction(unknownReason, payload),
-            )
-        }
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
         val problems = payload["problems"] as? List<*>
         val hasExplicitZeroResult = totalProblems == 0
@@ -2173,16 +2162,31 @@ class InspectionHandler : HttpRequestHandler() {
         val proofFailures = (payload["proof_failures"] as? List<*>)
             ?.filterIsInstance<String>()
             .orEmpty()
-        val redCompatibleProofFailures = setOf(
+        val incompleteCoverageFailures = setOf(
+            CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue,
             SCOPE_SEMANTIC_COVERAGE_MISSING_REASON,
             "scope_semantic_coverage_truncated",
         )
-        if (proofFailures.isNotEmpty() && (!hasCurrentFindings || proofFailures.any { it !in redCompatibleProofFailures })) {
+        val unknownReason = unknownVerdictReason(payload) ?: when {
+            proofFailures.isNotEmpty() && (!hasCurrentFindings || proofFailures.any { it !in incompleteCoverageFailures }) ->
+                "inspection_proof_failed"
+            hasUnprovenExecution(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
+            else -> null
+        }
+        if (unknownReason != null) {
             return InspectionVerdict(
                 verdict = "UNKNOWN",
-                reason = "inspection_proof_failed",
-                message = "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result.",
-                nextAction = unknownVerdictNextAction("inspection_proof_failed", payload),
+                reason = unknownReason,
+                message = when (unknownReason) {
+                    CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue ->
+                        "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+                    "inspection_proof_failed" ->
+                        "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result."
+                    else -> "Inspection did not produce a trustworthy GREEN or RED result."
+                },
+                nextAction = (if (unknownReason == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue && hasCurrentFindings) {
+                    "Fix the retained findings. "
+                } else "") + unknownVerdictNextAction(unknownReason, payload),
             )
         }
         if (hasCurrentFindings) {
@@ -2190,9 +2194,7 @@ class InspectionHandler : HttpRequestHandler() {
                 verdict = "RED",
                 reason = "actionable_findings",
                 message = "Inspection worked and returned actionable findings for the selected scope/filter.",
-                nextAction = if ((payload["capture_diagnostic"] as? Map<*, *>)?.get("batch_inspection_delegation_count") is Number) {
-                    "Fix the reported findings. " + unknownVerdictNextAction(CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue, payload)
-                } else "Fix the reported findings, then rerun inspection.",
+                nextAction = "Fix the reported findings, then rerun inspection.",
             )
         }
         if (
@@ -2229,7 +2231,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload) -> SCOPE_SEMANTIC_COVERAGE_MISSING_REASON
             hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload) -> "scope_semantic_coverage_truncated"
-            hasUnprovenExecution(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
+            hasUnprovenExecutionWithoutCurrentFindings(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
             payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
             status == "scope_mismatch" -> "scope_mismatch"
@@ -2430,6 +2432,9 @@ class InspectionHandler : HttpRequestHandler() {
         return diagnostic["execution_proof_established"] == false ||
             diagnostic["execution_proof_skipped"] == true
     }
+
+    private fun hasUnprovenExecutionWithoutCurrentFindings(payload: Map<String, Any?>): Boolean =
+        hasUnprovenExecution(payload) && !hasCurrentFindings(payload)
 
     private fun hasCurrentFindings(payload: Map<String, Any?>): Boolean {
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()

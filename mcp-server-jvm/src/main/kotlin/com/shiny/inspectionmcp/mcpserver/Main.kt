@@ -842,7 +842,13 @@ internal class ToolExecutor(
         keep.remove("capture_diagnostic")
         val includeStale = obj["include_stale"]?.jsonPrimitive?.booleanOrNull == true
         val verdict = pluginVerdict(obj)
-        if (verdict.verdict == "UNKNOWN" && verdict.reason != "execution_not_proven" && !includeStale) {
+        val currentUnprovenFindings = verdict.reason == "execution_not_proven" &&
+            obj["capture_incomplete"]?.jsonPrimitive?.booleanOrNull != true &&
+            obj["results_may_be_stale"]?.jsonPrimitive?.booleanOrNull != true &&
+            obj["proof_failures"]?.jsonArray?.none {
+                it.jsonPrimitive.contentOrNull in setOf("run_mismatch", "profile_mismatch", "session_drift")
+            } != false
+        if (verdict.verdict == "UNKNOWN" && !currentUnprovenFindings && !includeStale) {
             keep.remove("total_problems")
             keep.remove("problems_shown")
             keep.remove("problems")

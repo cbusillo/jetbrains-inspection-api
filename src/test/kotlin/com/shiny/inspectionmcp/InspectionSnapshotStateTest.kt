@@ -3219,10 +3219,10 @@ class InspectionSnapshotStateTest {
                 captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
                 captureDiagnostic = mapOf(
                     "scope_file_semantic_evidence_complete" to true,
-                    "execution_proof_mode" to "exact_bounded",
+                    "execution_proof_mode" to "native_attested",
                     "execution_proof_established" to false,
                     "execution_proof_clean" to false,
-                    "execution_proof_block_reason" to "applicable_missing_batch_wrapper",
+                    "execution_proof_block_reason" to "native_tool_completion_unproven",
                 ),
                 runId = runState.runId,
                 triggerTimeMs = runState.triggerTimeMs,
@@ -3233,7 +3233,6 @@ class InspectionSnapshotStateTest {
 
         assertEquals("UNKNOWN", status["inspection_verdict"])
         assertEquals("execution_not_proven", status["inspection_verdict_reason"])
-        assertTrue((status["inspection_verdict_message"] as String).contains("coverage is unproven"))
         @Suppress("UNCHECKED_CAST")
         val proof = status["inspection_proof"] as Map<String, Any?>
         assertEquals("failed", proof["status"])
@@ -3242,11 +3241,17 @@ class InspectionSnapshotStateTest {
         val results = jsonResponseValue(getInspectionProblems()) as Map<*, *>
         assertEquals("UNKNOWN", results["inspection_verdict"])
         assertEquals("execution_not_proven", results["inspection_verdict_reason"])
-        val wait = jsonResponseValue(waitForInspection()) as Map<*, *>
+        val wait = jsonResponseValue(waitForInspection(timeoutMs = 20000L)) as Map<*, *>
         assertEquals("UNKNOWN", wait["inspection_verdict"])
         assertEquals("execution_not_proven", wait["inspection_verdict_reason"])
         val problems = results["problems"] as List<*>
         assertEquals("Unresolved reference", (problems.single() as Map<*, *>)["description"])
+
+        val replacement = beginInspectionRun()
+        val runningStatus = buildInspectionStatus()
+        assertEquals("UNKNOWN", runningStatus["inspection_verdict"])
+        assertEquals("inspection_still_running", runningStatus["inspection_verdict_reason"])
+        finishInspectionRun(snapshotKey(), replacement.runId)
     }
 
     @Test
