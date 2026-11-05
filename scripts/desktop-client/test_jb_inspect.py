@@ -11400,6 +11400,8 @@ class HumanOutputTest(unittest.TestCase):
     def test_unproven_execution_preserves_more_specific_failures(self) -> None:
         for evidence, expected_reason in (
             ({"proof_failures": ["execution_not_proven", "run_mismatch"]}, "inspection_proof_failed"),
+            ({"total_problems": 0, "problems": [], "proof_failures": ["scope_semantic_coverage_missing", "execution_not_proven"]}, "scope_semantic_coverage_missing"),
+            ({"total_problems": 0, "problems": [], "proof_failures": ["scope_semantic_coverage_truncated", "execution_not_proven"]}, "scope_semantic_coverage_truncated"),
             ({"cleanup": {"status": "failed"}}, "cleanup_failed"),
             ({"timed_out": True}, "timeout"),
             ({"inspection_in_progress": True}, "inspection_still_running"),

@@ -6788,14 +6788,22 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
     if proof_failure_reason is not None:
         message = "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result."
         if proof_failure_reason == "execution_not_proven":
-            message = "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+            message = "Inspection execution and coverage are unproven."
         if plugin_verdict == "UNKNOWN" and payload.get("inspection_verdict_reason") == proof_failure_reason:
             message = str(payload.get("inspection_verdict_message") or message)
+        next_action = next_action_for_unknown(proof_failure_reason, payload)
+        total = payload.get("total_problems")
+        if (
+            proof_failure_reason == "execution_not_proven"
+            and (payload.get("problems") or (isinstance(total, int) and total > 0))
+            and next_action != payload.get("inspection_verdict_next_action")
+        ):
+            next_action = f"Fix the retained findings. {next_action}"
         return {
             "verdict": "UNKNOWN",
             "verdict_reason": proof_failure_reason,
             "verdict_message": message,
-            "verdict_next_action": next_action_for_unknown(proof_failure_reason, payload),
+            "verdict_next_action": next_action,
         }
 
     if plugin_verdict == "GREEN":
@@ -6941,15 +6949,14 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
         normalized_failures.append("execution_not_proven")
     if not normalized_failures:
         return None
-    if "execution_not_proven" in normalized_failures:
-        return (
-            "execution_not_proven"
-            if set(normalized_failures) <= RED_COMPATIBLE_PROOF_FAILURES | {"execution_not_proven"}
-            else "inspection_proof_failed"
-        )
     total_problems = payload.get("total_problems")
     problems = payload.get("problems")
     has_current_findings = bool(problems) or (isinstance(total_problems, int) and total_problems > 0)
+    if "execution_not_proven" in normalized_failures:
+        if not set(normalized_failures) <= RED_COMPATIBLE_PROOF_FAILURES | {"execution_not_proven"}:
+            return "inspection_proof_failed"
+        if has_current_findings:
+            return "execution_not_proven"
     if (
         payload.get("inspection_verdict") == "RED"
         and has_current_findings
@@ -6960,6 +6967,8 @@ def proof_failure_unknown_reason(payload: dict[str, Any]) -> str | None:
         return SEMANTIC_COVERAGE_MISSING_REASON
     if SEMANTIC_COVERAGE_TRUNCATED_REASON in normalized_failures:
         return SEMANTIC_COVERAGE_TRUNCATED_REASON
+    if "execution_not_proven" in normalized_failures:
+        return "execution_not_proven"
     retryable_reasons = (
         "no_results",
         "view_not_ready",

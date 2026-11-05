@@ -2179,7 +2179,7 @@ class InspectionHandler : HttpRequestHandler() {
                 reason = unknownReason,
                 message = when (unknownReason) {
                     CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue ->
-                        "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+                        "Inspection execution and coverage are unproven."
                     "inspection_proof_failed" ->
                         "Inspection returned contradictory proof and did not establish a trustworthy GREEN or RED result."
                     else -> "Inspection did not produce a trustworthy GREEN or RED result."

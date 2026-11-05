@@ -489,24 +489,19 @@ class McpServerTest {
     }
 
     @Test
-    fun mcpWithholdsUnprovenFindingsWhenFreshnessOrCaptureFailed() {
-        listOf(
-            "\"capture_incomplete\":true",
-            "\"results_may_be_stale\":true",
-            "\"proof_failures\":[\"execution_not_proven\",\"run_mismatch\"]",
-        ).forEach { failure ->
-            val response = """{
-                "inspection_verdict":"UNKNOWN", "inspection_verdict_reason":"execution_not_proven",
-                "total_problems":1, "problems":[{"description":"Untrusted finding"}], $failure
-            }"""
-            MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
-                server.start()
-                val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+    fun mcpWithholdsUnprovenFindingsWhenCaptureIsIncomplete() {
+        val response = """{
+            "inspection_verdict":"UNKNOWN", "inspection_verdict_reason":"execution_not_proven",
+            "total_problems":1, "problems":[{"description":"Untrusted finding"}],
+            "capture_incomplete":true, "capture_incomplete_reason":"execution_not_proven"
+        }"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
 
-                val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
+            val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
 
-                assertFalse(text.contains("Untrusted finding"), text)
-            }
+            assertFalse(text.contains("Untrusted finding"), text)
         }
     }
 
