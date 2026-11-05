@@ -237,7 +237,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. Follow-ups pin the accepted inspection_run_id, and omitted scope arguments reuse the triggered scope and its defining parameters. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
+                            "Fetch problems after inspection completes. Typical flow: inspection_trigger -> inspection_wait -> inspection_get_problems. Follow-ups pin the accepted inspection_run_id, and omitted scope arguments reuse the triggered scope and its defining parameters. In auto mode, pass project_path or project_key when available; selector-less calls follow the last triggered project when possible. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. Missing execution proof means UNKNOWN with current findings retained and coverage unproven. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying. stale_results withholds cached findings by default; pass include_stale only when explicitly diagnosing cached data. snapshot_change_kind explains whether stale data predates the trigger or fresh results saw reconciled IDE PSI churn."
                         )
                     )
                     put("inputSchema", getProblemsSchema())
@@ -265,7 +265,7 @@ internal class ToolExecutor(
                     put(
                         "description",
                         JsonPrimitive(
-                            "Block until inspection completes or timeout. Preferred after inspection_trigger; call inspection_get_problems after results or clean. In auto mode, pass project_path or project_key when available. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying."
+                            "Block until inspection completes or timeout. Preferred after inspection_trigger; call inspection_get_problems after results or clean. In auto mode, pass project_path or project_key when available. capture_incomplete means do not treat as clean; retry once for a readiness or capture blocker when the returned guidance permits it. Missing execution proof means UNKNOWN with current findings retained and coverage unproven. An execution_not_proven result with exact-proof failure diagnostics is terminal for this run; report it without retrying."
                         )
                     )
                     put("inputSchema", waitSchema())
@@ -841,7 +841,8 @@ internal class ToolExecutor(
         }
         keep.remove("capture_diagnostic")
         val includeStale = obj["include_stale"]?.jsonPrimitive?.booleanOrNull == true
-        if (pluginVerdict(obj).verdict == "UNKNOWN" && !includeStale) {
+        val verdict = pluginVerdict(obj)
+        if (verdict.verdict == "UNKNOWN" && verdict.reason != "execution_not_proven" && !includeStale) {
             keep.remove("total_problems")
             keep.remove("problems_shown")
             keep.remove("problems")

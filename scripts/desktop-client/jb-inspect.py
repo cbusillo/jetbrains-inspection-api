@@ -243,7 +243,6 @@ SEMANTIC_COVERAGE_MISSING_REASON = "scope_semantic_coverage_missing"
 SEMANTIC_COVERAGE_TRUNCATED_REASON = "scope_semantic_coverage_truncated"
 RED_COMPATIBLE_PROOF_FAILURES = frozenset(
     {
-        "execution_not_proven",
         SEMANTIC_COVERAGE_MISSING_REASON,
         SEMANTIC_COVERAGE_TRUNCATED_REASON,
     }
@@ -6738,7 +6737,11 @@ def verdict_for_payload(payload: dict[str, Any]) -> dict[str, str]:
         return {
             "verdict": "UNKNOWN",
             "verdict_reason": blocker_reason,
-            "verdict_message": "Inspection did not produce a trustworthy GREEN or RED result.",
+            "verdict_message": (
+                "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+                if blocker_reason == "execution_not_proven"
+                else "Inspection did not produce a trustworthy GREEN or RED result."
+            ),
             "verdict_next_action": next_action_for_unknown(blocker_reason, payload),
         }
 
@@ -6876,6 +6879,13 @@ def blocking_unknown_reason(payload: dict[str, Any], wait: dict[str, Any]) -> st
         expected_run_id = inspection_run_id(trigger) or positive_run_id(wait.get("expected_inspection_run_id"))
         if expected_run_id is None or wait_result_run_changed(wait, expected_run_id):
             return "run_changed"
+    diagnostic = dict_field(payload, "capture_diagnostic")
+    if (
+        "execution_not_proven" in (payload.get("proof_failures") or [])
+        or diagnostic.get("execution_proof_established") is False
+        or diagnostic.get("execution_proof_skipped") is True
+    ):
+        return "execution_not_proven"
     if payload.get("timed_out") or wait.get("timed_out") or payload.get("status") == "timed_out":
         if text_only_coverage_wait_timeout_is_recoverable(payload, wait):
             return None

@@ -2158,7 +2158,9 @@ class InspectionHandler : HttpRequestHandler() {
             return InspectionVerdict(
                 verdict = "UNKNOWN",
                 reason = unknownReason,
-                message = "Inspection did not produce a trustworthy GREEN or RED result.",
+                message = if (unknownReason == CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue) {
+                    "Inspection execution is unproven. Current findings are retained, but their coverage is unproven."
+                } else "Inspection did not produce a trustworthy GREEN or RED result.",
                 nextAction = unknownVerdictNextAction(unknownReason, payload),
             )
         }
@@ -2172,7 +2174,6 @@ class InspectionHandler : HttpRequestHandler() {
             ?.filterIsInstance<String>()
             .orEmpty()
         val redCompatibleProofFailures = setOf(
-            CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue,
             SCOPE_SEMANTIC_COVERAGE_MISSING_REASON,
             "scope_semantic_coverage_truncated",
         )
@@ -2228,7 +2229,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
             hasMissingScopeSemanticCoverageWithoutCurrentFindings(payload) -> SCOPE_SEMANTIC_COVERAGE_MISSING_REASON
             hasIncompleteScopeDiagnosticsWithoutCurrentFindings(payload) -> "scope_semantic_coverage_truncated"
-            hasUnprovenExecutionWithoutCurrentFindings(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
+            hasUnprovenExecution(payload) -> CaptureIncompleteReason.EXECUTION_NOT_PROVEN.apiValue
             payload["timed_out"] == true || completionReason == "timeout" -> "timeout"
             payload["indexing"] == true || payload["is_scanning"] == true || payload["inspection_in_progress"] == true -> "inspection_still_running"
             status == "scope_mismatch" -> "scope_mismatch"
@@ -2429,9 +2430,6 @@ class InspectionHandler : HttpRequestHandler() {
         return diagnostic["execution_proof_established"] == false ||
             diagnostic["execution_proof_skipped"] == true
     }
-
-    private fun hasUnprovenExecutionWithoutCurrentFindings(payload: Map<String, Any?>): Boolean =
-        hasUnprovenExecution(payload) && !hasCurrentFindings(payload)
 
     private fun hasCurrentFindings(payload: Map<String, Any?>): Boolean {
         val totalProblems = (payload["total_problems"] as? Number)?.toInt()
