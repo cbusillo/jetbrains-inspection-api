@@ -115,7 +115,7 @@
     ]]></change-notes>
     
     <depends>com.intellij.modules.platform</depends>
-    <depends optional="true">com.intellij.platform.vcs</depends>
+    <depends optional="true" config-file="com.shiny.inspection.api-vcs.xml">com.intellij.platform.vcs</depends>
     
     <depends optional="true" config-file="inspection-javascript.xml">JavaScript</depends>
 

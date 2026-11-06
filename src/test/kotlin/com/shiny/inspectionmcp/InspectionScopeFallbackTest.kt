@@ -2,12 +2,15 @@ package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import io.mockk.*
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vcs.FilePath
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import java.lang.reflect.InvocationTargetException
 
@@ -105,6 +108,30 @@ class InspectionScopeFallbackTest {
             )
         }
         assertTrue(error.cause is BadRequestException)
+    }
+
+    @Test
+    fun changedFilesScopeIncludesUnversionedFiles() {
+        val project = mockProject()
+        val file = mockk<VirtualFile> { every { path } returns "/workspace/new.json" }
+        val filePath = mockk<FilePath> { every { virtualFile } returns file }
+        val changeListManager = mockk<ChangeListManager>(relaxed = true)
+        mockkStatic(ChangeListManager::class)
+        every { ChangeListManager.getInstance(project) } returns changeListManager
+        every { changeListManager.unversionedFilesPaths } returns listOf(filePath)
+
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "resolveChangedFilesScopeFiles",
+            Project::class.java,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaObjectType,
+        )
+        method.isAccessible = true
+
+        val files = method.invoke(handler(), project, true, null, null)
+
+        assertEquals(listOf(file), files)
     }
 
     @Test

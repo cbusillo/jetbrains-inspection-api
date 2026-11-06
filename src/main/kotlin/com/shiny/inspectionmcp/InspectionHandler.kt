@@ -9544,16 +9544,7 @@ class InspectionHandler : HttpRequestHandler() {
             }
         }
         if (includeUnversioned) {
-            try {
-                val method = clm.javaClass.getMethod("getUnversionedFiles")
-                @Suppress("UNCHECKED_CAST")
-                val unversioned = method.invoke(clm) as? Collection<VirtualFile>
-                if (unversioned != null) {
-                    changeFiles.addAll(unversioned)
-                }
-            } catch (e: Exception) {
-                rethrowIfCanceled(e)
-            }
+            changeFiles.addAll(clm.unversionedFilesPaths.mapNotNull { it.virtualFile })
         }
         val unique = changeFiles
             .distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }

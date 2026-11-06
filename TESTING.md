@@ -103,7 +103,8 @@ evidence.
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
    `--prepare-timeout-ms 300000`. For compatibility evidence, also pass
-   `--ide-version` with the newly supported version. Use the in-repo desktop client and its normal trusted
+   `--ide-version` with the newly supported version. Use the in-repo desktop
+   client and its normal trusted
    project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
    assurance comes from the helper's enforced worktree match. The compact JSON
    does not include the route base path, so retain the exact command to show
@@ -720,8 +721,7 @@ and `mcp-server-jvm`.
 ## Compatibility release gates
 
 Before publishing a compatibility-range change, select the newly supported IDE
-version explicitly and capture
-evidence for:
+version explicitly and capture evidence for:
 
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure`
@@ -742,8 +742,8 @@ remains responsive while lifecycle close runs. A `run_changed` response must
 leave the newer run untouched and defer helper-owned project cleanup.
 
 For normal dogfood, use [agent smoke acceptance](#agent-smoke-acceptance)
-against the latest installed stable IDE. Use an exact `--ide-version` selector for compatibility evidence when that
-version is installed.
+against the latest installed stable IDE. Use an exact `--ide-version` selector
+for compatibility evidence when that version is installed.
 
 ### Normal-IDE traversal lifecycle
 
