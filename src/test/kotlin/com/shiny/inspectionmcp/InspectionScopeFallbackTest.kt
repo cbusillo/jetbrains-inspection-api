@@ -2,12 +2,16 @@ package com.shiny.inspectionmcp
 
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertThrows
 import org.junit.jupiter.api.DisplayName
 import org.junit.jupiter.api.Test
 import io.mockk.*
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.openapi.vcs.FilePath
+import com.intellij.openapi.vcs.changes.Change
 import com.intellij.openapi.vcs.changes.ChangeListManager
 import java.lang.reflect.InvocationTargetException
 
@@ -105,6 +109,51 @@ class InspectionScopeFallbackTest {
             )
         }
         assertTrue(error.cause is BadRequestException)
+    }
+
+    @Test
+    fun changedFilesScopeRespectsModeAndUnversionedSelectionBeforeLimit() {
+        val project = mockProject()
+        fun file(name: String): VirtualFile = mockk { every { path } returns "/workspace/$name" }
+        val unversionedFile = file("a.json")
+        val unstagedFile = file("b.json")
+        val stagedFile = file("z.json")
+        val filePath = mockk<FilePath> { every { virtualFile } returns unversionedFile }
+        val changeListManager = mockk<ChangeListManager>(relaxed = true)
+        mockkStatic(ChangeListManager::class)
+        every { ChangeListManager.getInstance(project) } returns changeListManager
+        every { changeListManager.allChanges } returns listOf(unstagedFile, stagedFile).map { changedFile ->
+            mockk<Change> { every { virtualFile } returns changedFile }
+        }
+        every { changeListManager.unversionedFilesPaths } returns listOf(filePath)
+        val inspectionHandler = spyk(handler(), recordPrivateCalls = true)
+        every { inspectionHandler["runBoundedGitCommand"](any<String>(), any<List<String>>()) } answers {
+            when {
+                "rev-parse" in secondArg<List<String>>() -> "/workspace\n".toByteArray()
+                "status" in secondArg<List<String>>() -> "?? a.json\u0000 M b.json\u0000M  z.json\u0000".toByteArray()
+                else -> error("Unexpected Git operation")
+            }
+        }
+
+        val method = InspectionHandler::class.java.getDeclaredMethod(
+            "resolveChangedFilesScopeFiles",
+            Project::class.java,
+            Boolean::class.javaPrimitiveType,
+            String::class.java,
+            Int::class.javaObjectType,
+        )
+        method.isAccessible = true
+
+        val scenarios = listOf(
+            Triple(null, true, listOf(unversionedFile, unstagedFile, stagedFile)),
+            Triple("staged", true, listOf(stagedFile)),
+            Triple("unstaged", true, listOf(unversionedFile, unstagedFile)),
+            Triple("unstaged", false, listOf(unstagedFile)),
+        )
+        for ((mode, includeUnversioned, expected) in scenarios) {
+            val files = method.invoke(inspectionHandler, project, includeUnversioned, mode, expected.size)
+            assertEquals(expected, files, "mode=$mode, include_unversioned=$includeUnversioned")
+        }
     }
 
     @Test

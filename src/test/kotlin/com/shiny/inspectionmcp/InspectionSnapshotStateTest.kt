@@ -203,6 +203,7 @@ class InspectionSnapshotStateTest {
         mockkStatic(ChangeListManager::class)
         every { ChangeListManager.getInstance(mockProject) } returns changeListManager
         every { changeListManager.allChanges } returns emptyList()
+        every { changeListManager.unversionedFilesPaths } returns emptyList()
 
         InspectionResultsStore.setSnapshot(
             snapshotKey(),

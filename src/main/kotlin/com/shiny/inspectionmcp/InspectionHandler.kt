@@ -9525,6 +9525,9 @@ class InspectionHandler : HttpRequestHandler() {
         val changeFiles = clm.allChanges.mapNotNull { change ->
             change.virtualFile ?: change.afterRevision?.file?.virtualFile ?: change.beforeRevision?.file?.virtualFile
         }.toMutableList()
+        if (includeUnversioned) {
+            changeFiles.addAll(clm.unversionedFilesPaths.mapNotNull { it.virtualFile })
+        }
 
         val mode = changedFilesMode?.lowercase()?.trim()
         if (!mode.isNullOrBlank() && mode != "all") {
@@ -9541,18 +9544,6 @@ class InspectionHandler : HttpRequestHandler() {
                     "unstaged" -> normalizedPath != null && unstagedSet.contains(normalizedPath)
                     else -> false
                 }
-            }
-        }
-        if (includeUnversioned) {
-            try {
-                val method = clm.javaClass.getMethod("getUnversionedFiles")
-                @Suppress("UNCHECKED_CAST")
-                val unversioned = method.invoke(clm) as? Collection<VirtualFile>
-                if (unversioned != null) {
-                    changeFiles.addAll(unversioned)
-                }
-            } catch (e: Exception) {
-                rethrowIfCanceled(e)
             }
         }
         val unique = changeFiles

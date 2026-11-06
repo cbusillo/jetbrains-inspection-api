@@ -102,8 +102,9 @@ evidence.
 2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout --skip-preparation` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
-   `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
-   `--ide-version 2026.2`. Use the in-repo desktop client and its normal trusted
+   `--prepare-timeout-ms 300000`. For compatibility evidence, also pass
+   `--ide-version` with the newly supported version. Use the in-repo desktop
+   client and its normal trusted
    project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
    assurance comes from the helper's enforced worktree match. The compact JSON
    does not include the route base path, so retain the exact command to show
@@ -460,7 +461,7 @@ requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change
 
 ### Inspection execution proof (issues #239, #259, #284, #296, and #301)
 
-For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; local obligations use `InspectionEngine.inspectEx` and global-simple obligations use the public single-file route described below, with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every configured 251, 252, 253, 261, and 262 IDE line.
+For `current_file`, `files`, and `changed_files` scopes, GREEN requires complete execution of every exact-file applicable batch-runnable obligation within the 25-file/60-second bounds. Replay is parallelized by exact file; local obligations use `InspectionEngine.inspectEx` and global-simple obligations use the public single-file route described below, with an isolated copied wrapper whose cleanup completes before proof returns, and every worker shares the same deadline and cancellation state. The API returns a sparse map containing only tools with descriptors, so the plugin keeps separate submitted, applicable, runnable, executed, and failed obligation evidence; an empty descriptor map is never sufficient by itself. Globally enabled tools that the selected profile disables for the file or whose declared language is positively non-applicable are counted but excluded. After `findTool2RunInBatch` returns `null`, the platform adapter classifies only an unpaired unfair source wrapper (`isUnfair == true` and source tool not `PairedUnfairLocalInspectionTool`) as intentionally non-batch-capable. That obligation is excluded from the batch denominator with bounded diagnostic evidence, but it is never counted as executed or clean. Paired unfair tools with an unavailable counterpart, fair missing wrappers, and unavailable metadata remain fail-closed. GREEN requires at least one real batch execution globally and on every requested file with an applicable obligation, so a file containing only excluded applicable tools remains `UNKNOWN`/`capture_incomplete` with `capture_incomplete_reason: "execution_not_proven"`; files with no applicable obligations are not falsely blocked. The platform test exercises these semantics on the 2025.1.1 development runtime, while `verifyPlugin` checks the compiled API use across every recommended IDE in the range configured in `build.gradle.kts`.
 
 Injected-language discovery uses the same deadline-aware, write-priority read as replay. The injected-PSI platform tests hold an injector active while an IDE write or the proof deadline interrupts it; a write permits discovery to restart, while an expired deadline keeps proof incomplete.
 
@@ -717,19 +718,19 @@ repository inputs in the commit gate.
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`.
 
-## 2026.2 compatibility release gates
+## Compatibility release gates
 
-Before publishing a compatibility-range change for JetBrains 2026.2, capture
-evidence for:
+Before publishing a compatibility-range change, select the newly supported IDE
+version explicitly and capture evidence for:
 
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=stable`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=full`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
-  stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
+  stable selectors for that version and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable
-  2026.2 selector and the supported coding agent used for the release.
+  version selector and the supported coding agent used for the release.
 
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a
@@ -741,8 +742,8 @@ remains responsive while lifecycle close runs. A `run_changed` response must
 leave the newer run untouched and defer helper-owned project cleanup.
 
 For normal dogfood, use [agent smoke acceptance](#agent-smoke-acceptance)
-against the latest installed stable IDE. Reserve the exact 2026.2 selector for
-compatibility evidence when that version is installed.
+against the latest installed stable IDE. Use an exact `--ide-version` selector
+for compatibility evidence when that version is installed.
 
 ### Normal-IDE traversal lifecycle
 

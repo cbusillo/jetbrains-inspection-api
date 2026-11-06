@@ -43,8 +43,6 @@ if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   exit 1
 fi
 
-EXPECTED_SINCE_BUILD="251"
-EXPECTED_UNTIL_BUILD="262.*"
 "$ROOT/scripts/validate-marketplace-publication.sh" --version "$VERSION"
 
 EXPECTED_ARCHIVE_NAME="jetbrains-inspection-api-$VERSION.zip"
@@ -83,9 +81,9 @@ python3 - \
   "$TEMP_DIR/inspection-build.properties" \
   "$VERSION" \
   "$SOURCE_SHA" \
-  "$EXPECTED_SINCE_BUILD" \
-  "$EXPECTED_UNTIL_BUILD" <<'PY'
+  "$ROOT/build.gradle.kts" <<'PY'
 from pathlib import Path
+import re
 import sys
 import xml.etree.ElementTree as ET
 
@@ -93,8 +91,12 @@ plugin_xml_path = Path(sys.argv[1])
 build_info_path = Path(sys.argv[2])
 expected_version = sys.argv[3]
 expected_source_sha = sys.argv[4]
-expected_since_build = sys.argv[5]
-expected_until_build = sys.argv[6]
+build_manifest = Path(sys.argv[5]).read_text(encoding="utf-8")
+build_range = re.findall(r'^\s*(sinceBuild|untilBuild)\s*=\s*"([^"]+)"\s*$', build_manifest, re.M)
+if len(build_range) != 2 or {name for name, _ in build_range} != {"sinceBuild", "untilBuild"}:
+    raise SystemExit("ERROR: Trusted build manifest must declare one sinceBuild and one untilBuild.")
+expected_since_build = dict(build_range)["sinceBuild"]
+expected_until_build = dict(build_range)["untilBuild"]
 
 try:
     plugin_root = ET.parse(plugin_xml_path).getroot()
