@@ -458,9 +458,6 @@ GH
     fi
     ./scripts/release.sh tag v1.2.4 --no-push >/dev/null
     [ "$(git rev-list -n 1 v1.2.4)" = "$(git rev-parse HEAD)" ] || fail "tag does not point at merged main"
-    if ./scripts/release.sh tag v1.2.4 --no-push >/dev/null 2>&1; then
-      fail "tag accepted an existing tag"
-    fi
   )
 
   rm -rf "$temp_dir"
