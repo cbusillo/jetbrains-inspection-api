@@ -25,6 +25,11 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.4</b>
+        <ul>
+            <li>Reports UNKNOWN when inspection execution cannot be proved complete, even when findings were captured.</li>
+            <li>Keeps those findings visible and marks their coverage as unproven.</li>
+        </ul>
         <b>Version 1.14.3</b>
         <ul>
             <li>Adds a Stable edition built on public JetBrains APIs.</li>
