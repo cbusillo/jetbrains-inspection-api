@@ -75,13 +75,19 @@ class StableBuildVerdictPlatformTest {
     }
 
     @Test
-    fun `a finding in a directory run is still RED`() {
+    fun `a finding in a directory run remains visible with UNKNOWN`() {
         val project = projectExtension.project
         val profile = registerProfile(project, LocalInspectionToolWrapper(FindingInspection()))
 
-        val status = runScope(project, "scope=directory&dir=${encode(createContentRoot("fixture.txt", "finding\n"))}", profile)
+        val scope = "scope=directory&dir=${encode(createContentRoot("fixture.txt", "finding\n"))}"
 
-        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("RED")
+        val status = runScope(project, scope, profile)
+        val results = request(InspectionHandler(), "/api/inspection/problems?$scope&project=${encode(project.name)}")
+
+        assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+        assertThat(results["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+        assertThat(results["inspection_verdict_reason"]?.jsonPrimitive?.content).isEqualTo("execution_not_proven")
+        assertThat(requireNotNull(results["problems"]).jsonArray).isNotEmpty()
     }
 
     @Test

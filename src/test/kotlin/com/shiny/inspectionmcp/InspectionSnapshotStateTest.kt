@@ -3196,8 +3196,8 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Current findings keep RED while proof metadata reports incomplete execution")
-    fun testCurrentFindingsKeepRedWithIncompleteProofMetadata() {
+    @DisplayName("Current findings remain visible with UNKNOWN when execution is unproven")
+    fun testCurrentFindingsRemainUnknownWithIncompleteProofMetadata() {
         val runState = beginInspectionRun()
         finishInspectionRun(snapshotKey(), runState.runId)
         InspectionResultsStore.setSnapshot(
@@ -3216,16 +3216,13 @@ class InspectionSnapshotStateTest {
                 projectState = InspectionProjectStateSnapshot(psiModificationCount = 7L, unsavedProjectDocuments = 0),
                 outcome = InspectionSnapshotOutcome.PROBLEMS_FOUND,
                 source = "global_context",
-                captureScope = InspectionCaptureScope(
-                    scopeParam = "files",
-                    resolvedFiles = listOf("/tmp/TestProject/src/App.kt"),
-                ),
+                captureScope = InspectionCaptureScope(scopeParam = "whole_project"),
                 captureDiagnostic = mapOf(
                     "scope_file_semantic_evidence_complete" to true,
-                    "execution_proof_mode" to "exact_bounded",
+                    "execution_proof_mode" to "native_attested",
                     "execution_proof_established" to false,
                     "execution_proof_clean" to false,
-                    "execution_proof_block_reason" to "applicable_missing_batch_wrapper",
+                    "execution_proof_block_reason" to "native_tool_completion_unproven",
                 ),
                 runId = runState.runId,
                 triggerTimeMs = runState.triggerTimeMs,
@@ -3234,12 +3231,27 @@ class InspectionSnapshotStateTest {
 
         val status = buildInspectionStatus()
 
-        assertEquals("RED", status["inspection_verdict"])
+        assertEquals("UNKNOWN", status["inspection_verdict"])
+        assertEquals("execution_not_proven", status["inspection_verdict_reason"])
         @Suppress("UNCHECKED_CAST")
         val proof = status["inspection_proof"] as Map<String, Any?>
         assertEquals("failed", proof["status"])
         assertEquals(false, proof["capture_complete"])
         assertEquals(listOf("execution_not_proven"), status["proof_failures"])
+        val results = jsonResponseValue(getInspectionProblems()) as Map<*, *>
+        assertEquals("UNKNOWN", results["inspection_verdict"])
+        assertEquals("execution_not_proven", results["inspection_verdict_reason"])
+        val wait = jsonResponseValue(waitForInspection(timeoutMs = 20000L)) as Map<*, *>
+        assertEquals("UNKNOWN", wait["inspection_verdict"])
+        assertEquals("execution_not_proven", wait["inspection_verdict_reason"])
+        val problems = results["problems"] as List<*>
+        assertEquals("Unresolved reference", (problems.single() as Map<*, *>)["description"])
+
+        val replacement = beginInspectionRun()
+        val runningStatus = buildInspectionStatus()
+        assertEquals("UNKNOWN", runningStatus["inspection_verdict"])
+        assertEquals("inspection_still_running", runningStatus["inspection_verdict_reason"])
+        finishInspectionRun(snapshotKey(), replacement.runId)
     }
 
     @Test

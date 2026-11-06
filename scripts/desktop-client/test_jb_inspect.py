@@ -11344,7 +11344,6 @@ class HumanOutputTest(unittest.TestCase):
 
     def test_incomplete_clean_proof_does_not_override_plugin_red_verdict(self):
         for proof_failure in (
-            "execution_not_proven",
             jb_inspect.SEMANTIC_COVERAGE_MISSING_REASON,
             jb_inspect.SEMANTIC_COVERAGE_TRUNCATED_REASON,
         ):
@@ -11364,6 +11363,63 @@ class HumanOutputTest(unittest.TestCase):
                 self.assertEqual(verdict["verdict"], "RED")
                 self.assertEqual(verdict["verdict_reason"], "actionable_findings")
 
+    def test_unproven_execution_overrides_findings_verdict_without_losing_findings(self) -> None:
+        for evidence in (
+            {"proof_failures": ["execution_not_proven"]},
+            {"capture_diagnostic": {"execution_proof_established": False}},
+            {"capture_diagnostic": {"execution_proof_skipped": True}},
+            {
+                "proof_failures": ["execution_not_proven"],
+                "inspection_verdict": "UNKNOWN",
+                "inspection_verdict_reason": "execution_not_proven",
+                "inspection_verdict_message": "Coverage could not be established.",
+                "inspection_verdict_next_action": "Use file scope or the full build.",
+            },
+        ):
+            with self.subTest(evidence=evidence):
+                payload: dict[str, Any] = {
+                    "status": "results_available",
+                    "total_problems": 1,
+                    "problems": [{"file": "/tmp/App.kt", "line": 3, "description": "Unresolved reference"}],
+                    "inspection_verdict": "RED",
+                    "inspection_verdict_reason": "actionable_findings",
+                    **evidence,
+                }
+
+                jb_inspect.apply_verdict(payload)
+                compact = jb_inspect.compact_agent_result_payload(payload, 0)
+
+                self.assertEqual(payload["verdict"], "UNKNOWN")
+                self.assertEqual(payload["verdict_reason"], "execution_not_proven")
+                self.assertEqual(compact["findings"][0]["description"], payload["problems"][0]["description"])
+                self.assertFalse(payload["retry_policy"]["retry"])
+                if "inspection_verdict_message" in evidence:
+                    self.assertEqual(payload["verdict_message"], evidence["inspection_verdict_message"])
+                    self.assertEqual(payload["verdict_next_action"], evidence["inspection_verdict_next_action"])
+
+    def test_unproven_execution_preserves_more_specific_failures(self) -> None:
+        for evidence, expected_reason in (
+            ({"proof_failures": ["execution_not_proven", "run_mismatch"]}, "inspection_proof_failed"),
+            ({"total_problems": 0, "problems": [], "proof_failures": ["scope_semantic_coverage_missing", "execution_not_proven"]}, "scope_semantic_coverage_missing"),
+            ({"total_problems": 0, "problems": [], "proof_failures": ["scope_semantic_coverage_truncated", "execution_not_proven"]}, "scope_semantic_coverage_truncated"),
+            ({"cleanup": {"status": "failed"}}, "cleanup_failed"),
+            ({"timed_out": True}, "timeout"),
+            ({"inspection_in_progress": True}, "inspection_still_running"),
+        ):
+            with self.subTest(evidence=evidence):
+                payload: dict[str, Any] = {
+                    "total_problems": 1,
+                    "problems": [{"description": "Retained finding"}],
+                    "capture_diagnostic": {"execution_proof_established": False},
+                    "inspection_verdict": "RED",
+                    **evidence,
+                }
+
+                verdict = jb_inspect.verdict_for_payload(payload)
+
+                self.assertEqual(verdict["verdict"], "UNKNOWN")
+                self.assertEqual(verdict["verdict_reason"], expected_reason)
+
     def test_unexpected_proof_failure_still_overrides_plugin_red_verdict(self):
         payload = {
             "status": "results_available",
@@ -11380,8 +11436,8 @@ class HumanOutputTest(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "UNKNOWN")
         self.assertEqual(verdict["verdict_reason"], "inspection_proof_failed")
 
-    def test_compact_red_result_preserves_incomplete_proof_metadata(self):
-        payload = {
+    def test_compact_unknown_result_preserves_incomplete_proof_metadata(self) -> None:
+        payload: dict[str, Any] = {
             "status": "results_available",
             "clean": False,
             "total_problems": 1,
@@ -11399,6 +11455,7 @@ class HumanOutputTest(unittest.TestCase):
         jb_inspect.apply_verdict(payload)
         compact = jb_inspect.compact_agent_result_payload(payload, 0)
 
+        self.assertEqual(payload["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(payload["agent_result"]["proof_failures"], ["execution_not_proven"])
         self.assertEqual(payload["agent_result"]["inspection_proof"]["capture_complete"], False)
         self.assertEqual(compact["proof_failures"], ["execution_not_proven"])
@@ -11683,7 +11740,7 @@ class HumanOutputTest(unittest.TestCase):
             self.assertEqual(compact["agent_result"][field], diagnostic[field])
             self.assertEqual(multi["lanes"][0][field], diagnostic[field])
 
-    def test_proven_findings_retain_failed_delegation_coverage_and_recovery(self):
+    def test_unproven_findings_retain_failed_delegation_coverage_and_recovery(self) -> None:
         finding = {"file": "/repo/broken.ts", "inspectionType": "Unused", "line": 1, "description": "unused control", "severity": "warning"}
         payload = {
             "scope": "files",
@@ -11708,7 +11765,7 @@ class HumanOutputTest(unittest.TestCase):
         jb_inspect.apply_verdict(payload)
         compact = jb_inspect.compact_agent_result_payload(payload, helper_exit_code=0)
 
-        self.assertEqual(compact["agent_result"]["verdict"], "RED")
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(compact["findings"][0]["description"], finding["description"])
         self.assertEqual(compact["agent_result"]["proof_failures"], payload["proof_failures"])
         self.assertEqual(compact["inspection_proof"]["status"], payload["inspection_proof"]["status"])
@@ -11756,7 +11813,7 @@ class HumanOutputTest(unittest.TestCase):
 
         self.assertEqual(compact["inspection_proof"], native_proof)
         self.assertEqual(compact["agent_result"]["inspection_proof"], native_proof)
-        self.assertEqual(compact["agent_result"]["verdict"], "RED")
+        self.assertEqual(compact["agent_result"]["verdict"], "UNKNOWN")
         self.assertEqual(compact["agent_result"]["proof_failures"], ["execution_not_proven"])
 
     def test_native_scope_enumeration_failure_is_terminal_tool_bug(self):

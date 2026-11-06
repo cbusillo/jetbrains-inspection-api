@@ -193,7 +193,8 @@ class TypeScriptBatchInspectionPrerequisitePlatformTest {
                 return
             }
             if (knownFinding != null) {
-                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("RED")
+                assertThat(response["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
+                assertThat(response["inspection_verdict_reason"]?.jsonPrimitive?.content).isEqualTo("execution_not_proven")
                 assertThat(response["problems"]?.jsonArray?.map { it.jsonObject["inspectionType"]?.jsonPrimitive?.content })
                     .contains(knownFinding.shortName)
             } else {

@@ -456,7 +456,7 @@ class McpServerTest {
     }
 
     @Test
-    fun mcpReportsPluginRedWhenCurrentFindingsCarryABroadExecutionProofGap() {
+    fun mcpReportsPluginUnknownAndKeepsFindingsWhenExecutionProofIsMissing() {
         val response = """
             {
               "status": "results_available", "inspection_run_id": 81,
@@ -464,9 +464,9 @@ class McpServerTest {
               "problems": [{"description": "Native finding"}],
               "proof_failures": ["execution_not_proven"],
               "capture_diagnostic": {"inspection_run_id": 81, "execution_proof_mode": "native", "execution_proof_established": false},
-              "inspection_verdict": "RED",
-              "inspection_verdict_reason": "actionable_findings",
-              "inspection_verdict_message": "Plugin says the findings are current.",
+              "inspection_verdict": "UNKNOWN",
+              "inspection_verdict_reason": "execution_not_proven",
+              "inspection_verdict_message": "Findings are retained; their coverage is unproven.",
               "inspection_verdict_next_action": "Plugin says fix the findings."
             }
         """.trimIndent()
@@ -478,13 +478,30 @@ class McpServerTest {
 
             assertTrue(
                 text.startsWith(
-                    "VERDICT: RED reason=actionable_findings\n" +
-                        "MESSAGE: Plugin says the findings are current.\n" +
+                    "VERDICT: UNKNOWN reason=execution_not_proven\n" +
+                        "MESSAGE: Findings are retained; their coverage is unproven.\n" +
                         "NEXT_ACTION: Plugin says fix the findings.",
                 ),
                 text,
             )
             assertTrue(text.contains("Native finding"), text)
+        }
+    }
+
+    @Test
+    fun mcpWithholdsUnprovenFindingsWhenCaptureIsIncomplete() {
+        val response = """{
+            "inspection_verdict":"UNKNOWN", "inspection_verdict_reason":"execution_not_proven",
+            "total_problems":1, "problems":[{"description":"Untrusted finding"}],
+            "capture_incomplete":true, "capture_incomplete_reason":"execution_not_proven"
+        }"""
+        MockIdeServer(mapOf("/api/inspection/problems" to MockResponse(response))).use { server ->
+            server.start()
+            val executor = ToolExecutor(server.baseUrl, HttpClient.newHttpClient(), server.port.toString())
+
+            val text = executor.handleToolCall(buildToolCall("inspection_get_problems", buildJsonObject { })).firstText()
+
+            assertFalse(text.contains("Untrusted finding"), text)
         }
     }
 
