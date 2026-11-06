@@ -1123,10 +1123,10 @@ Before publishing a compatibility-range update, capture the evidence listed in
 Shortcut:
 
 ```bash
-# Prepare, validate, push, and open the release PR
+# From a clean task worktree at the current remote default-branch commit
 ./scripts/release.sh --patch
 
-# After that PR merges and local main is updated
+# After that PR merges and the task worktree is updated to the remote default
 ./scripts/release.sh tag vX.Y.Z
 ```
 
@@ -1135,9 +1135,9 @@ tag. Use `--no-push` to keep the release branch local. It runs the automated
 IDE test, release compatibility gate and version validation. The full test
 gate runs in CI on the release PR and tag. The release script prompts before
 the inspection-only IDE test unless you pass
-`--yes`; that test does not install the plugin or restart the IDE. Tag mode
-requires a clean local default branch that exactly matches the remote default
-branch and refuses existing or version-mismatched tags.
+`--yes`; that test does not install the plugin or restart the IDE. Both modes
+require a clean worktree whose HEAD exactly matches the remote default
+branch. Tag mode refuses existing or version-mismatched tags.
 
 ## License
 

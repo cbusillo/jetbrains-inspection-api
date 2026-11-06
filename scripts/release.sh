@@ -21,8 +21,8 @@ branch, updates versions, runs release validation, commits, pushes the task
 branch, and opens a pull request. It never commits or pushes directly to the
 protected default branch and never creates a release tag.
 
-tag: after the release pull request is merged, validates that the clean local
-default branch exactly matches the remote default branch and vX.Y.Z matches
+tag: after the release pull request is merged, validates that the clean worktree
+HEAD exactly matches the remote default branch and vX.Y.Z matches
 pluginVersion, then creates and pushes the release tag.
 USAGE
 }
@@ -124,17 +124,12 @@ require_clean_tree() {
   fi
 }
 
-require_synced_default_branch() {
-  local current_branch="$1"
-  local default_branch="$2"
+require_default_branch_head() {
+  local default_branch="$1"
   local remote_default="$REMOTE/$default_branch"
 
-  if [ "$current_branch" != "$default_branch" ]; then
-    echo "ERROR: Run this command from the local $default_branch branch." >&2
-    exit 1
-  fi
   if [ "$(git rev-parse HEAD)" != "$(git rev-parse "$remote_default")" ]; then
-    echo "ERROR: Local $default_branch must exactly match $remote_default." >&2
+    echo "ERROR: Worktree HEAD must exactly match $remote_default." >&2
     exit 1
   fi
 }
@@ -311,12 +306,11 @@ EOF
 }
 
 prepare_release() {
-  local branch current_version new_version release_branch
-  branch=$(git branch --show-current)
+  local current_version new_version release_branch
   require_remote
   require_clean_tree
   git fetch "$REMOTE" "$DEFAULT_BRANCH" --tags
-  require_synced_default_branch "$branch" "$DEFAULT_BRANCH"
+  require_default_branch_head "$DEFAULT_BRANCH"
   if [ "$PUSH" -eq 1 ]; then
     if ! command -v gh >/dev/null 2>&1; then
       echo "ERROR: gh is required to open the release pull request." >&2
@@ -361,17 +355,15 @@ prepare_release() {
 }
 
 tag_release() {
-  local branch
   if [ -z "$TAG" ]; then
     echo "ERROR: tag mode requires vX.Y.Z." >&2
     exit 1
   fi
 
-  branch=$(git branch --show-current)
   require_remote
   require_clean_tree
   git fetch "$REMOTE" "$DEFAULT_BRANCH" --tags
-  require_synced_default_branch "$branch" "$DEFAULT_BRANCH"
+  require_default_branch_head "$DEFAULT_BRANCH"
   ./scripts/validate-release-version.sh --tag "$TAG" >/dev/null
 
   if git show-ref --verify --quiet "refs/tags/$TAG" ||
