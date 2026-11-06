@@ -419,6 +419,26 @@ GH
     git remote add origin "$remote"
     git push -u origin main >/dev/null
     git remote set-head origin main
+    git worktree add -b work/release "$temp_dir/task" origin/main >/dev/null
+    cd "$temp_dir/task"
+
+    touch untracked
+    if ./scripts/release.sh --patch --yes --no-push >/dev/null 2>&1; then
+      fail "prepare accepted a dirty worktree"
+    fi
+    rm untracked
+
+    git -C "$repo" commit --allow-empty -m remote-update >/dev/null
+    git -C "$repo" push origin main >/dev/null
+    if ./scripts/release.sh --patch --yes --no-push >/dev/null 2>&1; then
+      fail "prepare accepted a worktree behind remote main"
+    fi
+    git merge --ff-only origin/main >/dev/null
+    git commit --allow-empty -m unpushed >/dev/null
+    if ./scripts/release.sh --patch --yes --no-push >/dev/null 2>&1; then
+      fail "prepare accepted an unpushed commit"
+    fi
+    git push origin HEAD:main >/dev/null
     GH_LOG="$gh_log" PATH="$fake_bin:$PATH" ./scripts/release.sh --patch --yes >/dev/null
 
     [ "$(git branch --show-current)" = "release/v1.2.4" ] || fail "prepare did not create the release branch"
@@ -428,11 +448,19 @@ GH
     assert_contains "$gh_log" "auth status"
     assert_contains "$gh_log" "pr create --base main --head release/v1.2.4"
 
-    git switch main >/dev/null
-    git merge --ff-only release/v1.2.4 >/dev/null
-    git push origin main >/dev/null
+    if ./scripts/release.sh tag v1.2.4 --no-push >/dev/null 2>&1; then
+      fail "tag accepted an unmerged release"
+    fi
+    git -C "$repo" merge --ff-only release/v1.2.4 >/dev/null
+    git -C "$repo" push origin main >/dev/null
+    if ./scripts/release.sh tag v0.0.0 --no-push >/dev/null 2>&1; then
+      fail "tag accepted a version mismatch"
+    fi
     ./scripts/release.sh tag v1.2.4 --no-push >/dev/null
     [ "$(git rev-list -n 1 v1.2.4)" = "$(git rev-parse HEAD)" ] || fail "tag does not point at merged main"
+    if ./scripts/release.sh tag v1.2.4 --no-push >/dev/null 2>&1; then
+      fail "tag accepted an existing tag"
+    fi
   )
 
   rm -rf "$temp_dir"
