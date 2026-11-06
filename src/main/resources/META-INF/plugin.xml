@@ -25,6 +25,11 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.5</b>
+        <ul>
+            <li>Adds compatibility with JetBrains 2026.3.</li>
+            <li>Includes requested unversioned files and applies staged or unstaged selection before file limits.</li>
+        </ul>
         <b>Version 1.14.4</b>
         <ul>
             <li>Reports UNKNOWN when inspection execution cannot be proved complete, even when findings were captured.</li>
