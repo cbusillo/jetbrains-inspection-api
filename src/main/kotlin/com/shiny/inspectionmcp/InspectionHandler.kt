@@ -9525,6 +9525,9 @@ class InspectionHandler : HttpRequestHandler() {
         val changeFiles = clm.allChanges.mapNotNull { change ->
             change.virtualFile ?: change.afterRevision?.file?.virtualFile ?: change.beforeRevision?.file?.virtualFile
         }.toMutableList()
+        if (includeUnversioned) {
+            changeFiles.addAll(clm.unversionedFilesPaths.mapNotNull { it.virtualFile })
+        }
 
         val mode = changedFilesMode?.lowercase()?.trim()
         if (!mode.isNullOrBlank() && mode != "all") {
@@ -9542,9 +9545,6 @@ class InspectionHandler : HttpRequestHandler() {
                     else -> false
                 }
             }
-        }
-        if (includeUnversioned) {
-            changeFiles.addAll(clm.unversionedFilesPaths.mapNotNull { it.virtualFile })
         }
         val unique = changeFiles
             .distinctBy { file -> normalizeFileSystemPath(file.path) ?: file.path }

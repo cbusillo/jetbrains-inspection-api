@@ -61,7 +61,6 @@ test_stable_artifact_publication() {
   export STABLE_SOURCE_SHA="$source_sha"
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/scripts" "$fake_bin"
-  cp build.gradle.kts "$temp_dir/"
   cp \
     scripts/publish-stable-artifact.sh \
     scripts/validate-stable-artifact.sh \
@@ -86,12 +85,10 @@ from io import BytesIO
 from pathlib import Path
 import sys
 import zipfile
-import re
 import xml.etree.ElementTree as ET
 
-build = Path("build.gradle.kts").read_text()
-since = re.search(r'sinceBuild = "([^\"]+)"', build).group(1)
-until = re.search(r'untilBuild = "([^\"]+)"', build).group(1)
+since, until = "123", "456.*"
+(Path(sys.argv[1]).parent / "build.gradle.kts").write_text(f'sinceBuild = "{since}"\nuntilBuild = "{until}"\n')
 plugin_id = ET.parse("src/main/resources/META-INF/plugin.xml").getroot().findtext("id").strip()
 
 def write_archive(
