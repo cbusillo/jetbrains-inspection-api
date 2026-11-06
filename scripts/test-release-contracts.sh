@@ -61,6 +61,7 @@ test_stable_artifact_publication() {
   export STABLE_SOURCE_SHA="$source_sha"
   trap 'rm -rf "$temp_dir"' RETURN
   mkdir -p "$temp_dir/scripts" "$fake_bin"
+  cp build.gradle.kts "$temp_dir/"
   cp \
     scripts/publish-stable-artifact.sh \
     scripts/validate-stable-artifact.sh \
