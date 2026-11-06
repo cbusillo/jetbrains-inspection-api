@@ -102,8 +102,8 @@ evidence.
 2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout --skip-preparation` on that exact copy
    with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
    `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
-   `--prepare-timeout-ms 300000`. For 2026.2 compatibility evidence, also pass
-   `--ide-version 2026.2`. Use the in-repo desktop client and its normal trusted
+   `--prepare-timeout-ms 300000`. For compatibility evidence, also pass
+   `--ide-version` with the newly supported version. Use the in-repo desktop client and its normal trusted
    project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
    assurance comes from the helper's enforced worktree match. The compact JSON
    does not include the route base path, so retain the exact command to show
@@ -717,9 +717,10 @@ repository inputs in the commit gate.
 The required commit gate owns the 85% coverage thresholds for `inspection-core`
 and `mcp-server-jvm`.
 
-## 2026.2 compatibility release gates
+## Compatibility release gates
 
-Before publishing a compatibility-range change for JetBrains 2026.2, capture
+Before publishing a compatibility-range change, select the newly supported IDE
+version explicitly and capture
 evidence for:
 
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew buildPlugin`
@@ -727,9 +728,9 @@ evidence for:
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=stable`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=full`
 - IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
-  stable 2026.2 selectors and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
+  stable selectors for that version and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
 - [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable
-  2026.2 selector and the supported coding agent used for the release.
+  version selector and the supported coding agent used for the release.
 
 The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
 large-project release smokes should prefer helper closeout JSON and rerun with a
@@ -741,8 +742,8 @@ remains responsive while lifecycle close runs. A `run_changed` response must
 leave the newer run untouched and defer helper-owned project cleanup.
 
 For normal dogfood, use [agent smoke acceptance](#agent-smoke-acceptance)
-against the latest installed stable IDE. Reserve the exact 2026.2 selector for
-compatibility evidence when that version is installed.
+against the latest installed stable IDE. Use an exact `--ide-version` selector for compatibility evidence when that
+version is installed.
 
 ### Normal-IDE traversal lifecycle
 

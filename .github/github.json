@@ -19,7 +19,7 @@
     "fullBuildReleaseHelper": "scripts/agents-release.py",
     "commitGate": "scripts/commit-gate.sh",
     "release": "README.md#releases",
-    "releaseCompatibility": "TESTING.md#20262-compatibility-release-gates",
+    "releaseCompatibility": "TESTING.md#compatibility-release-gates",
     "releaseScript": "scripts/release.sh"
   },
   "qualityGate": {
@@ -114,9 +114,9 @@
       "automatedIde": "./scripts/test-automated.sh",
       "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh",
       "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh",
-      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000",
-      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide \"PyCharm\" --ide-app \"PyCharm\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000",
-      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm\" --ide-channel stable --ide-version 2026.2 --timeout-ms 300000 --prepare-timeout-ms 300000"
+      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000",
+      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide \"PyCharm\" --ide-app \"PyCharm\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000",
+      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000"
     },
     "docsRequiredWhen": [
       "behavior changes",

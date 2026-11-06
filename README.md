@@ -1118,7 +1118,7 @@ PUBLISH_TOKEN="$PUBLISH_TOKEN" ./scripts/publish-stable-artifact.sh \
 ```
 
 Before publishing a compatibility-range update, capture the evidence listed in
-[2026.2 compatibility release gates](TESTING.md#20262-compatibility-release-gates).
+[compatibility release gates](TESTING.md#compatibility-release-gates).
 
 Shortcut:
 
