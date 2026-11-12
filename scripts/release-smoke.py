@@ -175,7 +175,8 @@ def launch_ide(ide_app: Path, work: Path, config: Path, port: int) -> subprocess
     home.mkdir()
     vm_options = work / "ide.vmoptions"
     default_options = (product_info.parent / product["launch"][0]["vmOptionsFilePath"]).read_text()
-    vm_options.write_text(default_options + f"\n-Duser.home={home}\n")
+    # The private home has no recorded data-sharing choice; skip the prompt, which leaves sharing off.
+    vm_options.write_text(default_options + f"\n-Duser.home={home}\n-Djb.consents.confirmation.enabled=false\n")
     variable = product["envVarBaseName"]
     environment = os.environ | {
         "HOME": str(home),
