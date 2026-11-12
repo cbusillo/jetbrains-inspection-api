@@ -129,7 +129,10 @@ def run_case(api: PluginApi, claim: dict, case: Case, timeout_s: int) -> dict:
 
 def close_project(api: PluginApi, claim: dict) -> str:
     keys = ("project_key", "project_instance_id", "session_id", "close_token", "lease_id")
-    response = api.get("lifecycle/close", {key: claim[key] for key in keys})
+    try:
+        response = api.get("lifecycle/close", {key: claim[key] for key in keys})
+    except SmokeError as error:
+        return f"failed: {error}"
     return str(response.get("status"))
 
 
@@ -218,8 +221,7 @@ def smoke(args: argparse.Namespace) -> dict:
         archive.extractall(work / "plugins")
     project = work / "release-smoke"
     shutil.copytree(FIXTURE, project)
-    config = args.ide_config.resolve() if args.ide_config else new_config(work / "config")
-    process = launch_ide(args.ide_app.resolve(), work, config, args.port)
+    process = launch_ide(args.ide_app.resolve(), work, new_config(work / "config"), args.port)
     try:
         report = ask_plugin(PluginApi(args.port, work / "responses.jsonl"), project, args.timeout)
         if os.getpgid(report["plugin"]["pid"]) != process.pid:
@@ -234,10 +236,12 @@ def main() -> int:
     parser.add_argument("--archive", type=Path, required=True, help="Plugin ZIP to install.")
     parser.add_argument("--ide-app", type=Path, required=True, help="IDE .app bundle to run.")
     parser.add_argument("--work-dir", type=Path, required=True, help="New directory for the IDE's private state.")
-    parser.add_argument("--ide-config", type=Path, help="IDE config directory; defaults to a new one in --work-dir.")
     parser.add_argument("--port", type=int, default=65349)
     parser.add_argument("--timeout", type=int, default=600, help="Seconds allowed for startup and each case.")
     args = parser.parse_args()
+    # Termination unwinds through smoke()'s cleanup so the isolated IDE never outlives the driver.
+    for termination in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(termination, lambda number, _frame: sys.exit(128 + number))
     try:
         report = smoke(args)
     except SmokeError as error:

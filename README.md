@@ -1134,8 +1134,7 @@ compatibility gate and version validation. The full test gate runs in CI on the
 release PR and tag. Tag mode builds the Stable and full archives from the exact
 commit and runs the [release smoke](TESTING.md#release-smoke) on each in an
 isolated copy of the given IDE before it creates the tag; a failed smoke leaves
-no tag. Pass `--ide-config` to reuse an existing IDE config directory. Both
-modes require a clean worktree whose HEAD exactly matches the remote default
+no tag. Both modes require a clean worktree whose HEAD exactly matches the remote default
 branch. Tag mode refuses existing or version-mismatched tags.
 
 ## License

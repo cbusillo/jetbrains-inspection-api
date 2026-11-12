@@ -77,9 +77,8 @@ uv run scripts/release-smoke.py --archive build/distributions/jetbrains-inspecti
 
 The work directory must be new. It holds the IDE's private config, system,
 plugins, logs, `user.home`, the fixture copy, and every plugin response in
-`responses.jsonl`. The IDE never reads or writes the normal profile. Pass
-`--ide-config` to reuse an existing config directory, such as one with an
-activated license; by default a new one is created. The driver opens the fixture
+`responses.jsonl`. The IDE never reads or writes the normal profile; it starts
+with a new config, so it runs in the IDE's free tier. The driver opens the fixture
 through the plugin's lifecycle endpoints, closes it, and stops the IDE process
 group. A newly opened project can report `stale_results` while the IDE finishes
 its startup work; the driver reruns that case up to two more times and never
@@ -108,7 +107,7 @@ necessary: public path profiling skips out-of-scope files before recording a
 path and cannot preserve the unexpected-file check. Activity and per-kind
 completion counters are diagnostics only and are no longer collected.
 
-Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates temporary linked checkouts containing only the selected maintained fixture; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
+Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require a disposable IDE project: use the [release smoke](#release-smoke), which copies its fixture into a new work directory. Do not open this repository itself as #296 evidence, because IDE project-model writes can invalidate the snapshot.
 
 Run the focused regression suite:
 

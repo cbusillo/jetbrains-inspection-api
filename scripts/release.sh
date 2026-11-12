@@ -14,8 +14,7 @@ usage() {
 Usage:
   ./scripts/release.sh [prepare] [--major|--minor|--patch]
                        [--no-push] [--remote <name>]
-  ./scripts/release.sh tag vX.Y.Z --ide-app /path/IDE.app [--ide-config DIR]
-                       [--no-push] [--remote <name>]
+  ./scripts/release.sh tag vX.Y.Z --ide-app /path/IDE.app [--no-push] [--remote <name>]
 
 prepare (default): creates release/vX.Y.Z from the current remote default
 branch, updates versions, runs release validation, commits, pushes the task
@@ -26,8 +25,7 @@ tag: after the release pull request is merged, validates that the clean worktree
 HEAD exactly matches the remote default branch and vX.Y.Z matches
 pluginVersion, builds the Stable and full archives, runs scripts/release-smoke.py
 on each in an isolated copy of the given IDE, and only then creates and pushes
-the release tag. --ide-config reuses an existing IDE config directory, such as
-one with an activated license; by default each smoke starts a new one.
+the release tag.
 USAGE
 }
 
@@ -42,7 +40,6 @@ TAG=""
 PUSH=1
 REMOTE="origin"
 IDE_APP=""
-IDE_CONFIG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -68,12 +65,12 @@ while [ $# -gt 0 ]; do
       fi
       REMOTE="$1"
       ;;
-    --ide-app|--ide-config)
+    --ide-app)
       if [ "$MODE" != "tag" ] || [ -z "${2:-}" ]; then
-        echo "ERROR: $1 takes a path and is only valid in tag mode." >&2
+        echo "ERROR: --ide-app takes a path and is only valid in tag mode." >&2
         exit 1
       fi
-      if [ "$1" = "--ide-app" ]; then IDE_APP="$2"; else IDE_CONFIG="$2"; fi
+      IDE_APP="$2"
       shift
       ;;
     -h|--help)
@@ -356,7 +353,7 @@ run_release_smokes() {
     archive="$evidence/$edition.zip"
     cp "build/distributions/jetbrains-inspection-api-$version.zip" "$archive"
     if ! ./scripts/release-smoke.py --archive "$archive" --ide-app "$IDE_APP" \
-      ${IDE_CONFIG:+--ide-config "$IDE_CONFIG"} --work-dir "$evidence/$edition" >"$evidence/$edition.json"; then
+      --work-dir "$evidence/$edition" >"$evidence/$edition.json"; then
       cat "$evidence/$edition.json" >&2
       echo "ERROR: The $edition release smoke failed; no tag was created. Evidence: $evidence" >&2
       exit 1
