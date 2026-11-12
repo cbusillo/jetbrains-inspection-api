@@ -24,7 +24,6 @@ from pathlib import Path
 
 FIXTURE = Path(__file__).resolve().parent.parent / "test-fixtures" / "release-smoke"
 PROFILE = "ReleaseSmoke"
-STALE_RERUNS = 2
 
 
 @dataclass(frozen=True)
@@ -94,22 +93,12 @@ def open_project(api: PluginApi, project: Path, session_id: str, deadline: float
     return poll("the project to open and become ready", deadline, claimed)
 
 
-def inspect(api: PluginApi, route: dict[str, str], case: Case, timeout_s: int) -> dict:
+def run_case(api: PluginApi, claim: dict, case: Case, timeout_s: int) -> dict:
+    route = {"project_key": claim["project_key"], "session_id": claim["session_id"]}
     trigger = api.get("trigger", route | case.scope | {"profile": PROFILE})
     run = route | {"inspection_run_id": trigger["run_id"]}
     api.get("wait", run | {"timeout_ms": str(timeout_s * 1000), "poll_ms": "1000"}, timeout=timeout_s + 30)
-    return api.get("problems", run | case.scope)
-
-
-def run_case(api: PluginApi, claim: dict, case: Case, timeout_s: int) -> dict:
-    route = {"project_key": claim["project_key"], "session_id": claim["session_id"]}
-    # A newly opened project keeps changing while the IDE finishes its startup work. The plugin
-    # reports that as stale_results and asks for a rerun; a stale result is never an answer.
-    attempt = 1
-    problems = inspect(api, route, case, timeout_s)
-    while problems.get("inspection_verdict_reason") == "stale_results" and attempt <= STALE_RERUNS:
-        attempt += 1
-        problems = inspect(api, route, case, timeout_s)
+    problems = api.get("problems", run | case.scope)
     verdict = problems.get("inspection_verdict")
     findings = int(problems.get("total_problems") or 0)
     reason = problems.get("inspection_verdict_reason")
@@ -125,7 +114,6 @@ def run_case(api: PluginApi, claim: dict, case: Case, timeout_s: int) -> dict:
         "verdict": verdict,
         "reason": reason,
         "findings": findings,
-        "attempts": attempt,
     }
 
 

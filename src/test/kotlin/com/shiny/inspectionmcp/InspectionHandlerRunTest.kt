@@ -1099,11 +1099,34 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         dumb: Boolean = false,
         psiModificationCount: Long = 10L,
         projectFileEventCount: Long = 0L,
+        startupActivitiesPassed: Boolean = true,
     ) = ProjectQuiescenceObservation(
         dumb = dumb,
         projectState = InspectionProjectStateSnapshot(psiModificationCount, unsavedProjectDocuments = 0),
         projectFileEventCount = projectFileEventCount,
+        startupActivitiesPassed = startupActivitiesPassed,
     )
+
+    @Test
+    fun `test project quiescence waits a full stable window after background startup is reached`() {
+        var clock = 0L
+        val observations = ArrayDeque(List(4) { quiescenceObservation(startupActivitiesPassed = false) })
+
+        val evidence = awaitProjectQuiescence(
+            now = { clock },
+            sleep = { millis -> clock += millis },
+            observe = { observations.removeFirstOrNull() ?: quiescenceObservation() },
+            checkCanceled = {},
+            stableMs = 300,
+            timeoutMs = 5_000,
+            pollMs = 100,
+        )
+
+        assertFalse(evidence.timedOut)
+        assertEquals(600, evidence.waitedMs)
+        assertTrue(evidence.startupActivitiesPendingObserved)
+        assertFalse(evidence.dumbModeObserved)
+    }
 
     @Test
     fun `test project quiescence returns after one stable window when project is already quiet`() {

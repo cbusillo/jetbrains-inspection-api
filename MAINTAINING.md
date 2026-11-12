@@ -19,9 +19,9 @@ GitHub releases to go back.
 
 - **Stale first attempts:** in an authorized tracing build, temporarily record
   stack traces from `PsiModificationTracker.TOPIC` and `VFS_CHANGES` paths after
-  input capture, then run the [release smoke](TESTING.md#release-smoke). Its
-  report gives each case's `attempts`, and `responses.jsonl` keeps every plugin
-  response. Trace paths and stack samples need private review before
+  input capture, then run the [release smoke](TESTING.md#release-smoke), whose
+  `responses.jsonl` keeps every plugin response. The idea log's `Project
+  quiescence before inspection` line shows what the gate waited for. Trace paths and stack samples need private review before
   publication. Observation is evidence, not proof of the writing process.
 - **Test removals:** plant the fault a candidate test claims to catch in an
   isolated task worktree based on current `main`, then confirm a behavioral
