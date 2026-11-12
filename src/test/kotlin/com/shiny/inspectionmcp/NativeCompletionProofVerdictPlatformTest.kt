@@ -43,6 +43,7 @@ import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.QueryStringDecoder
 import org.assertj.core.api.Assertions.assertThat
 import org.assertj.core.api.Assertions.assertThatThrownBy
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.net.URLEncoder
@@ -51,6 +52,11 @@ import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicInteger
 
 class NativeCompletionProofVerdictPlatformTest {
+    @BeforeEach
+    fun markProjectStarted() {
+        markBackgroundStartupReached(projectExtension.project)
+    }
+
     @Test
     fun `directory run with a C family file and an enabled batch annotator is not clean`() {
         val project = projectExtension.project

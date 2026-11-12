@@ -46,7 +46,10 @@ jobs:
         uses: reviewdog/action-actionlint@a8ac3eea598697a830f7d8e701fc9fcbfde88974 # v1
         with:
           fail_level: error
-          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-annotations' || 'github-check' }}
+          # Push runs, including merge-train candidates, report in the log; posting a check run failed there with HTTP 404.
+          reporter: ${{ github.event_name == 'pull_request' && 'github-pr-annotations' || 'local' }}
+          # A push run has no diff to filter against; the local reporter needs every result.
+          filter_mode: ${{ github.event_name == 'pull_request' && 'added' || 'nofilter' }}
 
       - name: Lint shell scripts
         run: shellcheck --severity=warning scripts/*.sh
