@@ -48,6 +48,8 @@ jobs:
           fail_level: error
           # Push runs, including merge-train candidates, report in the log; posting a check run failed there with HTTP 404.
           reporter: ${{ github.event_name == 'pull_request' && 'github-pr-annotations' || 'local' }}
+          # A push run has no diff to filter against; the local reporter needs every result.
+          filter_mode: ${{ github.event_name == 'pull_request' && 'added' || 'nofilter' }}
 
       - name: Lint shell scripts
         run: shellcheck --severity=warning scripts/*.sh
