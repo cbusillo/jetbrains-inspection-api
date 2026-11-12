@@ -129,6 +129,7 @@ internal class InspectionHandlerRunTest : InspectionHandlerTestSupport() {
         mockkStatic(DumbService::class)
         val dumbService = mockk<DumbService>()
         every { DumbService.getInstance(mockProject) } returns dumbService
+        markBackgroundStartupReached(mockProject)
         every { dumbService.isDumb } returns false
 
         val inputFingerprint = projectInputsFingerprint(profileName = "TestProfile")

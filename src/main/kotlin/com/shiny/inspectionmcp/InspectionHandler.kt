@@ -32,7 +32,6 @@ import com.intellij.openapi.util.JDOMUtil
 import com.intellij.openapi.util.Computable
 import com.intellij.openapi.roots.ProjectFileIndex
 import com.intellij.openapi.roots.ProjectRootManager
-import com.intellij.openapi.startup.StartupManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.ProjectManager
 import com.intellij.openapi.projectRoots.ProjectJdkTable
@@ -8449,8 +8448,7 @@ class InspectionHandler : HttpRequestHandler() {
                         dumb = DumbService.getInstance(project).isDumb,
                         projectState = captureProjectState(project),
                         projectFileEventCount = projectFileEventCount.get(),
-                        startupActivitiesPassed = StartupManager.getInstance(project).postStartupActivityPassed() &&
-                            backgroundStartupReached(project),
+                        startupActivitiesPassed = backgroundStartupReached(project),
                     )
                 },
                 checkCanceled = { checkInspectionRunCancellation(key, runId) },
