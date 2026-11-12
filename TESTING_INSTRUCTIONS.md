@@ -59,38 +59,11 @@ Expected behavior:
   `max_files` values unless the caller explicitly supplies another scope.
 - Duplicate project names produce an ambiguity response with paths/project keys.
 
-## Helper lifecycle smoke
+## Release smoke
 
-Use this when validating worktree readiness inspection behavior from the
-external helper.
-Follow the shared [task worktree procedure](https://github.com/cbusillo/codex-skills/blob/main/skills/github/references/worktrees.md).
-Retain the project/worktree if cleanup is unresolved; do not delete it while the IDE
-still owns it.
-
-1. Pick a repo worktree that is not currently open in the target IDE.
-2. Run `scripts/desktop-client/jb-inspect.py inspect-closeout --repo <worktree> --scope changed_files`; add `--skip-preparation` when testing this repository's worktree.
-3. Confirm the helper reports an exact route with `opened_by_helper=true` and a
-   cleanup status of `closed` after inspection.
-4. Confirm no Trust Project, Safe Mode, or Open Project mode prompt appears; the
-   external helper should seed JetBrains Trusted Locations and project-opening
-   policy before lifecycle auto-open.
-5. If the helper times out waiting for auto-open, treat it as a blocker. Inspect
-   the helper diagnostics for unsupported IDE config layout, settings sync
-   overwriting the config, or a missing inspection plugin.
-6. If debugging a product-specific failure, call `/api/inspection/lifecycle/open`
-   directly and confirm the endpoint returns `status=opening` quickly; the
-   helper polling loop must then prove the project appears in `/route`.
-7. Open the same worktree manually in the IDE and rerun `inspect-closeout`.
-8. Confirm cleanup reports `not_needed` and the manually opened project remains
-   open.
-9. For linked worktrees, confirm the route `base_path` exactly equals the linked
-   worktree, not the main checkout.
-
-## Red lane live smoke
-
-Use [Red lane dogfood](TESTING.md#red-lane-dogfood) when changing verdict
-classification, extraction, or helper readiness inspection behavior and you need
-to prove a real IDE finding reaches agents as `RED`.
+Use the [release smoke](TESTING.md#release-smoke) when changing verdict
+classification, extraction, or lifecycle behavior and you need to prove a real
+IDE returns GREEN, RED and UNKNOWN for the fixture.
 
 ## Fast-path scopes (manual)
 

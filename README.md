@@ -231,7 +231,7 @@ Typical response (truncated):
 ```
 
 Notes:
-- Missing execution proof makes the overall HTTP, MCP, and desktop-client verdict `UNKNOWN` in both builds. When missing execution proof is the blocking reason, `inspection_verdict_reason` is `execution_not_proven`; existing run, freshness, and empty-scope semantic-coverage failures keep their precedence. Current findings remain in `problems` (and the desktop client's `findings`), with unchanged counts and pagination; their coverage is unproven. `inspection_proof.status: "failed"`, `capture_complete: false`, and `proof_failures` retain the proof failure. RED / `actionable_findings` requires execution proof as well as current findings. A terminal no-retry result applies to this run; request a fresh inspection after resolving its reported prerequisite.
+- Missing execution proof makes the overall HTTP and MCP verdict `UNKNOWN` in both builds. When missing execution proof is the blocking reason, `inspection_verdict_reason` is `execution_not_proven`; existing run, freshness, and empty-scope semantic-coverage failures keep their precedence. Current findings remain in `problems`, with unchanged counts and pagination; their coverage is unproven. `inspection_proof.status: "failed"`, `capture_complete: false`, and `proof_failures` retain the proof failure. RED / `actionable_findings` requires execution proof as well as current findings. A terminal no-retry result applies to this run; request a fresh inspection after resolving its reported prerequisite.
 - `locationKnown=false` means the IDE did not provide a stable file/line (often stale results). Use `locationNote` and re-run inspection.
 - `status: "no_results"` uses the same pagination, filters, `total_problems`, `problems_shown`, and `problems` fields as result responses, with an empty problems list. Without a run-attributed snapshot, `/problems` does not promote a live tool-window scrape to current evidence; the verdict remains `UNKNOWN` even if a generic Problems/Inspection tree contains findings.
 - `GREEN` and `RED` cover run-attributed classic inspection-profile results and enabled local inspection tools that the IDE exposes for batch execution. They do not include every editor or Problems-view diagnostic source. LSP-backed or daemon-only diagnostics, such as PyCharm Ruff diagnostics, may appear in the editor or Problems view without being part of the API verdict unless the IDE also exposes those checks as batch-capable inspections.
@@ -892,9 +892,7 @@ companion `inspection_verdict_reason`, `inspection_verdict_message`, and
 worked and found no actionable findings for the selected scope/filter, `RED`
 when inspection worked and returned actionable current findings, and `UNKNOWN`
 when the IDE/plugin/helper did not produce a trustworthy result. `UNKNOWN` is
-not clean and not red; report the included reason and next action. The in-repo
-desktop client (`scripts/desktop-client/jb-inspect.py`) may wrap these fields in its own compact `agent_result`
-envelope for agent workflows.
+not clean and not red; report the included reason and next action.
 
 ### Freshness Notes
 - The plugin saves documents and refreshes external file changes before starting a new inspection run. For `files`, `changed_files`, and `current_file`, it also compares scoped PSI text with decoded disk contents before execution and publication. A mismatch (including a timestamp-preserving external edit the VFS has not detected), unavailable scoped file/PSI, or disk-read failure returns `UNKNOWN` with `capture_incomplete_reason: "inspection_inputs_changed"` and a diagnostic `exit_reason` (`disk_psi_content_mismatch`, `scoped_file_unavailable`, `scoped_psi_unavailable`, or `scoped_disk_read_failed`); findings are withheld. Disk decoding uses replacement characters like the IDE, so malformed bytes alone do not block a matching PSI result. Structured next-action guidance names the recovery: resolve unavailable files, save intended editor changes, and synchronize through Reload from Disk in the exact IDE project, or rewrite with an updated modification time, then request a new inspection. The guard checks run cancellation between scoped reads and checks VFS/PSI validity under the PSI read lock; invalidation withholds findings under the same reason. This content check does not extend to `directory` or `whole_project`.
@@ -1127,16 +1125,16 @@ Shortcut:
 ./scripts/release.sh --patch
 
 # After that PR merges and the task worktree is updated to the remote default
-./scripts/release.sh tag vX.Y.Z
+./scripts/release.sh tag vX.Y.Z --ide-app /path/to/PyCharm.app
 ```
 
 Prepare mode never commits or pushes directly to `main` and never creates a
-tag. Use `--no-push` to keep the release branch local. It runs the automated
-IDE test, release compatibility gate and version validation. The full test
-gate runs in CI on the release PR and tag. The release script prompts before
-the inspection-only IDE test unless you pass
-`--yes`; that test does not install the plugin or restart the IDE. Both modes
-require a clean worktree whose HEAD exactly matches the remote default
+tag. Use `--no-push` to keep the release branch local. It runs the release
+compatibility gate and version validation. The full test gate runs in CI on the
+release PR and tag. Tag mode builds the Stable and full archives from the exact
+commit and runs the [release smoke](TESTING.md#release-smoke) on each in an
+isolated copy of the given IDE before it creates the tag; a failed smoke leaves
+no tag. Both modes require a clean worktree whose HEAD exactly matches the remote default
 branch. Tag mode refuses existing or version-mismatched tags.
 
 ## License

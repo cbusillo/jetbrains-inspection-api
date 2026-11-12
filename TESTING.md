@@ -53,411 +53,41 @@ cancellation. They do not change the installed IDE's SDK table or establish
 installed-runtime acceptance. The normal development runtime has no Python
 plugin, so this separate task requires the explicit PyCharm path.
 
-## Automated IDE smoke test
+## Release smoke
 
-`./scripts/test-automated.sh` runs the maintained helper against the configured
-local test project. It does not build, install or restart by default. For an
-explicitly authorized installation, see the exact-archive `--install` command in
-[Local plugin rollout](MAINTAINING.md#local-plugin-rollout).
+`scripts/release-smoke.py` installs one plugin archive into an isolated copy of
+a real IDE and asks the plugin for three verdicts on
+`test-fixtures/release-smoke`. The driver decides nothing itself; it compares
+the plugin's `inspection_verdict` with a fixed expectation:
 
-- Configure your machine in `AGENTS.local.md` (copy from `AGENTS.local.template.md`).
-- Pass explicit helper selectors such as `--scope files --file src/example.py` for
-  a bounded source-file assessment. With no selectors, the helper owns scope and
-  route resolution. Installed version and exact build provenance are verified
-  separately through the maintainer rollout acceptance procedure.
+| Case | Scope | Expected |
+| --- | --- | --- |
+| `clean` | `files` `src/clean.json` | GREEN, no findings |
+| `finding` | `files` `src/finding.json` | RED, duplicate-key findings |
+| `unproven` | `directory` `src` | UNKNOWN / `execution_not_proven` |
 
-### Installed-plugin smoke expectation
-
-When verifying an installed plugin in a live IDE:
-- **MCP Setup Discovery**: Confirm `Tools` → `Copy MCP Setup` locates `jetbrains-inspection-mcp.jar` via layered discovery (`CODE_SOURCE` → `CLASS_RESOURCE` → `PATH_MANAGER_CLASS` → `PLUGIN_ROOT_SCAN`).
-- **Redacted Failure Reporting**: On resolution failure, verify that dialogs and IDE logs report redacted strategy attempt outcomes with user home directory paths replaced by `~`.
-- **Workflow Support**: Confirm agent workflows operate via the preferred `codex-skills` `jetbrains-inspection` helper while MCP server tools remain fully supported.
-
-### IDE selection and lifecycle troubleshooting
-
-Product selectors such as `IntelliJ IDEA`, `PyCharm`, and `WebStorm` target the
-latest installed stable IDE. Use an EAP only when the test explicitly requires
-`--ide-channel eap`; discovering an EAP installation does not make it the target.
-Use exact version and app selectors for compatibility evidence.
-
-If auto-open reports `ide_selection_required`, `ide_config_ambiguous`, or
-`ide_config_missing`, check the repository's IDE metadata or pass an exact IDE
-selector for the run. Before changing plugin code for an auto-open failure,
-check trusted roots, pending project-opening prompts, IDE config layout,
-settings sync, and the installed inspection plugin. Follow the external
-`jetbrains-inspection` skill's lifecycle guidance when changing durable setup.
-
-### Agent smoke acceptance
-
-Run this check from the supported coding agent used for the release, using the
-external `jetbrains-inspection` helper. Retain the request, exact helper command,
-complete helper JSON, and the agent's final interpretation with the release
-evidence.
-
-1. Copy `test-fixtures/inspection-red-lane` into a disposable project under the
-   host's permitted artifact root and the helper's trusted auto-open policy.
-   For an owned test copy outside the configured trusted roots, set
-   `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to that exact copy for the
-   command. Leave the original fixture unchanged.
-2. Ask the agent to run `scripts/desktop-client/jb-inspect.py --json inspect-closeout --skip-preparation` on that exact copy
-   with `--scope whole_project --profile RedLane --ide "IntelliJ IDEA"`
-   `--ide-app "IntelliJ IDEA" --ide-channel stable --timeout-ms 300000`
-   `--prepare-timeout-ms 300000`. For compatibility evidence, also pass
-   `--ide-version` with the newly supported version. Use the in-repo desktop
-   client and its normal trusted
-   project/lifecycle flow. Do not pass `--no-worktree-check`: the exact-route
-   assurance comes from the helper's enforced worktree match. The compact JSON
-   does not include the route base path, so retain the exact command to show
-   which path was checked and that the check was enabled.
-3. Require the agent to identify the IDE and version, report `RED` with a
-   positive finding count, confirm the exact copied-project route, and report
-   owned-project cleanup as `closed`. A zero finding count, `GREEN`, `UNKNOWN`,
-   mismatched route, or unresolved cleanup does not satisfy this check.
-4. Retain the evidence before removing the disposable copy, and confirm the
-   source fixture and preexisting IDE projects were left unchanged.
-
-## Agent inspection helper
-
-Maintenance Python scripts use the root PyCharm lane with structured Python
-preparation inside the native worker's private snapshot. Dependency metadata
-comes from `scripts/install-local-plugin.py`; extend that PEP 723 input set if
-the scripts' dependencies change. Kotlin/Java uses a separate root IntelliJ
-lane, which imports Gradle and ignores Python preparation. Neither route
-changes the source worktree's Java/Gradle bindings or creates a source-worktree
-Python environment. Inspect each product's files in a separate assessment;
-preparation alone does not prove a decisive inspection.
-The root `.venv` ignore is required inside that snapshot as well.
-
-Agents inspect code through the catalog `jetbrains-inspection` skill's isolated
-native workers, which never call this plugin. This plugin's own smokes use
-`scripts/desktop-client/jb-inspect.py`, the catalog helper's desktop client as
-it stood before that route was retired
-([codex-skills#2804](https://github.com/cbusillo/codex-skills/issues/2804)).
-Its unit tests live beside it.
-The smoke entrypoints pass `--skip-preparation` for this checkout's projects;
-the matrix and default smoke still prepare projects from other repositories.
-When calling the desktop client directly on this repository, pass that option
-too; its preparation is for native snapshots and must not replace the tracked
-IDE model. Legacy nested environment ignores remain for prepared older checkouts.
-Preexisting matrix cases use `--no-open`; a missing project returns without
-sending an open request, while other lifecycle calls still open by default.
-
-### Project-retention reproduction
-
-`scripts/reproduce-ide-retention.py` runs distinct XML file inspections through
-the maintained helper and collects full-GC class histograms after each close.
-It requires an already running disposable IDE whose config, system, plugins,
-and logs live in `config/`, `system/`, `plugins/`, and `logs/` under one private
-instance root. It verifies those JVM paths and the plugin's PID before acting;
-the normal installed IDE is refused. Use a private helper cache and a pinned
-port outside the helper's default discovery range, so ordinary discovery does
-not select the experiment. The maintained helper must support `--no-ide-launch`
-(codex-skills#1725); the runner refuses an older helper before opening projects.
-
-Launch the disposable IDE with a separate VM-options file, selected only for
-that child process through the product's VM-options environment variable. Keep
-the original options and append the four `-Didea.*.path` overrides, a bounded
-heap, and a private heap-dump path. Extract the exact candidate plugin archive
-into that instance's `plugins/`. Never edit the owner's VM-options file or copy
-their credentials into the disposable configuration. Verify the actual bound
-port from the disposable log before measuring. Set
-`JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry"` in the
-IDE child environment as well as the helper environment. Configure the private
-built-in server's primary port with `-Drpc.port=<private-port>` in the child
-VM options, then check it is outside the selected helper's
-`DEFAULT_PORT_RANGE`. Open a harmless startup project inside the instance root.
-Changing the web-server setting alone creates a secondary listener and leaves
-the primary discovery port active; it does not isolate the inspection API.
-The runner verifies live registry metadata, refuses foreign open projects, and
-checks its counted plugin classes against the installed jars and live build
-fingerprint. It sets the helper's private config override as well as its cache
-and registry paths, and disables application launch fallback.
-Each measurement records SHA-256 digests of the exact installed jar bytes
-checked at batch start. Dirty builds remain usable for experiments; their commit
-fingerprint alone cannot distinguish different uncommitted builds. Match the
-recorded digests to the candidate artifacts when attributing a comparison.
+Stable cannot prove a broad scope, and the full build withholds proof because
+ShellCheck is enabled for `src/check.sh` (`native_batch_annotator_unproven`).
+The full build keeps the directory's findings with that UNKNOWN.
 
 ```bash
-uv run scripts/reproduce-ide-retention.py \
-  --instance-root "$DISPOSABLE_INSTANCE_ROOT" --pid "$DISPOSABLE_IDE_PID" \
-  --port "$DISPOSABLE_IDE_PORT" --jcmd "$IDE_JAVA_HOME/bin/jcmd" \
-  --ide "$DISPOSABLE_IDE_NAME" \
-  --helper "$HELPER" --output "$DISPOSABLE_INSTANCE_ROOT/measurements" \
-  --cycles 20
+uv run scripts/release-smoke.py --archive build/distributions/jetbrains-inspection-api-X.Y.Z.zip \
+  --ide-app /path/to/PyCharm.app --work-dir /new/evidence/directory
 ```
 
-The output directory must be new. Each cycle must finish with a native GREEN
-or RED verdict and verified disposal; UNKNOWN or unresolved cleanup stops the
-batch and preserves its evidence.
+The work directory must be new. It holds the IDE's private config, system,
+plugins, logs, `user.home`, the fixture copy, and every plugin response in
+`responses.jsonl`. The IDE never reads or writes the normal profile; it starts
+with a new config, so it runs in the IDE's free tier. The driver opens the fixture
+through the plugin's lifecycle endpoints, closes it, and stops the IDE process
+group. A newly opened project can report `stale_results` while the IDE finishes
+its startup work; the driver reruns that case up to two more times and never
+accepts a stale result. It prints a JSON report and exits non-zero unless every
+case matches.
 
-The runner requires POSIX process-group support (macOS or Linux). A helper
-timeout stops its own launcher and Python process group, preserving partial
-stdout/stderr and its lease evidence for supported cleanup after IDE activity
-settles. The initial full-GC histogram must contain the open startup project;
-a missing platform class cannot silently qualify zero project retention.
-
-For a retained timeout lease, use its exact UUID and the same private cache and
-registry. Preview with:
-
-```bash
-JETBRAINS_INSPECTION_CACHE_DIR="$DISPOSABLE_INSTANCE_ROOT/helper-cache" \
-JETBRAINS_INSPECTION_REGISTRY_DIR="$DISPOSABLE_INSTANCE_ROOT/registry" \
-  uv run "$HELPER" --json cleanup-helper-leases --lease-id "$LEASE_ID" --dry-run
-```
-
-After the exact route is verified and IDE activity has settled, replace
-`--dry-run` with `--no-dry-run` for supported lease-bound cleanup. Keep unresolved
-ownership or session evidence; never edit a lease or close a project by path.
-
-Compare retained project, native context,
-progress-window, snapshot, and qualification counts before and after the batch.
-Histograms describe shallow object bytes and counts, not dominator sizes.
-Use a private heap dump for retaining-root analysis. XML exercises the common
-native inspection and lifecycle path; it does not qualify Python SDK churn or
-a representative Odoo workload.
-
-For an exhausted shared IDE, stop submitting inspections. The existing memory
-diagnostic remains sticky for that IDE session, even if a GC releases space.
-Use the coordinated, quiescent normal-quit procedure in
-[MAINTAINING.md](MAINTAINING.md#local-plugin-rollout) within the task's restart
-authority, then verify the new session identity before inspecting again. Never
-clear an OOM diagnostic to manufacture a clean result. This reproducer neither
-restarts an IDE nor changes an installed plugin; use the maintainer procedure
-for source-to-runtime recovery.
-
-### Running the helper
-
-Run the in-repo desktop client when validating the plugin's HTTP behavior:
-
-```bash
-HELPER="scripts/desktop-client/jb-inspect.py"
-uv run "$HELPER" inspect-closeout \
-  --skip-preparation \
-  --repo "$PWD" \
-  --scope changed_files
-```
-
-It serializes helper-owned IDE opens, require an exact
-current-worktree route, run inspection, and call the plugin lifecycle close
-endpoint only for projects opened by the helper. Projects that were open before
-the helper started are left open. On macOS, lifecycle opens use `open -g` by
-default so the IDE should not take focus while readiness inspection is preparing
-a worktree. Auto-open requires a global trusted-root policy in
-`${XDG_CONFIG_HOME:-$HOME/.config}/jetbrains-inspection/config.json`; test
-worktrees should be created under those roots, not random temp directories.
-Lifecycle cleanup closes an exact helper-owned lease without saving IDE project
-settings. It refuses cleanup and retains the lease when an unsaved document is
-associated with the worktree or any project content root, when document
-association is unknown, or when the guard cannot complete. Tests must cover
-external roots, lexical symlink paths, unrelated local documents, guard errors,
-and repeated no-save attempts.
-The IDE may still persist project settings through autosave before lifecycle
-cleanup. No-save close removes the helper's forced close-time save but does not
-guarantee a clean worktree; mutation detection remains fail-closed. Coverage
-must also exercise non-EDT dispatch failures and recovery with the same claim
-after the blocking document is saved. Missing roots with unsaved documents are
-an intentional conservative refusal until ownership can be established or the
-project is closed manually.
-
-Before it starts lifecycle auto-open, the helper adds the matching trusted root
-to the selected JetBrains product's Trusted Locations and sets project opening
-to the separate-window mode. If auto-open stalls, treat it as a blocker: check
-for an unsupported IDE config layout, settings sync overwriting the config, or a
-missing inspection plugin. The
-plugin-side lifecycle open endpoint schedules project opening asynchronously and
-prepares a directory-based project store before using the noninteractive public
-project-open path for directory inputs. Explicit `.ipr` inputs outside `.idea`
-preserve the requested file-based project path and use its containing directory
-for trust, routing, readiness, and lifecycle ownership. Files under `.idea`
-always open the containing project root regardless of filename extension. This
-avoids the IDE's Open/Attach/New Window prompt while
-using the worktree directory name as the frame project name, running project
-configurators, and refreshing the VFS so cloned worktrees
-with identical checked-in `.idea` metadata can coexist in IntelliJ IDEA,
-PyCharm, and WebStorm. Current builds advertise the `lease_bound_v1` ownership
-protocol: the helper persists a lease before open, passes that `lease_id`, and
-accepts cleanup authority only from a later claim with
-`ownership_proven=true`. Scheduling, path/session matching, or a close-token
-field without that proof is not sufficient to close a project. Regression tests
-must cover a user project appearing between open acceptance and IDE-thread
-execution, and must prove that such a project receives no close token.
-Helper-owned routes expose `lifecycle_readiness`; readiness requires a content
-root covering the requested worktree after project configuration stabilizes.
-Lifecycle readiness is structural and must not synthesize a whole-project
-language scope. The inspection preflight evaluates the resolved requested scope:
-non-Python `files` and `changed_files` scopes report `python_not_in_scope`, while
-selected Python requires language support and a resolved Python SDK with no
-scheduled SDK refresh or unsettled analysis. Missing support or SDK assignment
-reports `language_sdk_missing`; SDK refresh, analysis, unreadable update state,
-or unavailable exact-scope resolution reports `project_analysis_not_ready`.
-Neither state may start inspection or publish decisive GREEN or RED findings.
-When the selected Python scope has an executable project-root `.venv`, that
-interpreter must be the effective SDK for every selected Python file; unrelated
-or mixed Python SDK assignments remain unready. The normalized worktree-local
-interpreter path is authoritative: the global target of a `.venv/bin/python`
-symlink is not accepted as the local SDK. Each observation captures scope
-resolution, global SDK registration, per-file module/project assignment, and
-update state in one IDE read action. Inspection preflight uses an initial
-ten-second observation window before taking the stable input fingerprint.
-Forward progress can extend the observation-start deadline to at most thirty
-seconds from settle start. No new observation starts at or after that deadline;
-an IDE read that began earlier may finish afterward, but its late result is
-discarded. Once settling is needed, two consecutive ready observations are
-required. Missing or invalid interpreter candidates skip the wait; a candidate
-that never registers remains terminal `language_sdk_missing`, while
-registered-but-unassigned, mismatched, mixed, or updating SDKs remain
-`project_analysis_not_ready`. Timeout diagnostics expose separate registration,
-distinct-SDK, per-file assignment, mismatch, and bounded `python_sdk_settle_*`
-evidence without modifying JetBrains' global SDK table.
-If configurators remove the initial raw-directory module, the plugin repairs
-the exact lease-bound helper-owned project with a non-persistent fallback module
-and reports `fallback_module_count`; the fallback must not create tracked
-project files or alter a preexisting, coalesced, or outside-root project.
-If neither the project model nor that bounded repair establishes coverage,
-preparation must fail with
-`project_content_roots_missing` and close the helper-owned project before any
-inspection trigger. A project model that becomes ready but misses the required
-stabilization window must remain unresolved as `project_configuration_unstable`
-rather than becoming ready on the next lifecycle poll.
-Imported multi-module projects may retain unrelated sibling content roots when
-a normal non-fallback module covers the requested worktree. Regression coverage
-must also prove that fallback-only target coverage plus an unrelated root stays
-blocked as `content_roots_outside_target`.
-
-The helper treats `capture_incomplete`, stale results, timeouts, indexing,
-session drift, route ambiguity, wrong-worktree routes, and cleanup failures as
-non-clean outcomes. Cached stale findings are returned only when the helper is
-run with `--include-stale` for explicit diagnostics. `capture_incomplete`
-responses expose `capture_incomplete_reason` plus `capture_diagnostic`; use the
-reason bucket for triage and keep the diagnostic payload for helper debugging.
-Agent-facing reports from plugin endpoint responses should use
-`inspection_verdict`, `inspection_verdict_reason`, `inspection_verdict_message`,
-and `inspection_verdict_next_action`. `GREEN` means the inspection worked and
-found no actionable findings for the selected scope/filter, `RED` means the
-inspection worked and returned actionable findings, and `UNKNOWN` means the
-tooling did not prove either state. The in-repo desktop client may wrap
-these fields in its own compact `agent_result` envelope with retry policy for
-agent workflows.
-Snapshot-less `/problems` calls return `no_results`/`UNKNOWN` rather than using a
-live tool-window scrape as current evidence. Targeted clean captures may bound
-detail rows at 25 files, but they must evaluate every resolved file and expose
-the complete aggregate `scope_file_semantic_coverage` proof. Only missing
-aggregate proof returns `capture_incomplete`/`scope_not_covered`; semantic gaps
-beyond the detail limit remain visible through bounded examples and counts and
-return `UNKNOWN`/`scope_semantic_coverage_missing` by default. HTTP and MCP stay
-fail-closed; only the external helper's explicit `--allow-text-only-coverage`
-option can accept generic text coverage. Recognized dependency lockfiles count
-as metadata only when the plugin reports both `is_excluded=true` and the
-`excluded_dependency_lockfile` role; basename-only or wildcard lockfile
-exemptions are not allowed.
-Once a settled clean snapshot has only a semantic-coverage gap, `/wait` must
-complete with that semantic reason instead of consuming the full timeout. This
-keeps default behavior fail-closed while allowing the helper's explicit
-text-only override to make a decisive result.
-Input changes during final publication return retryable
-`inspection_inputs_changed` instead of unattributed `unknown`. MCP trigger flows
-pin the accepted inspection run through wait/problems and reuse the trigger's
-scope-defining parameters unless the caller explicitly supplies a new scope.
-Foreign 409 runs and terminal responses without run identity remain `UNKNOWN`.
-Finding-bearing snapshots preserve detail bounds and aggregate proof, so
-filtering their findings to zero remains `UNKNOWN` only when complete semantic
-coverage was not proven.
-Use `uv run "$HELPER" summarize-outcomes` to view a helper-side rollup of
-`outcomes.jsonl` by verdict, bucket, retry, IDE channel, and cleanup status
-without running another inspection.
-For the #209 operational denominator, point `JB_INSPECT_DEPLOYMENT_MANIFEST` at
-the immutable manifest for the installed plugin/helper pair and run
-`uv run "$HELPER" summarize-outcomes --qualification-file <qualification.json>
---sample-size 50`. Qualification schema v1 records an ISO-8601 boundary,
-optional boundary event ID, exact helper revision, exact plugin fingerprint,
-and deployment-manifest SHA-256. The strict rollup counts only `inspect` and
-`inspect-closeout` assessments, groups retries by client run ID, reports every
-post-boundary exclusion, and fails closed on incomplete provenance,
-unattributed UNKNOWNs, artifact mismatch, or non-clean cleanup. A
-configuration-blocked event is excluded only when inspection never started and
-the exact missing IDE selector/configuration code is recorded.
-When this repo changes
-inspection status semantics, route metadata, clean/capture classification,
-lifecycle cleanup contracts, or MCP tool response contracts, update the skill
-docs/tests/scripts in the `jetbrains-inspection` skill as part of the same
-workstream.
-
-### Red lane dogfood
-
-Use `./scripts/dogfood-red-lane-smoke.sh` when changing verdict semantics,
-capture behavior, extraction, helper readiness inspection, or release readiness.
-It copies a maintained known-bad project fixture to a disposable local project,
-runs the in-repo desktop client's `inspect-closeout`, and requires `VERDICT=RED`,
-`total_problems > 0`, and cleanup `closed`. The helper may exit non-zero because
-`RED` is not readiness-clean; the smoke trusts the structured JSON verdict and
-still fails on invalid JSON or missing cleanup.
-
-The report prints and stores `open_attempt_count`, `open_methods`,
-verdict/error reason, and plugin identity so first-attempt reliability is
-visible. A warm IDE red-lane run should normally be
-`attempts=1 methods=running_ide`; cold IDE runs may include bootstrap attempts,
-but must still end in a trustworthy RED with cleanup `closed`.
-
-```bash
-# Optionally select a temporary or task-evidence parent with --work-root.
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --keep-project \
-  --product intellij \
-  --ide "IntelliJ IDEA" \
-  --ide-app "IntelliJ IDEA" \
-  --json-out tmp/dogfood-red-lane.json
-
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --keep-project \
-  --product pycharm \
-  --ide "PyCharm" \
-  --ide-app "PyCharm" \
-  --json-out tmp/dogfood-red-lane-pycharm.json
-
-./scripts/dogfood-red-lane-smoke.sh \
-  --helper "$HELPER" --keep-project \
-  --product webstorm \
-  --ide "WebStorm" \
-  --ide-app "WebStorm" \
-  --json-out tmp/dogfood-red-lane-webstorm.json
-```
-
-Set `HELPER` to the in-repo desktop client as above.
-The smoke materializes only the selected tracked fixture from the source HEAD
-in an owned temporary linked checkout, on every host. It leaves the source's
-Git configuration unchanged. `--work-root` optionally selects a temporary or
-task-evidence parent outside the task-worktree root. The smoke uses the in-repo
-`scripts/desktop-client/jb-inspect.py`; set `JB_INSPECT_HELPER` or pass `--helper`
-to select another client explicitly.
-
-The report records the exact project, worktree, helper command, evidence directory,
-native `plugin_build_fingerprint`, and `worktree_retirement`. Without
-`--keep-project`, retirement requires cleanup `closed`, the original branch/head,
-and an unchanged tracked/untracked state, verified preservation of known generated
-IDE/build state outside the project, and no unknown ignored changes, followed
-by the maintained helper's live SDK preview and apply. Unresolved lifecycle or
-SDK cleanup, dirty projects and interrupted runs preserve the worktree and
-registration. There is no force removal or directory-deletion fallback.
-Evidence remains outside the project in the printed retained evidence directory.
-Pass `--json-out` under the run's task-evidence location to retain the complete
-report. For a kept or interrupted run that must survive system temporary-file
-cleanup, also pass `--work-root` under task-evidence.
-
-The smoke sets `JETBRAINS_INSPECTION_TRUSTED_AUTO_OPEN_ROOTS` to its exact owned
-checkout for the inspection command. The helper persists that root in the
-selected IDE's Trusted Locations. After retirement, that exact path can be removed from a normally
-stopped IDE's trust configuration using the preview/apply command in
-[Smoke trust retirement](MAINTAINING.md#smoke-trust-retirement). Leave shared
-trusted worktree roots in place.
-
-Use `--ide` for the inspection identity selector and `--ide-app` for the exact
-macOS app bundle to launch. Keep the bundle selector aligned with the installed
-application name even when channel and version selectors identify an EAP line.
-
-This is a live IDE smoke. The red-lane/matrix shell contracts and Python lifecycle/installer tests
-stub live IDE operations and never install or restart an IDE. `./scripts/test-red-lane-smoke-script.sh` stubs the helper
-and checks the IntelliJ, PyCharm, and WebStorm fixture contracts without
-requiring a GUI IDE. Run it whenever the red-lane fixtures or dogfood CLI change.
+`./scripts/release.sh tag` runs this smoke for the Stable and full archives
+built from the exact tagged commit and refuses to tag when either fails.
+`scripts/test-release-smoke.py` drives the driver against a fake plugin server.
 
 ### Inspection execution proof (issues #239, #259, #284, #296, and #301)
 
@@ -477,7 +107,7 @@ necessary: public path profiling skips out-of-scope files before recording a
 path and cannot preserve the unexpected-file check. Activity and per-kind
 completion counters are diagnostics only and are no longer collected.
 
-Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require disposable IDE smoke projects. Use `dogfood-red-lane-smoke.sh`, which creates temporary linked checkouts containing only the selected maintained fixture; do not use a helper-owned open of this repository as #296 evidence because IDE project-model writes can invalidate the worktree snapshot.
+Automated wrapper tests show that only local wrappers can use `inspectEx`. The Stable file-proof controls separately verify global-simple execution through the public single-file route. Native execution of global kinds and live RED/UNKNOWN preservation require a disposable IDE project: use the [release smoke](#release-smoke), which copies its fixture into a new work directory. Do not open this repository itself as #296 evidence, because IDE project-model writes can invalidate the snapshot.
 
 Run the focused regression suite:
 
@@ -523,45 +153,8 @@ Key expectations:
 - `capture_diagnostic` contains `execution_proof_mode`, `execution_proof_established`, `execution_proof_clean`, `execution_proof_error_count`, `execution_proof_skipped`, `execution_proof_skipped_reason`, and `execution_proof_block_reason`; exact bounded scopes also separate globally enabled tools from candidate, applicable, non-applicable, runnable, executed, failed, unclassified, and unvisited obligations and emit bounded examples; native broad scopes include expected, analyzed, missing, unexpected, and tool-event counts under `execution_proof_native_*`
 
 Before shipping changes to clean/capture classification, run the focused
-`InspectionSnapshotStateTest` coverage, then build the plugin with
-`./gradlew buildPlugin`. Smoke the installed plugin from the agent helper in the
-JetBrains IDEs that matter for the change, such as PyCharm, WebStorm, and
-IntelliJ IDEA. If plugin installation prompts about replacing an existing jar,
-handle that explicitly and rerun the smoke; the prompt alone is not install
-validation.
-
-## Dogfood smoke matrix
-
-`./scripts/dogfood-smoke-matrix.sh` wraps
-the in-repo desktop client's `inspect-closeout`, includes this repo by default, includes
-`~/Developer/mediaforce` when present, and runs both preexisting-project and
-helper-opened worktree cases.
-
-Helper-opened worktrees use `dev-worktree` on Chris-Studio and its validated
-Developer-Artifacts volume. Portable hosts pass an explicit `--worktree-root`.
-Each run prints its retained evidence directory. Cleanup checks the original
-branch/head and tracked/untracked state and archives byte-verified generated IDE/build state
-outside the worktree before delegating live SDK preview/apply
-and non-force removal to the maintained helper. Interrupted, changed or
-lifecycle-busy worktrees remain registered with their evidence.
-
-The preexisting case uses `--no-open` and expects cleanup `not_needed`; if the
-project is not already open it is reported as a skipped preexisting row. The
-helper-opened case creates a disposable linked worktree through the approved
-host flow, expects
-`opened_by_helper=true`, and expects cleanup `closed`. Each row records the IDE
-identity, plugin version, cleanup status, result bucket, helper `agent_result`
-bucket/retry decision, and the issue bucket to check for failures such as
-`capture_incomplete`, opaque helper errors, or lifecycle cleanup regressions.
-
-For a supported targeted pass on your host-approved task worktree, use the
-helper directly:
-
-```bash
-uv run "$HELPER" inspect-closeout \
-  --skip-preparation \
-  --ide "IntelliJ IDEA" --scope changed_files --repo "$PWD"
-```
+`InspectionSnapshotStateTest` coverage and the [release smoke](#release-smoke)
+for both builds.
 
 ## Local cleanup
 
@@ -581,8 +174,7 @@ requests and pushes to `main` via `.github/workflows/ci.yml`:
 
 The commit gate runs the
 action-pin, inspection-boundary and cancellation linters, the exact internal-API manifest
-validator, smoke lifecycle/installer and red-lane/matrix contracts, IDE retention
-controls, and release contract tests. It requires Java 21, then
+validator, the release smoke driver test, and release contract tests. It requires Java 21, then
 runs plugin tests,
 the core and MCP 85% JaCoCo verification tasks, and `buildPlugin`. Each coverage
 verification task depends on its module's tests and report, so tests are not run
@@ -727,23 +319,8 @@ version explicitly and capture evidence for:
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPluginStructure`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=stable`
 - `JAVA_HOME="${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}" ./gradlew verifyPlugin -PinspectionBuild=full`
-- IntelliJ IDEA, PyCharm, and WebStorm red-lane dogfood smokes with exact
-  stable selectors for that version and `--timeout-ms 300000 --prepare-timeout-ms 300000`.
-- [Agent smoke acceptance](#agent-smoke-acceptance), using the exact stable
-  version selector and the supported coding agent used for the release.
-
-The `/api/inspection/wait` endpoint caps a single wait request at 300 seconds;
-large-project release smokes should prefer helper closeout JSON and rerun with a
-fresh route rather than treating one long wait timeout as a clean result. When
-the timed-out response still reports `inspection_in_progress`, exercise
-`/api/inspection/cancel` with that response's `inspection_run_id`, verify
-`/status` reaches an idle state, and confirm a concurrent `/identity` request
-remains responsive while lifecycle close runs. A `run_changed` response must
-leave the newer run untouched and defer helper-owned project cleanup.
-
-For normal dogfood, use [agent smoke acceptance](#agent-smoke-acceptance)
-against the latest installed stable IDE. Use an exact `--ide-version` selector
-for compatibility evidence when that version is installed.
+- The [release smoke](#release-smoke) for both builds, run on the newly
+  supported IDE version.
 
 ### Normal-IDE traversal lifecycle
 
@@ -822,11 +399,3 @@ under excluded roots, or in ignored workspace metadata cannot reconcile a PSI
 change into fresh results. `ProjectStateCapturePlatformTest`
 uses a real indexing transition to prove that the PSI counter can advance while
 file bytes and saved-document state stay unchanged.
-
-Live Odoo acceptance uses two prepared CM website worktrees sharing the same
-pinned core sources. Open each through the inspection helper, start exact-file
-runs with `start-inspection` in both projects before waiting, and retain both
-run identities, input-validation diagnostics, Odoo findings, and lease-bound
-cleanup. A deliberately invalid Odoo reference must return actionable RED;
-restoring it must return GREEN. Preserve the original UNKNOWN evidence and do
-not attribute a PSI tick to a writer without independent evidence.
