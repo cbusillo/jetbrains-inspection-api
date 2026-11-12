@@ -8,7 +8,6 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
-from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -26,14 +25,12 @@ CORRECT = {
 }
 
 
-PluginHandler = Callable[[object, object, ThreadingHTTPServer], BaseHTTPRequestHandler]
-
-
-def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: str) -> PluginHandler:
+def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: str) -> type[BaseHTTPRequestHandler]:
     remaining = {target: list(results) for target, results in answers.items()}
 
     class Plugin(BaseHTTPRequestHandler):
-        def log_message(self, *_args: object) -> None:
+        # noinspection PyShadowingBuiltins
+        def log_message(self, format: str, *args: object) -> None:
             pass
 
         # noinspection PyPep8Naming
@@ -69,6 +66,7 @@ def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: st
 
 
 def ask(answers: dict[str, list[tuple[str, str, int]]], close_status: str = "closed") -> dict:
+    # noinspection PyTypeChecker
     server = ThreadingHTTPServer(("127.0.0.1", 0), fake_plugin(answers, close_status))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
