@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 import urllib.parse
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -25,17 +26,21 @@ CORRECT = {
 }
 
 
-def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: str) -> type[BaseHTTPRequestHandler]:
+PluginHandler = Callable[[object, object, ThreadingHTTPServer], BaseHTTPRequestHandler]
+
+
+def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: str) -> PluginHandler:
     remaining = {target: list(results) for target, results in answers.items()}
 
     class Plugin(BaseHTTPRequestHandler):
-        def log_message(self, format: str, *args: object) -> None:
+        def log_message(self, *_args: object) -> None:
             pass
 
+        # noinspection PyPep8Naming
         def do_GET(self) -> None:
-            url = urllib.parse.urlparse(self.path)
-            endpoint = url.path.removeprefix("/api/inspection/")
-            params = dict(urllib.parse.parse_qsl(url.query))
+            path, _, query = str(self.path).partition("?")
+            endpoint = path.removeprefix("/api/inspection/")
+            params: dict[str, str] = dict(urllib.parse.parse_qsl(query))
             claim = {
                 "ownership_proven": True, "lifecycle_readiness": {"ready": True}, "project_key": "key",
                 "session_id": "session", "project_instance_id": "instance", "close_token": "token",
@@ -63,37 +68,39 @@ def fake_plugin(answers: dict[str, list[tuple[str, str, int]]], close_status: st
     return Plugin
 
 
+def ask(answers: dict[str, list[tuple[str, str, int]]], close_status: str = "closed") -> dict:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), fake_plugin(answers, close_status))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with tempfile.TemporaryDirectory() as work:
+            api = release_smoke.PluginApi(server.server_address[1], Path(work) / "responses.jsonl")
+            return release_smoke.ask_plugin(api, Path(work), timeout_s=10)
+    finally:
+        server.shutdown()
+
+
 class ReleaseSmokeTest(unittest.TestCase):
-    def ask(self, answers: dict[str, list[tuple[str, str, int]]], close_status: str = "closed") -> dict:
-        server = ThreadingHTTPServer(("127.0.0.1", 0), fake_plugin(answers, close_status))
-        threading.Thread(target=server.serve_forever, daemon=True).start()
-        try:
-            with tempfile.TemporaryDirectory() as work:
-                api = release_smoke.PluginApi(server.server_address[1], Path(work) / "responses.jsonl")
-                return release_smoke.ask_plugin(api, Path(work), timeout_s=10)
-        finally:
-            server.shutdown()
 
     def test_passes_only_when_every_verdict_matches(self) -> None:
-        self.assertTrue(self.ask(CORRECT)["passed"])
+        self.assertTrue(ask(CORRECT)["passed"])
 
     def test_fails_when_an_unproven_run_is_reported_clean(self) -> None:
-        report = self.ask(CORRECT | {"src": [("GREEN", "no_matching_findings", 0)]})
+        report = ask(CORRECT | {"src": [("GREEN", "no_matching_findings", 0)]})
         self.assertFalse(report["passed"])
         self.assertEqual("closed", report["cleanup"])
 
     def test_fails_when_the_project_does_not_close(self) -> None:
-        self.assertFalse(self.ask(CORRECT, close_status="skipped")["passed"])
+        self.assertFalse(ask(CORRECT, close_status="skipped")["passed"])
 
     def test_fails_when_unknown_has_another_cause(self) -> None:
-        self.assertFalse(self.ask(CORRECT | {"src": [("UNKNOWN", "capture_incomplete", 0)]})["passed"])
+        self.assertFalse(ask(CORRECT | {"src": [("UNKNOWN", "capture_incomplete", 0)]})["passed"])
 
     def test_reruns_stale_results_but_never_accepts_them(self) -> None:
         stale = ("UNKNOWN", "stale_results", 0)
-        settled = self.ask(CORRECT | {"src/clean.json": [stale, ("GREEN", "no_matching_findings", 0)]})
+        settled = ask(CORRECT | {"src/clean.json": [stale, ("GREEN", "no_matching_findings", 0)]})
         self.assertTrue(settled["passed"])
         self.assertEqual(2, settled["cases"][0]["attempts"])
-        self.assertFalse(self.ask(CORRECT | {"src": [stale]})["passed"])
+        self.assertFalse(ask(CORRECT | {"src": [stale]})["passed"])
 
 
 if __name__ == "__main__":

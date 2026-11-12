@@ -18,6 +18,7 @@ import urllib.parse
 import urllib.request
 import uuid
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -65,7 +66,7 @@ class PluginApi:
         return body
 
 
-def poll(description: str, deadline: float, check):
+def poll(description: str, deadline: float, check: Callable[[], dict | None]) -> dict:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
@@ -104,10 +105,11 @@ def run_case(api: PluginApi, claim: dict, case: Case, timeout_s: int) -> dict:
     route = {"project_key": claim["project_key"], "session_id": claim["session_id"]}
     # A newly opened project keeps changing while the IDE finishes its startup work. The plugin
     # reports that as stale_results and asks for a rerun; a stale result is never an answer.
-    for attempt in range(1, STALE_RERUNS + 2):
+    attempt = 1
+    problems = inspect(api, route, case, timeout_s)
+    while problems.get("inspection_verdict_reason") == "stale_results" and attempt <= STALE_RERUNS:
+        attempt += 1
         problems = inspect(api, route, case, timeout_s)
-        if problems.get("inspection_verdict_reason") != "stale_results":
-            break
     verdict = problems.get("inspection_verdict")
     findings = int(problems.get("total_problems") or 0)
     reason = problems.get("inspection_verdict_reason")
