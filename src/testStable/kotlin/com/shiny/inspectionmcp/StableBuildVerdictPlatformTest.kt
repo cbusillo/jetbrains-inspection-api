@@ -50,6 +50,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 import org.junit.jupiter.params.ParameterizedTest
@@ -62,6 +63,11 @@ import java.util.concurrent.atomic.AtomicInteger
 // Runs only in the Stable build (-PinspectionBuild=stable): without native attestation it must never say clean
 // when it cannot prove every enabled inspection ran, and it must still report real findings.
 class StableBuildVerdictPlatformTest {
+    @BeforeEach
+    fun markProjectStarted() {
+        markBackgroundStartupReached(projectExtension.project)
+    }
+
     @Test
     fun `a clean directory run remains UNKNOWN`() {
         val project = projectExtension.project

@@ -28,6 +28,7 @@ import io.netty.handler.codec.http.HttpMethod
 import io.netty.handler.codec.http.HttpVersion
 import io.netty.handler.codec.http.QueryStringDecoder
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 import java.net.URLEncoder
@@ -36,6 +37,11 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class CaptureLoopExtractionPlatformTest {
+    @BeforeEach
+    fun markProjectStarted() {
+        markBackgroundStartupReached(projectExtension.project)
+    }
+
     @Test
     fun `failing tool-window extraction keeps a clean directory run polling until the capture deadline`() {
         val project = projectExtension.project

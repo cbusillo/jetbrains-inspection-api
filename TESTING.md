@@ -80,10 +80,9 @@ plugins, logs, `user.home`, the fixture copy, and every plugin response in
 `responses.jsonl`. The IDE never reads or writes the normal profile; it starts
 with a new config, so it runs in the IDE's free tier. The driver opens the fixture
 through the plugin's lifecycle endpoints, closes it, and stops the IDE process
-group. A newly opened project can report `stale_results` while the IDE finishes
-its startup work; the driver reruns that case up to two more times and never
-accepts a stale result. It prints a JSON report and exits non-zero unless every
-case matches.
+group. Each case runs once: the first check on the freshly opened project must
+already be decisive, so a `stale_results` answer fails the smoke. It prints a
+JSON report and exits non-zero unless every case matches.
 
 `./scripts/release.sh tag` runs this smoke for the Stable and full archives
 built from the exact tagged commit and refuses to tag when either fails.

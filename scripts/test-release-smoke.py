@@ -93,12 +93,9 @@ class ReleaseSmokeTest(unittest.TestCase):
     def test_fails_when_unknown_has_another_cause(self) -> None:
         self.assertFalse(ask(CORRECT | {"src": [("UNKNOWN", "capture_incomplete", 0)]})["passed"])
 
-    def test_reruns_stale_results_but_never_accepts_them(self) -> None:
+    def test_fails_when_the_first_clean_check_is_stale(self) -> None:
         stale = ("UNKNOWN", "stale_results", 0)
-        settled = ask(CORRECT | {"src/clean.json": [stale, ("GREEN", "no_matching_findings", 0)]})
-        self.assertTrue(settled["passed"])
-        self.assertEqual(2, settled["cases"][0]["attempts"])
-        self.assertFalse(ask(CORRECT | {"src": [stale]})["passed"])
+        self.assertFalse(ask(CORRECT | {"src/clean.json": [stale, ("GREEN", "no_matching_findings", 0)]})["passed"])
 
 
 if __name__ == "__main__":

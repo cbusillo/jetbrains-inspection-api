@@ -738,6 +738,7 @@ internal abstract class InspectionHandlerTestSupport {
         mockkStatic(DumbService::class)
         val dumbService = mockk<DumbService>()
         every { DumbService.getInstance(project) } returns dumbService
+        markBackgroundStartupReached(project)
         every { dumbService.isDumb } returns false
         every { dumbService.modificationTracker.modificationCount } returns 0L
     }

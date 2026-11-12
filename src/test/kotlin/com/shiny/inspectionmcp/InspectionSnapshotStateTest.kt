@@ -89,6 +89,7 @@ class InspectionSnapshotStateTest {
 
         mockkStatic(DumbService::class)
         every { DumbService.getInstance(mockProject) } returns mockDumbService
+        markBackgroundStartupReached(mockProject)
         every { mockDumbService.isDumb } returns false
 
         mockkStatic(ToolWindowManager::class)

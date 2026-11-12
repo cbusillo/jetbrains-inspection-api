@@ -222,7 +222,10 @@ internal data class ProjectQuiescenceObservation(
     val dumb: Boolean,
     val projectState: InspectionProjectStateSnapshot,
     val projectFileEventCount: Long,
-)
+    val startupActivitiesPassed: Boolean = true,
+) {
+    val busy: Boolean get() = dumb || !startupActivitiesPassed
+}
 
 internal data class ProjectQuiescenceEvidence(
     val attempted: Boolean,
@@ -232,6 +235,7 @@ internal data class ProjectQuiescenceEvidence(
     val dumbModeObserved: Boolean,
     val projectStateChangeCount: Int,
     val projectFileEventsObserved: Boolean,
+    val startupActivitiesPendingObserved: Boolean = false,
 ) {
     fun diagnosticMap(): Map<String, Any> = mapOf(
         "project_quiescence_attempted" to attempted,
@@ -241,6 +245,7 @@ internal data class ProjectQuiescenceEvidence(
         "project_quiescence_dumb_mode_observed" to dumbModeObserved,
         "project_quiescence_state_change_count" to projectStateChangeCount,
         "project_quiescence_file_events_observed" to projectFileEventsObserved,
+        "project_quiescence_startup_pending_observed" to startupActivitiesPendingObserved,
     )
 }
 
@@ -273,6 +278,7 @@ internal fun awaitProjectQuiescence(
     var quietSinceElapsedMs = 0L
     var observationCount = 1
     var dumbModeObserved = previous.dumb
+    var startupActivitiesPendingObserved = !previous.startupActivitiesPassed
     var projectStateChangeCount = 0
     var projectFileEventsObserved = false
 
@@ -286,11 +292,12 @@ internal fun awaitProjectQuiescence(
         dumbModeObserved = dumbModeObserved,
         projectStateChangeCount = projectStateChangeCount,
         projectFileEventsObserved = projectFileEventsObserved,
+        startupActivitiesPendingObserved = startupActivitiesPendingObserved,
     )
 
     while (true) {
         val elapsed = elapsedMs()
-        if (!previous.dumb && elapsed - quietSinceElapsedMs >= stableMs) {
+        if (!previous.busy && elapsed - quietSinceElapsedMs >= stableMs) {
             return evidence(elapsed, timedOut = false)
         }
         if (elapsed >= boundedTimeoutMs) {
@@ -304,6 +311,9 @@ internal fun awaitProjectQuiescence(
         observationCount += 1
         val projectStateChanged = current.projectState != previous.projectState
         val projectFilesChanged = current.projectFileEventCount != previous.projectFileEventCount
+        if (!current.startupActivitiesPassed) {
+            startupActivitiesPendingObserved = true
+        }
         if (projectStateChanged) {
             projectStateChangeCount += 1
         }
@@ -313,7 +323,7 @@ internal fun awaitProjectQuiescence(
         if (current.dumb) {
             dumbModeObserved = true
         }
-        if (current.dumb || projectStateChanged || projectFilesChanged) {
+        if (current.busy || projectStateChanged || projectFilesChanged) {
             quietSinceElapsedMs = elapsedMs()
         }
         previous = current
@@ -8438,6 +8448,7 @@ class InspectionHandler : HttpRequestHandler() {
                         dumb = DumbService.getInstance(project).isDumb,
                         projectState = captureProjectState(project),
                         projectFileEventCount = projectFileEventCount.get(),
+                        startupActivitiesPassed = backgroundStartupReached(project),
                     )
                 },
                 checkCanceled = { checkInspectionRunCancellation(key, runId) },

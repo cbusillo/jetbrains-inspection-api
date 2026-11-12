@@ -139,6 +139,7 @@
                 bundle="messages.InspectionApiBundle"
                 key="notification.group.name" />
         <postStartupActivity implementation="com.shiny.inspectionmcp.McpOnboardingStartupActivity"/>
+        <backgroundPostStartupActivity implementation="com.shiny.inspectionmcp.BackgroundStartupReached"/>
     </extensions>
 
     <applicationListeners>
