@@ -35,10 +35,16 @@ import java.nio.file.Path
 import java.nio.file.attribute.FileTime
 import java.util.concurrent.atomic.AtomicInteger
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.extension.RegisterExtension
 
 class BackgroundDiskFreshnessPlatformTest {
+    @BeforeEach
+    fun markProjectStarted() {
+        markBackgroundStartupReached(projectExtension.project)
+    }
+
     @Test
     fun `timestamp-preserving disk write is UNKNOWN until PSI matches the disk`() {
         val project = projectExtension.project
