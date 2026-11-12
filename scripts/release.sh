@@ -13,8 +13,9 @@ usage() {
   cat <<'USAGE'
 Usage:
   ./scripts/release.sh [prepare] [--major|--minor|--patch]
-                       [--no-push] [--remote <name>] [--yes]
-  ./scripts/release.sh tag vX.Y.Z [--no-push] [--remote <name>]
+                       [--no-push] [--remote <name>]
+  ./scripts/release.sh tag vX.Y.Z --ide-app /path/IDE.app [--ide-config DIR]
+                       [--no-push] [--remote <name>]
 
 prepare (default): creates release/vX.Y.Z from the current remote default
 branch, updates versions, runs release validation, commits, pushes the task
@@ -23,7 +24,10 @@ protected default branch and never creates a release tag.
 
 tag: after the release pull request is merged, validates that the clean worktree
 HEAD exactly matches the remote default branch and vX.Y.Z matches
-pluginVersion, then creates and pushes the release tag.
+pluginVersion, builds the Stable and full archives, runs scripts/release-smoke.py
+on each in an isolated copy of the given IDE, and only then creates and pushes
+the release tag. --ide-config reuses an existing IDE config directory, such as
+one with an activated license; by default each smoke starts a new one.
 USAGE
 }
 
@@ -37,7 +41,8 @@ BUMP=""
 TAG=""
 PUSH=1
 REMOTE="origin"
-ASSUME_YES=0
+IDE_APP=""
+IDE_CONFIG=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -63,12 +68,13 @@ while [ $# -gt 0 ]; do
       fi
       REMOTE="$1"
       ;;
-    --yes)
-      if [ "$MODE" != "prepare" ]; then
-        echo "ERROR: --yes is only valid in prepare mode." >&2
+    --ide-app|--ide-config)
+      if [ "$MODE" != "tag" ] || [ -z "${2:-}" ]; then
+        echo "ERROR: $1 takes a path and is only valid in tag mode." >&2
         exit 1
       fi
-      ASSUME_YES=1
+      if [ "$1" = "--ide-app" ]; then IDE_APP="$2"; else IDE_CONFIG="$2"; fi
+      shift
       ;;
     -h|--help)
       usage
@@ -261,20 +267,6 @@ PY
 
 run_release_validation() {
   local version="$1"
-  if [ "$ASSUME_YES" -ne 1 ]; then
-    echo ""
-    echo "This will inspect the configured test project without installing or restarting the IDE."
-    read -r -p "Continue with ./scripts/test-automated.sh? [y/N] " reply
-    case "$reply" in
-      [Yy]*) ;;
-      *)
-        echo "Aborted before automated IDE test."
-        exit 1
-        ;;
-    esac
-  fi
-
-  ./scripts/test-automated.sh
   ./scripts/release-compatibility-gate.sh
   ./scripts/validate-release-version.sh --tag "v$version" >/dev/null
 }
@@ -293,7 +285,6 @@ open_release_pr() {
 
 ## Validation
 
-- \`./scripts/test-automated.sh\`
 - \`./scripts/release-compatibility-gate.sh\`
 EOF
   gh pr create \
@@ -354,9 +345,33 @@ prepare_release() {
   echo "Release preparation complete for v${new_version}; no tag was created."
 }
 
+run_release_smokes() {
+  local version="$1" evidence edition archive
+  evidence=$(mktemp -d "${TMPDIR:-/tmp}/release-smoke-v$version.XXXXXX")
+  # shellcheck source=scripts/java21.sh
+  source scripts/java21.sh
+  use_java21
+  for edition in stable full; do
+    ./gradlew --quiet buildPlugin "-PinspectionBuild=$edition"
+    archive="$evidence/$edition.zip"
+    cp "build/distributions/jetbrains-inspection-api-$version.zip" "$archive"
+    if ! ./scripts/release-smoke.py --archive "$archive" --ide-app "$IDE_APP" \
+      ${IDE_CONFIG:+--ide-config "$IDE_CONFIG"} --work-dir "$evidence/$edition" >"$evidence/$edition.json"; then
+      cat "$evidence/$edition.json" >&2
+      echo "ERROR: The $edition release smoke failed; no tag was created. Evidence: $evidence" >&2
+      exit 1
+    fi
+  done
+  echo "Release smokes passed for both builds. Evidence: $evidence"
+}
+
 tag_release() {
   if [ -z "$TAG" ]; then
     echo "ERROR: tag mode requires vX.Y.Z." >&2
+    exit 1
+  fi
+  if [ -z "$IDE_APP" ]; then
+    echo "ERROR: tag mode requires --ide-app for the release smokes." >&2
     exit 1
   fi
 
@@ -371,6 +386,8 @@ tag_release() {
     echo "ERROR: Release tag $TAG already exists." >&2
     exit 1
   fi
+
+  run_release_smokes "${TAG#v}"
 
   git tag -a "$TAG" -m "Release $TAG"
   if [ "$PUSH" -eq 1 ]; then

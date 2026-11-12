@@ -22,10 +22,9 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
 - Plugin: Kotlin/Gradle, requires Java 21. Supported IDE builds are configured
   in `build.gradle.kts`.
 - MCP server: Kotlin/JVM (bundled in plugin, built via `mcp-server-jvm`).
-- Desktop client: `scripts/desktop-client/jb-inspect.py` drives the plugin's
-  HTTP API for this repository's smokes; agents no longer inspect through the
-  plugin. Keep its status/clean/capture contracts in mind when changing HTTP
-  inspection behavior, and update it and its tests together.
+- Release smoke: `scripts/release-smoke.py` installs a built archive into an
+  isolated IDE and compares the plugin's own verdicts with fixed expectations;
+  it judges nothing itself. Agents no longer inspect through the plugin.
 
 ## Always-on rules
 
@@ -37,8 +36,6 @@ Evidence: [DIRECTION.md](DIRECTION.md) and [README.md](README.md).
   permitted" from NativeServices, re-run with the required permissions.
 - Prefer descriptive names to comments/docstrings; keep commentary minimal.
 - Avoid stale docs: keep this file evergreen and link to README for specifics.
-- If API status semantics, route metadata, clean/capture classification, or
-  MCP tool contracts change, update the desktop client and its tests to match.
 
 ## Test rules
 
@@ -51,9 +48,8 @@ Follow the shared [Tests rules](https://github.com/cbusillo/codex-skills/blob/ma
   See `TESTING.md` for test surfaces.
 - Safety-module selection includes the changed area and its callers. Trace
   inspection trust/cancellation to plugin/core/MCP tests,
-  installation/recovery to smoke-lifecycle and red-lane fixtures, retention to
-  IDE-retention fixtures, and release/publication to release-contract and
-  agents-release fixtures. Also run `cancellationCatchLint`,
+  the release smoke to its driver test, and release/publication to
+  release-contract and agents-release fixtures. Also run `cancellationCatchLint`,
   `inspectionBoundaryLint` and `internalApiManifest` for their respective
   changed boundaries, plus `stableBuild` for Stable internal-API/verdict changes,
   using the commands in `.github/github.json`. Preserve required platform
@@ -72,9 +68,3 @@ Follow the shared [Tests rules](https://github.com/cbusillo/codex-skills/blob/ma
 - Do not add production code, overloads, or wait-skipping seams that exist only
   for tests. Injecting a time source is fine when the waiting logic still
   runs against it; setting a wait to zero is not.
-
-## Local-only overrides
-
-If you need machine-specific paths/ports/log locations, copy
-`AGENTS.local.template.md` to `AGENTS.local.md`.
-`AGENTS.local.md` is ignored in git.

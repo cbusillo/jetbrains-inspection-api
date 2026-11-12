@@ -1,7 +1,8 @@
 <component name="InspectionProjectProfileManager">
-  <profile version="1.0" is_locked="false">
-    <option name="myName" value="RedLane" />
+  <profile version="1.0" is_locked="true">
+    <option name="myName" value="ReleaseSmoke" />
     <inspection_tool class="JsonDuplicatePropertyKeys" enabled="true" level="ERROR" enabled_by_default="true" />
     <inspection_tool class="JsonStandardCompliance" enabled="true" level="ERROR" enabled_by_default="true" />
+    <inspection_tool class="ShellCheck" enabled="true" level="ERROR" enabled_by_default="true" />
   </profile>
 </component>

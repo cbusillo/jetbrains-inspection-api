@@ -6,7 +6,7 @@
     "testing": "TESTING.md",
     "maintenance": "MAINTAINING.md",
     "manualSmoke": "TESTING_INSTRUCTIONS.md",
-    "agentSmoke": "TESTING.md#agent-smoke-acceptance",
+    "releaseSmoke": "TESTING.md#release-smoke",
     "buildManifest": "build.gradle.kts",
     "settings": "settings.gradle.kts",
     "version": "gradle.properties",
@@ -33,9 +33,7 @@
       "supportedInspectionExecutor": "JAVA_HOME=\"${JAVA_HOME_21:-$(/usr/libexec/java_home -v 21)}\" ./gradlew :platformTest --tests '*.SupportedInspectionExecutorPlatformTest'",
       "core": "./gradlew :inspection-core:test",
       "mcpServer": "./gradlew :mcp-server-jvm:test",
-      "ideRetention": "uv run scripts/test-ide-retention.py",
-      "smokeLifecycle": "uv run scripts/test-smoke-lifecycle.py && ./scripts/test-red-lane-smoke-script.sh",
-      "desktopClient": "for test in scripts/desktop-client/test_*.py; do uv run \"$test\" || exit 1; done",
+      "releaseSmokeDriver": "uv run scripts/test-release-smoke.py",
       "inspectionBoundaryLint": "uv run scripts/lint-inspection-boundary.py --sources src/main/kotlin --sources src/full/kotlin --sources src/stable/kotlin --boundary src/full/kotlin/com/shiny/inspectionmcp/InspectionBuildEdition.kt --manifest config/plugin-verifier/full-internal-api-allowlist.txt",
       "cancellationCatchLint": "uv run scripts/lint-cancellation-catches.py --sources src/main/kotlin",
       "internalApiManifest": "./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/full-internal-api-allowlist.txt && ./scripts/verify-internal-api-allowlist.py --manifest config/plugin-verifier/stable-internal-api-allowlist.txt",
@@ -58,38 +56,11 @@
           "version": "3.12",
           "moduleName": "inspection-api-scripts",
           "pep723Scripts": [
-            "scripts/install-local-plugin.py"
+            "scripts/release-smoke.py"
           ]
         }
       },
       "lanes": [
-        {
-          "id": "fixture-webstorm",
-          "ide": "WebStorm",
-          "required": false,
-          "include": [
-            "test-fixtures/inspection-red-lane-webstorm/**"
-          ],
-          "projectPath": "test-fixtures/inspection-red-lane-webstorm"
-        },
-        {
-          "id": "fixture-pycharm",
-          "ide": "PyCharm",
-          "required": false,
-          "include": [
-            "test-fixtures/inspection-red-lane-pycharm/**"
-          ],
-          "projectPath": "test-fixtures/inspection-red-lane-pycharm"
-        },
-        {
-          "id": "fixture-java",
-          "ide": "IntelliJ IDEA",
-          "required": false,
-          "include": [
-            "test-fixtures/inspection-red-lane/**"
-          ],
-          "projectPath": "test-fixtures/inspection-red-lane"
-        },
         {
           "id": "python",
           "ide": "PyCharm",
@@ -111,12 +82,7 @@
       ]
     },
     "manualSmoke": {
-      "automatedIde": "./scripts/test-automated.sh",
-      "dogfoodMatrix": "./scripts/dogfood-smoke-matrix.sh",
-      "redLaneDogfood": "./scripts/dogfood-red-lane-smoke.sh",
-      "redLaneDogfoodIntelliJ": "./scripts/dogfood-red-lane-smoke.sh --product intellij --ide \"IntelliJ IDEA\" --ide-app \"IntelliJ IDEA\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000",
-      "redLaneDogfoodPyCharm": "./scripts/dogfood-red-lane-smoke.sh --product pycharm --ide \"PyCharm\" --ide-app \"PyCharm\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000",
-      "redLaneDogfoodWebStorm": "./scripts/dogfood-red-lane-smoke.sh --product webstorm --ide \"WebStorm\" --ide-app \"WebStorm\" --ide-channel stable --timeout-ms 300000 --prepare-timeout-ms 300000"
+      "releaseSmoke": "./scripts/release-smoke.py --archive /path/plugin.zip --ide-app /path/IDE.app --work-dir /new/evidence/dir"
     },
     "docsRequiredWhen": [
       "behavior changes",
