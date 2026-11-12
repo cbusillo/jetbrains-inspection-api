@@ -32,6 +32,7 @@ import com.intellij.testFramework.ProjectExtension
 import com.intellij.testFramework.PsiTestUtil
 import com.intellij.testFramework.runInEdtAndGet
 import org.assertj.core.api.Assertions.assertThat
+import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
@@ -57,6 +58,11 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class TypeScriptBatchInspectionPrerequisitePlatformTest {
+    @BeforeEach
+    fun markProjectStarted() {
+        markBackgroundStartupReached(projectExtension.project)
+    }
+
     @Test
     fun `API withholds delegated batch findings and provides an exact file recovery`() {
         assertApiDelegation(initiallyDelegated = true)
