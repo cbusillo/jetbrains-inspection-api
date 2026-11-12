@@ -25,6 +25,10 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.6</b>
+        <ul>
+            <li>Waits for the IDE's delayed startup work before the first inspection of a freshly opened project, so that inspection no longer comes back stale.</li>
+        </ul>
         <b>Version 1.14.5</b>
         <ul>
             <li>Adds compatibility with JetBrains 2026.3.</li>
