@@ -42,8 +42,7 @@ Someone finds and installs the plugin from the normal Marketplace Stable
 listing and gets a true clean or findings verdict where public APIs can prove
 it. Someone who needs broad-scope proof gets the full build from its
 Marketplace channel or GitHub releases. Release smokes drive each build
-through the in-repository desktop client (`scripts/desktop-client`) and get a
-decisive clean or findings verdict that is true. Both builds say UNKNOWN when
+in an isolated IDE and get a decisive clean or findings verdict that is true. Both builds say UNKNOWN when
 proof is missing, and both keep working on each new IntelliJ release soon
 after it ships. Whatever blocks that journey is the next piece of work.
 
