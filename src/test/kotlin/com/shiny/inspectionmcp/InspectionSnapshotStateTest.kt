@@ -2280,6 +2280,18 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
+    @DisplayName("Capture polling settles stable results when clean proof is impossible")
+    fun testShouldStopCapturePollingWhenCleanProofIsImpossible() {
+        assertFalse(shouldStopCapturePolling(bestResultsCount = 0, stableForMs = 6000, pollingElapsedMs = 7000))
+        assertTrue(
+            shouldStopCapturePolling(bestResultsCount = 0, stableForMs = 6000, pollingElapsedMs = 7000, cleanProofImpossible = true),
+        )
+        assertFalse(
+            shouldStopCapturePolling(bestResultsCount = 0, stableForMs = 4000, pollingElapsedMs = 7000, cleanProofImpossible = true),
+        )
+    }
+
+    @Test
     @DisplayName("Capture polling settles on stable tool-window findings without inspection view")
     fun testShouldStopCapturePollingForStableToolResultsWithoutView() {
         assertFalse(
