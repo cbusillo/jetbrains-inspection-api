@@ -25,6 +25,10 @@
     ]]></description>
     
     <change-notes><![CDATA[
+        <b>Version 1.14.8</b>
+        <ul>
+            <li>A file or changed-files inspection that cannot be proven clean now answers in seconds instead of waiting a full minute.</li>
+        </ul>
         <b>Version 1.14.7</b>
         <ul>
             <li>Stable answers folder and whole-project requests in seconds instead of waiting a full minute for a result it cannot prove.</li>
