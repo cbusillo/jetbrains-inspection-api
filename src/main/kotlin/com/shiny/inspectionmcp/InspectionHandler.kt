@@ -111,6 +111,7 @@ private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
 private const val DEFAULT_PROJECT_QUIESCENCE_STABLE_MS = 2_000L
+private val BROAD_CAPTURE_SCOPES = setOf("directory", "whole_project", "all")
 private const val DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS = 20_000L
 private const val DEFAULT_PROJECT_QUIESCENCE_POLL_MS = 100L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
@@ -566,6 +567,9 @@ private data class InspectionAnalysisQualification(
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
     fun hasChanges(): Boolean
+    // Any disk change under, or above, an input root, including excluded parts that hasChanges() ignores.
+    // Only checks that rely on unchanged inputs alone, with no result evidence, must refuse these.
+    fun hasAnyInputRootChanges(): Boolean
     fun firstChangeDescription(): String? = null
     fun runIfUnchanged(action: () -> Unit): Boolean
 }
@@ -968,6 +972,11 @@ private fun isTrackedInspectionInputPath(
     return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
 }
 
+// A change inside any input root (project, content, source, library or SDK), excluded parts included,
+// or above one (a moved or deleted parent).
+internal fun touchesInputRoot(rootPaths: List<Path>, eventPath: Path): Boolean =
+    rootPaths.any { rootPath -> eventPath.startsWith(rootPath) || rootPath.startsWith(eventPath) }
+
 private class MessageBusInspectionProjectContentTracker(
     project: Project,
     projectBasePath: String?,
@@ -975,6 +984,7 @@ private class MessageBusInspectionProjectContentTracker(
     excludedRootPaths: List<String>,
 ) : InspectionProjectContentTracker {
     private val changed = AtomicBoolean(false)
+    private val anyInputRootChanged = AtomicBoolean(false)
     private val firstChange = AtomicReference<String?>(null)
     private val closed = AtomicBoolean(false)
     private val changeLock = Any()
@@ -1024,6 +1034,8 @@ private class MessageBusInspectionProjectContentTracker(
 
     override fun hasChanges(): Boolean = changed.get()
 
+    override fun hasAnyInputRootChanges(): Boolean = anyInputRootChanged.get()
+
     override fun firstChangeDescription(): String? = firstChange.get()
 
     override fun runIfUnchanged(action: () -> Unit): Boolean {
@@ -1043,6 +1055,14 @@ private class MessageBusInspectionProjectContentTracker(
     }
 
     private fun recordChanges(events: List<VFileEvent>) {
+        if (!anyInputRootChanged.get() && events.any { event ->
+                inspectionEventPaths(event).any { eventPath ->
+                    normalizeFileSystemPath(eventPath)?.let(Paths::get)?.let { touchesInputRoot(normalizedRootPaths, it) } == true
+                }
+            }
+        ) {
+            anyInputRootChanged.set(true)
+        }
         if (changed.get()) {
             return
         }
@@ -5998,12 +6018,18 @@ class InspectionHandler : HttpRequestHandler() {
                 } else {
                     CurrentRunPsiChurnReconciliation(snapshot, false)
                 }
+                // An UNKNOWN broad-scope answer cannot match result evidence, but it claims nothing a
+                // PSI-only tick could invalidate; unchanged tracked inputs are enough to keep it current.
+                val inputsOnlyReconciliationEligible = canAttemptReconciliation &&
+                    !reconciliation.reconciled &&
+                    snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
+                    snapshot.captureScope?.scopeParam?.trim()?.lowercase() in BROAD_CAPTURE_SCOPES
                 val currentFingerprint = if (
                     !project.isDisposed &&
                     !contentChangedBeforeVerification &&
                     stateStableBeforeVerification &&
                     isCurrentInspectionRun(key, runId) &&
-                    (!projectStateChangedDuringCapture || reconciliation.reconciled)
+                    (!projectStateChangedDuringCapture || reconciliation.reconciled || inputsOnlyReconciliationEligible)
                 ) {
                     projectInputsFingerprintProvider(project, inputFingerprint.requestedProfileName)
                 } else {
@@ -6023,6 +6049,12 @@ class InspectionHandler : HttpRequestHandler() {
                     !project.isDisposed &&
                     isCurrentInspectionRun(key, runId)
                 val shouldReconcile = reconciliation.reconciled && finalValidationPassed
+                // Unsaved documents anywhere, including library sources outside the project, can change
+                // resolution without a disk event the tracker would see.
+                val shouldReconcileInputsOnly = inputsOnlyReconciliationEligible &&
+                    finalValidationPassed &&
+                    !contentTracker.hasAnyInputRootChanges() &&
+                    FileDocumentManager.getInstance().unsavedDocuments.isEmpty()
                 val shouldPublishUnchangedSnapshot =
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(
@@ -6038,7 +6070,8 @@ class InspectionHandler : HttpRequestHandler() {
                         "firstInputChange=${contentTracker.firstChangeDescription()}, " +
                         "changedInputFields=$changedInputFields, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
-                        "promoted=$shouldReconcile"
+                        "promoted=$shouldReconcile, " +
+                        "inputsOnlyReconciled=$shouldReconcileInputsOnly"
                 )
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
@@ -6054,6 +6087,13 @@ class InspectionHandler : HttpRequestHandler() {
                             snapshot.reconciliationChangeKind
                         },
                     )
+                } else if (shouldReconcileInputsOnly) {
+                    snapshot.copy(
+                        projectState = captureEndState,
+                        captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                            "final_input_reconciliation_source" to "inputs_only",
+                        ),
+                    )
                 } else if (shouldPublishUnchangedSnapshot) {
                     snapshot
                 } else if (projectStateChangedDuringCapture) {
@@ -6062,7 +6102,8 @@ class InspectionHandler : HttpRequestHandler() {
                     inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 }
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
-                    val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
+                    val publicationRequiresStableTracker =
+                        shouldReconcile || shouldReconcileInputsOnly || shouldPublishUnchangedSnapshot
                     var scopeMatchedAtPublication = !publicationRequiresStableTracker
                     val publishedWithStableTracker = if (publicationRequiresStableTracker) {
                         contentTracker.runIfUnchanged {

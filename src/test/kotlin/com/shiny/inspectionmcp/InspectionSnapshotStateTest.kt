@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import java.nio.file.Paths
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
@@ -2256,6 +2257,18 @@ class InspectionSnapshotStateTest {
                 timeSinceTriggerMs = 16000,
             )
         )
+    }
+
+    @Test
+    @DisplayName("Any change inside or above an input root counts, excluded parts included")
+    fun testTouchesInputRoot() {
+        val roots = listOf(Paths.get("/p"), Paths.get("/vendor"), Paths.get("/p/.venv/lib/python3.12/site-packages"))
+        assertTrue(touchesInputRoot(roots, Paths.get("/p/.venv/lib/python3.12/site-packages/pkg/a.py")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/p/build/out.class")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/vendor/generated/dep.py")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/")))
+        assertFalse(touchesInputRoot(roots, Paths.get("/config/options/ide.general.xml")))
+        assertFalse(touchesInputRoot(roots, Paths.get("/pother/a.py")))
     }
 
     @Test

@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
+import com.intellij.openapi.editor.Document
 import com.intellij.lang.Language
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileType
@@ -433,6 +434,90 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         assertEquals(true, completedStatus["has_inspection_results"])
         assertEquals(true, editedStatus["results_may_be_stale"])
         assertEquals("project_changed_since_inspection", editedStatus["snapshot_change_kind"])
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        "unchanged", "changed_content", "changed_inputs", "later_psi_change", "red_outcome", "files_scope",
+        "current_file_scope", "excluded_library_change", "unsaved_document",
+    ])
+    fun `test unproven broad-scope answer stays current through psi-only churn with unchanged inputs`(scenario: String) {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiCount = AtomicLong(44L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers { psiCount.get() }
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        mockExtractorFailure()
+        val fingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            if (scenario == "changed_inputs") fingerprint.copy(projectSdkVersion = "3.14") else fingerprint
+        }
+        val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content").apply {
+            anyInputRootChanged = scenario == "excluded_library_change"
+        }
+        if (scenario == "unsaved_document") {
+            // An unsaved document outside the project, such as an edited external library source.
+            val externalDocument = mockk<Document>()
+            every { FileDocumentManager.getInstance().unsavedDocuments } returns arrayOf(externalDocument)
+            every { FileDocumentManager.getInstance().getFile(externalDocument) } returns null
+        }
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = listOf(
+                mapOf(
+                    "file" to "/tmp/TestProject/src/Included.kt", "line" to 4, "column" to 7,
+                    "severity" to "warning", "inspectionType" to "CurrentRunInspection",
+                    "description" to "unproven broad finding",
+                ),
+            ),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 40L, unsavedProjectDocuments = 0),
+            outcome = if (scenario == "red_outcome") InspectionSnapshotOutcome.PROBLEMS_FOUND
+                else InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "global_context",
+            captureScope = publicationScope(
+                when (scenario) {
+                    "files_scope" -> "files"
+                    "current_file_scope" -> "current_file"
+                    else -> "directory"
+                },
+            ),
+            runId = 1L,
+            captureIncompleteReason = if (scenario == "red_outcome") null else CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
+        )
+
+        publishInspectionSnapshot(
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 44L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = fingerprint,
+            projectContentTracker = tracker,
+        )
+        every { FileDocumentManager.getInstance().unsavedDocuments } returns emptyArray()
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        if (scenario == "later_psi_change") psiCount.set(45L)
+        val status = buildInspectionStatus()
+        val published = requireNotNull(InspectionResultsStore.getSnapshot(key))
+
+        if (scenario in setOf("unchanged", "later_psi_change")) {
+            assertEquals(44L, published.projectState.psiModificationCount)
+            assertEquals("inputs_only", published.captureDiagnostic?.get("final_input_reconciliation_source"))
+            assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, published.outcome)
+            assertEquals(1, published.problems.size)
+            // A PSI change after publication still makes the answer stale.
+            assertEquals(scenario == "later_psi_change", status["results_may_be_stale"])
+        } else {
+            assertNull(published.captureDiagnostic?.get("final_input_reconciliation_source"))
+            assertEquals(true, status["results_may_be_stale"])
+        }
     }
 
     @ParameterizedTest
