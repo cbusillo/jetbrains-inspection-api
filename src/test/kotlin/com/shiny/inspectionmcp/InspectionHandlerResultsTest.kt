@@ -5,6 +5,7 @@ import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.ValueSource
 import org.junit.jupiter.api.Assertions.*
 import io.mockk.*
+import com.intellij.openapi.editor.Document
 import com.intellij.lang.Language
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.fileTypes.FileType
@@ -436,7 +437,10 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["unchanged", "changed_content", "changed_inputs", "later_psi_change", "red_outcome", "files_scope"])
+    @ValueSource(strings = [
+        "unchanged", "changed_content", "changed_inputs", "later_psi_change", "red_outcome", "files_scope",
+        "current_file_scope", "excluded_library_change", "unsaved_document",
+    ])
     fun `test unproven broad-scope answer stays current through psi-only churn with unchanged inputs`(scenario: String) {
         every { mockProject.basePath } returns "/tmp/TestProject"
         every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
@@ -450,7 +454,15 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
         handler.projectInputsFingerprintProvider = { _, _ ->
             if (scenario == "changed_inputs") fingerprint.copy(projectSdkVersion = "3.14") else fingerprint
         }
-        val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content")
+        val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content").apply {
+            excludedLibraryRootChanged = scenario == "excluded_library_change"
+        }
+        if (scenario == "unsaved_document") {
+            // An unsaved document outside the project, such as an edited external library source.
+            val externalDocument = mockk<Document>()
+            every { FileDocumentManager.getInstance().unsavedDocuments } returns arrayOf(externalDocument)
+            every { FileDocumentManager.getInstance().getFile(externalDocument) } returns null
+        }
         setInspectionRunState(
             key,
             InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
@@ -468,7 +480,13 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             outcome = if (scenario == "red_outcome") InspectionSnapshotOutcome.PROBLEMS_FOUND
                 else InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
             source = "global_context",
-            captureScope = publicationScope(if (scenario == "files_scope") "files" else "directory"),
+            captureScope = publicationScope(
+                when (scenario) {
+                    "files_scope" -> "files"
+                    "current_file_scope" -> "current_file"
+                    else -> "directory"
+                },
+            ),
             runId = 1L,
             captureIncompleteReason = if (scenario == "red_outcome") null else CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
         )
@@ -480,6 +498,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             inspectionInputFingerprint = fingerprint,
             projectContentTracker = tracker,
         )
+        every { FileDocumentManager.getInstance().unsavedDocuments } returns emptyArray()
         setInspectionRunState(
             key,
             InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),

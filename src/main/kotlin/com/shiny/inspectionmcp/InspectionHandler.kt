@@ -111,6 +111,7 @@ private const val MAX_SCOPE_FILE_DIAGNOSTICS = 25
 private const val DEFAULT_BOUNDED_EXECUTION_PROOF_TIMEOUT_MS = 60_000L
 private const val DEFAULT_PYTHON_SDK_SETTLE_TIMEOUT_MS = 10_000L
 private const val DEFAULT_PROJECT_QUIESCENCE_STABLE_MS = 2_000L
+private val BROAD_CAPTURE_SCOPES = setOf("directory", "whole_project", "all")
 private const val DEFAULT_PROJECT_QUIESCENCE_TIMEOUT_MS = 20_000L
 private const val DEFAULT_PROJECT_QUIESCENCE_POLL_MS = 100L
 private const val DEFAULT_PYTHON_SDK_SETTLE_POLL_MS = 200L
@@ -566,6 +567,9 @@ private data class InspectionAnalysisQualification(
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
     fun hasChanges(): Boolean
+    // Changes under an excluded root that holds a library or SDK root, such as a project-local .venv.
+    // hasChanges() ignores these; only checks that rely on inputs alone must refuse them.
+    fun hasExcludedLibraryRootChanges(): Boolean
     fun firstChangeDescription(): String? = null
     fun runIfUnchanged(action: () -> Unit): Boolean
 }
@@ -968,6 +972,15 @@ private fun isTrackedInspectionInputPath(
     return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
 }
 
+// A path inside an excluded root that is also inside an input root nested in it, such as a
+// library root under a project-local .venv.
+internal fun isExcludedLibraryInputPath(rootPaths: List<Path>, excludedRootPaths: List<Path>, eventPath: Path): Boolean =
+    excludedRootPaths.any { excludedRoot ->
+        eventPath.startsWith(excludedRoot) && rootPaths.any { rootPath ->
+            rootPath != excludedRoot && rootPath.startsWith(excludedRoot) && eventPath.startsWith(rootPath)
+        }
+    }
+
 private class MessageBusInspectionProjectContentTracker(
     project: Project,
     projectBasePath: String?,
@@ -975,6 +988,7 @@ private class MessageBusInspectionProjectContentTracker(
     excludedRootPaths: List<String>,
 ) : InspectionProjectContentTracker {
     private val changed = AtomicBoolean(false)
+    private val excludedLibraryRootChanged = AtomicBoolean(false)
     private val firstChange = AtomicReference<String?>(null)
     private val closed = AtomicBoolean(false)
     private val changeLock = Any()
@@ -1024,6 +1038,8 @@ private class MessageBusInspectionProjectContentTracker(
 
     override fun hasChanges(): Boolean = changed.get()
 
+    override fun hasExcludedLibraryRootChanges(): Boolean = excludedLibraryRootChanged.get()
+
     override fun firstChangeDescription(): String? = firstChange.get()
 
     override fun runIfUnchanged(action: () -> Unit): Boolean {
@@ -1043,6 +1059,14 @@ private class MessageBusInspectionProjectContentTracker(
     }
 
     private fun recordChanges(events: List<VFileEvent>) {
+        if (!excludedLibraryRootChanged.get() && events.any { event ->
+                inspectionEventPaths(event).any { eventPath ->
+                    normalizeFileSystemPath(eventPath)?.let(Paths::get)?.let(::isUnderExcludedLibraryRoot) == true
+                }
+            }
+        ) {
+            excludedLibraryRootChanged.set(true)
+        }
         if (changed.get()) {
             return
         }
@@ -1060,6 +1084,9 @@ private class MessageBusInspectionProjectContentTracker(
         } ?: return
         markChanged("file:" + describeTrackedEventPath(firstTrackedEventPath))
     }
+
+    private fun isUnderExcludedLibraryRoot(eventPath: Path): Boolean =
+        isExcludedLibraryInputPath(normalizedRootPaths, normalizedExcludedRootPaths, eventPath)
 
     private fun describeTrackedEventPath(eventPath: Path): String {
         val basePath = normalizedProjectBasePath
@@ -5997,8 +6024,7 @@ class InspectionHandler : HttpRequestHandler() {
                 val inputsOnlyReconciliationEligible = canAttemptReconciliation &&
                     !reconciliation.reconciled &&
                     snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
-                    !isFilesCaptureScope(snapshot.captureScope) &&
-                    !isChangedFilesCaptureScope(snapshot.captureScope)
+                    snapshot.captureScope?.scopeParam?.trim()?.lowercase() in BROAD_CAPTURE_SCOPES
                 val currentFingerprint = if (
                     !project.isDisposed &&
                     !contentChangedBeforeVerification &&
@@ -6024,7 +6050,12 @@ class InspectionHandler : HttpRequestHandler() {
                     !project.isDisposed &&
                     isCurrentInspectionRun(key, runId)
                 val shouldReconcile = reconciliation.reconciled && finalValidationPassed
-                val shouldReconcileInputsOnly = inputsOnlyReconciliationEligible && finalValidationPassed
+                // Unsaved documents anywhere, including library sources outside the project, can change
+                // resolution without a disk event the tracker would see.
+                val shouldReconcileInputsOnly = inputsOnlyReconciliationEligible &&
+                    finalValidationPassed &&
+                    !contentTracker.hasExcludedLibraryRootChanges() &&
+                    FileDocumentManager.getInstance().unsavedDocuments.isEmpty()
                 val shouldPublishUnchangedSnapshot =
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(

@@ -1,5 +1,6 @@
 package com.shiny.inspectionmcp
 
+import java.nio.file.Paths
 import com.intellij.openapi.application.Application
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.editor.Document
@@ -2256,6 +2257,17 @@ class InspectionSnapshotStateTest {
                 timeSinceTriggerMs = 16000,
             )
         )
+    }
+
+    @Test
+    @DisplayName("Excluded-root changes count as inputs only under a nested library root")
+    fun testExcludedLibraryInputPath() {
+        val roots = listOf(Paths.get("/p"), Paths.get("/p/.venv/lib/python3.12/site-packages"))
+        val excluded = listOf(Paths.get("/p/.venv"), Paths.get("/p/build"))
+        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/lib/python3.12/site-packages/pkg/a.py")))
+        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/bin/python")))
+        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/build/out.class")))
+        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/src/a.py")))
     }
 
     @Test

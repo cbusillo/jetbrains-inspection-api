@@ -580,7 +580,11 @@ internal abstract class InspectionHandlerTestSupport {
         var beforeRunIfUnchanged: (() -> Unit)? = null
         var firstChange: String? = null
 
+        var excludedLibraryRootChanged: Boolean = false
+
         override fun hasChanges(): Boolean = changed
+
+        override fun hasExcludedLibraryRootChanges(): Boolean = excludedLibraryRootChanged
 
         override fun firstChangeDescription(): String? = firstChange
 
