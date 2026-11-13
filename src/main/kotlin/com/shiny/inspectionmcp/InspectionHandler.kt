@@ -7717,8 +7717,8 @@ class InspectionHandler : HttpRequestHandler() {
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
                                     minResultsWaitMs = settlingWindow.minResultsWaitMs,
-                                    cleanProofImpossible = nativeProofCollector != null &&
-                                        nativeAttestationUnavailableReason != null,
+                                    cleanProofImpossible = boundedProof?.proofEstablished == false ||
+                                        (nativeProofCollector != null && nativeAttestationUnavailableReason != null),
                                 )
                             ) {
                                 captureExitReason = "settled"

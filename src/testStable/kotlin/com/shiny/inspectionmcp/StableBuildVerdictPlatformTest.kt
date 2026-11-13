@@ -78,9 +78,7 @@ class StableBuildVerdictPlatformTest {
         assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
         assertThat(status["capture_diagnostic"]?.jsonObject?.get("execution_proof_block_reason")?.jsonPrimitive?.content)
             .isEqualTo(STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON)
-        assertThat(status["capture_diagnostic"]?.jsonObject?.get("capture_elapsed_ms")?.jsonPrimitive?.content?.toLong())
-            .describedAs("an unprovable run must not wait out the capture deadline")
-            .isLessThan(30_000L)
+        assertDidNotWaitOutCaptureDeadline(status)
     }
 
     @Test
@@ -232,6 +230,7 @@ class StableBuildVerdictPlatformTest {
             assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
             assertThat(status["capture_diagnostic"]?.jsonObject?.get("execution_proof_failed_obligation_count")?.jsonPrimitive?.int)
                 .isEqualTo(1)
+            assertDidNotWaitOutCaptureDeadline(status)
         } finally {
             unmockkStatic(InspectionEngine::class)
         }
@@ -321,6 +320,12 @@ class StableBuildVerdictPlatformTest {
         )
         assertThat(manager.runningContexts).containsExactlyInAnyOrderElementsOf(runningContexts)
         return proof
+    }
+
+    private fun assertDidNotWaitOutCaptureDeadline(status: JsonObject) {
+        assertThat(status["capture_diagnostic"]?.jsonObject?.get("capture_elapsed_ms")?.jsonPrimitive?.content?.toLong())
+            .describedAs("an unprovable run must not wait out the capture deadline")
+            .isLessThan(30_000L)
     }
 
     private fun runScope(project: Project, scopeQuery: String, profile: InspectionProfileImpl): JsonObject {
