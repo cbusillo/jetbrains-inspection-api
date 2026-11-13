@@ -455,7 +455,7 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
             if (scenario == "changed_inputs") fingerprint.copy(projectSdkVersion = "3.14") else fingerprint
         }
         val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content").apply {
-            excludedLibraryRootChanged = scenario == "excluded_library_change"
+            anyInputRootChanged = scenario == "excluded_library_change"
         }
         if (scenario == "unsaved_document") {
             // An unsaved document outside the project, such as an edited external library source.

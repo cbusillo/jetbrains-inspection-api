@@ -2260,20 +2260,15 @@ class InspectionSnapshotStateTest {
     }
 
     @Test
-    @DisplayName("Excluded-root changes count as inputs only under a nested library root")
-    fun testExcludedLibraryInputPath() {
-        val roots = listOf(Paths.get("/p"), Paths.get("/p/.venv/lib/python3.12/site-packages"))
-        val excluded = listOf(Paths.get("/p/.venv"), Paths.get("/p/build"))
-        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/lib/python3.12/site-packages/pkg/a.py")))
-        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/bin/python")))
-        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/build/out.class")))
-        assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/src/a.py")))
-        // A parent of the library root moving or disappearing changes the library too.
-        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/lib")))
-        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv")))
-        // An excluded directory that is itself attached as a library root.
-        val vendorRoots = listOf(Paths.get("/p"), Paths.get("/p/vendor"))
-        assertTrue(isExcludedLibraryInputPath(vendorRoots, listOf(Paths.get("/p/vendor")), Paths.get("/p/vendor/dep/a.py")))
+    @DisplayName("Any change inside or above an input root counts, excluded parts included")
+    fun testTouchesInputRoot() {
+        val roots = listOf(Paths.get("/p"), Paths.get("/vendor"), Paths.get("/p/.venv/lib/python3.12/site-packages"))
+        assertTrue(touchesInputRoot(roots, Paths.get("/p/.venv/lib/python3.12/site-packages/pkg/a.py")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/p/build/out.class")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/vendor/generated/dep.py")))
+        assertTrue(touchesInputRoot(roots, Paths.get("/")))
+        assertFalse(touchesInputRoot(roots, Paths.get("/config/options/ide.general.xml")))
+        assertFalse(touchesInputRoot(roots, Paths.get("/pother/a.py")))
     }
 
     @Test

@@ -567,9 +567,9 @@ private data class InspectionAnalysisQualification(
 
 internal interface InspectionProjectContentTracker : AutoCloseable {
     fun hasChanges(): Boolean
-    // Changes under an excluded root that holds a library or SDK root, such as a project-local .venv.
-    // hasChanges() ignores these; only checks that rely on inputs alone must refuse them.
-    fun hasExcludedLibraryRootChanges(): Boolean
+    // Any disk change under, or above, an input root, including excluded parts that hasChanges() ignores.
+    // Only checks that rely on unchanged inputs alone, with no result evidence, must refuse these.
+    fun hasAnyInputRootChanges(): Boolean
     fun firstChangeDescription(): String? = null
     fun runIfUnchanged(action: () -> Unit): Boolean
 }
@@ -972,14 +972,10 @@ private fun isTrackedInspectionInputPath(
     return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
 }
 
-// A change under an excluded root that touches an input root lying in or equal to it, such as a
-// library root under a project-local .venv: inside that input root, or above it (a moved or deleted parent).
-internal fun isExcludedLibraryInputPath(rootPaths: List<Path>, excludedRootPaths: List<Path>, eventPath: Path): Boolean =
-    excludedRootPaths.any { excludedRoot ->
-        eventPath.startsWith(excludedRoot) && rootPaths.any { rootPath ->
-            rootPath.startsWith(excludedRoot) && (eventPath.startsWith(rootPath) || rootPath.startsWith(eventPath))
-        }
-    }
+// A change inside any input root (project, content, source, library or SDK), excluded parts included,
+// or above one (a moved or deleted parent).
+internal fun touchesInputRoot(rootPaths: List<Path>, eventPath: Path): Boolean =
+    rootPaths.any { rootPath -> eventPath.startsWith(rootPath) || rootPath.startsWith(eventPath) }
 
 private class MessageBusInspectionProjectContentTracker(
     project: Project,
@@ -988,7 +984,7 @@ private class MessageBusInspectionProjectContentTracker(
     excludedRootPaths: List<String>,
 ) : InspectionProjectContentTracker {
     private val changed = AtomicBoolean(false)
-    private val excludedLibraryRootChanged = AtomicBoolean(false)
+    private val anyInputRootChanged = AtomicBoolean(false)
     private val firstChange = AtomicReference<String?>(null)
     private val closed = AtomicBoolean(false)
     private val changeLock = Any()
@@ -1038,7 +1034,7 @@ private class MessageBusInspectionProjectContentTracker(
 
     override fun hasChanges(): Boolean = changed.get()
 
-    override fun hasExcludedLibraryRootChanges(): Boolean = excludedLibraryRootChanged.get()
+    override fun hasAnyInputRootChanges(): Boolean = anyInputRootChanged.get()
 
     override fun firstChangeDescription(): String? = firstChange.get()
 
@@ -1059,13 +1055,13 @@ private class MessageBusInspectionProjectContentTracker(
     }
 
     private fun recordChanges(events: List<VFileEvent>) {
-        if (!excludedLibraryRootChanged.get() && events.any { event ->
+        if (!anyInputRootChanged.get() && events.any { event ->
                 inspectionEventPaths(event).any { eventPath ->
-                    normalizeFileSystemPath(eventPath)?.let(Paths::get)?.let(::isUnderExcludedLibraryRoot) == true
+                    normalizeFileSystemPath(eventPath)?.let(Paths::get)?.let { touchesInputRoot(normalizedRootPaths, it) } == true
                 }
             }
         ) {
-            excludedLibraryRootChanged.set(true)
+            anyInputRootChanged.set(true)
         }
         if (changed.get()) {
             return
@@ -1084,9 +1080,6 @@ private class MessageBusInspectionProjectContentTracker(
         } ?: return
         markChanged("file:" + describeTrackedEventPath(firstTrackedEventPath))
     }
-
-    private fun isUnderExcludedLibraryRoot(eventPath: Path): Boolean =
-        isExcludedLibraryInputPath(normalizedRootPaths, normalizedExcludedRootPaths, eventPath)
 
     private fun describeTrackedEventPath(eventPath: Path): String {
         val basePath = normalizedProjectBasePath
@@ -6054,7 +6047,7 @@ class InspectionHandler : HttpRequestHandler() {
                 // resolution without a disk event the tracker would see.
                 val shouldReconcileInputsOnly = inputsOnlyReconciliationEligible &&
                     finalValidationPassed &&
-                    !contentTracker.hasExcludedLibraryRootChanges() &&
+                    !contentTracker.hasAnyInputRootChanges() &&
                     FileDocumentManager.getInstance().unsavedDocuments.isEmpty()
                 val shouldPublishUnchangedSnapshot =
                     !projectStateChangedDuringCapture && finalValidationPassed
