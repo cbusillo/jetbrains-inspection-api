@@ -1620,7 +1620,13 @@ internal fun shouldStopCapturePolling(
     minStableMs: Long = 5000L,
     minResultsWaitMs: Long = 15000L,
     maxFallbackWaitMs: Long = 60000L,
+    cleanProofImpossible: Boolean = false,
 ): Boolean {
+    // Waiting cannot turn an unprovable run clean; it only lets late findings arrive, which a
+    // stable window already covers.
+    if (cleanProofImpossible && stableForMs >= minStableMs) {
+        return true
+    }
     if (bestResultsCount > 0 && stableForMs >= minStableMs && pollingElapsedMs >= minResultsWaitMs) {
         return true
     }
@@ -7670,6 +7676,8 @@ class InspectionHandler : HttpRequestHandler() {
                                     stableForMs = stableForMs,
                                     pollingElapsedMs = pollingElapsedMs,
                                     minResultsWaitMs = settlingWindow.minResultsWaitMs,
+                                    cleanProofImpossible = nativeProofCollector != null &&
+                                        nativeAttestationUnavailableReason != null,
                                 )
                             ) {
                                 captureExitReason = "settled"

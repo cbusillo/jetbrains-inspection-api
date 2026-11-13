@@ -78,6 +78,9 @@ class StableBuildVerdictPlatformTest {
         assertThat(status["inspection_verdict"]?.jsonPrimitive?.content).isEqualTo("UNKNOWN")
         assertThat(status["capture_diagnostic"]?.jsonObject?.get("execution_proof_block_reason")?.jsonPrimitive?.content)
             .isEqualTo(STABLE_BUILD_BROAD_SCOPE_UNPROVEN_REASON)
+        assertThat(status["capture_diagnostic"]?.jsonObject?.get("capture_elapsed_ms")?.jsonPrimitive?.content?.toLong())
+            .describedAs("an unprovable run must not wait out the capture deadline")
+            .isLessThan(30_000L)
     }
 
     @Test
