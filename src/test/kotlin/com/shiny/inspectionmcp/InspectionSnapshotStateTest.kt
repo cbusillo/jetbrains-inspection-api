@@ -2268,6 +2268,12 @@ class InspectionSnapshotStateTest {
         assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/bin/python")))
         assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/build/out.class")))
         assertFalse(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/src/a.py")))
+        // A parent of the library root moving or disappearing changes the library too.
+        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv/lib")))
+        assertTrue(isExcludedLibraryInputPath(roots, excluded, Paths.get("/p/.venv")))
+        // An excluded directory that is itself attached as a library root.
+        val vendorRoots = listOf(Paths.get("/p"), Paths.get("/p/vendor"))
+        assertTrue(isExcludedLibraryInputPath(vendorRoots, listOf(Paths.get("/p/vendor")), Paths.get("/p/vendor/dep/a.py")))
     }
 
     @Test

@@ -972,12 +972,12 @@ private fun isTrackedInspectionInputPath(
     return relativePathText != ".idea" && !relativePathText.startsWith(".idea/workspace.xml")
 }
 
-// A path inside an excluded root that is also inside an input root nested in it, such as a
-// library root under a project-local .venv.
+// A change under an excluded root that touches an input root lying in or equal to it, such as a
+// library root under a project-local .venv: inside that input root, or above it (a moved or deleted parent).
 internal fun isExcludedLibraryInputPath(rootPaths: List<Path>, excludedRootPaths: List<Path>, eventPath: Path): Boolean =
     excludedRootPaths.any { excludedRoot ->
         eventPath.startsWith(excludedRoot) && rootPaths.any { rootPath ->
-            rootPath != excludedRoot && rootPath.startsWith(excludedRoot) && eventPath.startsWith(rootPath)
+            rootPath.startsWith(excludedRoot) && (eventPath.startsWith(rootPath) || rootPath.startsWith(eventPath))
         }
     }
 
