@@ -436,6 +436,72 @@ internal class InspectionHandlerResultsTest : InspectionHandlerTestSupport() {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = ["unchanged", "changed_content", "changed_inputs", "later_psi_change", "red_outcome", "files_scope"])
+    fun `test unproven broad-scope answer stays current through psi-only churn with unchanged inputs`(scenario: String) {
+        every { mockProject.basePath } returns "/tmp/TestProject"
+        every { mockProject.projectFilePath } returns "/tmp/TestProject/.idea/misc.xml"
+        mockInspectionPrerequisites(mockProject)
+        val psiCount = AtomicLong(44L)
+        every { PsiModificationTracker.getInstance(mockProject).modificationCount } answers { psiCount.get() }
+        val key = projectKey(mockProject)
+        InspectionResultsStore.clear(key)
+        mockExtractorFailure()
+        val fingerprint = projectInputsFingerprint()
+        handler.projectInputsFingerprintProvider = { _, _ ->
+            if (scenario == "changed_inputs") fingerprint.copy(projectSdkVersion = "3.14") else fingerprint
+        }
+        val tracker = FakeInspectionProjectContentTracker(changed = scenario == "changed_content")
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = true),
+        )
+        val snapshot = InspectionResultsSnapshot(
+            problems = listOf(
+                mapOf(
+                    "file" to "/tmp/TestProject/src/Included.kt", "line" to 4, "column" to 7,
+                    "severity" to "warning", "inspectionType" to "CurrentRunInspection",
+                    "description" to "unproven broad finding",
+                ),
+            ),
+            timestamp = System.currentTimeMillis(),
+            projectState = InspectionProjectStateSnapshot(psiModificationCount = 40L, unsavedProjectDocuments = 0),
+            outcome = if (scenario == "red_outcome") InspectionSnapshotOutcome.PROBLEMS_FOUND
+                else InspectionSnapshotOutcome.CAPTURE_INCOMPLETE,
+            source = "global_context",
+            captureScope = publicationScope(if (scenario == "files_scope") "files" else "directory"),
+            runId = 1L,
+            captureIncompleteReason = if (scenario == "red_outcome") null else CaptureIncompleteReason.EXECUTION_NOT_PROVEN,
+        )
+
+        publishInspectionSnapshot(
+            snapshot = snapshot,
+            captureEndState = InspectionProjectStateSnapshot(psiModificationCount = 44L, unsavedProjectDocuments = 0),
+            projectStateChangedDuringCapture = true,
+            inspectionInputFingerprint = fingerprint,
+            projectContentTracker = tracker,
+        )
+        setInspectionRunState(
+            key,
+            InspectionRunState(runId = 1L, triggerTimeMs = System.currentTimeMillis(), inProgress = false),
+        )
+        if (scenario == "later_psi_change") psiCount.set(45L)
+        val status = buildInspectionStatus()
+        val published = requireNotNull(InspectionResultsStore.getSnapshot(key))
+
+        if (scenario in setOf("unchanged", "later_psi_change")) {
+            assertEquals(44L, published.projectState.psiModificationCount)
+            assertEquals("inputs_only", published.captureDiagnostic?.get("final_input_reconciliation_source"))
+            assertEquals(InspectionSnapshotOutcome.CAPTURE_INCOMPLETE, published.outcome)
+            assertEquals(1, published.problems.size)
+            // A PSI change after publication still makes the answer stale.
+            assertEquals(scenario == "later_psi_change", status["results_may_be_stale"])
+        } else {
+            assertNull(published.captureDiagnostic?.get("final_input_reconciliation_source"))
+            assertEquals(true, status["results_may_be_stale"])
+        }
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = [
         "matching_red", "matching_clean", "changed_finding", "changed_content", "changed_inputs",
         "later_psi_change", "unproved_execution", "unreadable_context", "partial_context", "unmapped_clean",

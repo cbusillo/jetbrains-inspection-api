@@ -5992,12 +5992,19 @@ class InspectionHandler : HttpRequestHandler() {
                 } else {
                     CurrentRunPsiChurnReconciliation(snapshot, false)
                 }
+                // An UNKNOWN broad-scope answer cannot match result evidence, but it claims nothing a
+                // PSI-only tick could invalidate; unchanged tracked inputs are enough to keep it current.
+                val inputsOnlyReconciliationEligible = canAttemptReconciliation &&
+                    !reconciliation.reconciled &&
+                    snapshot.outcome == InspectionSnapshotOutcome.CAPTURE_INCOMPLETE &&
+                    !isFilesCaptureScope(snapshot.captureScope) &&
+                    !isChangedFilesCaptureScope(snapshot.captureScope)
                 val currentFingerprint = if (
                     !project.isDisposed &&
                     !contentChangedBeforeVerification &&
                     stateStableBeforeVerification &&
                     isCurrentInspectionRun(key, runId) &&
-                    (!projectStateChangedDuringCapture || reconciliation.reconciled)
+                    (!projectStateChangedDuringCapture || reconciliation.reconciled || inputsOnlyReconciliationEligible)
                 ) {
                     projectInputsFingerprintProvider(project, inputFingerprint.requestedProfileName)
                 } else {
@@ -6017,6 +6024,7 @@ class InspectionHandler : HttpRequestHandler() {
                     !project.isDisposed &&
                     isCurrentInspectionRun(key, runId)
                 val shouldReconcile = reconciliation.reconciled && finalValidationPassed
+                val shouldReconcileInputsOnly = inputsOnlyReconciliationEligible && finalValidationPassed
                 val shouldPublishUnchangedSnapshot =
                     !projectStateChangedDuringCapture && finalValidationPassed
                 logger.info(
@@ -6032,7 +6040,8 @@ class InspectionHandler : HttpRequestHandler() {
                         "firstInputChange=${contentTracker.firstChangeDescription()}, " +
                         "changedInputFields=$changedInputFields, " +
                         "unchangedPublished=$shouldPublishUnchangedSnapshot, " +
-                        "promoted=$shouldReconcile"
+                        "promoted=$shouldReconcile, " +
+                        "inputsOnlyReconciled=$shouldReconcileInputsOnly"
                 )
                 val snapshotToPublish = if (shouldReconcile) {
                     snapshot.copy(
@@ -6048,6 +6057,13 @@ class InspectionHandler : HttpRequestHandler() {
                             snapshot.reconciliationChangeKind
                         },
                     )
+                } else if (shouldReconcileInputsOnly) {
+                    snapshot.copy(
+                        projectState = captureEndState,
+                        captureDiagnostic = snapshot.captureDiagnostic.orEmpty() + mapOf(
+                            "final_input_reconciliation_source" to "inputs_only",
+                        ),
+                    )
                 } else if (shouldPublishUnchangedSnapshot) {
                     snapshot
                 } else if (projectStateChangedDuringCapture) {
@@ -6056,7 +6072,8 @@ class InspectionHandler : HttpRequestHandler() {
                     inspectionInputValidationFailureSnapshot(snapshot, "inputs_changed", contentTracker.firstChangeDescription())
                 }
                 if (!project.isDisposed && isCurrentInspectionRun(key, runId)) {
-                    val publicationRequiresStableTracker = shouldReconcile || shouldPublishUnchangedSnapshot
+                    val publicationRequiresStableTracker =
+                        shouldReconcile || shouldReconcileInputsOnly || shouldPublishUnchangedSnapshot
                     var scopeMatchedAtPublication = !publicationRequiresStableTracker
                     val publishedWithStableTracker = if (publicationRequiresStableTracker) {
                         contentTracker.runIfUnchanged {
